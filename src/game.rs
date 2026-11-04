@@ -45,6 +45,18 @@ pub enum Screen {
     SkirmishSetup,
     Loading,
     InGame,
+    /// Esc on the battlefield. This and the options and credits screens opened from it
+    /// draw over the battle while `Game::in_battle` holds.
+    EscapeMenu,
+}
+
+/// One line of the diplomacy window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatsRow {
+    pub name: String,
+    pub faction: Option<Faction>,
+    pub color: TeamColor,
+    pub allies: [Ally; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -339,6 +351,9 @@ pub enum Action {
     ConfirmFaction,
     CancelFaction,
     StartBattle,
+    SaveGame,
+    ExitGame,
+    ReturnToGame,
     NameField,
     MapDropdown,
     SelectMap(usize),
@@ -420,6 +435,14 @@ const SINGLE_PLAYER_MENU: &[(Action, &str, Anchor)] = &[
 ];
 
 const BACK_ONLY: &[(Action, &str, Anchor)] = &[(Action::Back, "Back", Anchor::BottomLeft)];
+
+const ESCAPE_MENU: &[(Action, &str, Anchor)] = &[
+    (Action::LoadGame, "Load Game", Anchor::Center),
+    (Action::SaveGame, "Save Game", Anchor::Center),
+    (Action::Options, "Options", Anchor::Center),
+    (Action::ExitGame, "Exit Game", Anchor::Center),
+    (Action::ReturnToGame, "Return to Game", Anchor::Center),
+];
 
 /// Layout is authored for a 1080-pixel-tall screen and scaled to the real height.
 pub fn ui_scale(height: f32) -> f32 {
@@ -811,6 +834,17 @@ pub fn setup_checkboxes(width: f32, height: f32) -> Vec<Button> {
         .collect()
 }
 
+/// Where the diplomacy window's rows start, and their spacing, at 1080 pixels tall.
+pub const STATS_ROW_TOP: f32 = 120.0;
+pub const STATS_ROW_STEP: f32 = 76.0;
+
+/// The diplomacy window as (x, y, w, h), centered on the screen.
+pub fn stats_rect(width: f32, height: f32) -> (f32, f32, f32, f32) {
+    let s = ui_scale(height);
+    let (w, h) = (1000.0 * s, 760.0 * s);
+    ((width - w) / 2.0, (height - h) / 2.0, w, h)
+}
+
 pub const CONFIRM_MESSAGE: &str = "Are you sure you will play for those guys?";
 
 /// The confirmation message box as (x, y, w, h), centered on the screen.
@@ -871,14 +905,11 @@ pub fn buttons(screen: Screen, width: f32, height: f32) -> Vec<Button> {
     const MARGIN: f32 = 48.0;
 
     let items = match screen {
-        Screen::Intro | Screen::Loading | Screen::Movie(_) => return Vec::new(),
+        Screen::Intro | Screen::Loading | Screen::Movie(_) | Screen::InGame => return Vec::new(),
         Screen::MainMenu => MAIN_MENU,
         Screen::SinglePlayerMenu => SINGLE_PLAYER_MENU,
-        Screen::Options
-        | Screen::Credits
-        | Screen::InGame
-        | Screen::FactionSelect
-        | Screen::SkirmishSetup => BACK_ONLY,
+        Screen::EscapeMenu => ESCAPE_MENU,
+        Screen::Options | Screen::Credits | Screen::FactionSelect | Screen::SkirmishSetup => BACK_ONLY,
     };
     let s = ui_scale(height);
     let centered = items.iter().filter(|i| i.2 == Anchor::Center).count() as f32;
@@ -938,6 +969,18 @@ pub struct Game {
     pub camera: Camera,
     /// False while another app is in front; the cursor then says nothing about the game.
     pub focused: bool,
+    /// A battle is under way, even while a menu is drawn over it.
+    pub in_battle: bool,
+    /// Network games cannot stop for one player. Every game is pausable until those exist.
+    pub pausable: bool,
+    /// Paused with the Pause key rather than by a menu being open.
+    pub key_paused: bool,
+    pub stats_open: bool,
+    /// Pressed on the battlefield minimap and not yet released.
+    minimap_dragging: bool,
+    skirmish_battle: bool,
+    /// Seconds of battle played, which stand still while paused.
+    battle_time: f32,
     /// Seconds since the current screen opened.
     screen_elapsed: f32,
 }
@@ -963,24 +1006,101 @@ impl Game {
             battle_map: 0,
             camera: Camera::centered(),
             focused: true,
+            in_battle: false,
+            pausable: true,
+            key_paused: false,
+            stats_open: false,
+            minimap_dragging: false,
+            skirmish_battle: false,
+            battle_time: 0.0,
             screen_elapsed: 0.0,
         }
     }
 
+    pub fn battle_time(&self) -> f32 {
+        self.battle_time
+    }
+
+    /// A battle stands still with the Pause key on, or with a menu over it if it can.
+    pub fn is_paused(&self) -> bool {
+        self.in_battle && self.pausable && (self.key_paused || self.screen != Screen::InGame)
+    }
+
+    /// The player, then each opponent in this battle.
+    pub fn stats_rows(&self) -> Vec<StatsRow> {
+        let setup = &self.skirmish;
+        if !self.skirmish_battle {
+            let color = match self.faction {
+                Some(Faction::H) => TeamColor::Red,
+                Some(Faction::O) => TeamColor::Cyan,
+                Some(Faction::A) | None => TeamColor::Blue,
+            };
+            return vec![StatsRow {
+                name: setup.commander.clone(),
+                faction: self.faction,
+                color,
+                allies: [Ally::None; 2],
+            }];
+        }
+        let mut rows = vec![StatsRow {
+            name: setup.commander.clone(),
+            faction: Some(setup.faction),
+            color: setup.color,
+            allies: setup.allies,
+        }];
+        for (i, opponent) in setup.opponents[..setup.ai_players as usize].iter().enumerate() {
+            rows.push(StatsRow {
+                name: format!("AI {} ({})", i + 1, opponent.kind.label()),
+                faction: Some(opponent.faction),
+                color: opponent.color,
+                allies: opponent.allies,
+            });
+        }
+        rows
+    }
+
+    fn leave_battle(&mut self) {
+        self.in_battle = false;
+        self.key_paused = false;
+        self.stats_open = false;
+        self.set_screen(Screen::MainMenu);
+    }
+
     fn click_battle_minimap(&mut self) {
-        if self.screen != Screen::InGame {
+        if self.screen != Screen::InGame || self.key_paused || self.stats_open {
             return;
         }
         let rect = battlefield::overlay_minimap_rect(self.width, self.height);
         if let Some((x, z)) = battlefield::minimap_to_world(rect, self.mouse.0, self.mouse.1) {
             self.camera.look_at(x, z);
+            self.minimap_dragging = true;
         }
     }
 
-    fn start_battle(&mut self, map: usize, faction: Option<Faction>) {
+    /// Follows the cursor until release, holding to the minimap's edge if it wanders off.
+    fn drag_battle_minimap(&mut self) {
+        if !self.minimap_dragging || self.key_paused {
+            return;
+        }
+        let rect = battlefield::overlay_minimap_rect(self.width, self.height);
+        let (x, y, size) = rect;
+        let px = self.mouse.0.clamp(x, x + size - 0.01);
+        let py = self.mouse.1.clamp(y, y + size - 0.01);
+        if let Some((world_x, world_z)) = battlefield::minimap_to_world(rect, px, py) {
+            self.camera.look_at(world_x, world_z);
+        }
+    }
+
+    fn start_battle(&mut self, map: usize, faction: Option<Faction>, skirmish: bool) {
         self.battle_map = map;
         self.faction = faction;
+        self.skirmish_battle = skirmish;
         self.camera = Camera::centered();
+        self.in_battle = true;
+        self.pausable = true;
+        self.key_paused = false;
+        self.stats_open = false;
+        self.battle_time = 0.0;
         self.set_screen(Screen::Loading);
     }
 
@@ -1058,7 +1178,7 @@ impl Game {
                 self.skirmish.commander.pop();
             }
             Key::Enter | Key::Escape => self.name_focused = false,
-            Key::Char(_) | Key::Other => {}
+            Key::Char(_) | Key::Tab | Key::Pause | Key::Other => {}
         }
     }
 
@@ -1147,11 +1267,13 @@ impl Game {
     /// Where Back and Escape lead, if anywhere.
     fn parent(&self) -> Option<Screen> {
         match self.screen {
-            Screen::SinglePlayerMenu | Screen::Options => Some(Screen::MainMenu),
+            Screen::SinglePlayerMenu => Some(Screen::MainMenu),
+            Screen::Options if self.in_battle => Some(Screen::EscapeMenu),
+            Screen::Options => Some(Screen::MainMenu),
             Screen::Credits => Some(Screen::Options),
-            Screen::InGame | Screen::FactionSelect | Screen::SkirmishSetup => {
-                Some(Screen::SinglePlayerMenu)
-            }
+            Screen::InGame => Some(Screen::EscapeMenu),
+            Screen::EscapeMenu => Some(Screen::InGame),
+            Screen::FactionSelect | Screen::SkirmishSetup => Some(Screen::SinglePlayerMenu),
             Screen::Intro | Screen::MainMenu | Screen::Loading | Screen::Movie(_) => None,
         }
     }
@@ -1159,6 +1281,10 @@ impl Game {
     fn go_back(&mut self) {
         // With the message box up, Escape answers it instead of leaving the screen.
         if self.confirming.take().is_some() {
+            return;
+        }
+        if self.stats_open {
+            self.stats_open = false;
             return;
         }
         if self.dropdown_open || self.color_open {
@@ -1173,13 +1299,16 @@ impl Game {
 
     pub fn update(&mut self, dt: f32) {
         self.screen_elapsed += dt;
+        if self.in_battle && !self.is_paused() {
+            self.battle_time += dt;
+        }
         match self.screen {
             Screen::Intro if self.screen_elapsed >= INTRO_SECONDS => self.set_screen(Screen::MainMenu),
             Screen::Loading if self.screen_elapsed >= LOADING_SECONDS => self.set_screen(Screen::InGame),
             Screen::Movie(faction) if self.screen_elapsed >= MOVIE_SECONDS => self.finish_movie(faction),
             Screen::InGame => {
                 self.camera.ease_zoom(dt);
-                if self.focused {
+                if self.focused && !self.key_paused && !self.minimap_dragging {
                     let direction = battlefield::edge_direction(self.mouse, self.width, self.height);
                     self.camera.scroll(direction, self.settings.scroll_rate, dt);
                 }
@@ -1193,7 +1322,7 @@ impl Game {
             Event::Quit => self.quit = true,
             Event::Focus(focused) => self.focused = focused,
             Event::Wheel(notches) => {
-                if self.screen == Screen::InGame {
+                if self.screen == Screen::InGame && !self.key_paused {
                     self.camera.zoom_by(notches);
                 }
             }
@@ -1205,6 +1334,7 @@ impl Game {
             Event::MouseMove(x, y) => {
                 self.mouse = (x, y);
                 self.drag_to(x);
+                self.drag_battle_minimap();
             }
             Event::MouseDown => {
                 self.name_focused = false;
@@ -1218,6 +1348,7 @@ impl Game {
             // A button fires only if the press and the release both landed on it.
             Event::MouseUp => {
                 self.dragging = None;
+                self.minimap_dragging = false;
                 let pressed = self.pressed.take();
                 if self.screen == Screen::Intro {
                     self.set_screen(Screen::MainMenu);
@@ -1235,6 +1366,8 @@ impl Game {
             Event::KeyDown(key) => match (self.screen, key) {
                 (Screen::Intro, _) => self.set_screen(Screen::MainMenu),
                 (Screen::Movie(faction), _) => self.finish_movie(faction),
+                (Screen::InGame, Key::Pause) if self.pausable => self.key_paused = !self.key_paused,
+                (Screen::InGame, Key::Tab) => self.stats_open = !self.stats_open,
                 (_, Key::Escape) => self.go_back(),
                 _ => {}
             },
@@ -1250,13 +1383,15 @@ impl Game {
             Action::Tab(Tab::Credits) => self.set_screen(Screen::Credits),
             Action::Tab(tab) => self.tab = tab,
             Action::Toggle(toggle) => self.flip(toggle),
-            Action::Tutorial => self.start_battle(0, None),
+            Action::Tutorial => self.start_battle(0, None, false),
+            Action::ExitGame => self.leave_battle(),
+            Action::ReturnToGame => self.set_screen(Screen::InGame),
             Action::StartCampaign => self.set_screen(Screen::FactionSelect),
             Action::Faction(faction) => self.set_screen(Screen::Movie(faction)),
             Action::CancelFaction => self.confirming = None,
-            Action::ConfirmFaction => self.start_battle(0, self.confirming),
+            Action::ConfirmFaction => self.start_battle(0, self.confirming, false),
             Action::SkirmishBattle => self.set_screen(Screen::SkirmishSetup),
-            Action::StartBattle => self.start_battle(self.skirmish.map, None),
+            Action::StartBattle => self.start_battle(self.skirmish.map, None, true),
             Action::NameField => self.name_focused = true,
             Action::MapDropdown => self.dropdown_open = true,
             Action::SelectMap(map) => {
@@ -1283,7 +1418,7 @@ impl Game {
                 cycle_ally(&mut self.skirmish.opponents[slot].allies, ally);
             }
             // Not designed yet: these buttons respond to hover but do nothing.
-            Action::Multiplayer | Action::LoadGame => {}
+            Action::Multiplayer | Action::LoadGame | Action::SaveGame => {}
         }
     }
 
@@ -1291,6 +1426,7 @@ impl Game {
         self.screen = screen;
         self.pressed = None;
         self.dragging = None;
+        self.minimap_dragging = false;
         self.confirming = None;
         self.name_focused = false;
         self.dropdown_open = false;
@@ -1596,10 +1732,216 @@ mod tests {
 
         game.update(LOADING_SECONDS);
         assert_eq!(game.screen, Screen::InGame);
-        assert_eq!(actions(&game), [Action::Back]);
+        assert!(game.buttons().is_empty(), "the battlefield has no Back button");
+    }
+
+    fn leave_battle(game: &mut Game) {
+        game.handle(Event::KeyDown(Key::Escape));
+        click(game, Action::ExitGame);
+        assert_eq!(game.screen, Screen::MainMenu);
+    }
+
+    #[test]
+    fn escape_opens_the_requested_menu_and_returns_to_the_game() {
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::EscapeMenu);
+        let labels: Vec<_> = game.buttons().iter().map(|b| b.label).collect();
+        assert_eq!(labels, ["Load Game", "Save Game", "Options", "Exit Game", "Return to Game"]);
+        let middle = game.buttons()[2];
+        assert!((middle.x + middle.w / 2.0 - W / 2.0).abs() < 0.5, "centered");
+        assert!(middle.y < H / 2.0 && middle.y + middle.h > H / 2.0, "centered");
+
+        click(&mut game, Action::ReturnToGame);
+        assert_eq!(game.screen, Screen::InGame);
+
+        game.handle(Event::KeyDown(Key::Escape));
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::InGame, "esc also returns");
+    }
+
+    #[test]
+    fn the_escape_menu_pauses_a_pausable_game_only() {
+        let mut game = in_battle();
+        game.update(1.0);
+        let played = game.battle_time();
+        game.handle(Event::KeyDown(Key::Escape));
+        assert!(game.is_paused());
+        game.update(1.0);
+        assert_eq!(game.battle_time(), played, "time stands still");
+        game.handle(Event::KeyDown(Key::Escape));
+        assert!(!game.is_paused());
+        game.update(1.0);
+        assert_eq!(game.battle_time(), played + 1.0);
+
+        let mut game = in_battle();
+        game.pausable = false;
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::EscapeMenu, "the menu still opens");
+        assert!(!game.is_paused());
+        game.update(1.0);
+        assert_eq!(game.battle_time(), 1.0, "a network game keeps running");
+    }
+
+    #[test]
+    fn the_pause_key_toggles_and_escape_does_not_unpause() {
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Pause));
+        assert!(game.key_paused && game.is_paused());
+        game.update(1.0);
+        assert_eq!(game.battle_time(), 0.0);
+
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::EscapeMenu);
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::InGame);
+        assert!(game.key_paused && game.is_paused(), "still paused after the menu");
+
+        game.handle(Event::KeyDown(Key::Pause));
+        assert!(!game.key_paused && !game.is_paused(), "the same key unpauses");
+    }
+
+    #[test]
+    fn the_pause_key_does_nothing_in_menus_or_network_games() {
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Escape));
+        game.handle(Event::KeyDown(Key::Pause));
+        assert!(!game.key_paused, "ignored in the menu");
+
+        let mut game = in_battle();
+        game.pausable = false;
+        game.handle(Event::KeyDown(Key::Pause));
+        assert!(!game.key_paused && !game.is_paused());
+
+        let mut game = in_setup();
+        game.handle(Event::KeyDown(Key::Pause));
+        assert!(!game.key_paused);
+    }
+
+    #[test]
+    fn nothing_moves_the_camera_while_key_paused() {
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Pause));
+        let start = game.camera;
+        game.handle(Event::MouseMove(W - 1.0, H / 2.0));
+        game.handle(Event::Wheel(5.0));
+        game.update(0.5);
+        let (x, y, size) = battlefield::overlay_minimap_rect(W, H);
+        click_at(&mut game, x + size - 1.0, y + size / 2.0);
+        game.update(0.5);
+        assert_eq!(game.camera, start);
+    }
+
+    #[test]
+    fn options_over_the_battle_return_to_the_escape_menu() {
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Escape));
+        click(&mut game, Action::Options);
+        assert_eq!(game.screen, Screen::Options);
+        assert!(game.in_battle && game.is_paused());
+        assert!(!game.sliders().is_empty(), "the same options as the separate screen");
+
+        click(&mut game, Action::Tab(Tab::Credits));
+        assert_eq!(game.screen, Screen::Credits);
+        click(&mut game, Action::Back);
+        assert_eq!(game.screen, Screen::Options);
+
+        let s = slider(&game, SliderId::ScrollRate);
+        drag(&mut game, SliderId::ScrollRate, s.x_of(9));
+        assert_eq!(game.settings.scroll_rate, 9);
 
         click(&mut game, Action::Back);
-        assert_eq!(game.screen, Screen::SinglePlayerMenu);
+        assert_eq!(game.screen, Screen::EscapeMenu);
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::InGame);
+    }
+
+    #[test]
+    fn exit_game_leaves_for_the_main_menu_and_options_go_back_there_again() {
+        let mut game = in_battle();
+        leave_battle(&mut game);
+        assert!(!game.in_battle && !game.is_paused());
+        click(&mut game, Action::Options);
+        click(&mut game, Action::Back);
+        assert_eq!(game.screen, Screen::MainMenu);
+    }
+
+    #[test]
+    fn a_new_battle_is_not_paused_and_starts_its_clock_again() {
+        let mut game = in_battle();
+        game.update(3.0);
+        game.handle(Event::KeyDown(Key::Pause));
+        leave_battle(&mut game);
+        assert!(!game.key_paused);
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::Tutorial);
+        game.update(LOADING_SECONDS);
+        assert!(!game.is_paused());
+        assert_eq!(game.battle_time(), 0.0);
+    }
+
+    #[test]
+    fn tab_toggles_the_diplomacy_window_on_the_battlefield_only() {
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Tab));
+        assert!(game.stats_open);
+        assert!(!game.is_paused(), "the game keeps running behind it");
+        game.handle(Event::KeyDown(Key::Tab));
+        assert!(!game.stats_open);
+
+        game.handle(Event::KeyDown(Key::Tab));
+        game.handle(Event::KeyDown(Key::Escape));
+        assert!(!game.stats_open, "esc closes it first");
+        assert_eq!(game.screen, Screen::InGame);
+
+        game.handle(Event::KeyDown(Key::Escape));
+        game.handle(Event::KeyDown(Key::Tab));
+        assert!(!game.stats_open, "not from the menu");
+
+        let mut game = in_setup();
+        game.handle(Event::KeyDown(Key::Tab));
+        assert!(!game.stats_open);
+    }
+
+    #[test]
+    fn diplomacy_lists_the_player_and_each_opponent_of_a_skirmish() {
+        let mut game = in_setup();
+        let ai = slider(&game, SliderId::AiPlayers);
+        drag(&mut game, SliderId::AiPlayers, ai.x_of(2));
+        click_widget(&mut game, Action::CycleAlly(0));
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        let rows = game.stats_rows();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].name, "Commander");
+        assert_eq!(rows[0].allies, [Ally::Triangle, Ally::None]);
+        assert_eq!(rows[0].color, game.skirmish.color);
+        assert_eq!(rows[1].name, "AI 1 (Competent)");
+        assert_eq!(rows[2].color, game.skirmish.opponents[1].color);
+    }
+
+    #[test]
+    fn diplomacy_outside_a_skirmish_lists_only_the_player() {
+        let mut game = in_faction_select();
+        pick(&mut game, Faction::O);
+        click(&mut game, Action::ConfirmFaction);
+        game.update(LOADING_SECONDS);
+        let rows = game.stats_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].faction, Some(Faction::O));
+        assert_eq!(rows[0].color, TeamColor::Cyan);
+    }
+
+    #[test]
+    fn the_diplomacy_window_fits_every_player() {
+        use crate::font::text_width;
+        for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+            let (x, y, ww, wh) = stats_rect(w, h);
+            assert!(x >= 0.0 && y >= 0.0 && x + ww <= w && y + wh <= h, "at {w}x{h}");
+            let s = ui_scale(h);
+            assert!(text_width("AI 7 (Defensive)") * small_text_px(h) < 380.0 * s);
+            assert!(STATS_ROW_TOP + 8.0 * STATS_ROW_STEP <= 760.0, "eight rows fit");
+        }
     }
 
     #[test]
@@ -1623,9 +1965,7 @@ mod tests {
             assert_eq!(game.loading_progress(), 0.0);
             game.update(LOADING_SECONDS);
             assert_eq!(game.screen, Screen::InGame);
-            game.handle(Event::KeyDown(Key::Escape));
-            game.handle(Event::KeyDown(Key::Escape));
-            assert_eq!(game.screen, Screen::MainMenu);
+            leave_battle(&mut game);
         }
     }
 
@@ -1720,9 +2060,7 @@ mod tests {
         game.update(LOADING_SECONDS);
         assert_eq!(game.screen, Screen::InGame);
         assert_eq!(game.faction, Some(Faction::O));
-        assert_eq!(actions(&game), [Action::Back]);
-        click(&mut game, Action::Back);
-        assert_eq!(game.screen, Screen::SinglePlayerMenu);
+        assert!(game.buttons().is_empty());
     }
 
     #[test]
@@ -1745,7 +2083,8 @@ mod tests {
         pick(&mut game, Faction::H);
         click(&mut game, Action::ConfirmFaction);
         game.update(LOADING_SECONDS);
-        click(&mut game, Action::Back);
+        leave_battle(&mut game);
+        click(&mut game, Action::SinglePlayer);
         click(&mut game, Action::Tutorial);
         assert_eq!(game.faction, None);
     }
@@ -2216,7 +2555,7 @@ mod tests {
         assert!(game.camera.z < before.z, "top edge moves north");
 
         let before = game.camera;
-        click(&mut game, Action::Back);
+        leave_battle(&mut game);
         game.handle(Event::MouseMove(W - 1.0, H / 2.0));
         game.update(0.5);
         assert_eq!(game.camera, before, "menus do not scroll");
@@ -2279,7 +2618,8 @@ mod tests {
         game.handle(Event::Wheel(5.0));
         settle_zoom(&mut game);
         assert!(game.camera.zoom > 0.0);
-        click(&mut game, Action::Back);
+        leave_battle(&mut game);
+        click(&mut game, Action::SinglePlayer);
         click(&mut game, Action::Tutorial);
         game.update(LOADING_SECONDS);
         settle_zoom(&mut game);
@@ -2311,6 +2651,75 @@ mod tests {
     }
 
     #[test]
+    fn dragging_on_the_minimap_moves_the_camera_until_release() {
+        let mut game = in_battle();
+        let rect = battlefield::overlay_minimap_rect(W, H);
+        let (x, y, size) = rect;
+        let at = |fx: f32, fy: f32| (x + size * fx, y + size * fy);
+        let world = |p: (f32, f32)| battlefield::minimap_to_world(rect, p.0, p.1).unwrap();
+
+        let start = at(0.5, 0.3);
+        game.handle(Event::MouseMove(start.0, start.1));
+        game.handle(Event::MouseDown);
+        assert!((game.camera.z - world(start).1).abs() < 0.01, "moves on press");
+
+        let next = at(0.6, 0.45);
+        game.handle(Event::MouseMove(next.0, next.1));
+        assert!((game.camera.x - world(next).0).abs() < 0.01, "follows the drag");
+        assert!((game.camera.z - world(next).1).abs() < 0.01, "follows the drag");
+
+        game.handle(Event::MouseUp);
+        let released = game.camera;
+        let later = at(0.4, 0.5);
+        game.handle(Event::MouseMove(later.0, later.1));
+        assert_eq!(game.camera, released, "release ends it");
+    }
+
+    #[test]
+    fn a_minimap_drag_can_leave_the_minimap_without_scrolling_the_screen() {
+        let mut game = in_battle();
+        let rect = battlefield::overlay_minimap_rect(W, H);
+        let (x, y, size) = rect;
+        game.handle(Event::MouseMove(x + size / 2.0, y + size / 2.0));
+        game.handle(Event::MouseDown);
+
+        // Off the right edge of the screen, past the minimap's edge.
+        game.handle(Event::MouseMove(W - 1.0, y + size / 2.0));
+        let (east_x, _) = battlefield::minimap_to_world(rect, x + size - 0.01, y + size / 2.0).unwrap();
+        assert!((game.camera.x - east_x).abs() < 0.01, "holds to the minimap's edge");
+        let held = game.camera;
+        game.update(0.5);
+        assert_eq!(game.camera, held, "edge scrolling waits for the release");
+
+        game.handle(Event::MouseUp);
+        game.update(0.5);
+        assert_ne!(game.camera, held, "edge scrolling resumes");
+    }
+
+    #[test]
+    fn a_press_outside_the_minimap_does_not_start_a_drag() {
+        let mut game = in_battle();
+        let (x, y, size) = battlefield::overlay_minimap_rect(W, H);
+        let start = game.camera;
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseMove(x + size / 2.0, y + size / 2.0));
+        assert_eq!(game.camera, start);
+    }
+
+    #[test]
+    fn opening_the_menu_ends_a_minimap_drag() {
+        let mut game = in_battle();
+        let (x, y, size) = battlefield::overlay_minimap_rect(W, H);
+        game.handle(Event::MouseMove(x + size / 2.0, y + size / 2.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::KeyDown(Key::Escape));
+        let held = game.camera;
+        game.handle(Event::MouseMove(x + size * 0.7, y + size * 0.7));
+        assert_eq!(game.camera, held);
+    }
+
+    #[test]
     fn a_minimap_click_outside_the_diamond_stays_on_the_map() {
         let mut game = in_battle();
         let (x, y, _) = battlefield::overlay_minimap_rect(W, H);
@@ -2336,12 +2745,10 @@ mod tests {
     }
 
     #[test]
-    fn the_battle_minimap_does_not_touch_the_scroll_edges_or_back() {
+    fn the_battle_minimap_does_not_touch_the_scroll_edges() {
         for (w, h) in [(1280.0, 720.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
             let (x, y, size) = battlefield::overlay_minimap_rect(w, h);
             assert_eq!(battlefield::edge_direction((x + size - 1.0, y), w, h), (0.0, 0.0), "at {w}x{h}");
-            let back = buttons(Screen::InGame, w, h)[0];
-            assert!(back.x + back.w < x && y + size < back.y);
         }
     }
 
@@ -2350,7 +2757,8 @@ mod tests {
         let mut game = in_battle();
         game.handle(Event::MouseMove(W - 1.0, H / 2.0));
         game.update(0.5);
-        click(&mut game, Action::Back);
+        leave_battle(&mut game);
+        click(&mut game, Action::SinglePlayer);
         click(&mut game, Action::Tutorial);
         game.update(LOADING_SECONDS);
         assert_eq!(game.camera, Camera::centered());
@@ -2365,9 +2773,8 @@ mod tests {
         game.update(LOADING_SECONDS);
         assert_eq!(game.screen, Screen::InGame);
         assert_eq!(game.faction, None);
-        assert_eq!(actions(&game), [Action::Back]);
-        click(&mut game, Action::Back);
-        assert_eq!(game.screen, Screen::SinglePlayerMenu);
+        assert!(game.buttons().is_empty());
+        leave_battle(&mut game);
         assert_eq!(game.skirmish.difficulty, Difficulty::Hard);
     }
 
@@ -2437,7 +2844,7 @@ mod tests {
     #[test]
     fn layout_stays_on_screen_across_aspect_ratios() {
         for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2880.0, 1800.0), (5120.0, 1440.0), (1024.0, 768.0)] {
-            for screen in [Screen::MainMenu, Screen::SinglePlayerMenu, Screen::Options, Screen::Credits, Screen::InGame, Screen::FactionSelect, Screen::SkirmishSetup] {
+            for screen in [Screen::MainMenu, Screen::SinglePlayerMenu, Screen::Options, Screen::Credits, Screen::EscapeMenu, Screen::FactionSelect, Screen::SkirmishSetup] {
                 let all = buttons(screen, w, h);
                 for b in &all {
                     assert!(b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= w && b.y + b.h <= h);

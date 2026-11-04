@@ -4,9 +4,10 @@ use crate::battlefield::{self, MAP_CELLS};
 use crate::font;
 use crate::planet;
 use crate::game::{
-    Action, Ally, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, Screen, TeamColor,
-    buttons, checkbox_size, color_slots, map_items, minimap_rect, modal_rect, opponent_row,
-    opponent_widgets, options_panel, setup_checkboxes, setup_widgets, small_text_px, ui_scale,
+    Action, Ally, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, STATS_ROW_STEP,
+    STATS_ROW_TOP, Screen, TeamColor, buttons, checkbox_size, color_slots, map_items, minimap_rect,
+    modal_rect, opponent_row, opponent_widgets, options_panel, setup_checkboxes, setup_widgets,
+    small_text_px, stats_rect, ui_scale,
 };
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use crate::platform::Vertex;
@@ -27,6 +28,7 @@ const BUTTON_PRESSED: Color = [0.32, 0.27, 0.18, 1.0];
 const BORDER: Color = [0.38, 0.35, 0.28, 1.0];
 const DIM: Color = [0.0, 0.0, 0.0, 0.6];
 const INK: Color = [0.05, 0.05, 0.08, 1.0];
+const WINDOW: Color = [0.07, 0.07, 0.10, 0.78];
 const VIEW_OUTLINE: Color = [1.0, 1.0, 1.0, 1.0];
 const CURSOR_FILL: Color = [0.98, 0.98, 0.95, 1.0];
 const CURSOR_EDGE: Color = [0.0, 0.0, 0.0, 1.0];
@@ -128,7 +130,7 @@ impl Canvas {
 }
 
 pub fn clear_color(game: &Game) -> [f32; 3] {
-    if matches!(game.screen, Screen::Intro | Screen::Movie(_) | Screen::InGame) {
+    if game.in_battle || matches!(game.screen, Screen::Intro | Screen::Movie(_)) {
         [INTRO_CLEAR[0], INTRO_CLEAR[1], INTRO_CLEAR[2]]
     } else {
         CLEAR
@@ -161,29 +163,32 @@ pub fn build(game: &Game) -> Vec<Vertex> {
         | Screen::Credits
         | Screen::FactionSelect
         | Screen::SkirmishSetup
+        | Screen::EscapeMenu
         | Screen::InGame => {
+            if game.in_battle {
+                draw_battle(&mut canvas, game);
+                if game.screen != Screen::InGame {
+                    canvas.rect(0.0, 0.0, game.width, game.height, DIM);
+                }
+            }
             let title = match game.screen {
                 Screen::Options => Some("Main Options"),
                 Screen::Credits => Some("Credits"),
                 Screen::FactionSelect => Some("Choose Faction"),
-                Screen::InGame | Screen::SkirmishSetup => None,
+                Screen::InGame | Screen::SkirmishSetup | Screen::EscapeMenu => None,
                 _ => Some(TITLE),
             };
             if let Some(title) = title {
                 canvas.text_centered(title, cx, 170.0 * s, 16.0 * s, GOLD);
             }
             if game.screen == Screen::InGame {
-                battlefield::draw(
-                    &mut canvas.vertices,
-                    battlefield::terrain(game.battle_map),
-                    game.camera,
-                    game.width,
-                    game.height,
-                );
-                if let Some(faction) = game.faction {
-                    canvas.text_centered(faction.label(), cx, 40.0 * s, 4.0 * s, TEXT);
+                if game.key_paused {
+                    canvas.rect(0.0, 0.0, game.width, game.height, DIM);
+                    canvas.text_centered("Paused", cx, game.height / 2.0, 12.0 * s, GOLD);
                 }
-                draw_battle_minimap(&mut canvas, game);
+                if game.stats_open {
+                    draw_diplomacy(&mut canvas, game);
+                }
             }
             if game.screen == Screen::SkirmishSetup {
                 draw_skirmish_setup(&mut canvas, game);
@@ -227,7 +232,7 @@ fn draw_button(canvas: &mut Canvas, game: &Game, b: Button) {
     let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
     if let Action::Faction(faction) = b.action {
         let ring = if hovered == Some(b.action) { GOLD } else { BORDER };
-        draw_planet(canvas, game, faction, b, ring);
+        draw_planet(canvas, game, faction, button_circle(b), ring);
         // The name goes below: the moving surface would make it hard to read on top.
         canvas.text_centered(b.label, cx, b.y + b.h + 28.0 * s, 4.0 * s, TEXT);
         return;
@@ -271,11 +276,70 @@ fn draw_options_panel(canvas: &mut Canvas, game: &Game) {
 }
 
 /// A faction's planet inside a thin ring filling the given circle.
-fn draw_planet(canvas: &mut Canvas, game: &Game, faction: Faction, b: Button, ring: Color) {
+fn draw_planet(canvas: &mut Canvas, game: &Game, faction: Faction, (cx, cy, r): (f32, f32, f32), ring: Color) {
     let border = (2.0 * ui_scale(game.height)).round().max(1.0);
-    let (cx, cy, r) = (b.x + b.w / 2.0, b.y + b.h / 2.0, b.w / 2.0);
     canvas.circle(cx, cy, r, ring);
     planet::draw(&mut canvas.vertices, faction, cx, cy, r - border, game.screen_elapsed());
+}
+
+fn button_circle(b: Button) -> (f32, f32, f32) {
+    (b.x + b.w / 2.0, b.y + b.h / 2.0, b.w / 2.0)
+}
+
+/// The terrain, the faction name in a campaign, and the minimap.
+fn draw_battle(canvas: &mut Canvas, game: &Game) {
+    let s = ui_scale(game.height);
+    battlefield::draw(
+        &mut canvas.vertices,
+        battlefield::terrain(game.battle_map),
+        game.camera,
+        game.width,
+        game.height,
+    );
+    if let Some(faction) = game.faction {
+        canvas.text_centered(faction.label(), game.width / 2.0, 40.0 * s, 4.0 * s, TEXT);
+    }
+    draw_battle_minimap(canvas, game);
+}
+
+/// Everyone in this battle, in a window the battlefield shows through.
+fn draw_diplomacy(canvas: &mut Canvas, game: &Game) {
+    let s = ui_scale(game.height);
+    let px = small_text_px(game.height);
+    let border = (2.0 * s).round().max(1.0);
+    let (x, y, w, h) = stats_rect(game.width, game.height);
+    canvas.rect(x, y, w, border, BORDER);
+    canvas.rect(x, y + h - border, w, border, BORDER);
+    canvas.rect(x, y + border, border, h - border * 2.0, BORDER);
+    canvas.rect(x + w - border, y + border, border, h - border * 2.0, BORDER);
+    canvas.rect(x + border, y + border, w - border * 2.0, h - border * 2.0, WINDOW);
+
+    canvas.text_centered("Diplomacy", x + w / 2.0, y + 40.0 * s, 5.0 * s, GOLD);
+    let (swatch_x, name_x, planet_x, faction_x, ally_x) =
+        (x + 30.0 * s, x + 90.0 * s, x + 520.0 * s, x + 570.0 * s, x + 800.0 * s);
+    let header_y = y + 88.0 * s;
+    canvas.text_left("Player", name_x, header_y, px, QUIET);
+    canvas.text_left("Faction", faction_x, header_y, px, QUIET);
+    canvas.text_left("Allies", ally_x - 22.0 * s, header_y, px, QUIET);
+
+    for (i, row) in game.stats_rows().iter().enumerate() {
+        let cy = y + (STATS_ROW_TOP + (i as f32 + 0.5) * STATS_ROW_STEP) * s;
+        canvas.rect(swatch_x, cy - 18.0 * s, 36.0 * s, 36.0 * s, team_color(row.color));
+        canvas.text_left(&row.name, name_x, cy, px, TEXT);
+        match row.faction {
+            Some(faction) => {
+                draw_planet(canvas, game, faction, (planet_x, cy, 26.0 * s), BORDER);
+                canvas.text_left(faction.label(), faction_x, cy, px, TEXT);
+            }
+            None => canvas.text_left("None", faction_x, cy, px, QUIET),
+        }
+        for (slot, ally) in row.allies.iter().enumerate() {
+            let ally_cx = ally_x + slot as f32 * 70.0 * s;
+            canvas.circle(ally_cx, cy, 26.0 * s, BORDER);
+            canvas.circle(ally_cx, cy, 26.0 * s - border, BUTTON);
+            draw_ally(canvas, *ally, ally_cx, cy, 17.0 * s, (px - 1.0).max(1.0));
+        }
+    }
 }
 
 fn team_color(color: TeamColor) -> Color {
@@ -330,7 +394,7 @@ fn draw_opponents(canvas: &mut Canvas, game: &Game) {
                 canvas.text_centered(opponent.kind.label(), cx, cy, px, text_on(opponent.color));
             }
             Action::CycleOpponentFaction(slot) => {
-                draw_planet(canvas, game, setup.opponents[slot].faction, b, edge);
+                draw_planet(canvas, game, setup.opponents[slot].faction, button_circle(b), edge);
             }
             Action::CycleOpponentAlly(slot, ally) => {
                 canvas.circle(cx, cy, b.w / 2.0, edge);
@@ -418,7 +482,7 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
             Action::StartBattle => draw_button(canvas, game, b),
             Action::CycleFaction => {
                 canvas.text_centered(setup.faction.label(), cx, b.y - 24.0 * s, px, TEXT);
-                draw_planet(canvas, game, setup.faction, b, edge);
+                draw_planet(canvas, game, setup.faction, button_circle(b), edge);
                 canvas.text_centered("Click to change", cx, b.y + b.h + 32.0 * s, px, QUIET);
             }
             Action::CycleAlly(slot) => {
@@ -465,7 +529,7 @@ fn draw_minimap(canvas: &mut Canvas, game: &Game) {
 fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
     let rect = battlefield::overlay_minimap_rect(game.width, game.height);
     draw_map_diamond(canvas, game, game.battle_map, rect);
-    draw_radar_sweep(canvas, rect, game.screen_elapsed());
+    draw_radar_sweep(canvas, rect, game.battle_time());
 
     let view = battlefield::View::new(game.camera, game.width, game.height);
     let Some(corners) = view.ground_corners() else { return };

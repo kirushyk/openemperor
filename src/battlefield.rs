@@ -24,15 +24,18 @@ pub const GROUND: [f32; 3] = [0.40, 0.30, 0.21];
 /// How strongly the surface grain varies the color, either way.
 const GRAIN: f32 = 0.22;
 
-/// The camera moves between two fixed positions. Zooming changes where it is and where it
-/// looks, never its field of view. Top: high and looking almost straight down.
+/// The first half of zooming moves the camera between two fixed positions. The second half
+/// stays at the bottom position and narrows the field of view. Top: high and looking almost
+/// straight down.
 const TOP_HEIGHT: f32 = 30.0;
 const TOP_PITCH_DEGREES: f32 = 75.0;
 /// Bottom: low and looking almost forward, 30 degrees down from the ground.
 const BOTTOM_HEIGHT: f32 = 8.0;
 const BOTTOM_PITCH_DEGREES: f32 = 30.0;
-/// Share of the way between the positions per wheel notch.
-const ZOOM_PER_NOTCH: f32 = 0.1;
+/// How much the field of view narrows at the very end of the zoom.
+const MAX_LENS: f32 = 2.0;
+/// Share of the whole zoom per wheel notch.
+const ZOOM_PER_NOTCH: f32 = 0.05;
 /// How quickly the camera catches up with the wheel; higher is snappier.
 const ZOOM_EASING: f32 = 10.0;
 /// Vertical field of view, as the tangent of half its angle (about 40 degrees in total).
@@ -93,8 +96,8 @@ fn world_to_grid(x: f32, z: f32) -> (f32, f32) {
     ((z + x) / (2.0 * CELL), (z - x) / (2.0 * CELL))
 }
 
-/// The ground point the camera looks at, and how far it has descended towards the bottom
-/// position: 0 is the top, 1 the bottom.
+/// The ground point the camera looks at, and how far it has zoomed: 0 is the top position,
+/// 0.5 the bottom position, and 1 the bottom position with the field of view narrowed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pub x: f32,
@@ -140,7 +143,7 @@ impl Camera {
     /// One frame of edge scrolling. Slower when low, so the ground crosses the screen at
     /// about the same pace from either position.
     pub fn scroll(&mut self, direction: (f32, f32), scroll_rate: i32, dt: f32) {
-        let pace = self.altitude() / TOP_HEIGHT;
+        let pace = self.altitude() / TOP_HEIGHT / self.lens();
         let distance = SCROLL_PER_RATE * scroll_rate as f32 * pace * dt;
         let (dx, dz) = (direction.0 * distance, direction.1 * distance);
         if dx != 0.0 && dz != 0.0 {
@@ -184,8 +187,18 @@ impl Camera {
         (self.x, self.z) = grid_to_world(u.clamp(0.0, limit), v.clamp(0.0, limit));
     }
 
+    /// How far between the two positions: 0 at the top, 1 from the bottom position onward.
+    fn descent(self) -> f32 {
+        (self.zoom * 2.0).min(1.0)
+    }
+
     fn altitude(self) -> f32 {
-        TOP_HEIGHT + (BOTTOM_HEIGHT - TOP_HEIGHT) * self.zoom
+        TOP_HEIGHT + (BOTTOM_HEIGHT - TOP_HEIGHT) * self.descent()
+    }
+
+    /// Magnification from narrowing the field of view: 1 until the bottom position.
+    fn lens(self) -> f32 {
+        1.0 + (MAX_LENS - 1.0) * (self.zoom * 2.0 - 1.0).max(0.0)
     }
 }
 
@@ -201,14 +214,14 @@ pub struct View {
 
 impl View {
     pub fn new(camera: Camera, width: f32, height: f32) -> Self {
-        let degrees = TOP_PITCH_DEGREES + (BOTTOM_PITCH_DEGREES - TOP_PITCH_DEGREES) * camera.zoom;
+        let degrees = TOP_PITCH_DEGREES + (BOTTOM_PITCH_DEGREES - TOP_PITCH_DEGREES) * camera.descent();
         let (sin, cos) = degrees.to_radians().sin_cos();
         let altitude = camera.altitude();
         View {
             position: [camera.x, altitude, camera.z + altitude * cos / sin],
             forward: [-sin, -cos],
             up: [cos, -sin],
-            focal: height / (2.0 * HALF_FOV_TAN),
+            focal: height / (2.0 * HALF_FOV_TAN) * camera.lens(),
             center: (width / 2.0, height / 2.0),
         }
     }
@@ -380,21 +393,57 @@ mod tests {
     }
 
     #[test]
-    fn zoom_has_two_fixed_ends_with_the_requested_tilt() {
+    fn zoom_has_two_fixed_positions_with_the_requested_tilt() {
         assert!((pitch(at_zoom(0.0)) - 75.0).abs() < 0.01, "top looks almost straight down");
-        assert!((pitch(at_zoom(1.0)) - 30.0).abs() < 0.01, "bottom is 30 degrees from the ground");
-        assert!(View::new(at_zoom(1.0), W, H).position[1] < View::new(at_zoom(0.0), W, H).position[1]);
+        assert!((pitch(at_zoom(0.5)) - 30.0).abs() < 0.01, "bottom is 30 degrees from the ground");
+        assert!(View::new(at_zoom(0.5), W, H).position[1] < View::new(at_zoom(0.0), W, H).position[1]);
     }
 
     #[test]
-    fn zooming_keeps_the_same_ground_point_at_screen_center_and_the_same_lens() {
-        for zoom in [0.0, 0.3, 0.7, 1.0] {
-            let camera = at_zoom(zoom);
-            let view = View::new(camera, W, H);
-            let (x, y) = view.project(camera.x, 0.0, camera.z).unwrap();
-            assert!((x - W / 2.0).abs() < 0.01 && (y - H / 2.0).abs() < 0.01, "at {zoom}");
-            assert_eq!(view.focal, View::new(at_zoom(0.0), W, H).focal, "field of view is fixed");
+    fn the_first_half_moves_the_camera_and_keeps_the_field_of_view() {
+        let wide = View::new(at_zoom(0.0), W, H).focal;
+        for zoom in [0.0, 0.2, 0.4, 0.5] {
+            assert_eq!(View::new(at_zoom(zoom), W, H).focal, wide, "at {zoom}");
         }
+        assert!(pitch(at_zoom(0.25)) > pitch(at_zoom(0.5)), "still moving at 0.25");
+    }
+
+    #[test]
+    fn the_second_half_stays_put_and_narrows_the_field_of_view_up_to_2x() {
+        let (bottom, end) = (View::new(at_zoom(0.5), W, H), View::new(at_zoom(1.0), W, H));
+        assert_eq!(end.position, bottom.position, "the camera does not move");
+        assert_eq!(end.forward, bottom.forward, "or turn");
+        assert!((end.focal / bottom.focal - 2.0).abs() < 1e-4, "2x at the end");
+        let middle = View::new(at_zoom(0.75), W, H).focal / bottom.focal;
+        assert!(middle > 1.0 && middle < 2.0, "gradual: {middle}");
+    }
+
+    #[test]
+    fn zooming_keeps_the_same_ground_point_at_screen_center() {
+        for zoom in [0.0, 0.3, 0.5, 0.7, 1.0] {
+            let camera = at_zoom(zoom);
+            let (x, y) = View::new(camera, W, H).project(camera.x, 0.0, camera.z).unwrap();
+            assert!((x - W / 2.0).abs() < 0.01 && (y - H / 2.0).abs() < 0.01, "at {zoom}");
+        }
+    }
+
+    #[test]
+    fn narrowing_the_field_of_view_shrinks_the_view_outline() {
+        let width = |zoom| {
+            let [left, right, ..] = View::new(at_zoom(zoom), W, H).ground_corners().unwrap();
+            right.0 - left.0
+        };
+        assert!(width(1.0) < width(0.5) * 0.6);
+    }
+
+    #[test]
+    fn scrolling_slows_further_as_the_view_narrows() {
+        let moved = |zoom| {
+            let mut camera = at_zoom(zoom);
+            camera.scroll((1.0, 0.0), 5, 0.1);
+            camera.x - at_zoom(zoom).x
+        };
+        assert!((moved(0.5) / moved(1.0) - 2.0).abs() < 0.01);
     }
 
     #[test]
@@ -403,11 +452,11 @@ mod tests {
         camera.zoom_by(1.0);
         assert_eq!(camera.zoom, 0.0, "nothing moves until time passes");
         camera.ease_zoom(0.016);
-        assert!(camera.zoom > 0.0 && camera.zoom < 0.1, "glides: {}", camera.zoom);
+        assert!(camera.zoom > 0.0 && camera.zoom < ZOOM_PER_NOTCH, "glides: {}", camera.zoom);
         for _ in 0..200 {
             camera.ease_zoom(0.016);
         }
-        assert_eq!(camera.zoom, 0.1, "arrives exactly");
+        assert_eq!(camera.zoom, ZOOM_PER_NOTCH, "arrives exactly");
 
         camera.zoom_by(100.0);
         for _ in 0..200 {
@@ -565,11 +614,13 @@ mod tests {
 
     #[test]
     fn the_bottom_position_draws_without_gaps_at_the_screen_edges() {
-        let mut out = Vec::new();
-        draw(&mut out, terrain(0), at_zoom(1.0), W, H);
-        assert!(!out.is_empty());
-        let lowest = out.iter().map(|v| v.y).fold(f32::MIN, f32::max);
-        assert!(lowest >= H, "terrain reaches the bottom of the screen: {lowest}");
+        for zoom in [0.5, 1.0] {
+            let mut out = Vec::new();
+            draw(&mut out, terrain(0), at_zoom(zoom), W, H);
+            assert!(!out.is_empty());
+            let lowest = out.iter().map(|v| v.y).fold(f32::MIN, f32::max);
+            assert!(lowest >= H, "terrain reaches the bottom of the screen at {zoom}: {lowest}");
+        }
     }
 
     #[test]

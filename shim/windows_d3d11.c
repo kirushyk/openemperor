@@ -95,6 +95,8 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             e.a = wp == VK_ESCAPE ? OE_KEY_ESCAPE
                   : wp == VK_BACK ? OE_KEY_BACKSPACE
                   : wp == VK_RETURN ? OE_KEY_ENTER
+                  : wp == VK_TAB ? OE_KEY_TAB
+                  : wp == VK_PAUSE ? OE_KEY_PAUSE
                                     : OE_KEY_OTHER;
             push_event(e);
             return 0;

@@ -26,7 +26,9 @@ enum {
     OE_KEY_OTHER = 0,
     OE_KEY_ESCAPE = 1,
     OE_KEY_BACKSPACE = 2,
-    OE_KEY_ENTER = 3
+    OE_KEY_ENTER = 3,
+    OE_KEY_TAB = 4,
+    OE_KEY_PAUSE = 5 /* Pause/Break; Mac keyboards have no such key */
 };
 
 typedef struct {

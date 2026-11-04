@@ -184,6 +184,10 @@ static int32_t translate(NSEvent *e, OeEvent *out) {
                     if (e.ARepeat) return 0;
                     out->a = OE_KEY_ENTER;
                     return 1;
+                case 48:
+                    if (e.ARepeat) return 0;
+                    out->a = OE_KEY_TAB;
+                    return 1;
                 case 51:
                     out->a = OE_KEY_BACKSPACE;
                     return 1;

@@ -1,5 +1,6 @@
 /* PROTOTYPE, NEVER COMPILED: Linux shim using an X11 fullscreen window and Vulkan. */
 #define VK_USE_PLATFORM_XLIB_KHR
+#include <X11/XKBlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -16,6 +17,7 @@ static Display *g_display;
 static Window g_window;
 static Atom g_wm_delete;
 static Cursor g_blank_cursor;
+static KeySym g_held_toggle_key = NoSymbol;
 static int32_t g_width, g_height;
 
 static VkInstance g_instance;
@@ -348,6 +350,8 @@ static void ensure_vertex_buffer(Frame *frame, VkDeviceSize bytes) {
 int32_t oe_init(const char *title, int32_t *width, int32_t *height) {
     g_display = XOpenDisplay(NULL);
     if (!g_display) return 0;
+    /* Holding a key then repeats its press alone, so toggle keys can ignore the repeats. */
+    XkbSetDetectableAutoRepeat(g_display, True, NULL);
     int screen = DefaultScreen(g_display);
     g_width = DisplayWidth(g_display, screen);
     g_height = DisplayHeight(g_display, screen);
@@ -356,8 +360,8 @@ int32_t oe_init(const char *title, int32_t *width, int32_t *height) {
     g_window = XCreateSimpleWindow(g_display, root, 0, 0, (unsigned)g_width, (unsigned)g_height, 0, 0, 0);
     XStoreName(g_display, g_window, title);
     XSelectInput(g_display, g_window,
-                 PointerMotionMask | ButtonPressMask | ButtonReleaseMask | KeyPressMask | StructureNotifyMask |
-                     FocusChangeMask);
+                 PointerMotionMask | ButtonPressMask | ButtonReleaseMask | KeyPressMask | KeyReleaseMask |
+                     StructureNotifyMask | FocusChangeMask);
     g_wm_delete = XInternAtom(g_display, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(g_display, g_window, &g_wm_delete, 1);
     Atom state = XInternAtom(g_display, "_NET_WM_STATE", False);
@@ -442,16 +446,25 @@ int32_t oe_poll_event(OeEvent *event) {
                 KeySym sym = NoSymbol;
                 char typed[8];
                 int length = XLookupString(&e.xkey, typed, sizeof(typed), &sym, NULL);
+                if (sym == XK_Tab || sym == XK_Pause) {
+                    if (sym == g_held_toggle_key) break;
+                    g_held_toggle_key = sym;
+                }
                 event->kind = OE_EVENT_KEY_DOWN;
                 event->a = sym == XK_Escape      ? OE_KEY_ESCAPE
                            : sym == XK_BackSpace ? OE_KEY_BACKSPACE
                            : sym == XK_Return    ? OE_KEY_ENTER
+                           : sym == XK_Tab       ? OE_KEY_TAB
+                           : sym == XK_Pause     ? OE_KEY_PAUSE
                                                  : OE_KEY_OTHER;
                 if (event->a == OE_KEY_OTHER && length == 1 && typed[0] >= 0x20 && typed[0] <= 0x7E) {
                     event->b = typed[0];
                 }
                 return 1;
             }
+            case KeyRelease:
+                if (XLookupKeysym(&e.xkey, 0) == g_held_toggle_key) g_held_toggle_key = NoSymbol;
+                break;
             default:
                 break;
         }

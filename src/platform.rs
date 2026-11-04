@@ -27,6 +27,9 @@ pub enum Key {
     Escape,
     Backspace,
     Enter,
+    Tab,
+    /// Pause/Break, which Mac keyboards do not have.
+    Pause,
     /// A printable ASCII character.
     Char(char),
     Other,
@@ -84,6 +87,8 @@ impl Platform {
                     (1, _) => Key::Escape,
                     (2, _) => Key::Backspace,
                     (3, _) => Key::Enter,
+                    (4, _) => Key::Tab,
+                    (5, _) => Key::Pause,
                     (_, 0x20..=0x7E) => Key::Char(raw.b as u8 as char),
                     _ => Key::Other,
                 }),

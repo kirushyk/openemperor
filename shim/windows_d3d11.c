@@ -91,6 +91,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONUP:
             ReleaseCapture();
             e.kind = OE_EVENT_MOUSE_UP;
+            e.a = (wp & MK_SHIFT) ? 1 : 0;
             push_event(e);
             return 0;
         case WM_KEYDOWN:

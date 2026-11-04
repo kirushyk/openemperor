@@ -1228,7 +1228,9 @@ impl Game {
     /// Ends the drag. A real box selects the player's units in it, replacing the old
     /// selection. Anything that stayed near its start on screen is a click: on one of the
     /// player's units it selects that unit, and elsewhere it sends the selected units there.
-    fn finish_selection(&mut self) {
+    /// With `adding`, what it picks joins the selection instead, and a click that picks
+    /// nothing does nothing, so that a near miss does not send everyone off.
+    fn finish_selection(&mut self, adding: bool) {
         let Some((x, z)) = self.selection_anchor else { return };
         if self.aiming_strike {
             if let Some((target_x, target_z)) = self.view().ground_at(self.mouse.0, self.mouse.1) {
@@ -1245,12 +1247,14 @@ impl Game {
         if !is_click {
             let chosen: Vec<bool> = self.units.iter().map(|u| self.in_selection_drag(u)).collect();
             for (unit, chosen) in self.units.iter_mut().zip(chosen) {
-                unit.selected = chosen;
+                unit.selected = chosen || (adding && unit.selected);
             }
         } else if let Some(picked) = self.unit_under_cursor() {
             for (i, unit) in self.units.iter_mut().enumerate() {
-                unit.selected = i == picked;
+                unit.selected = i == picked || (adding && unit.selected);
             }
+        } else if adding {
+            // Nothing picked, nothing to add.
         } else if let Some(target) = self.view().ground_at(self.mouse.0, self.mouse.1) {
             units::order_move(&mut self.units, target, battlefield::terrain(self.battle_map), &self.teams);
         }
@@ -1760,10 +1764,10 @@ impl Game {
                 }
             }
             // A button fires only if the press and the release both landed on it.
-            Event::MouseUp => {
+            Event::MouseUp | Event::ShiftMouseUp => {
                 self.dragging = None;
                 self.minimap_dragging = false;
-                self.finish_selection();
+                self.finish_selection(event == Event::ShiftMouseUp);
                 let pressed = self.pressed.take();
                 if self.screen == Screen::Intro {
                     self.set_screen(Screen::MainMenu);
@@ -3040,6 +3044,103 @@ mod tests {
         game.update(0.01);
         assert_eq!(game.lost.aircraft, planes);
         assert_eq!(game.lost.infantry + game.lost.vehicles, 0);
+    }
+
+    fn shift_drag_select(game: &mut Game, from: (f32, f32), to: (f32, f32)) {
+        game.handle(Event::MouseMove(from.0, from.1));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseMove(to.0, to.1));
+        game.handle(Event::ShiftMouseUp);
+    }
+
+    fn infantry_on_screen(game: &Game, skip: usize) -> (usize, (f32, f32)) {
+        let (index, unit) = game
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| u.owner == 0 && u.kind == UnitKind::Infantry)
+            .nth(skip)
+            .unwrap();
+        (index, game.view().project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z).unwrap())
+    }
+
+    #[test]
+    fn a_box_with_shift_adds_to_the_selection() {
+        let mut game = in_battle();
+        let (first, _) = infantry_on_screen(&game, 0);
+        let (last, _) = infantry_on_screen(&game, 7);
+        // Boxes go by the spot on the ground where a unit stands.
+        let view = game.view();
+        let around = |index: usize| {
+            let unit = &game.units[index];
+            let (x, y) = view.project(unit.x, unit.y, unit.z).unwrap();
+            ((x - 40.0, y - 40.0), (x + 40.0, y + 40.0))
+        };
+        let ((from, to), (next_from, next_to)) = (around(first), around(last));
+        drag_select(&mut game, from, to);
+        assert_eq!(selected_count(&game), 1);
+
+        let (from, to) = (next_from, next_to);
+        shift_drag_select(&mut game, from, to);
+        assert!(game.units[first].selected, "the old selection stays");
+        assert!(game.units[last].selected, "and the new one joins it");
+        assert_eq!(selected_count(&game), 2);
+
+        drag_select(&mut game, from, to);
+        assert_eq!(selected_count(&game), 1, "without Shift a box still replaces");
+    }
+
+    #[test]
+    fn a_click_on_a_unit_with_shift_adds_it_and_a_second_click_keeps_it() {
+        let mut game = in_battle();
+        let (first, (x, y)) = infantry_on_screen(&game, 0);
+        let (second, (other_x, other_y)) = infantry_on_screen(&game, 7);
+        click_at(&mut game, x, y);
+        for _ in 0..2 {
+            game.handle(Event::MouseMove(other_x, other_y));
+            game.handle(Event::MouseDown);
+            game.handle(Event::ShiftMouseUp);
+            assert!(game.units[first].selected && game.units[second].selected);
+            assert_eq!(selected_count(&game), 2);
+        }
+        assert!(game.units.iter().all(|u| !u.is_moving()), "nobody was sent anywhere");
+    }
+
+    #[test]
+    fn with_shift_picking_nothing_neither_clears_nor_sends_anyone() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+
+        // A box around nothing.
+        shift_drag_select(&mut game, (W / 2.0 - 800.0, H / 2.0 + 300.0), (W / 2.0 - 700.0, H / 2.0 + 400.0));
+        assert_eq!(selected_count(&game), FIRST_GROUP);
+
+        // A click on bare ground.
+        game.handle(Event::MouseMove(W / 2.0 - 800.0, H / 2.0 + 300.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::ShiftMouseUp);
+        assert_eq!(selected_count(&game), FIRST_GROUP);
+        assert!(game.units.iter().all(|u| !u.is_moving()));
+    }
+
+    #[test]
+    fn shift_still_lets_go_of_buttons_and_launches_the_superweapon() {
+        let mut game = in_menu();
+        let (x, y) = {
+            let b = game.buttons().into_iter().find(|b| b.action == Action::SinglePlayer).unwrap();
+            (b.x + b.w / 2.0, b.y + b.h / 2.0)
+        };
+        game.handle(Event::MouseMove(x, y));
+        game.handle(Event::MouseDown);
+        game.handle(Event::ShiftMouseUp);
+        assert_eq!(game.screen, Screen::SinglePlayerMenu);
+
+        let mut game = in_battle();
+        pick_superweapon(&mut game);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::ShiftMouseUp);
+        assert_eq!(game.combat.strikes.len(), 1);
     }
 
     #[test]

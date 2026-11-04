@@ -445,6 +445,7 @@ int32_t oe_poll_event(OeEvent *event) {
             case ButtonRelease:
                 if (e.xbutton.button != Button1) break;
                 event->kind = OE_EVENT_MOUSE_UP;
+                event->a = (e.xbutton.state & ShiftMask) ? 1 : 0;
                 return 1;
             case KeyPress: {
                 KeySym sym = NoSymbol;

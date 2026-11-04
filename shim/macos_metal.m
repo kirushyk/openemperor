@@ -169,6 +169,7 @@ static int32_t translate(NSEvent *e, OeEvent *out) {
             return 1;
         case NSEventTypeLeftMouseUp:
             out->kind = OE_EVENT_MOUSE_UP;
+            out->a = (e.modifierFlags & NSEventModifierFlagShift) ? 1 : 0;
             return 1;
         case NSEventTypeKeyDown:
             if ((e.modifierFlags & NSEventModifierFlagCommand) &&

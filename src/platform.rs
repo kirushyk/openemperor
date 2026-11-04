@@ -42,6 +42,8 @@ pub enum Event {
     MouseMove(f32, f32),
     MouseDown,
     MouseUp,
+    /// The left button let go with Shift held.
+    ShiftMouseUp,
     KeyDown(Key),
     Focus(bool),
     /// Notches turned, positive away from the player.
@@ -84,6 +86,7 @@ impl Platform {
                 2 => Event::Resize(raw.a, raw.b),
                 3 => Event::MouseMove(raw.x, raw.y),
                 4 => Event::MouseDown,
+                5 if raw.a != 0 => Event::ShiftMouseUp,
                 5 => Event::MouseUp,
                 6 => Event::KeyDown(match (raw.a, raw.b) {
                     (1, _) => Key::Escape,

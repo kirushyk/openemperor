@@ -29,6 +29,12 @@ const BUTTON: Color = [0.13, 0.13, 0.18, 1.0];
 const BUTTON_HOVER: Color = [0.22, 0.21, 0.27, 1.0];
 const BUTTON_PRESSED: Color = [0.32, 0.27, 0.18, 1.0];
 const BORDER: Color = [0.38, 0.35, 0.28, 1.0];
+pub const BANNER_BLUE: [f32; 3] = [0.10, 0.20, 0.44];
+const BANNER_HOVER: [f32; 3] = [0.18, 0.33, 0.66];
+const BANNER_PRESSED: [f32; 3] = [0.07, 0.13, 0.30];
+pub const BANNER_LINE: [f32; 3] = [0.98, 0.70, 0.20];
+/// How opaque a button's lines are at their two ends; they are solid in the middle.
+pub const BANNER_LINE_END_ALPHA: f32 = 0.5;
 const DIM: Color = [0.0, 0.0, 0.0, 0.6];
 const INK: Color = [0.05, 0.05, 0.08, 1.0];
 const WINDOW: Color = [0.07, 0.07, 0.10, 0.78];
@@ -85,6 +91,29 @@ impl Canvas {
     fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Color) {
         self.triangle([(x, y), (x + w, y), (x, y + h)], c);
         self.triangle([(x + w, y), (x + w, y + h), (x, y + h)], c);
+    }
+
+    /// A rectangle of one color, opaque along its middle and fading sideways to `end_alpha`.
+    fn fading_rect(&mut self, x: f32, y: f32, w: f32, h: f32, [r, g, b]: [f32; 3], end_alpha: f32) {
+        let vertex = |x: f32, y: f32, a: f32| Vertex { x, y, r, g, b, a };
+        let middle = x + w / 2.0;
+        for (from, to) in [(x, middle), (x + w, middle)] {
+            self.vertices.extend([
+                vertex(from, y, end_alpha),
+                vertex(to, y, 1.0),
+                vertex(to, y + h, 1.0),
+                vertex(from, y, end_alpha),
+                vertex(to, y + h, 1.0),
+                vertex(from, y + h, end_alpha),
+            ]);
+        }
+    }
+
+    /// A blue band fading out to both sides, between two orange lines.
+    fn banner(&mut self, x: f32, y: f32, w: f32, h: f32, thickness: f32, fill: [f32; 3]) {
+        self.fading_rect(x, y, w, h, fill, 0.0);
+        self.fading_rect(x, y, w, thickness, BANNER_LINE, BANNER_LINE_END_ALPHA);
+        self.fading_rect(x, y + h - thickness, w, thickness, BANNER_LINE, BANNER_LINE_END_ALPHA);
     }
 
     fn circle(&mut self, cx: f32, cy: f32, r: f32, c: Color) {
@@ -349,8 +378,19 @@ fn draw_button(canvas: &mut Canvas, game: &Game, b: Button) {
         canvas.text_centered(b.label, cx, b.y + b.h + 28.0 * s, 4.0 * s, TEXT);
         return;
     }
-    canvas.rect(b.x, b.y, b.w, b.h, edge);
-    canvas.rect(b.x + border, b.y + border, b.w - border * 2.0, b.h - border * 2.0, fill);
+    // The sidebar's small square buttons keep solid edges: their labels and symbols sit
+    // there, over whatever the battlefield shows.
+    if matches!(b.action, Action::BuildCell(_) | Action::HudSmall(_)) {
+        canvas.rect(b.x, b.y, b.w, b.h, edge);
+        canvas.rect(b.x + border, b.y + border, b.w - border * 2.0, b.h - border * 2.0, fill);
+    } else {
+        let banner = match (hovered == Some(b.action) || selected, game.pressed == Some(b.action)) {
+            (true, true) => BANNER_PRESSED,
+            (true, false) => BANNER_HOVER,
+            _ => BANNER_BLUE,
+        };
+        canvas.banner(b.x, b.y, b.w, b.h, border, banner);
+    }
     let px = match b.action {
         Action::Tab(_) | Action::HudSmall(_) | Action::HudWide(_) => small_text_px(game.height),
         _ => 4.0 * s,

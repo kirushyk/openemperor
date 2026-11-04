@@ -3670,6 +3670,55 @@ mod tests {
         assert!(crate::render::build(&game).len() > plain_options + 10_000, "the planet stays");
     }
 
+    fn alphas_of(game: &Game, [r, g, b]: [f32; 3]) -> Vec<f32> {
+        crate::render::build(game).iter().filter(|v| [v.r, v.g, v.b] == [r, g, b]).map(|v| v.a).collect()
+    }
+
+    #[test]
+    fn buttons_are_blue_fading_sideways_between_orange_lines_that_only_half_fade() {
+        use crate::render::{BANNER_BLUE, BANNER_LINE, BANNER_LINE_END_ALPHA};
+        let mut game = in_menu();
+        game.handle(Event::MouseMove(1.0, 1.0));
+        let fill = alphas_of(&game, BANNER_BLUE);
+        assert!(fill.contains(&1.0), "opaque in the middle");
+        assert!(fill.contains(&0.0), "clear at the ends");
+        let lines = alphas_of(&game, BANNER_LINE);
+        assert!(lines.contains(&1.0), "lines are solid in the middle");
+        assert!(lines.contains(&BANNER_LINE_END_ALPHA), "and semi-opaque at the ends");
+        assert!(!lines.contains(&0.0));
+
+        let vertices = crate::render::build(&game);
+        let b = buttons(game.screen, W, H)[0];
+        let at = |x: f32, y: f32| {
+            vertices.iter().find(|v| [v.r, v.g, v.b] == BANNER_BLUE && (v.x - x).abs() < 0.5 && (v.y - y).abs() < 0.5).map(|v| v.a)
+        };
+        assert_eq!(at(b.x, b.y), Some(0.0), "the left end");
+        assert_eq!(at(b.x + b.w, b.y), Some(0.0), "the right end");
+        assert_eq!(at(b.x + b.w / 2.0, b.y), Some(1.0), "the middle");
+    }
+
+    #[test]
+    fn a_button_under_the_cursor_changes_its_band() {
+        use crate::render::BANNER_BLUE;
+        let mut game = in_menu();
+        game.handle(Event::MouseMove(1.0, 1.0));
+        let quiet = alphas_of(&game, BANNER_BLUE).len();
+        let b = buttons(game.screen, W, H)[0];
+        game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
+        assert!(alphas_of(&game, BANNER_BLUE).len() < quiet);
+    }
+
+    #[test]
+    fn the_sidebars_small_square_buttons_stay_solid() {
+        use crate::render::BANNER_BLUE;
+        let mut game = in_battle();
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        let drawn = crate::render::build(&game);
+        let wide = hud::command_buttons(W, H).into_iter().filter(|b| matches!(b.action, Action::HudWide(_))).count();
+        let bands = drawn.iter().filter(|v| [v.r, v.g, v.b] == BANNER_BLUE).count();
+        assert_eq!(bands, wide * 12, "only the wide ones have a band");
+    }
+
     #[test]
     fn the_planet_stays_off_the_escape_menu_over_a_battle() {
         let sand = |game: &Game| crate::render::build(game).iter().filter(|v| v.a == 1.0 && v.r > v.g && v.g > v.b && v.b > 0.09 && v.r < 0.7).count();

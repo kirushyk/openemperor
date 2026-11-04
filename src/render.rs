@@ -68,6 +68,7 @@ const CURSOR_FILL: Color = [0.98, 0.98, 0.95, 1.0];
 const CURSOR_EDGE: Color = [0.0, 0.0, 0.0, 1.0];
 
 pub const TITLE: &str = "OpenEmperor";
+pub const VERSION: &str = "v2.00";
 
 #[derive(Default)]
 struct Canvas {
@@ -245,6 +246,12 @@ pub fn build(game: &Game) -> Vec<Vertex> {
                 if game.screen != Screen::InGame {
                     canvas.rect(0.0, 0.0, game.width, game.height, DIM);
                 }
+            }
+            if matches!(game.screen, Screen::MainMenu | Screen::SinglePlayerMenu) && !game.in_battle {
+                // Rising from the bottom of the screen, leaving the title on clear sky.
+                let (y, radius) = (game.height * 0.66, game.height * 0.48);
+                planet::draw_sandy(&mut canvas.vertices, cx, y, radius, game.menu_seconds());
+                canvas.text_left(VERSION, 24.0 * s, 30.0 * s, small_text_px(game.height), TEXT);
             }
             let title = match game.screen {
                 Screen::Options => Some("Main Options"),

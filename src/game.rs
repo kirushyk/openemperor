@@ -1098,6 +1098,8 @@ pub struct Game {
     /// Where a selection drag started, as a point on the map (x, z), so that it stays put
     /// on the ground while the camera moves.
     selection_anchor: Option<(f32, f32)>,
+    /// Seconds since the game started, unbroken by going from screen to screen.
+    menu_seconds: f32,
     /// New units get ids never used in this battle, so a missile cannot chase the wrong one.
     next_unit_id: u32,
     pub build_tab: BuildTab,
@@ -1152,6 +1154,7 @@ impl Game {
             aiming_strike: false,
             strike_recharge: 0.0,
             selection_anchor: None,
+            menu_seconds: 0.0,
             next_unit_id: 0,
             build_tab: BuildTab::Infantry,
             energy: STARTING_ENERGY,
@@ -1561,6 +1564,10 @@ impl Game {
     }
 
     /// Seconds since the current screen opened, for simple animation.
+    pub fn menu_seconds(&self) -> f32 {
+        self.menu_seconds
+    }
+
     pub fn screen_elapsed(&self) -> f32 {
         self.screen_elapsed
     }
@@ -1776,6 +1783,7 @@ impl Game {
     }
 
     pub fn update(&mut self, dt: f32) {
+        self.menu_seconds += dt;
         self.screen_elapsed += dt;
         if self.in_battle && !self.is_paused() {
             self.battle_time += dt;
@@ -3639,6 +3647,36 @@ mod tests {
         game.handle(Event::KeyDown(Key::Escape));
         game.handle(Event::KeyDown(Key::Char('a')));
         assert_eq!(selected_count(&game), 0, "in the menu");
+    }
+
+    #[test]
+    fn the_main_menu_shows_the_version_and_a_planet_that_carries_on_between_its_screens() {
+        let mut game = in_menu();
+        let plain_options = {
+            let mut other = in_options();
+            other.update(0.0);
+            crate::render::build(&other).len()
+        };
+        let drawn = crate::render::build(&game);
+        assert!(drawn.len() > plain_options + 10_000, "the planet shows");
+        let top_left = |v: &&crate::platform::Vertex| v.x < 200.0 && v.y < 100.0;
+        let text = [0.93, 0.89, 0.78, 1.0];
+        assert!(drawn.iter().filter(top_left).any(|v| [v.r, v.g, v.b, v.a] == text), "the version shows");
+
+        game.update(5.0);
+        let before = game.menu_seconds();
+        click(&mut game, Action::SinglePlayer);
+        assert_eq!(game.menu_seconds(), before, "no jump on the way to the submenu");
+        assert!(crate::render::build(&game).len() > plain_options + 10_000, "the planet stays");
+    }
+
+    #[test]
+    fn the_planet_stays_off_the_escape_menu_over_a_battle() {
+        let sand = |game: &Game| crate::render::build(game).iter().filter(|v| v.a == 1.0 && v.r > v.g && v.g > v.b && v.b > 0.09 && v.r < 0.7).count();
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::EscapeMenu);
+        assert!(sand(&in_menu()) > sand(&game), "only the main menu has it");
     }
 
     #[test]

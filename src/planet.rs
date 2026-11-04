@@ -21,7 +21,24 @@ struct Mesh {
     /// (rows + 1) * (cols + 1) points on the unit sphere, y up.
     points: Vec<[f32; 3]>,
     colors: Vec<[f32; 3]>,
+    alphas: Vec<f32>,
 }
+
+/// The main menu's sandy planet turns very slowly, and its clouds a little faster around a
+/// slightly different axis, so that they drift over the surface.
+const SANDY_SPIN: f32 = 0.02;
+const CLOUD_SPIN: f32 = 0.033;
+const CLOUD_TILT: f32 = AXIAL_TILT + 0.13;
+/// How far above the surface the clouds float, as a share of the radius.
+const CLOUD_HEIGHT: f32 = 1.015;
+const SANDY_SEED: u32 = 61;
+const CLOUD_SEED: u32 = 83;
+const SAND_LOW: [f32; 3] = [0.30, 0.20, 0.10];
+const SAND_MIDDLE: [f32; 3] = [0.50, 0.37, 0.20];
+const SAND_HIGH: [f32; 3] = [0.66, 0.54, 0.34];
+const CLOUD_COLOR: [f32; 3] = [0.95, 0.93, 0.88];
+/// How opaque clouds get at their thickest.
+const CLOUD_ALPHA: f32 = 0.75;
 
 /// Dark seas, shallows and land for each faction.
 fn palette(faction: Faction) -> [[f32; 3]; 3] {
@@ -107,9 +124,36 @@ fn surface_color(point: [f32; 3], faction: Faction) -> [f32; 3] {
     [mix(from[0], to[0], t), mix(from[1], to[1], t), mix(from[2], to[2], t)]
 }
 
+fn sandy_color(point: [f32; 3]) -> [f32; 3] {
+    let height = fractal_noise(point, SANDY_SEED);
+    let (from, to, t) = if height < 0.5 {
+        (SAND_LOW, SAND_MIDDLE, (height - 0.25) / 0.25)
+    } else {
+        (SAND_MIDDLE, SAND_HIGH, (height - 0.5) / 0.2)
+    };
+    let t = t.clamp(0.0, 1.0);
+    [mix(from[0], to[0], t), mix(from[1], to[1], t), mix(from[2], to[2], t)]
+}
+
+/// Clear where the noise is low, thickening smoothly where it is high.
+fn cloud_alpha(point: [f32; 3]) -> f32 {
+    let t = ((fractal_noise(point, CLOUD_SEED) - 0.5) / 0.15).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t) * CLOUD_ALPHA
+}
+
 fn build_mesh(faction: Faction, rows: usize, cols: usize) -> Mesh {
+    build_sphere(rows, cols, |point| surface_color(point, faction), |_| 1.0)
+}
+
+fn build_sphere(
+    rows: usize,
+    cols: usize,
+    color_at: impl Fn([f32; 3]) -> [f32; 3],
+    alpha_at: impl Fn([f32; 3]) -> f32,
+) -> Mesh {
     let mut points = Vec::with_capacity((rows + 1) * (cols + 1));
     let mut colors = Vec::with_capacity(points.capacity());
+    let mut alphas = Vec::with_capacity(points.capacity());
     for row in 0..=rows {
         let latitude = PI / 2.0 - row as f32 / rows as f32 * PI;
         for col in 0..=cols {
@@ -119,11 +163,12 @@ fn build_mesh(faction: Faction, rows: usize, cols: usize) -> Mesh {
                 latitude.sin(),
                 latitude.cos() * longitude.cos(),
             ];
-            colors.push(surface_color(point, faction));
+            colors.push(color_at(point));
+            alphas.push(alpha_at(point));
             points.push(point);
         }
     }
-    Mesh { rows, cols, points, colors }
+    Mesh { rows, cols, points, colors, alphas }
 }
 
 fn faction_index(faction: Faction) -> usize {
@@ -147,8 +192,24 @@ fn meshes() -> &'static [[Mesh; 2]; 3] {
 pub fn draw(out: &mut Vec<Vertex>, faction: Faction, cx: f32, cy: f32, radius: f32, seconds: f32) {
     let lod = usize::from(radius < DETAIL_RADIUS);
     let mesh = &meshes()[faction_index(faction)][lod];
-    let (spin_sin, spin_cos) = (start_angle(faction) + seconds * SPIN_SPEED).sin_cos();
-    let (tilt_sin, tilt_cos) = AXIAL_TILT.sin_cos();
+    let spin = start_angle(faction) + seconds * SPIN_SPEED;
+    draw_mesh(out, mesh, (cx, cy, radius), spin, AXIAL_TILT);
+}
+
+/// The sandy planet for the main menu, with its cloud layer over it.
+pub fn draw_sandy(out: &mut Vec<Vertex>, cx: f32, cy: f32, radius: f32, seconds: f32) {
+    static SURFACE: OnceLock<Mesh> = OnceLock::new();
+    static CLOUDS: OnceLock<Mesh> = OnceLock::new();
+    let surface = SURFACE.get_or_init(|| build_sphere(72, 144, sandy_color, |_| 1.0));
+    let clouds = CLOUDS.get_or_init(|| build_sphere(72, 144, |_| CLOUD_COLOR, cloud_alpha));
+    draw_mesh(out, surface, (cx, cy, radius), seconds * SANDY_SPIN, AXIAL_TILT);
+    draw_mesh(out, clouds, (cx, cy, radius * CLOUD_HEIGHT), seconds * CLOUD_SPIN, CLOUD_TILT);
+}
+
+/// Appends the side of a sphere facing the viewer, skipping parts that are fully see-through.
+fn draw_mesh(out: &mut Vec<Vertex>, mesh: &Mesh, (cx, cy, radius): (f32, f32, f32), spin: f32, tilt: f32) {
+    let (spin_sin, spin_cos) = spin.sin_cos();
+    let (tilt_sin, tilt_cos) = tilt.sin_cos();
 
     let turned: Vec<[f32; 3]> = mesh
         .points
@@ -164,7 +225,7 @@ pub fn draw(out: &mut Vec<Vertex>, faction: Faction, cx: f32, cy: f32, radius: f
     let vertex = |i: usize| {
         let [x, y, _] = turned[i];
         let [r, g, b] = mesh.colors[i];
-        Vertex { x, y, r, g, b, a: 1.0 }
+        Vertex { x, y, r, g, b, a: mesh.alphas[i] }
     };
     for row in 0..mesh.rows {
         for col in 0..mesh.cols {
@@ -176,7 +237,7 @@ pub fn draw(out: &mut Vec<Vertex>, faction: Faction, cx: f32, cy: f32, radius: f
             ];
             // Keeping quads that only just face away closes the disc at its rim.
             let facing: f32 = corners.iter().map(|&i| turned[i][2]).sum();
-            if facing < -0.2 {
+            if facing < -0.2 || corners.iter().all(|&i| mesh.alphas[i] == 0.0) {
                 continue;
             }
             let [a, b, c, d] = corners.map(vertex);
@@ -202,6 +263,39 @@ mod tests {
             vertices.iter().map(|v| v.g).sum::<f32>() / n,
             vertices.iter().map(|v| v.b).sum::<f32>() / n,
         ]
+    }
+
+    fn sandy(seconds: f32) -> Vec<Vertex> {
+        let mut out = Vec::new();
+        draw_sandy(&mut out, 500.0, 400.0, 400.0, seconds);
+        out
+    }
+
+    #[test]
+    fn the_sandy_planet_is_sandy_with_some_clear_sky_and_some_cloud() {
+        let vertices = sandy(0.0);
+        let (ground, clouds): (Vec<Vertex>, Vec<Vertex>) = vertices.iter().partition(|v| v.a == 1.0);
+        assert!(!ground.is_empty() && !clouds.is_empty());
+        let [r, g, b] = average_color(&ground);
+        assert!(r > g && g > b, "sandy: {:?}", [r, g, b]);
+        assert!(clouds.iter().all(|v| v.a <= CLOUD_ALPHA), "clouds stay see-through");
+        assert!(clouds.iter().any(|v| v.a > 0.3), "but can be seen");
+        assert!(clouds.len() < ground.len(), "with gaps between them");
+    }
+
+    #[test]
+    fn the_sandy_planet_turns_very_slowly_and_its_clouds_a_bit_differently() {
+        assert!(SANDY_SPIN < SPIN_SPEED / 10.0, "much slower than the faction planets");
+        assert_ne!(CLOUD_SPIN, SANDY_SPIN);
+        assert_ne!(CLOUD_TILT, AXIAL_TILT);
+        assert_ne!(sandy(0.0), sandy(30.0));
+        assert_eq!(sandy(12.0), sandy(12.0));
+
+        let ground = |vertices: Vec<Vertex>| -> Vec<Vertex> { vertices.into_iter().filter(|v| v.a == 1.0).collect() };
+        let early = ground(sandy(0.0))[0];
+        let later = ground(sandy(1.0))[0];
+        let moved = (early.x - later.x).hypot(early.y - later.y);
+        assert!(moved < 400.0 * 0.05, "a tiny part of the way in a second: {moved}");
     }
 
     #[test]

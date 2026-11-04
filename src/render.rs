@@ -6,7 +6,7 @@ use crate::hud;
 use crate::planet;
 use crate::units::{self, Role, Target, Unit, UnitKind};
 use crate::game::{
-    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, Outcome,
+    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Faction, Game, MAPS, OPPONENT_SLOTS, Outcome,
     SUPERWEAPON_CELL, STATS_ROW_STEP,
     STATS_ROW_TOP, Screen, TeamColor, buttons, checkbox_size, color_slots, map_items, minimap_rect,
     modal_rect, opponent_row, opponent_widgets, options_panel, setup_checkboxes, setup_widgets,
@@ -43,6 +43,9 @@ const SELECTED_RING: Color = [0.35, 1.0, 0.45, 1.0];
 pub const ORDER_LINE: Color = [0.35, 1.0, 0.45, 0.85];
 pub const ATTACK_LINE: Color = [1.0, 0.2, 0.15, 0.85];
 pub const ATTACK_CURSOR: Color = [0.95, 0.12, 0.1, 1.0];
+pub const HEAL_LINE: Color = [0.3, 0.6, 1.0, 0.85];
+pub const HEAL_CURSOR: Color = [0.25, 0.6, 1.0, 1.0];
+pub const MEDAL: Color = [1.0, 0.82, 0.25, 1.0];
 const POISON_FILL: [f32; 3] = [0.25, 0.95, 0.25];
 const POISON_ALPHA: f32 = 0.32;
 const LASER_GLOW: Color = [1.0, 0.25, 0.2, 0.35];
@@ -190,6 +193,20 @@ impl Canvas {
         );
         let (fx, fy) = (x + inset * 0.6, y + inset * 1.6);
         self.triangle([(fx, fy), (fx, fy + fill), (fx + fill * 0.72, fy + fill * 0.72)], CURSOR_FILL);
+    }
+
+    /// A blue ring around a blue cross, centered on the cursor.
+    fn heal_cursor(&mut self, (x, y): (f32, f32), s: f32) {
+        let (radius, arm, wide) = (20.0 * s, 11.0 * s, 7.0 * s);
+        let edge = (2.0 * s).max(1.0);
+        let thickness = (4.0 * s).max(1.0);
+        self.ring((x, y), radius, thickness + edge * 2.0, CURSOR_EDGE);
+        self.ring((x, y), radius, thickness, HEAL_CURSOR);
+        for (half_w, half_h, grow, color) in [(arm, wide / 2.0, edge, CURSOR_EDGE), (arm, wide / 2.0, 0.0, HEAL_CURSOR)] {
+            let (w, h) = (half_w + grow, half_h + grow);
+            self.rect(x - w, y - h, w * 2.0, h * 2.0, color);
+            self.rect(x - h, y - w, h * 2.0, w * 2.0, color);
+        }
     }
 
     /// A ring of short straight pieces.
@@ -341,10 +358,10 @@ pub fn build(game: &Game) -> Vec<Vertex> {
     if let Some(tip) = game.tip() {
         draw_tip(&mut canvas, game, tip);
     }
-    if game.cursor_means_attack() {
-        canvas.attack_cursor(game.mouse, s, game.screen_elapsed());
-    } else {
-        canvas.cursor(game.mouse, s);
+    match game.cursor_look() {
+        CursorLook::Attack => canvas.attack_cursor(game.mouse, s, game.screen_elapsed()),
+        CursorLook::Heal => canvas.heal_cursor(game.mouse, s),
+        CursorLook::Arrow => canvas.cursor(game.mouse, s),
     }
     canvas.vertices
 }
@@ -535,6 +552,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
                 }
                 draw_unit(canvas, game, &view, unit);
                 draw_health_bar(canvas, game, &view, unit);
+                draw_medals(canvas, game, &view, unit);
             }
             Object::Ruin(piece) => {
                 let color = RUIN_CONCRETE.map(|c| c * piece.shade);
@@ -546,6 +564,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     for unit in flying {
         draw_unit(canvas, game, &view, unit);
         draw_health_bar(canvas, game, &view, unit);
+        draw_medals(canvas, game, &view, unit);
     }
 }
 
@@ -717,6 +736,24 @@ fn draw_health_bar(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
     canvas.rect(x - width / 2.0, y, width * share, height, HEALTH_GOOD);
 }
 
+/// One gold V for each rank above the first, stacked above where a health bar goes.
+fn draw_medals(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    let rank = unit.rank();
+    if rank == 0 {
+        return;
+    }
+    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else { return };
+    let s = ui_scale(game.height);
+    let (half_w, tall, step) = (7.0 * s, 6.0 * s, 8.0 * s);
+    let thickness = (2.5 * s).max(1.0);
+    for i in 0..rank {
+        let top = y - 6.0 * s - tall - i as f32 * step;
+        let (left, tip, right) = ((x - half_w, top), (x, top + tall), (x + half_w, top));
+        canvas.line(left, tip, thickness, MEDAL);
+        canvas.line(tip, right, thickness, MEDAL);
+    }
+}
+
 /// The superweapon's symbol: three blades around a dot.
 fn draw_radiation_symbol(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, c: Color) {
     const POINTS: usize = 8;
@@ -751,6 +788,7 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
         };
         let from = (unit.x, unit.z);
         match after {
+            Some(to) if unit.role == Role::RepairVehicle => draw_dashed_line(canvas, game, view, from, to, HEAL_LINE),
             Some(to) => draw_dashed_line(canvas, game, view, from, to, ATTACK_LINE),
             None if unit.is_moving() => draw_dashed_line(canvas, game, view, from, unit.destination, ORDER_LINE),
             None => {}

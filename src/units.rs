@@ -68,6 +68,15 @@ impl UnitKind {
         self == UnitKind::Tower
     }
 
+    /// The experience its killer gets.
+    pub fn kill_value(self) -> u32 {
+        match self {
+            UnitKind::Infantry => 1,
+            UnitKind::Vehicle | UnitKind::Aircraft => 2,
+            UnitKind::Tower => 3,
+        }
+    }
+
     pub fn flies(self) -> bool {
         self == UnitKind::Aircraft
     }
@@ -99,6 +108,13 @@ impl UnitKind {
 
 /// How high aircraft fly, in world units.
 const CRUISE_ALTITUDE: f32 = 4.0;
+/// Experience needed for each rank above the first.
+const RANK_EXPERIENCE: [u32; 3] = [2, 5, 10];
+/// What each rank adds, as a share of the unit's usual health, attack and speed.
+const RANK_HEALTH: f32 = 0.25;
+const RANK_ATTACK: f32 = 0.2;
+const RANK_SPEED: f32 = 0.1;
+
 /// What a unit is, beyond how it moves: this names it and decides what it starts with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -253,6 +269,8 @@ pub enum Target {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Unit {
     pub role: Role,
+    /// Earned by killing enemies, and what decides its rank.
+    pub experience: u32,
     /// Whether K Infantry has dug in with its cannon, unable to move.
     pub deployed: bool,
     /// Stays the same for life, so that a missile can keep chasing the same unit.
@@ -308,8 +326,34 @@ impl Unit {
         }
     }
 
+    /// From 0, with no medal, up to 3.
+    pub fn rank(&self) -> u32 {
+        RANK_EXPERIENCE.iter().filter(|&&needed| self.experience >= needed).count() as u32
+    }
+
     pub fn max_health(&self) -> f32 {
-        self.role.max_health()
+        self.role.max_health() * (1.0 + RANK_HEALTH * self.rank() as f32)
+    }
+
+    /// What its damage is multiplied by.
+    pub fn attack_power(&self) -> f32 {
+        1.0 + RANK_ATTACK * self.rank() as f32
+    }
+
+    fn speed(&self) -> f32 {
+        self.role.speed() * (1.0 + RANK_SPEED * self.rank() as f32)
+    }
+
+    /// Adds experience. Reaching a new rank adds the health that rank brings to what it has.
+    pub fn gain_experience(&mut self, points: u32) {
+        let before = self.max_health();
+        self.experience += points;
+        self.health += self.max_health() - before;
+    }
+
+    /// Whether a repair vehicle can work on it: a vehicle, or an aircraft while it is grounded.
+    pub fn can_be_repaired(&self) -> bool {
+        self.kind == UnitKind::Vehicle || (self.kind.flies() && self.altitude <= 0.0)
     }
 
     /// Whether it can be forced to fire on another unit, whoever that is.
@@ -328,7 +372,7 @@ impl Unit {
             && self.alive
             && other.alive
             && self.id != other.id
-            && other.kind == UnitKind::Vehicle
+            && other.can_be_repaired()
             && are_friends(teams, self.owner, other.owner)
     }
 
@@ -398,6 +442,7 @@ impl Unit {
     pub fn for_test(x: f32, z: f32, kind: UnitKind) -> Self {
         Unit {
             role: Role::for_kind(kind),
+            experience: 0,
             deployed: false,
             id: 0,
             health: kind.max_health(),
@@ -500,6 +545,7 @@ fn place_unit(
     let kind = role.kind();
     units.push(Unit {
         role,
+        experience: 0,
         deployed: false,
         id,
         health: role.max_health(),
@@ -852,7 +898,7 @@ pub fn turn_between(from: f32, to: f32) -> f32 {
 /// Moves a unit along its way, sliding along whatever it cannot enter. Returns whether
 /// those got in its way.
 fn walk(unit: &mut Unit, terrain: &Terrain, (dir_x, dir_z): (f32, f32), dt: f32) -> bool {
-    let distance = (unit.role.speed() * dt).min(unit.remaining());
+    let distance = (unit.speed() * dt).min(unit.remaining());
     let (dx, dz) = (dir_x * distance, dir_z * distance);
     let tries = [(dx, dz), (dx, 0.0), (0.0, dz)];
     match tries.iter().find(|(tx, tz)| unit.can_enter(terrain, unit.x + tx, unit.z + tz)) {
@@ -914,6 +960,8 @@ fn squash(units: &mut [Unit], teams: &[usize]) {
             if dx.hypot(dz).hypot(dy) < units[a].kind.radius() + units[b].kind.radius() {
                 units[b].alive = false;
                 units[b].selected = false;
+                let value = units[b].kind.kill_value();
+                units[a].gain_experience(value);
             }
         }
     }
@@ -998,7 +1046,7 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
         held_back[i] |= push_out_of_ruins(unit, terrain);
         // Wedged against those who stay put, a chaser would otherwise press on forever.
         let moved = (unit.x - started_at[i].0).hypot(unit.z - started_at[i].1);
-        held_back[i] |= unit.target.is_some() && moved < unit.role.speed() * dt * WEDGED_SHARE;
+        held_back[i] |= unit.target.is_some() && moved < unit.speed() * dt * WEDGED_SHARE;
         unit.y = terrain.height_at(unit.x, unit.z);
         give_up_if_stuck(unit, held_back[i], dt);
     }
@@ -1796,6 +1844,75 @@ mod tests {
         assert!(!fixer.can_fix(&id(ally), &TWO_SIDES), "an enemy");
         assert!(!fixer.can_fix(&id(unit_at(5.0, 60.0, UnitKind::Infantry)), &[0]), "infantry");
         assert!(!fixer.can_fix(&fixer, &[0]), "itself");
+    }
+
+    #[test]
+    fn a_repair_vehicle_fixes_aircraft_only_while_they_are_grounded() {
+        let fixer = fixer_at(0.0, 60.0);
+        let mut plane = unit_at(5.0, 60.0, UnitKind::Aircraft);
+        plane.id = 9;
+        assert!(!fixer.can_fix(&plane, &[0]), "in the air");
+        plane.altitude = 0.0;
+        assert!(fixer.can_fix(&plane, &[0]), "on the ground");
+    }
+
+    #[test]
+    fn experience_gives_four_ranks_with_more_health_power_and_speed() {
+        let mut unit = unit_at(0.0, 60.0, UnitKind::Vehicle);
+        let (health, power, speed) = (unit.max_health(), unit.attack_power(), unit.speed());
+        assert_eq!(unit.rank(), 0);
+        let mut last_rank = 0;
+        for needed in RANK_EXPERIENCE {
+            unit.experience = needed - 1;
+            assert_eq!(unit.rank(), last_rank, "not yet at {needed}");
+            unit.experience = needed;
+            assert_eq!(unit.rank(), last_rank + 1);
+            last_rank += 1;
+        }
+        assert_eq!(unit.rank(), 3, "the highest");
+        unit.experience = 1000;
+        assert_eq!(unit.rank(), 3, "and no higher");
+        assert!(unit.max_health() > health);
+        assert!(unit.attack_power() > power);
+        assert!(unit.speed() > speed);
+    }
+
+    #[test]
+    fn a_new_rank_brings_its_extra_health_at_once() {
+        let mut unit = unit_at(0.0, 60.0, UnitKind::Infantry);
+        unit.health = 40.0;
+        unit.gain_experience(1);
+        assert_eq!(unit.health, 40.0, "no new rank yet");
+        unit.gain_experience(1);
+        assert_eq!(unit.rank(), 1);
+        assert_eq!(unit.health, 40.0 + 100.0 * RANK_HEALTH);
+    }
+
+    #[test]
+    fn experienced_units_get_there_faster() {
+        let run_for = |experience: u32| {
+            let mut units = [unit_at(-20.0, 60.0, UnitKind::Vehicle)];
+            units[0].experience = experience;
+            units[0].heading = 0.0;
+            units[0].destination = (20.0, 60.0);
+            for _ in 0..40 {
+                advance(&mut units, open_ground(), &[], 0.05);
+            }
+            units[0].x
+        };
+        assert!(run_for(10) > run_for(0));
+    }
+
+    #[test]
+    fn running_over_infantry_earns_experience() {
+        let mut units = [unit_at(-3.0, 60.0, UnitKind::Vehicle), enemy_at(0.0, 60.0, UnitKind::Infantry)];
+        units[0].heading = 0.0;
+        units[0].destination = (3.0, 60.0);
+        for _ in 0..100 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert!(!units[1].alive);
+        assert_eq!(units[0].experience, UnitKind::Infantry.kill_value());
     }
 
     #[test]

@@ -54,6 +54,14 @@ pub enum Outcome {
     Defeat,
 }
 
+/// The cursor's three looks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorLook {
+    Arrow,
+    Attack,
+    Heal,
+}
+
 /// What a click with Control held would order.
 #[derive(Clone, Copy)]
 enum AttackOrder {
@@ -1347,9 +1355,23 @@ impl Game {
         self.view().ground_at(self.mouse.0, self.mouse.1).map(AttackOrder::Place)
     }
 
-    /// Whether the cursor should show that a click means attack.
-    pub fn cursor_means_attack(&self) -> bool {
-        self.forced_order_under_cursor().is_some() || self.attackable_under_cursor().is_some()
+    /// What the cursor should look like: what a click here would make the selected units do.
+    pub fn cursor_look(&self) -> CursorLook {
+        let selected: Vec<&Unit> = self.units.iter().filter(|u| u.selected).collect();
+        let look_at = |u: &Unit| {
+            let armed = |s: &&Unit| s.can_attack(u, &self.teams) || (self.control_held && s.can_fire_on(u));
+            if selected.iter().any(armed) { CursorLook::Attack } else { CursorLook::Heal }
+        };
+        match self.forced_order_under_cursor() {
+            Some(AttackOrder::Place(_)) => CursorLook::Attack,
+            Some(AttackOrder::Unit(unit)) => look_at(&self.units[unit]),
+            None => self.attackable_under_cursor().map_or(CursorLook::Arrow, |unit| look_at(&self.units[unit])),
+        }
+    }
+
+    #[cfg(test)]
+    fn cursor_means_attack(&self) -> bool {
+        self.cursor_look() == CursorLook::Attack
     }
 
     /// Ends the drag. A real box selects the player's units in it, replacing the old
@@ -3853,7 +3875,7 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_repair_vehicle_turns_the_cursor_red_over_a_friendly_vehicle_and_goes_there() {
+    fn a_selected_repair_vehicle_shows_the_heal_cursor_over_a_friendly_vehicle_and_goes_there() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         let tank = game.units.iter().position(|u| u.owner == 0 && u.role == Role::Tank).unwrap();
@@ -3862,30 +3884,82 @@ mod tests {
         let unit = game.units[tank];
         let (x, y) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
         game.handle(Event::MouseMove(x, y));
-        assert!(game.cursor_means_attack(), "without Control");
+        assert_eq!(game.cursor_look(), CursorLook::Heal, "not the attack cursor, and without Control");
+        assert!(line_vertices(&game, crate::render::HEAL_CURSOR) > 0, "and it shows");
+        assert_eq!(line_vertices(&game, crate::render::ATTACK_CURSOR), 0);
         click_at(&mut game, x, y);
         assert_eq!(game.units[fixer].target, Some(crate::units::Target::Unit(unit.id)));
         assert!(game.units[fixer].selected, "the selection stands");
         assert!(!game.units[tank].selected);
+        assert!(line_vertices(&game, crate::render::HEAL_LINE) > 0, "a blue line leads there");
+        assert_eq!(line_vertices(&game, crate::render::ATTACK_LINE), 0);
     }
 
     #[test]
-    fn a_selected_repair_vehicle_does_not_turn_the_cursor_red_over_infantry_enemies_or_itself() {
+    fn a_selected_repair_vehicle_changes_no_cursor_over_infantry_enemies_or_itself() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         let fixer = select_new(&mut game, 1);
         let own = game.units[fixer];
         let (x, y) = game.view().project(own.x, own.pick_height(), own.z).unwrap();
         game.handle(Event::MouseMove(x, y));
-        assert!(!game.cursor_means_attack(), "itself");
+        assert_eq!(game.cursor_look(), CursorLook::Arrow, "itself");
 
         let (_, (x, y)) = infantry_on_screen(&game, 7);
         game.handle(Event::MouseMove(x, y));
-        assert!(!game.cursor_means_attack(), "infantry");
+        assert_eq!(game.cursor_look(), CursorLook::Arrow, "infantry");
 
         let (_, (x, y)) = enemy_beside_first_group(&mut game);
         game.handle(Event::MouseMove(x, y));
-        assert!(!game.cursor_means_attack(), "an enemy");
+        assert_eq!(game.cursor_look(), CursorLook::Arrow, "an enemy");
+    }
+
+    #[test]
+    fn with_armed_units_selected_too_only_control_turns_a_friendly_vehicle_red() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        let tank = game.units.iter().position(|u| u.owner == 0 && u.role == Role::Tank).unwrap();
+        let fixer = select_new(&mut game, 1);
+        let gunner = game.units.iter().position(|u| u.owner == 0 && u.kind == UnitKind::Infantry).unwrap();
+        game.units[gunner].selected = true;
+        assert!(game.units[fixer].selected);
+        let unit = game.units[tank];
+        let (x, y) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert_eq!(game.cursor_look(), CursorLook::Heal);
+        game.handle(Event::Control(true));
+        assert_eq!(game.cursor_look(), CursorLook::Attack);
+    }
+
+    #[test]
+    fn medals_show_one_v_for_each_rank_on_friend_and_foe() {
+        let medals = |game: &Game| line_vertices(game, crate::render::MEDAL);
+        let mut game = in_battle();
+        assert_eq!(medals(&game), 0, "no medal at first");
+        let (enemy, _) = enemy_beside_first_group(&mut game);
+        for (experience, rank) in [(2, 1), (5, 2), (10, 3)] {
+            game.units[0].experience = experience;
+            assert_eq!(game.units[0].rank(), rank);
+            assert_eq!(medals(&game), 12 * rank as usize, "two strokes of two triangles each");
+        }
+        game.units[0].experience = 0;
+        game.units[enemy].experience = 2;
+        assert_eq!(medals(&game), 12);
+    }
+
+    #[test]
+    fn a_kill_in_a_real_battle_earns_a_medal() {
+        let mut game = in_battle();
+        let (enemy, _) = enemy_beside_first_group(&mut game);
+        let id = game.units[enemy].id;
+        game.units[enemy].health = 1.0;
+        for _ in 0..200 {
+            game.update(0.05);
+            if !game.units.iter().any(|u| u.id == id) {
+                break;
+            }
+        }
+        assert!(game.units.iter().filter(|u| u.owner == 0).any(|u| u.experience > 0));
     }
 
     #[test]

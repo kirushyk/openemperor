@@ -41,6 +41,8 @@ const SPRAY_SECONDS: f32 = 0.3;
 
 /// Health a repair vehicle gives back with each pulse.
 const REPAIR_HEALTH: f32 = 12.0;
+/// Health per second that experienced units win back, for each rank.
+const VETERAN_HEALING: f32 = 1.0;
 
 const BEAM_SECONDS: f32 = 0.2;
 const FLARE_SECONDS: f32 = 0.1;
@@ -129,6 +131,11 @@ impl WeaponKind {
         }
     }
 
+    /// Only lasers and missiles can be fired on the move. Everything else must stand still.
+    fn fires_on_move(self) -> bool {
+        matches!(self, WeaponKind::Laser | WeaponKind::Missile | WeaponKind::AirMissile)
+    }
+
     /// How wide its cone is to each side, in radians, if it sprays one.
     fn spray_angle(self) -> Option<f32> {
         match self {
@@ -187,6 +194,20 @@ impl WeaponKind {
 
 type Point = (f32, f32, f32);
 
+/// Who fired something, kept with shots in flight: it may rank up or die before they land.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shooter {
+    id: u32,
+    owner: usize,
+    power: f32,
+}
+
+impl Shooter {
+    fn of(unit: &Unit) -> Self {
+        Shooter { id: unit.id, owner: unit.owner, power: unit.attack_power() }
+    }
+}
+
 fn distance(a: Point, b: Point) -> f32 {
     (a.0 - b.0).hypot(a.1 - b.1).hypot(a.2 - b.2)
 }
@@ -199,6 +220,7 @@ pub struct Missile {
     target_id: u32,
     /// Where it is headed if it was fired at a place and not a unit.
     place: Option<Point>,
+    shooter: Shooter,
     fuel: f32,
 }
 
@@ -212,6 +234,7 @@ pub struct Shell {
     arc: f32,
     /// Fired by order at a place or a friend, it spares nobody.
     hurts_all: bool,
+    shooter: Shooter,
 }
 
 impl Shell {
@@ -321,10 +344,11 @@ impl Combat {
 
     fn step(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
         self.fire(units, teams, terrain, dt);
-        self.fly_missiles(units, terrain, dt);
+        self.fly_missiles(units, teams, terrain, dt);
         self.fly_shells(units, teams, dt);
         self.fall_strikes(units, dt);
         self.poison_land(units, dt);
+        heal_veterans(units, dt);
         for beam in &mut self.beams {
             beam.life -= dt / BEAM_SECONDS;
         }
@@ -349,6 +373,9 @@ impl Combat {
                 continue;
             }
             units[i].cooldown -= dt;
+            if units[i].is_moving() && !units[i].weapon.fires_on_move() {
+                continue;
+            }
             let must_aim = units[i].kind.is_building() || units[i].weapon.spray_angle().is_some();
             if !must_aim && units[i].cooldown > 0.0 {
                 continue;
@@ -368,6 +395,7 @@ impl Combat {
             let weapon = units[i].weapon;
             units[i].cooldown = weapon.cooldown();
             let from = units[i].muzzle();
+            let shooter = Shooter::of(&units[i]);
             let (to, target) = match aim {
                 Aim::Unit(t) => (units[t].center(), Some(t)),
                 Aim::Place(place) => (place, None),
@@ -385,10 +413,10 @@ impl Combat {
                 | WeaponKind::Sniper
                 | WeaponKind::Pistol
                 | WeaponKind::Cannon
-                | WeaponKind::AutoGun => strike(units, i, target, to, weapon),
+                | WeaponKind::AutoGun => strike(units, i, target, to, weapon, teams),
                 WeaponKind::Flame | WeaponKind::Gas => self.spray(units, i, teams, forced),
                 WeaponKind::Laser => {
-                    strike(units, i, target, to, weapon);
+                    strike(units, i, target, to, weapon, teams);
                     self.beams.push(Beam { from, to, life: 1.0, repair: false });
                 }
                 WeaponKind::Repair => {
@@ -414,6 +442,7 @@ impl Combat {
                         direction,
                         target_id: target.map_or(NO_UNIT, |t| units[t].id),
                         place: target.is_none().then_some(to),
+                        shooter,
                         fuel: MISSILE_FUEL_SECONDS,
                     });
                     units[i].second_tube = !units[i].second_tube;
@@ -428,6 +457,7 @@ impl Combat {
                         duration: (flat / SHELL_SPEED).max(0.2),
                         arc: flat * SHELL_ARC,
                         hurts_all: forced,
+                        shooter,
                     });
                 }
             }
@@ -440,7 +470,8 @@ impl Combat {
         let unit = units[sprayer];
         let Some(half_angle) = unit.weapon.spray_angle() else { return };
         let reach = unit.weapon.range();
-        for (index, other) in units.iter_mut().enumerate() {
+        for index in 0..units.len() {
+            let other = units[index];
             let harmed = forced || are_enemies(teams, unit.owner, other.owner);
             if index == sprayer || !other.alive || !harmed || !unit.weapon.can_target(other.kind, other.altitude) {
                 continue;
@@ -451,7 +482,7 @@ impl Combat {
             let off_center = turn_between(unit.heading, dz.atan2(dx)).abs();
             let widened = half_angle + (other.kind.radius() / away.max(0.0001)).min(1.0).asin();
             if away <= reach + other.kind.radius() && off_center <= widened {
-                hit(other, unit.weapon);
+                hit(units, index, unit.weapon, Shooter::of(&unit), teams);
             }
         }
         self.sprays.push(Spray {
@@ -464,7 +495,7 @@ impl Combat {
         });
     }
 
-    fn fly_missiles(&mut self, units: &mut [Unit], terrain: &Terrain, dt: f32) {
+    fn fly_missiles(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
         let mut flying = Vec::with_capacity(self.missiles.len());
         for mut missile in std::mem::take(&mut self.missiles) {
             let target = units.iter().position(|u| u.alive && u.id == missile.target_id);
@@ -488,15 +519,16 @@ impl Combat {
             });
             if reached_place {
                 // Whoever stands at the place it was sent to is hurt, whoever they are.
-                for unit in units.iter_mut().filter(|u| u.alive) {
-                    if distance(missile.position, unit.center()) <= MISSILE_BLAST_RADIUS + unit.kind.radius() {
-                        hit(unit, WeaponKind::Missile);
+                for index in 0..units.len() {
+                    let reach = MISSILE_BLAST_RADIUS + units[index].kind.radius();
+                    if units[index].alive && distance(missile.position, units[index].center()) <= reach {
+                        hit(units, index, WeaponKind::Missile, missile.shooter, teams);
                     }
                 }
                 self.blasts.push(Blast { at: missile.position, radius: MISSILE_BLAST_RADIUS, life: 1.0 });
             } else if reached {
                 let t = target.unwrap_or(0);
-                hit(&mut units[t], WeaponKind::Missile);
+                hit(units, t, WeaponKind::Missile, missile.shooter, teams);
                 self.blasts.push(Blast { at: missile.position, radius: MISSILE_BLAST_RADIUS, life: 1.0 });
             } else if y <= terrain.height_at(x, z) || missile.fuel <= 0.0 {
                 // A miss: it hits the ground or burns out, harming nobody.
@@ -517,12 +549,14 @@ impl Combat {
                 continue;
             }
             // Only enemies of whoever fired are hurt, so that units can fire freely.
-            for unit in units.iter_mut() {
+            for index in 0..units.len() {
+                let unit = units[index];
                 if unit.alive && (shell.hurts_all || are_enemies(teams, shell.owner, unit.owner)) {
                     let away = distance(shell.landing, unit.center());
                     let reach = SHELL_BLAST_RADIUS + unit.kind.radius();
                     if away < reach {
-                        hurt(unit, WeaponKind::Mortar.damage() * (1.0 - away / reach * 0.5));
+                        let damage = WeaponKind::Mortar.damage() * shell.shooter.power * (1.0 - away / reach * 0.5);
+                        harm(units, index, damage, shell.shooter, teams);
                     }
                 }
             }
@@ -566,22 +600,45 @@ impl Combat {
 }
 
 /// A shot striking at once: its target, or whoever stands at the place it was fired at.
-fn strike(units: &mut [Unit], shooter: usize, target: Option<usize>, at: Point, weapon: WeaponKind) {
+fn strike(units: &mut [Unit], firing: usize, target: Option<usize>, at: Point, weapon: WeaponKind, teams: &[usize]) {
+    let shooter = Shooter::of(&units[firing]);
     if let Some(t) = target {
-        hit(&mut units[t], weapon);
+        hit(units, t, weapon, shooter, teams);
         return;
     }
-    for (index, unit) in units.iter_mut().enumerate() {
+    for index in 0..units.len() {
+        let unit = units[index];
         let touched = distance(at, unit.center()) <= unit.kind.radius() + PLACE_SHOT_SPREAD;
-        if index != shooter && unit.alive && touched && weapon.can_target(unit.kind, unit.altitude) {
-            hit(unit, weapon);
+        if index != firing && unit.alive && touched && weapon.can_target(unit.kind, unit.altitude) {
+            hit(units, index, weapon, shooter, teams);
         }
     }
 }
 
-fn hit(unit: &mut Unit, weapon: WeaponKind) {
-    let damage = weapon.damage_to(unit.kind);
-    hurt(unit, damage);
+fn hit(units: &mut [Unit], victim: usize, weapon: WeaponKind, shooter: Shooter, teams: &[usize]) {
+    let damage = weapon.damage_to(units[victim].kind) * shooter.power;
+    harm(units, victim, damage, shooter, teams);
+}
+
+/// Hurts a unit on someone's account. Whoever kills an enemy gains experience, if they
+/// still live. Killing a friend earns nothing.
+fn harm(units: &mut [Unit], victim: usize, damage: f32, shooter: Shooter, teams: &[usize]) {
+    let was_alive = units[victim].alive;
+    hurt(&mut units[victim], damage);
+    if was_alive && !units[victim].alive && are_enemies(teams, shooter.owner, units[victim].owner) {
+        let value = units[victim].kind.kill_value();
+        if let Some(killer) = units.iter_mut().find(|u| u.alive && u.id == shooter.id) {
+            killer.gain_experience(value);
+        }
+    }
+}
+
+/// Units with a medal slowly win health back by themselves.
+fn heal_veterans(units: &mut [Unit], dt: f32) {
+    for unit in units.iter_mut().filter(|u| u.alive && u.rank() > 0) {
+        let healed = unit.health + VETERAN_HEALING * unit.rank() as f32 * dt;
+        unit.health = healed.min(unit.max_health());
+    }
 }
 
 fn hurt(unit: &mut Unit, damage: f32) {
@@ -661,7 +718,7 @@ fn nearest_to_repair(units: &[Unit], repairer: usize, teams: &[usize]) -> Option
         let unit = &units[i];
         i != repairer
             && unit.alive
-            && unit.kind == UnitKind::Vehicle
+            && unit.can_be_repaired()
             && unit.health < unit.max_health()
             && are_friends(teams, owner, unit.owner)
             && distance(from, unit.center()) <= reach + unit.kind.radius()
@@ -903,6 +960,7 @@ mod tests {
             direction: (0.0, 1.0, 0.0),
             target_id: units[1].id,
             place: None,
+            shooter: Shooter::of(&units[0]),
             fuel: 4.0,
         });
         let mut lowest = f32::MAX;
@@ -1542,6 +1600,172 @@ mod tests {
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         assert_eq!(units[1].health, 50.0, "the nearer one waits");
         assert!(units[2].health > 50.0);
+    }
+
+    fn moving(mut unit: Unit) -> Unit {
+        unit.destination = (unit.x - 30.0, unit.z);
+        unit
+    }
+
+    #[test]
+    fn only_lasers_and_missiles_can_be_fired_on_the_move() {
+        for weapon in [WeaponKind::Laser, WeaponKind::Missile] {
+            let mut units = [moving(shooter(weapon)), target_at(4.0, 60.0)];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 1.0);
+            assert!(!combat.beams.is_empty() || !combat.missiles.is_empty() || units[1].health < 100.0, "{weapon:?}");
+        }
+        for weapon in [
+            WeaponKind::Bullet,
+            WeaponKind::Sniper,
+            WeaponKind::Pistol,
+            WeaponKind::Cannon,
+            WeaponKind::AutoGun,
+            WeaponKind::Mortar,
+            WeaponKind::Flame,
+            WeaponKind::Gas,
+        ] {
+            let mut units = [moving(shooter(weapon)), target_at(3.0, 60.0)];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 2.0);
+            assert_eq!(units[1].health, 100.0, "{weapon:?} holds fire");
+            assert_eq!(combat, Combat::default(), "{weapon:?} shows nothing");
+
+            units[0].destination = (units[0].x, units[0].z);
+            run(&mut combat, &mut units, 3.0);
+            assert!(combat != Combat::default() || units[1].health < 100.0, "{weapon:?} fires once stopped");
+        }
+    }
+
+    #[test]
+    fn a_repair_vehicle_on_the_move_stops_working() {
+        let mut units = repair_scene(0, 2.0, UnitKind::Vehicle);
+        units[0] = moving(units[0]);
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 1.0);
+        assert_eq!(units[1].health, 50.0);
+    }
+
+    #[test]
+    fn a_kill_earns_experience_by_what_was_killed_and_a_hit_alone_earns_none() {
+        for (kind, health) in [(UnitKind::Infantry, 12.0), (UnitKind::Vehicle, 3.0), (UnitKind::Tower, 3.0)] {
+            let mut enemy = target_at(4.0, 60.0);
+            enemy.kind = kind;
+            enemy.health = health * 2.0;
+            let mut units = [shooter(WeaponKind::Bullet), enemy];
+            let mut combat = Combat::default();
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            assert!(units[1].alive, "{kind:?}");
+            assert_eq!(units[0].experience, 0, "{kind:?} only hit");
+            run(&mut combat, &mut units, 1.0);
+            assert!(!units[1].alive, "{kind:?}");
+            assert_eq!(units[0].experience, kind.kill_value(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn experience_comes_from_every_way_of_killing() {
+        let kill_with = |weapon: WeaponKind, x: f32| {
+            let mut enemy = target_at(x, 60.0);
+            enemy.health = 1.0;
+            let mut unit = shooter(weapon);
+            unit.heading = 0.0;
+            let mut units = [unit, enemy];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 4.0);
+            assert!(!units[1].alive, "{weapon:?}");
+            units[0].experience
+        };
+        for (weapon, x) in [
+            (WeaponKind::Bullet, 4.0),
+            (WeaponKind::Laser, 4.0),
+            (WeaponKind::Missile, 8.0),
+            (WeaponKind::Mortar, 10.0),
+            (WeaponKind::Flame, 2.0),
+            (WeaponKind::Gas, 2.0),
+        ] {
+            assert_eq!(kill_with(weapon, x), 1, "{weapon:?}");
+        }
+    }
+
+    #[test]
+    fn killing_a_friend_earns_nothing() {
+        let mut friend = Unit::for_test(3.0, 60.0, UnitKind::Infantry);
+        friend.id = 3;
+        friend.health = 1.0;
+        friend.cooldown = 1000.0;
+        let mut units = [shooter(WeaponKind::Bullet), friend];
+        units[0].target = Some(Target::Forced(3));
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 1.0);
+        assert!(!units[1].alive);
+        assert_eq!(units[0].experience, 0);
+    }
+
+    #[test]
+    fn a_shot_still_in_flight_credits_its_shooter_unless_the_shooter_died() {
+        let mut enemy = target_at(10.0, 60.0);
+        enemy.health = 1.0;
+        let mut units = [shooter(WeaponKind::Missile), enemy];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        units[0].cooldown = 1000.0;
+        units[0].alive = false;
+        run(&mut combat, &mut units, 3.0);
+        assert!(!units[1].alive, "the shot still lands");
+        assert_eq!(units[0].experience, 0);
+    }
+
+    #[test]
+    fn experienced_units_hit_harder() {
+        let damage_by = |experience: u32| {
+            let mut unit = shooter(WeaponKind::Bullet);
+            unit.experience = experience;
+            let mut units = [unit, target_at(4.0, 60.0)];
+            let mut combat = Combat::default();
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            100.0 - units[1].health
+        };
+        assert_eq!(damage_by(0), WeaponKind::Bullet.damage());
+        assert!(damage_by(2) > damage_by(0));
+        assert!(damage_by(10) > damage_by(5));
+    }
+
+    #[test]
+    fn units_with_a_medal_slowly_heal_and_others_do_not() {
+        let hurt_for_ten_seconds = |experience: u32| {
+            let mut unit = shooter(WeaponKind::Unarmed);
+            unit.experience = experience;
+            unit.health = 50.0;
+            let mut units = [unit];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 10.0);
+            units[0].health
+        };
+        assert_eq!(hurt_for_ten_seconds(0), 50.0);
+        let (one_medal, three) = (hurt_for_ten_seconds(2), hurt_for_ten_seconds(10));
+        assert!(one_medal > 50.0 && one_medal < 65.0, "slowly: {one_medal}");
+        assert!(three > one_medal, "faster with more medals");
+
+        let mut unit = shooter(WeaponKind::Unarmed);
+        unit.experience = 2;
+        unit.health = unit.max_health() - 0.01;
+        let mut units = [unit];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 2.0);
+        assert_eq!(units[0].health, units[0].max_health(), "up to full and no further");
+    }
+
+    #[test]
+    fn a_grounded_aircraft_can_be_repaired_but_not_one_in_the_air() {
+        let mut units = repair_scene(0, 2.0, UnitKind::Aircraft);
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 1.0);
+        assert_eq!(units[1].health, 50.0, "in the air");
+
+        units[1].altitude = 0.0;
+        run(&mut combat, &mut units, 1.0);
+        assert!(units[1].health > 50.0, "on the ground");
     }
 
     #[test]

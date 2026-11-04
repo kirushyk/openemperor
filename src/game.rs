@@ -20,7 +20,7 @@ const PICK_RADIUS: f32 = 25.0;
 const STARTING_ENERGY: i32 = 65;
 
 /// The Vehicles menu's cell holding the superweapon.
-pub const SUPERWEAPON_CELL: usize = 3;
+pub const SUPERWEAPON_CELL: usize = 4;
 /// What each tab's first cells produce, in order.
 const INFANTRY_BUILDS: [Role; 7] = [
     Role::Scout,
@@ -31,7 +31,12 @@ const INFANTRY_BUILDS: [Role; 7] = [
     Role::FlameInfantry,
     Role::GasInfantry,
 ];
-const VEHICLE_BUILDS: [Role; 3] = [Role::Tank, Role::RepairVehicle, Role::Catapult];
+const VEHICLE_BUILDS: [Role; 4] = [
+    Role::Tank,
+    Role::RepairVehicle,
+    Role::Catapult,
+    Role::RocketLauncher,
+];
 /// What the Vehicles menu's bottom row makes, from its left end.
 const BOTTOM_VEHICLE_BUILDS: [Role; 2] = [Role::AirDefensePlatform, Role::AirDrone];
 const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
@@ -2269,6 +2274,7 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::Vertex;
 
     const W: f32 = 2880.0;
     const H: f32 = 1800.0;
@@ -3755,7 +3761,7 @@ mod tests {
     }
 
     fn line_vertices(game: &Game, color: [f32; 4]) -> usize {
-        let is_color = |v: &&crate::platform::Vertex| [v.r, v.g, v.b, v.a] == color;
+        let is_color = |v: &&crate::platform::Vertex| **v == Vertex::new((v.x, v.y), color);
         crate::render::build(game).iter().filter(is_color).count()
     }
 
@@ -4049,7 +4055,7 @@ mod tests {
     fn each_vehicle_button_makes_its_vehicle_and_the_superweapon_comes_after_them() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        for (cell, name) in ["Tank", "Repair Vehicle", "Catapult"]
+        for (cell, name) in ["Tank", "Repair Vehicle", "Catapult", "Rocket Launcher"]
             .into_iter()
             .enumerate()
         {
@@ -4064,6 +4070,26 @@ mod tests {
         click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
         assert!(game.aiming_strike);
         assert_eq!(game.units.len(), before);
+    }
+
+    #[test]
+    fn every_vehicle_shines_white_light_ahead_of_it_and_nothing_else_does() {
+        let lights = |game: &Game| {
+            crate::render::build(game)
+                .iter()
+                .filter(|v| v.a == 0.0 && v.r > 0.0)
+                .inspect(|v| assert_eq!((v.r, v.g), (v.b, v.b), "white"))
+                .count()
+        };
+        let mut game = in_battle();
+        let vehicles = |game: &Game| {
+            let is_vehicle = |u: &&Unit| u.alive && u.kind == UnitKind::Vehicle;
+            game.units.iter().filter(is_vehicle).count()
+        };
+        assert!(vehicles(&game) > 0);
+        assert_eq!(lights(&game), vehicles(&game), "one bright corner each");
+        game.units.retain(|u| u.kind != UnitKind::Vehicle);
+        assert_eq!(lights(&game), 0);
     }
 
     #[test]
@@ -4261,9 +4287,15 @@ mod tests {
         assert_eq!(game.tip(), None, "that cell makes nothing");
 
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        for (i, name) in ["Tank", "Repair Vehicle", "Catapult", "Superweapon"]
-            .into_iter()
-            .enumerate()
+        for (i, name) in [
+            "Tank",
+            "Repair Vehicle",
+            "Catapult",
+            "Rocket Launcher",
+            "Superweapon",
+        ]
+        .into_iter()
+        .enumerate()
         {
             let b = cell(i);
             game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
@@ -4378,10 +4410,15 @@ mod tests {
         );
     }
 
-    fn alphas_of(game: &Game, [r, g, b]: [f32; 3]) -> Vec<f32> {
+    /// Whether a vertex shows this color. One fully clear shows no color at all.
+    fn shows_color(v: &Vertex, color: [f32; 3]) -> bool {
+        v.a > 0.0 && [v.r, v.g, v.b] == color.map(|c| c * v.a)
+    }
+
+    fn alphas_of(game: &Game, color: [f32; 3]) -> Vec<f32> {
         crate::render::build(game)
             .iter()
-            .filter(|v| [v.r, v.g, v.b] == [r, g, b])
+            .filter(|v| shows_color(v, color))
             .map(|v| v.a)
             .collect()
     }
@@ -4393,14 +4430,13 @@ mod tests {
         game.handle(Event::MouseMove(1.0, 1.0));
         let fill = alphas_of(&game, BANNER_BLUE);
         assert!(fill.contains(&1.0), "opaque in the middle");
-        assert!(fill.contains(&0.0), "clear at the ends");
         let lines = alphas_of(&game, BANNER_LINE);
         assert!(lines.contains(&1.0), "lines are solid in the middle");
         assert!(
             lines.contains(&BANNER_LINE_END_ALPHA),
             "and semi-opaque at the ends"
         );
-        assert!(!lines.contains(&0.0));
+        assert!(lines.iter().all(|&alpha| alpha >= BANNER_LINE_END_ALPHA));
 
         let vertices = crate::render::build(&game);
         let b = buttons(game.screen, W, H)[0];
@@ -4408,7 +4444,9 @@ mod tests {
             vertices
                 .iter()
                 .find(|v| {
-                    [v.r, v.g, v.b] == BANNER_BLUE && (v.x - x).abs() < 0.5 && (v.y - y).abs() < 0.5
+                    (v.a == 0.0 || shows_color(v, BANNER_BLUE))
+                        && (v.x - x).abs() < 0.5
+                        && (v.y - y).abs() < 0.5
                 })
                 .map(|v| v.a)
         };
@@ -4438,11 +4476,9 @@ mod tests {
             .into_iter()
             .filter(|b| matches!(b.action, Action::HudWide(_)))
             .count();
-        let bands = drawn
-            .iter()
-            .filter(|v| [v.r, v.g, v.b] == BANNER_BLUE)
-            .count();
-        assert_eq!(bands, wide * 12, "only the wide ones have a band");
+        let bands = drawn.iter().filter(|v| shows_color(v, BANNER_BLUE)).count();
+        // Half of a band's twelve corners are its clear ends.
+        assert_eq!(bands, wide * 6, "only the wide ones have a band");
     }
 
     #[test]

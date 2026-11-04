@@ -6,7 +6,8 @@
 
 use crate::battlefield::Terrain;
 use crate::units::{
-    Point, Role, Target, Unit, UnitKind, are_enemies, are_friends, distance, substeps, turn_between,
+    Point, ROCKET_SIDES, Role, Target, Unit, UnitKind, are_enemies, are_friends, distance,
+    substeps, turn_between,
 };
 
 /// A unit with nothing in range looks again this often, in seconds.
@@ -24,6 +25,9 @@ const MISSILE_BLAST_RADIUS: f32 = 0.8;
 const SHELL_SPEED: f32 = 7.0;
 const SHELL_ARC: f32 = 0.35;
 const SHELL_BLAST_RADIUS: f32 = 1.6;
+
+/// How long a rocket launcher takes to reload once its whole salvo has gone, in seconds.
+const ROCKET_RELOAD_SECONDS: f32 = 8.0;
 
 /// Radians per second whatever must face its target turns towards it.
 const AIM_TURN: f32 = 2.0;
@@ -70,6 +74,8 @@ pub enum WeaponKind {
     Laser,
     /// Lobbed in a ballistic arc at where the target was, exploding where it lands.
     Mortar,
+    /// Flies like a missile, one after another in a salvo, each weaker than a missile.
+    Rockets,
     /// Like a bullet, but slower and from farther away, and hits harder.
     Sniper,
     /// Like a bullet, but weak and slower.
@@ -97,6 +103,7 @@ impl WeaponKind {
             WeaponKind::Missile => 12.0,
             WeaponKind::Laser => 9.0,
             WeaponKind::Mortar => 16.0,
+            WeaponKind::Rockets => 13.0,
             WeaponKind::Sniper => 14.0,
             WeaponKind::Pistol => 5.0,
             WeaponKind::Cannon => 10.0,
@@ -156,6 +163,7 @@ impl WeaponKind {
             WeaponKind::Missile => 3.0,
             WeaponKind::Laser => 1.2,
             WeaponKind::Mortar => 4.0,
+            WeaponKind::Rockets => 0.3,
             WeaponKind::Sniper => 3.5,
             WeaponKind::Pistol => 1.5,
             WeaponKind::Cannon => 3.0,
@@ -173,6 +181,7 @@ impl WeaponKind {
             WeaponKind::Missile => 60.0,
             WeaponKind::Laser => 25.0,
             WeaponKind::Mortar => 70.0,
+            WeaponKind::Rockets => 35.0,
             WeaponKind::Sniper => 90.0,
             WeaponKind::Pistol => 8.0,
             WeaponKind::Cannon => 80.0,
@@ -224,6 +233,7 @@ pub struct Missile {
     pub position: Point,
     /// A unit vector.
     pub direction: Point,
+    weapon: WeaponKind,
     target_id: u32,
     /// Where it is headed if it was fired at a place and not a unit.
     place: Option<Point>,
@@ -367,6 +377,9 @@ impl Combat {
                 continue;
             }
             units[i].cooldown -= dt;
+            if units[i].cooldown <= 0.0 && units[i].rockets_fired == ROCKET_SIDES.len() {
+                units[i].rockets_fired = 0;
+            }
             if units[i].is_moving() && !units[i].weapon.fires_on_move() {
                 continue;
             }
@@ -437,7 +450,7 @@ impl Combat {
                 }
             }
             WeaponKind::Unarmed => {}
-            WeaponKind::Missile | WeaponKind::AirMissile => {
+            WeaponKind::Missile | WeaponKind::AirMissile | WeaponKind::Rockets => {
                 // From the ground it is launched upward, so that it visibly rises and turns
                 // towards its target. From the air it has a clear shot.
                 let (dx, dz) = (to.0 - from.0, to.2 - from.2);
@@ -450,12 +463,19 @@ impl Combat {
                 self.missiles.push(Missile {
                     position: from,
                     direction,
+                    weapon,
                     target_id: target.map_or(NO_UNIT, |t| units[t].id),
                     place: target.is_none().then_some(to),
                     shooter,
                     fuel: MISSILE_FUEL_SECONDS,
                 });
                 units[i].second_tube = !units[i].second_tube;
+                if weapon == WeaponKind::Rockets {
+                    units[i].rockets_fired += 1;
+                    if units[i].rockets_fired == ROCKET_SIDES.len() {
+                        units[i].cooldown = ROCKET_RELOAD_SECONDS;
+                    }
+                }
             }
             WeaponKind::Mortar => {
                 let flat = (to.0 - from.0).hypot(to.2 - from.2);
@@ -545,7 +565,7 @@ impl Combat {
                     if units[index].alive
                         && distance(missile.position, units[index].center()) <= reach
                     {
-                        hit(units, index, WeaponKind::Missile, missile.shooter, teams);
+                        hit(units, index, missile.weapon, missile.shooter, teams);
                     }
                 }
                 self.blasts.push(Blast {
@@ -554,7 +574,7 @@ impl Combat {
                     life: 1.0,
                 });
             } else if let Some(t) = reached {
-                hit(units, t, WeaponKind::Missile, missile.shooter, teams);
+                hit(units, t, missile.weapon, missile.shooter, teams);
                 self.blasts.push(Blast {
                     at: missile.position,
                     radius: MISSILE_BLAST_RADIUS,
@@ -715,11 +735,15 @@ fn hurt(unit: &mut Unit, damage: f32) {
     }
 }
 
-/// Towers, sprayers, tanks and catapults can only fire the way they face.
+/// Towers, sprayers, tanks, catapults and rocket launchers can only fire the way they face.
 fn must_turn_to_fire(unit: &Unit) -> bool {
     unit.kind.is_building()
         || unit.weapon.spray_angle().is_some()
-        || (unit.weapon != WeaponKind::Repair && matches!(unit.role, Role::Tank | Role::Catapult))
+        || (unit.weapon != WeaponKind::Repair
+            && matches!(
+                unit.role,
+                Role::Tank | Role::Catapult | Role::RocketLauncher
+            ))
 }
 
 /// What a unit fires at this moment.
@@ -1084,6 +1108,7 @@ mod tests {
         combat.missiles.push(Missile {
             position: units[0].muzzle(),
             direction: (0.0, 1.0, 0.0),
+            weapon: WeaponKind::Missile,
             target_id: units[1].id,
             place: None,
             shooter: Shooter::of(&units[0]),
@@ -2015,6 +2040,78 @@ mod tests {
         units[1].altitude = 0.0;
         run(&mut combat, &mut units, 1.0);
         assert!(units[1].health > 50.0, "on the ground");
+    }
+
+    fn rocket_launcher_facing_east() -> Unit {
+        let mut unit = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        unit.role = Role::RocketLauncher;
+        unit.id = 1;
+        unit.weapon = WeaponKind::Rockets;
+        unit.heading = 0.0;
+        unit
+    }
+
+    #[test]
+    fn a_rocket_launcher_fires_three_from_the_left_one_by_one_then_three_from_the_right_then_reloads()
+     {
+        let mut target = target_at(10.0, 60.0);
+        target.health = 1000.0;
+        let mut units = [rocket_launcher_facing_east(), target];
+        let mut combat = Combat::default();
+        let (mut launches, mut sides, mut elapsed) = (Vec::new(), Vec::new(), 0.0);
+        while launches.len() < 7 && elapsed < 30.0 {
+            units[1].health = 1000.0;
+            let flying = combat.missiles.len();
+            combat.advance(&mut units, &TEAMS, flat(), 0.01);
+            elapsed += 0.01;
+            if combat.missiles.len() > flying {
+                assert_eq!(combat.missiles.len(), flying + 1, "one by one");
+                launches.push(elapsed);
+                sides.push(combat.missiles[flying].position.2 - units[0].z);
+            }
+        }
+        assert_eq!(launches.len(), 7, "{launches:?}");
+        // Facing east, its left is to the north, where z is smaller.
+        assert!(sides[..3].iter().all(|&side| side < 0.0), "{sides:?}");
+        assert!(sides[3..6].iter().all(|&side| side > 0.0), "{sides:?}");
+        assert!((sides[6] - sides[0]).abs() < 0.01, "and starts over");
+        for pair in launches[..6].windows(2) {
+            let gap = pair[1] - pair[0];
+            assert!(gap < 0.5, "quickly one after another: {gap}");
+        }
+        let reload = launches[6] - launches[5];
+        assert!(reload > 7.0, "a long reload: {reload}");
+    }
+
+    #[test]
+    fn a_rocket_launcher_turns_to_face_its_target_and_does_not_fire_on_the_move() {
+        let mut units = [rocket_launcher_facing_east(), target_at(-10.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert!(combat.missiles.is_empty(), "the target is behind it");
+        for _ in 0..80 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert!(!combat.missiles.is_empty(), "it turned round");
+
+        let mut units = [rocket_launcher_facing_east(), target_at(10.0, 60.0)];
+        units[0].destination = (0.0, 70.0);
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert!(combat.missiles.is_empty());
+    }
+
+    #[test]
+    fn a_rocket_hurts_less_than_a_missile() {
+        assert!(WeaponKind::Rockets.damage() < WeaponKind::Missile.damage());
+        let mut units = [rocket_launcher_facing_east(), target_at(5.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        units[0].cooldown = 1000.0;
+        for _ in 0..60 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert_eq!(units[1].health, 100.0 - WeaponKind::Rockets.damage());
     }
 
     fn catapult_facing_east() -> Unit {

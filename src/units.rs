@@ -152,6 +152,8 @@ pub enum Role {
     RepairVehicle,
     /// Lobs shells in a ballistic arc.
     Catapult,
+    /// Fires a salvo of rockets from its two racks, then reloads for a long time.
+    RocketLauncher,
     Aircraft,
     /// Hangs in the air and fires an automatic gun at the air and the ground alike.
     AirDefensePlatform,
@@ -176,7 +178,9 @@ impl Role {
             | Role::KInfantry
             | Role::FlameInfantry
             | Role::GasInfantry => UnitKind::Infantry,
-            Role::Tank | Role::RepairVehicle | Role::Catapult => UnitKind::Vehicle,
+            Role::Tank | Role::RepairVehicle | Role::Catapult | Role::RocketLauncher => {
+                UnitKind::Vehicle
+            }
             Role::Aircraft | Role::AirDefensePlatform | Role::AirDrone => UnitKind::Aircraft,
             Role::Tower | Role::FlameTower => UnitKind::Tower,
         }
@@ -192,6 +196,7 @@ impl Role {
             Role::Tank => "Tank",
             Role::RepairVehicle => "Repair Vehicle",
             Role::Catapult => "Catapult",
+            Role::RocketLauncher => "Rocket Launcher",
             Role::Aircraft => "Aircraft",
             Role::AirDefensePlatform => "Air Defense Platform",
             Role::AirDrone => "Air Drone",
@@ -211,6 +216,7 @@ impl Role {
             Role::Tank => WeaponKind::Cannon,
             Role::RepairVehicle => WeaponKind::Repair,
             Role::Catapult => WeaponKind::Mortar,
+            Role::RocketLauncher => WeaponKind::Rockets,
             Role::Aircraft | Role::Tower => WeaponKind::Missile,
             Role::AirDefensePlatform => WeaponKind::AutoGun,
             Role::AirDrone => WeaponKind::AirMissile,
@@ -226,7 +232,7 @@ impl Role {
             Role::Engineer => 80.0,
             Role::KInfantry => 120.0,
             Role::RepairVehicle => 200.0,
-            Role::Catapult => 180.0,
+            Role::Catapult | Role::RocketLauncher => 180.0,
             Role::AirDefensePlatform => 200.0,
             Role::AirDrone => 80.0,
             Role::FlameTower => 500.0,
@@ -237,7 +243,7 @@ impl Role {
     fn speed(self) -> f32 {
         match self {
             Role::Scout => 4.0,
-            Role::Catapult => 3.5,
+            Role::Catapult | Role::RocketLauncher => 3.5,
             Role::AirDefensePlatform => 3.0,
             Role::AirDrone => 8.0,
             _ => self.kind().speed(),
@@ -274,6 +280,12 @@ pub const TUBE_HEIGHT: f32 = 1.26;
 /// How far ahead of a tower's middle its tubes end, and how far apart they stand from it.
 const TUBE_REACH: f32 = 0.7;
 pub const TUBE_SPREAD: f32 = 0.18;
+/// Where a rocket launcher's rockets lie from its middle, in the order they are fired: the left
+/// rack's three, then the right rack's.
+pub const ROCKET_SIDES: [f32; 6] = [-0.21, -0.14, -0.07, 0.07, 0.14, 0.21];
+/// How high a rocket launcher's rockets lie, and how far ahead of its middle they end.
+pub const ROCKET_HEIGHT: f32 = 0.35;
+const ROCKET_REACH: f32 = 0.3;
 
 /// What a unit was told to go after.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -323,6 +335,8 @@ pub struct Unit {
     pub alive: bool,
     /// Which of a tower's two tubes fires next.
     pub second_tube: bool,
+    /// How many rockets of its salvo have gone: they stay gone until it has reloaded.
+    pub rockets_fired: usize,
     blocked_for: f32,
     /// Its nearest approach to the destination since it set off.
     best_remaining: f32,
@@ -461,8 +475,18 @@ impl Unit {
         (self.x, self.sphere_y(), self.z)
     }
 
-    /// Where its shots come from: a tower takes turns with the ends of its two tubes.
+    /// Where its shots come from: a tower takes turns with the ends of its two tubes, and a
+    /// rocket launcher goes along its racks.
     pub fn muzzle(&self) -> (f32, f32, f32) {
+        if self.role == Role::RocketLauncher {
+            let (sin, cos) = self.heading.sin_cos();
+            let side = ROCKET_SIDES.get(self.rockets_fired).copied().unwrap_or(0.0);
+            return (
+                self.x + cos * ROCKET_REACH - sin * side,
+                self.y + ROCKET_HEIGHT,
+                self.z + sin * ROCKET_REACH + cos * side,
+            );
+        }
         if self.kind.is_building() {
             let (sin, cos) = self.heading.sin_cos();
             let side = match (self.role, self.second_tube) {
@@ -519,6 +543,7 @@ impl Unit {
             heavy: kind == UnitKind::Vehicle,
             alive: true,
             second_tube: false,
+            rockets_fired: 0,
             blocked_for: 0.0,
             best_remaining: f32::INFINITY,
         }
@@ -630,6 +655,7 @@ fn place_unit(
         heavy: kind == UnitKind::Vehicle,
         alive: true,
         second_tube: false,
+        rockets_fired: 0,
         blocked_for: 0.0,
         best_remaining: f32::INFINITY,
     });
@@ -1856,6 +1882,7 @@ mod tests {
             (Role::Tank, WeaponKind::Cannon, "Tank"),
             (Role::RepairVehicle, WeaponKind::Repair, "Repair Vehicle"),
             (Role::Catapult, WeaponKind::Mortar, "Catapult"),
+            (Role::RocketLauncher, WeaponKind::Rockets, "Rocket Launcher"),
             (
                 Role::AirDefensePlatform,
                 WeaponKind::AutoGun,
@@ -2272,6 +2299,7 @@ mod tests {
             Role::Sniper,
             Role::Tank,
             Role::Catapult,
+            Role::RocketLauncher,
             Role::Aircraft,
             Role::Tower,
         ] {

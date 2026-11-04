@@ -90,7 +90,7 @@ int32_t oe_init(const char *title, int32_t *width, int32_t *height) {
         MTLRenderPipelineColorAttachmentDescriptor *color = desc.colorAttachments[0];
         color.pixelFormat = MTLPixelFormatBGRA8Unorm;
         color.blendingEnabled = YES;
-        color.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+        color.sourceRGBBlendFactor = MTLBlendFactorOne;
         color.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
         color.sourceAlphaBlendFactor = MTLBlendFactorOne;
         color.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;

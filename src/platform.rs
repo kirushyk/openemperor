@@ -2,6 +2,8 @@
 
 use std::ffi::CString;
 
+/// A corner of a triangle, its color already multiplied by its alpha. The backends blend it
+/// over what is there by adding its color to what its alpha leaves showing.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vertex {
@@ -15,7 +17,26 @@ pub struct Vertex {
 
 impl Vertex {
     pub fn new((x, y): (f32, f32), [r, g, b, a]: [f32; 4]) -> Self {
-        Vertex { x, y, r, g, b, a }
+        Vertex {
+            x,
+            y,
+            r: r * a,
+            g: g * a,
+            b: b * a,
+            a,
+        }
+    }
+
+    /// Light: it adds its color to what is there and covers none of it.
+    pub fn light((x, y): (f32, f32), [r, g, b]: [f32; 3]) -> Self {
+        Vertex {
+            x,
+            y,
+            r,
+            g,
+            b,
+            a: 0.0,
+        }
     }
 }
 
@@ -139,5 +160,18 @@ impl Drop for Platform {
     fn drop(&mut self) {
         // SAFETY: `Platform` only exists after a successful oe_init.
         unsafe { oe_shutdown() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_vertex_carries_its_color_multiplied_by_its_alpha_and_light_covers_nothing() {
+        let v = Vertex::new((0.0, 0.0), [1.0, 0.5, 0.0, 0.5]);
+        assert_eq!([v.r, v.g, v.b, v.a], [0.5, 0.25, 0.0, 0.5]);
+        let v = Vertex::light((0.0, 0.0), [0.3, 0.3, 0.3]);
+        assert_eq!([v.r, v.g, v.b, v.a], [0.3, 0.3, 0.3, 0.0]);
     }
 }

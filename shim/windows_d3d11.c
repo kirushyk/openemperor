@@ -216,7 +216,7 @@ int32_t oe_init(const char *title, int32_t *width, int32_t *height) {
 
     D3D11_BLEND_DESC blend = {0};
     blend.RenderTarget[0].BlendEnable = TRUE;
-    blend.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    blend.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
     blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
     blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
     blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;

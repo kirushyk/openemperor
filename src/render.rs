@@ -23,6 +23,8 @@ pub const CLEAR: [f32; 3] = [0.05, 0.05, 0.08];
 const INTRO_CLEAR: Color = [0.0, 0.0, 0.0, 1.0];
 const CLEAR_RGBA: Color = [CLEAR[0], CLEAR[1], CLEAR[2], 1.0];
 const TEXT: Color = [0.93, 0.89, 0.78, 1.0];
+/// How bright a headlight is where it leaves the vehicle.
+const HEADLIGHT: f32 = 0.35;
 const QUIET: Color = [0.55, 0.53, 0.48, 1.0];
 const GOLD: Color = [0.95, 0.76, 0.32, 1.0];
 const GOLD_DIM: Color = [0.62, 0.50, 0.24, 1.0];
@@ -1076,7 +1078,34 @@ fn draw_dashed_line(
 /// A unit from simple boxes turned to its heading. Infantry is one tall thin block, a vehicle
 /// is a hull with a turret and a barrel, and an aircraft is a body with wings and a tail, so
 /// that their turning can be seen.
+/// White light on the ground in front of a vehicle, fading with distance.
+fn draw_headlight(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    let terrain = battlefield::terrain(game.battle_map);
+    let (sin, cos) = unit.heading.sin_cos();
+    let on_ground = |ahead: f32, side: f32| {
+        let (x, z) = (
+            unit.x + cos * ahead - sin * side,
+            unit.z + sin * ahead + cos * side,
+        );
+        view.project(x, terrain.height_at(x, z), z)
+    };
+    if let (Some(lamp), Some(left), Some(right)) = (
+        on_ground(0.45, 0.0),
+        on_ground(2.6, -1.0),
+        on_ground(2.6, 1.0),
+    ) {
+        canvas.vertices.extend([
+            Vertex::light(lamp, [HEADLIGHT; 3]),
+            Vertex::light(left, [0.0; 3]),
+            Vertex::light(right, [0.0; 3]),
+        ]);
+    }
+}
+
 fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    if unit.kind == UnitKind::Vehicle {
+        draw_headlight(canvas, game, view, unit);
+    }
     let [r, g, b, _] = team_color(unit.color);
     let color = [r, g, b];
     let (forward_x, forward_z) = (unit.heading.cos(), unit.heading.sin());
@@ -1154,6 +1183,27 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
             let (bucket_x, bucket_z) = ahead(-0.42);
             let bucket = (bucket_x, bucket_z, 0.09, 0.09, unit.heading);
             part(bucket, (top + 0.1, top + 0.26), color.map(|c| c * 0.45));
+        }
+        UnitKind::Vehicle if unit.role == Role::RocketLauncher => {
+            let hull = (unit.x, unit.z, 0.42, 0.26, unit.heading);
+            part(hull, (unit.y, unit.y + 0.22), color);
+            let beside = |side: f32| (unit.x - forward_z * side, unit.z + forward_x * side);
+            for side in [-0.14, 0.14] {
+                let (x, z) = beside(side);
+                let rack = (x, z, 0.3, 0.1, unit.heading);
+                let height = (unit.y + 0.22, unit.y + units::ROCKET_HEIGHT);
+                part(rack, height, color.map(|c| c * 0.5));
+            }
+            for &side in &units::ROCKET_SIDES[unit.rockets_fired..] {
+                let (x, z) = beside(side);
+                let rocket = (x, z, 0.28, 0.025, unit.heading);
+                let height = (units::ROCKET_HEIGHT, units::ROCKET_HEIGHT + 0.04);
+                part(
+                    rocket,
+                    (unit.y + height.0, unit.y + height.1),
+                    [0.9, 0.9, 0.85],
+                );
+            }
         }
         UnitKind::Vehicle => {
             let hull = (unit.x, unit.z, 0.45, 0.28, unit.heading);
@@ -1558,6 +1608,7 @@ fn short_name(role: Role) -> &'static str {
         Role::KInfantry => "K Inf",
         Role::RepairVehicle => "Repair",
         Role::Catapult => "Catap",
+        Role::RocketLauncher => "Rocket",
         Role::AirDefensePlatform => "AirDef",
         Role::AirDrone => "Drone",
         Role::FlameInfantry => "Flame",

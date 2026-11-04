@@ -96,6 +96,12 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_KEYDOWN:
             if ((lp & (1 << 30)) && wp != VK_BACK) return 0; /* auto-repeat */
+            if (wp == VK_CONTROL) {
+                e.kind = OE_EVENT_CONTROL;
+                e.a = 1;
+                push_event(e);
+                return 0;
+            }
             e.kind = OE_EVENT_KEY_DOWN;
             e.a = wp == VK_ESCAPE ? OE_KEY_ESCAPE
                   : wp == VK_BACK ? OE_KEY_BACKSPACE
@@ -103,6 +109,12 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                   : wp == VK_TAB ? OE_KEY_TAB
                   : wp == VK_PAUSE ? OE_KEY_PAUSE
                                     : OE_KEY_OTHER;
+            push_event(e);
+            return 0;
+        case WM_KEYUP:
+            if (wp != VK_CONTROL) break;
+            e.kind = OE_EVENT_CONTROL;
+            e.a = 0;
             push_event(e);
             return 0;
         case WM_CHAR:

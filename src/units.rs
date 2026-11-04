@@ -239,6 +239,17 @@ pub const TUBE_HEIGHT: f32 = 1.26;
 const TUBE_REACH: f32 = 0.7;
 pub const TUBE_SPREAD: f32 = 0.18;
 
+/// What a unit was told to go after.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Target {
+    /// By id: an enemy to fight, or for a repair vehicle a friendly vehicle to look after.
+    Unit(u32),
+    /// By id: any unit at all it was forced to fire on, friendly or not.
+    Forced(u32),
+    /// A place on the map (x, z) to fire at until told otherwise.
+    Place(f32, f32),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Unit {
     pub role: Role,
@@ -266,9 +277,9 @@ pub struct Unit {
     /// Where its owner last sent it (x, z). This is never forgotten: being pushed aside
     /// only delays the unit, which then walks back.
     pub destination: (f32, f32),
-    /// The id of the enemy its owner told it to attack. It goes after this one until the
-    /// enemy dies or a new move order replaces it.
-    pub target: Option<u32>,
+    /// What its owner told it to go after. It keeps at this until a target unit dies or
+    /// a new order replaces it.
+    pub target: Option<Target>,
     /// A heavy unit squashes enemy infantry it drives over. Every vehicle is heavy for now.
     pub heavy: bool,
     pub alive: bool,
@@ -299,6 +310,26 @@ impl Unit {
 
     pub fn max_health(&self) -> f32 {
         self.role.max_health()
+    }
+
+    /// Whether it can be forced to fire on another unit, whoever that is.
+    pub fn can_fire_on(&self, other: &Unit) -> bool {
+        self.alive && other.alive && self.id != other.id && self.weapon.can_target(other.kind, other.altitude)
+    }
+
+    /// Whether it can be told to fire at a place on the ground.
+    pub fn can_fire_at_ground(&self) -> bool {
+        self.alive && self.weapon.can_target(UnitKind::Infantry, 0.0)
+    }
+
+    /// Whether it can look after another unit: a repair vehicle fixes friendly vehicles.
+    pub fn can_fix(&self, other: &Unit, teams: &[usize]) -> bool {
+        self.weapon == WeaponKind::Repair
+            && self.alive
+            && other.alive
+            && self.id != other.id
+            && other.kind == UnitKind::Vehicle
+            && are_friends(teams, self.owner, other.owner)
     }
 
     /// Whether it could take this building over.
@@ -423,6 +454,14 @@ fn kind_in_block(owner: usize, row: usize, rows: usize) -> UnitKind {
         UnitKind::Aircraft
     } else {
         UnitKind::Infantry
+    }
+}
+
+/// Whether two owners are the same or allied. An unknown owner is nobody's friend.
+pub fn are_friends(teams: &[usize], a: usize, b: usize) -> bool {
+    match (teams.get(a), teams.get(b)) {
+        (Some(team_a), Some(team_b)) => team_a == team_b,
+        _ => false,
     }
 }
 
@@ -656,54 +695,86 @@ fn order_layer(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, teams:
     }
 }
 
-/// Tells every selected unit able to fight this enemy to go after it. The others carry on
-/// with what they were doing.
-pub fn order_attack(units: &mut [Unit], enemy: usize, teams: &[usize]) {
-    let enemy = units[enemy];
+fn set_target(unit: &mut Unit, target: Target) {
+    unit.target = Some(target);
+    unit.blocked_for = 0.0;
+    unit.best_remaining = f32::INFINITY;
+}
+
+/// Tells every selected unit able to fight this enemy, or fix this friend, to go after it.
+/// The others carry on with what they were doing.
+pub fn order_attack(units: &mut [Unit], chosen: usize, teams: &[usize]) {
+    let chosen = units[chosen];
     for unit in units.iter_mut().filter(|u| u.selected) {
-        if unit.can_attack(&enemy, teams) {
-            unit.target = Some(enemy.id);
-            unit.blocked_for = 0.0;
-            unit.best_remaining = f32::INFINITY;
+        if unit.can_attack(&chosen, teams) || unit.can_fix(&chosen, teams) {
+            set_target(unit, Target::Unit(chosen.id));
         }
     }
 }
 
+/// Like `order_attack`, but those able to fire on it do so even if it is a friend.
+pub fn order_force_attack(units: &mut [Unit], chosen: usize, teams: &[usize]) {
+    let chosen = units[chosen];
+    for unit in units.iter_mut().filter(|u| u.selected) {
+        if unit.can_attack(&chosen, teams) || unit.can_fix(&chosen, teams) {
+            set_target(unit, Target::Unit(chosen.id));
+        } else if unit.can_fire_on(&chosen) {
+            set_target(unit, Target::Forced(chosen.id));
+        }
+    }
+}
+
+/// Tells every selected unit able to fire at the ground to fire at this place.
+pub fn order_attack_place(units: &mut [Unit], (x, z): (f32, f32)) {
+    for unit in units.iter_mut().filter(|u| u.selected && u.can_fire_at_ground()) {
+        set_target(unit, Target::Place(x, z));
+    }
+}
+
 /// Points everyone with a target at it, or stops them once it is within reach. A unit whose
-/// target is gone, or is no longer an enemy, stays where it is. An engineer that reaches
-/// its target building takes it over.
-fn chase_targets(units: &mut [Unit], teams: &[usize]) {
+/// target unit is gone, or no longer fit for its order, is free and stays where it is. An
+/// engineer that reaches its target building takes it over.
+fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
     for i in 0..units.len() {
-        let Some(id) = units[i].target else { continue };
+        let Some(target) = units[i].target else { continue };
         if !units[i].alive {
             continue;
         }
         let (x, z) = (units[i].x, units[i].z);
-        let found = units.iter().position(|u| u.alive && u.id == id).filter(|&e| units[i].can_attack(&units[e], teams));
-        let Some(enemy_index) = found else {
-            units[i].target = None;
-            units[i].destination = (x, z);
-            continue;
-        };
-        let enemy = units[enemy_index];
-        if units[i].can_capture(&enemy, teams) {
-            let touching = units[i].kind.radius() + enemy.kind.radius() + CAPTURE_MARGIN;
-            if (enemy.x - x).hypot(enemy.z - z) <= touching {
-                (units[enemy_index].owner, units[enemy_index].color) = (units[i].owner, units[i].color);
-                units[i].target = None;
-                units[i].destination = (x, z);
-            } else {
-                units[i].destination = (enemy.x, enemy.z);
+        let goal = match target {
+            Target::Place(place_x, place_z) => (place_x, terrain.height_at(place_x, place_z), place_z),
+            Target::Unit(id) | Target::Forced(id) => {
+                let fit = |u: &Unit| match target {
+                    Target::Forced(_) => units[i].can_fire_on(u),
+                    _ => units[i].can_attack(u, teams) || units[i].can_fix(u, teams),
+                };
+                let Some(other_index) = units.iter().position(|u| u.alive && u.id == id && fit(u)) else {
+                    units[i].target = None;
+                    units[i].destination = (x, z);
+                    continue;
+                };
+                let other = units[other_index];
+                if matches!(target, Target::Unit(_)) && units[i].can_capture(&other, teams) {
+                    let touching = units[i].kind.radius() + other.kind.radius() + CAPTURE_MARGIN;
+                    if (other.x - x).hypot(other.z - z) <= touching {
+                        (units[other_index].owner, units[other_index].color) = (units[i].owner, units[i].color);
+                        units[i].target = None;
+                        units[i].destination = (x, z);
+                    } else {
+                        units[i].destination = (other.x, other.z);
+                    }
+                    continue;
+                }
+                other.center()
             }
-            continue;
-        }
+        };
         if units[i].deployed {
             continue;
         }
         let center = units[i].center();
-        let away = (enemy.x - center.0).hypot(enemy.center().1 - center.1).hypot(enemy.z - center.2);
+        let away = (goal.0 - center.0).hypot(goal.1 - center.1).hypot(goal.2 - center.2);
         let in_reach = away <= units[i].weapon.range() * ATTACK_REACH;
-        units[i].destination = if in_reach { (x, z) } else { (enemy.x, enemy.z) };
+        units[i].destination = if in_reach { (x, z) } else { (goal.0, goal.2) };
     }
 }
 
@@ -747,7 +818,7 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
     let mut sideways = 0.0;
     for (other_index, other) in units.iter().enumerate() {
         let other_layer = other.kind.flies() != unit.kind.flies();
-        let building_to_capture = unit.target == Some(other.id) && unit.can_capture(other, teams);
+        let building_to_capture = unit.target == Some(Target::Unit(other.id)) && unit.can_capture(other, teams);
         if other_index == index || !other.alive || other_layer || building_to_capture || can_squash(unit, other, teams) {
             continue;
         }
@@ -957,7 +1028,7 @@ fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
 
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
-    chase_targets(units, teams);
+    chase_targets(units, terrain, teams);
     // Spheres only start to overlap when something moves.
     if !units.iter().any(Unit::is_moving) {
         return;
@@ -965,7 +1036,7 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
     let steps = (dt / MAX_STEP).ceil().max(1.0);
     for _ in 0..steps as usize {
         step(units, terrain, teams, dt / steps);
-        chase_targets(units, teams);
+        chase_targets(units, terrain, teams);
     }
 }
 
@@ -1232,7 +1303,7 @@ mod tests {
     fn a_unit_told_to_attack_closes_to_within_range_and_stops_there() {
         let mut units = attacker_and_enemy(20.0);
         order_attack(&mut units, 1, &TWO_SIDES);
-        assert_eq!(units[0].target, Some(7));
+        assert_eq!(units[0].target, Some(Target::Unit(7)));
         for _ in 0..400 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
@@ -1240,7 +1311,7 @@ mod tests {
         let away = units[1].x - units[0].x;
         assert!(away <= WeaponKind::Bullet.range(), "in range: {away}");
         assert!(away > WeaponKind::Bullet.range() * 0.8, "and no nearer than needed: {away}");
-        assert_eq!(units[0].target, Some(7), "it remembers");
+        assert_eq!(units[0].target, Some(Target::Unit(7)), "it remembers");
     }
 
     #[test]
@@ -1299,7 +1370,7 @@ mod tests {
         order_attack(&mut units, 3, &TWO_SIDES);
         assert_eq!(units[0].target, None, "mortars cannot aim up");
         assert_eq!(units[1].target, None, "not selected");
-        assert_eq!(units[2].target, Some(7));
+        assert_eq!(units[2].target, Some(Target::Unit(7)));
     }
 
     #[test]
@@ -1535,7 +1606,7 @@ mod tests {
         for _ in 0..40 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
-        assert_eq!(units[0].target, Some(7));
+        assert_eq!(units[0].target, Some(Target::Unit(7)));
         assert!(!units[0].is_moving());
     }
 
@@ -1598,6 +1669,133 @@ mod tests {
         advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         assert_eq!(units[0].target, None);
         assert!(!units[0].is_moving());
+    }
+
+    #[test]
+    fn a_unit_told_to_attack_a_place_closes_to_within_range_and_stays_on_the_order() {
+        let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry)];
+        units[0].selected = true;
+        order_attack_place(&mut units, (20.0, 60.0));
+        assert_eq!(units[0].target, Some(Target::Place(20.0, 60.0)));
+        for _ in 0..400 {
+            advance(&mut units, open_ground(), &[0], 0.05);
+        }
+        assert!(!units[0].is_moving());
+        let away = 20.0 - units[0].x;
+        assert!(away <= WeaponKind::Bullet.range() && away > 3.0, "it did not go all the way: {away}");
+        assert_eq!(units[0].target, Some(Target::Place(20.0, 60.0)), "the order stands");
+
+        order_move(&mut units, (0.0, 60.0), open_ground(), &[0]);
+        assert_eq!(units[0].target, None, "until a move order replaces it");
+    }
+
+    #[test]
+    fn a_unit_already_in_range_of_a_place_does_not_move() {
+        let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry)];
+        units[0].selected = true;
+        order_attack_place(&mut units, (3.0, 60.0));
+        advance(&mut units, open_ground(), &[0], 0.05);
+        assert_eq!(units[0].x, 0.0);
+    }
+
+    #[test]
+    fn those_unable_to_hit_the_ground_take_no_order_to_attack_a_place() {
+        let mut scout = unit_at(0.0, 60.0, UnitKind::Infantry);
+        scout.weapon = WeaponKind::Unarmed;
+        let mut drone = unit_at(0.0, 62.0, UnitKind::Aircraft);
+        drone.weapon = WeaponKind::AirMissile;
+        let mut fixer = unit_at(0.0, 64.0, UnitKind::Vehicle);
+        fixer.weapon = WeaponKind::Repair;
+        let mut units = [scout, drone, fixer];
+        for unit in &mut units {
+            unit.selected = true;
+        }
+        order_attack_place(&mut units, (5.0, 60.0));
+        assert!(units.iter().all(|u| u.target.is_none()));
+    }
+
+    fn with_ids<const N: usize>(mut units: [Unit; N]) -> [Unit; N] {
+        for (i, unit) in units.iter_mut().enumerate() {
+            unit.id = i as u32 + 1;
+        }
+        units
+    }
+
+    #[test]
+    fn a_forced_target_is_remembered_even_if_it_is_a_friend_and_its_death_frees_the_unit() {
+        let mut gunner = unit_at(0.0, 60.0, UnitKind::Infantry);
+        gunner.selected = true;
+        let mut units = with_ids([gunner, unit_at(20.0, 60.0, UnitKind::Infantry)]);
+        order_force_attack(&mut units, 1, &[0]);
+        assert_eq!(units[0].target, Some(Target::Forced(2)));
+        for _ in 0..400 {
+            advance(&mut units, open_ground(), &[0], 0.05);
+        }
+        assert!(units[0].x > 10.0, "it went after its friend: {:?}", units[0]);
+        assert_eq!(units[0].target, Some(Target::Forced(2)));
+
+        units[1].alive = false;
+        advance(&mut units, open_ground(), &[0], 0.05);
+        assert_eq!(units[0].target, None, "free");
+        assert!(!units[0].is_moving());
+    }
+
+    #[test]
+    fn no_unit_is_forced_to_target_itself() {
+        let mut gunner = unit_at(0.0, 60.0, UnitKind::Infantry);
+        gunner.selected = true;
+        let mut units = with_ids([gunner]);
+        order_force_attack(&mut units, 0, &[0]);
+        assert_eq!(units[0].target, None);
+    }
+
+    #[test]
+    fn forcing_an_attack_on_an_enemy_is_an_ordinary_attack() {
+        let mut gunner = unit_at(0.0, 60.0, UnitKind::Infantry);
+        gunner.selected = true;
+        let mut units = with_ids([gunner, enemy_at(5.0, 60.0, UnitKind::Infantry)]);
+        order_force_attack(&mut units, 1, &TWO_SIDES);
+        assert_eq!(units[0].target, Some(Target::Unit(2)));
+    }
+
+    fn fixer_at(x: f32, z: f32) -> Unit {
+        let mut fixer = unit_at(x, z, UnitKind::Vehicle);
+        fixer.role = Role::RepairVehicle;
+        fixer.weapon = WeaponKind::Repair;
+        fixer.selected = true;
+        fixer
+    }
+
+    #[test]
+    fn a_repair_vehicle_goes_to_a_friendly_vehicle_it_was_sent_to_and_its_death_frees_it() {
+        let mut units = with_ids([fixer_at(0.0, 60.0), unit_at(20.0, 60.0, UnitKind::Vehicle)]);
+        order_attack(&mut units, 1, &[0]);
+        assert_eq!(units[0].target, Some(Target::Unit(2)));
+        for _ in 0..400 {
+            advance(&mut units, open_ground(), &[0], 0.05);
+        }
+        let away = units[1].x - units[0].x;
+        assert!(away <= WeaponKind::Repair.range(), "within reach: {away}");
+        assert!(!units[0].is_moving());
+
+        units[1].alive = false;
+        advance(&mut units, open_ground(), &[0], 0.05);
+        assert_eq!(units[0].target, None);
+    }
+
+    #[test]
+    fn a_repair_vehicle_can_be_sent_only_to_friendly_vehicles_other_than_itself() {
+        let ally = Unit { owner: 1, ..unit_at(5.0, 60.0, UnitKind::Vehicle) };
+        let fixer = fixer_at(0.0, 60.0);
+        let id = |mut unit: Unit| {
+            unit.id = 9;
+            unit
+        };
+        assert!(fixer.can_fix(&id(unit_at(5.0, 60.0, UnitKind::Vehicle)), &[0]));
+        assert!(fixer.can_fix(&id(ally), &[0, 0]), "an ally");
+        assert!(!fixer.can_fix(&id(ally), &TWO_SIDES), "an enemy");
+        assert!(!fixer.can_fix(&id(unit_at(5.0, 60.0, UnitKind::Infantry)), &[0]), "infantry");
+        assert!(!fixer.can_fix(&fixer, &[0]), "itself");
     }
 
     #[test]

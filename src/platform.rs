@@ -50,6 +50,8 @@ pub enum Event {
     Wheel(f32),
     /// The right button, or a two-finger click or tap on a Mac trackpad.
     RightDown,
+    /// A Control key pressed or let go.
+    Control(bool),
 }
 
 unsafe extern "C" {
@@ -100,6 +102,7 @@ impl Platform {
                 7 => Event::Focus(raw.a != 0),
                 8 => Event::Wheel(raw.y),
                 9 => Event::RightDown,
+                10 => Event::Control(raw.a != 0),
                 _ => continue,
             };
             return Some(event);

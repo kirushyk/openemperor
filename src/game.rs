@@ -54,6 +54,13 @@ pub enum Outcome {
     Defeat,
 }
 
+/// What a click with Control held would order.
+#[derive(Clone, Copy)]
+enum AttackOrder {
+    Unit(usize),
+    Place((f32, f32)),
+}
+
 /// One side of the battle statistics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Casualties {
@@ -1100,6 +1107,8 @@ pub struct Game {
     selection_anchor: Option<(f32, f32)>,
     /// Seconds since the game started, unbroken by going from screen to screen.
     menu_seconds: f32,
+    /// Whether a Control key is down, which turns clicks into attack orders.
+    control_held: bool,
     /// New units get ids never used in this battle, so a missile cannot chase the wrong one.
     next_unit_id: u32,
     pub build_tab: BuildTab,
@@ -1155,6 +1164,7 @@ impl Game {
             strike_recharge: 0.0,
             selection_anchor: None,
             menu_seconds: 0.0,
+            control_held: false,
             next_unit_id: 0,
             build_tab: BuildTab::Infantry,
             energy: STARTING_ENERGY,
@@ -1259,16 +1269,22 @@ impl Game {
         (start.0 - self.mouse.0).abs() < slop && (start.1 - self.mouse.1).abs() < slop
     }
 
-    /// The enemy a click would send the selected units after: one under the cursor, nearer
-    /// than any of the player's own, that at least one of them is able to fight.
+    fn can_order_attack_here(&self) -> bool {
+        self.cursor_on_battlefield() && !self.aiming_strike && !self.minimap_dragging && self.is_click_so_far()
+    }
+
+    /// Who a click would send the selected units after: an enemy they can fight, or a friendly
+    /// vehicle a repair vehicle among them can fix. It must be under the cursor and no
+    /// farther from it than any other of the player's own.
     fn attackable_under_cursor(&self) -> Option<usize> {
-        if !self.cursor_on_battlefield() || self.aiming_strike || self.minimap_dragging || !self.is_click_so_far() {
+        if !self.can_order_attack_here() {
             return None;
         }
         let selected: Vec<&Unit> = self.units.iter().filter(|u| u.selected).collect();
-        let (enemy, enemy_distance) = self.unit_near_cursor(|u| selected.iter().any(|s| s.can_attack(u, &self.teams)))?;
+        let able = |u: &Unit| selected.iter().any(|s| s.can_attack(u, &self.teams) || s.can_fix(u, &self.teams));
+        let (chosen, distance) = self.unit_near_cursor(able)?;
         let own = self.unit_near_cursor(Unit::is_selectable);
-        own.is_none_or(|(_, own_distance)| enemy_distance < own_distance).then_some(enemy)
+        own.is_none_or(|(own_unit, own_distance)| own_unit == chosen || distance < own_distance).then_some(chosen)
     }
 
     /// What a cell of the build menu makes.
@@ -1312,15 +1328,35 @@ impl Game {
         self.unit_near_cursor(|_| true).map(|(i, _)| self.units[i].name())
     }
 
+    /// With Control held, what a click would make the selected units fire on: anyone they
+    /// are able to under the cursor, or else the ground there.
+    fn forced_order_under_cursor(&self) -> Option<AttackOrder> {
+        if !self.control_held || !self.can_order_attack_here() {
+            return None;
+        }
+        let selected: Vec<&Unit> = self.units.iter().filter(|u| u.selected).collect();
+        let able = |u: &Unit| {
+            selected.iter().any(|s| s.can_fire_on(u) || s.can_attack(u, &self.teams) || s.can_fix(u, &self.teams))
+        };
+        if let Some((unit, _)) = self.unit_near_cursor(able) {
+            return Some(AttackOrder::Unit(unit));
+        }
+        if !selected.iter().any(|s| s.can_fire_at_ground()) {
+            return None;
+        }
+        self.view().ground_at(self.mouse.0, self.mouse.1).map(AttackOrder::Place)
+    }
+
     /// Whether the cursor should show that a click means attack.
     pub fn cursor_means_attack(&self) -> bool {
-        self.attackable_under_cursor().is_some()
+        self.forced_order_under_cursor().is_some() || self.attackable_under_cursor().is_some()
     }
 
     /// Ends the drag. A real box selects the player's units in it, replacing the old
     /// selection. Anything that stayed near its start on screen is a click: on one of the
     /// player's units it selects that unit, on an enemy they can fight it sends them after
-    /// that enemy, and elsewhere it sends them there. With `adding`, what it picks joins the selection instead, and a click that picks
+    /// that enemy, and elsewhere it sends them there. With Control held it orders an attack
+    /// on whatever is there, friend or bare ground. With `adding`, what it picks joins the selection instead, and a click that picks
     /// nothing does nothing, so that a near miss does not send everyone off.
     fn finish_selection(&mut self, adding: bool) {
         if self.selection_anchor.is_none() {
@@ -1340,8 +1376,13 @@ impl Game {
             for (unit, chosen) in self.units.iter_mut().zip(chosen) {
                 unit.selected = chosen || (adding && unit.selected);
             }
-        } else if let Some(enemy) = self.attackable_under_cursor() {
-            units::order_attack(&mut self.units, enemy, &self.teams);
+        } else if let Some(order) = self.forced_order_under_cursor() {
+            match order {
+                AttackOrder::Unit(unit) => units::order_force_attack(&mut self.units, unit, &self.teams),
+                AttackOrder::Place(place) => units::order_attack_place(&mut self.units, place),
+            }
+        } else if let Some(chosen) = self.attackable_under_cursor() {
+            units::order_attack(&mut self.units, chosen, &self.teams);
         } else if let Some(picked) = self.unit_under_cursor() {
             for (i, unit) in self.units.iter_mut().enumerate() {
                 unit.selected = i == picked || (adding && unit.selected);
@@ -1825,8 +1866,10 @@ impl Game {
                 if !focused {
                     // The release may happen in another app, where the game cannot see it.
                     self.selection_anchor = None;
+                    self.control_held = false;
                 }
             }
+            Event::Control(held) => self.control_held = held,
             Event::RightDown => {
                 if self.aiming_strike {
                     // Only calls off the superweapon; the selection stands.
@@ -3264,7 +3307,7 @@ mod tests {
         click_at(&mut game, x, y);
         assert_eq!(selected_count(&game), FIRST_GROUP, "the selection stands");
         assert!(!game.units[enemy].selected);
-        let sent = game.units.iter().filter(|u| u.selected && u.target == Some(id)).count();
+        let sent = game.units.iter().filter(|u| u.selected && u.target == Some(crate::units::Target::Unit(id))).count();
         assert_eq!(sent, FIRST_GROUP);
 
         for _ in 0..600 {
@@ -3275,7 +3318,7 @@ mod tests {
         }
         assert!(!game.units.iter().any(|u| u.id == id), "it died");
         game.update(0.05);
-        assert!(game.units.iter().all(|u| u.target != Some(id)), "and everyone forgot it");
+        assert!(game.units.iter().all(|u| u.target != Some(crate::units::Target::Unit(id))), "and everyone forgot it");
     }
 
     #[test]
@@ -3287,7 +3330,7 @@ mod tests {
         game.handle(Event::MouseDown);
         game.handle(Event::ShiftMouseUp);
         let id = game.units[enemy].id;
-        assert!(game.units.iter().filter(|u| u.selected).all(|u| u.target == Some(id)));
+        assert!(game.units.iter().filter(|u| u.selected).all(|u| u.target == Some(crate::units::Target::Unit(id))));
     }
 
     #[test]
@@ -3364,7 +3407,7 @@ mod tests {
         game.handle(Event::MouseMove(px, py));
         assert!(game.cursor_means_attack());
         click_at(&mut game, px, py);
-        assert!(game.units.iter().filter(|u| u.selected).all(|u| u.target == Some(id)));
+        assert!(game.units.iter().filter(|u| u.selected).all(|u| u.target == Some(crate::units::Target::Unit(id))));
 
         for _ in 0..4000 {
             game.update(0.05);
@@ -3726,6 +3769,123 @@ mod tests {
         game.handle(Event::KeyDown(Key::Escape));
         assert_eq!(game.screen, Screen::EscapeMenu);
         assert!(sand(&in_menu()) > sand(&game), "only the main menu has it");
+    }
+
+    fn clear_spot_on_screen() -> (f32, f32) {
+        (W / 2.0 - 800.0, H / 2.0 + 300.0)
+    }
+
+    #[test]
+    fn control_turns_the_cursor_red_over_bare_ground_only_for_those_able_to_fire() {
+        let mut game = in_battle();
+        let (x, y) = clear_spot_on_screen();
+        game.handle(Event::MouseMove(x, y));
+        game.handle(Event::Control(true));
+        assert!(!game.cursor_means_attack(), "nobody selected");
+
+        select_first_group(&mut game);
+        game.handle(Event::MouseMove(x, y));
+        assert!(game.cursor_means_attack());
+        game.handle(Event::Control(false));
+        assert!(!game.cursor_means_attack(), "let go, and it turns back");
+
+        game.handle(Event::Control(true));
+        game.handle(Event::Focus(false));
+        assert!(!game.cursor_means_attack(), "losing focus lets go of it");
+
+        // Only a scout selected.
+        let mut game = in_battle();
+        select_new(&mut game, 0);
+        game.handle(Event::Control(true));
+        game.handle(Event::MouseMove(x, y));
+        assert!(!game.cursor_means_attack(), "unarmed");
+    }
+
+    #[test]
+    fn a_control_click_on_bare_ground_attacks_that_place_with_a_red_line_and_no_green() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        let (x, y) = clear_spot_on_screen();
+        let place = game.view().ground_at(x, y).unwrap();
+        game.handle(Event::Control(true));
+        click_at(&mut game, x, y);
+        for unit in game.units.iter().filter(|u| u.selected) {
+            assert_eq!(unit.target, Some(crate::units::Target::Place(place.0, place.1)));
+        }
+        assert_eq!(selected_count(&game), FIRST_GROUP);
+        game.update(0.05);
+        assert!(line_vertices(&game, crate::render::ATTACK_LINE) > 0);
+        assert_eq!(line_vertices(&game, crate::render::ORDER_LINE), 0);
+
+        game.handle(Event::RightDown);
+        assert_eq!(line_vertices(&game, crate::render::ATTACK_LINE), 0);
+        select_first_group(&mut game);
+        assert!(line_vertices(&game, crate::render::ATTACK_LINE) > 0, "it shows again");
+    }
+
+    #[test]
+    fn a_control_click_on_a_friend_makes_it_the_target_and_its_death_frees_everyone() {
+        let mut game = in_battle();
+        let (friend_index, _) = infantry_on_screen(&game, 7);
+        let friend = game.units[friend_index];
+        let (x, y) = game.view().project(friend.x, friend.pick_height(), friend.z).unwrap();
+        select_first_group(&mut game);
+        game.units[friend_index].selected = false;
+        game.handle(Event::Control(true));
+        game.handle(Event::MouseMove(x, y));
+        assert!(game.cursor_means_attack());
+        click_at(&mut game, x, y);
+        game.handle(Event::Control(false));
+        assert!(!game.units[friend_index].selected, "not selected, targeted");
+        let forced = crate::units::Target::Forced(friend.id);
+        let on_it = game.units.iter().filter(|u| u.target == Some(forced)).count();
+        assert!(on_it > 0, "the selected turn on it");
+
+        for _ in 0..1200 {
+            game.update(0.05);
+            if !game.units.iter().any(|u| u.id == friend.id) {
+                break;
+            }
+        }
+        assert!(!game.units.iter().any(|u| u.id == friend.id), "it dies");
+        game.update(0.05);
+        assert!(game.units.iter().all(|u| u.target != Some(forced)), "and everyone is free");
+    }
+
+    #[test]
+    fn a_selected_repair_vehicle_turns_the_cursor_red_over_a_friendly_vehicle_and_goes_there() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        let tank = game.units.iter().position(|u| u.owner == 0 && u.role == Role::Tank).unwrap();
+        let fixer = select_new(&mut game, 1);
+        game.units[tank].health = 50.0;
+        let unit = game.units[tank];
+        let (x, y) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert!(game.cursor_means_attack(), "without Control");
+        click_at(&mut game, x, y);
+        assert_eq!(game.units[fixer].target, Some(crate::units::Target::Unit(unit.id)));
+        assert!(game.units[fixer].selected, "the selection stands");
+        assert!(!game.units[tank].selected);
+    }
+
+    #[test]
+    fn a_selected_repair_vehicle_does_not_turn_the_cursor_red_over_infantry_enemies_or_itself() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        let fixer = select_new(&mut game, 1);
+        let own = game.units[fixer];
+        let (x, y) = game.view().project(own.x, own.pick_height(), own.z).unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert!(!game.cursor_means_attack(), "itself");
+
+        let (_, (x, y)) = infantry_on_screen(&game, 7);
+        game.handle(Event::MouseMove(x, y));
+        assert!(!game.cursor_means_attack(), "infantry");
+
+        let (_, (x, y)) = enemy_beside_first_group(&mut game);
+        game.handle(Event::MouseMove(x, y));
+        assert!(!game.cursor_means_attack(), "an enemy");
     }
 
     #[test]

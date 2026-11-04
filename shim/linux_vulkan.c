@@ -451,6 +451,11 @@ int32_t oe_poll_event(OeEvent *event) {
                 KeySym sym = NoSymbol;
                 char typed[8];
                 int length = XLookupString(&e.xkey, typed, sizeof(typed), &sym, NULL);
+                if (sym == XK_Control_L || sym == XK_Control_R) {
+                    event->kind = OE_EVENT_CONTROL;
+                    event->a = 1;
+                    return 1;
+                }
                 if (sym == XK_Tab || sym == XK_Pause) {
                     if (sym == g_held_toggle_key) break;
                     g_held_toggle_key = sym;
@@ -468,6 +473,11 @@ int32_t oe_poll_event(OeEvent *event) {
                 return 1;
             }
             case KeyRelease:
+                if (XLookupKeysym(&e.xkey, 0) == XK_Control_L || XLookupKeysym(&e.xkey, 0) == XK_Control_R) {
+                    event->kind = OE_EVENT_CONTROL;
+                    event->a = 0;
+                    return 1;
+                }
                 if (XLookupKeysym(&e.xkey, 0) == g_held_toggle_key) g_held_toggle_key = NoSymbol;
                 break;
             default:

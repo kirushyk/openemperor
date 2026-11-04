@@ -4,7 +4,7 @@ use crate::battlefield::{self, MAP_CELLS};
 use crate::font;
 use crate::hud;
 use crate::planet;
-use crate::units::{self, Role, Unit, UnitKind};
+use crate::units::{self, Role, Target, Unit, UnitKind};
 use crate::game::{
     Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, Outcome,
     SUPERWEAPON_CELL, STATS_ROW_STEP,
@@ -738,13 +738,20 @@ fn draw_radiation_symbol(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, c: Co
 }
 
 /// For each selected unit, a dashed line along the ground to what it was told to do: red to
-/// the enemy it is after, for as long as it is after one, or green to where it is going.
+/// the unit or place it is after, for as long as it is after one, or green to where it is
+/// going.
 fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     for unit in game.units.iter().filter(|u| u.selected) {
-        let enemy = unit.target.and_then(|id| game.units.iter().find(|u| u.alive && u.id == id));
+        let after = match unit.target {
+            Some(Target::Place(x, z)) => Some((x, z)),
+            Some(Target::Unit(id) | Target::Forced(id)) => {
+                game.units.iter().find(|u| u.alive && u.id == id).map(|u| (u.x, u.z))
+            }
+            None => None,
+        };
         let from = (unit.x, unit.z);
-        match enemy {
-            Some(enemy) => draw_dashed_line(canvas, game, view, from, (enemy.x, enemy.z), ATTACK_LINE),
+        match after {
+            Some(to) => draw_dashed_line(canvas, game, view, from, to, ATTACK_LINE),
             None if unit.is_moving() => draw_dashed_line(canvas, game, view, from, unit.destination, ORDER_LINE),
             None => {}
         }

@@ -7,6 +7,7 @@ mod hud;
 mod planet;
 mod platform;
 mod render;
+mod units;
 
 use std::time::Instant;
 

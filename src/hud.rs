@@ -166,6 +166,18 @@ pub fn build_tabs(width: f32, height: f32) -> Vec<Button> {
         .collect()
 }
 
+/// Whether a screen point is on the sidebar, gaps included, rather than on the battlefield.
+pub fn covers(x: f32, y: f32, width: f32, height: f32) -> bool {
+    let s = ui_scale(height);
+    let cells = grid_cells(width, height);
+    let bottom = cells.last().map_or(0.0, |c| c.y + c.h);
+    let tabs = build_tabs(width, height);
+    let tabs_bottom = tabs.last().map_or(0.0, |t| t.y + t.h);
+    let in_panel = x >= panel_x(width, height) && x <= width - MARGIN * s && y <= bottom;
+    let in_tabs = tabs.first().is_some_and(|t| x >= t.x && x < t.x + t.w && y >= t.y && y <= tabs_bottom);
+    in_panel || in_tabs
+}
+
 /// Everything clickable in the sidebar.
 pub fn all_buttons(width: f32, height: f32) -> Vec<Button> {
     let mut all = command_buttons(width, height);

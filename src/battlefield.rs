@@ -47,9 +47,84 @@ const EDGE_MARGIN: f32 = 4.0;
 /// World units per second, per point of the Scroll Rate option.
 const SCROLL_PER_RATE: f32 = 15.0;
 
+/// World z of the map's middle; its x is 0.
+pub const MAP_MIDDLE_Z: f32 = MAP_CELLS as f32 * CELL;
+
+/// How many destroyed buildings each map tries to place.
+const RUIN_COUNT: usize = 24;
+
+/// One block of a destroyed building: a stretch of broken wall, or rubble.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RuinPiece {
+    pub x: f32,
+    /// Height of the ground under it.
+    pub y: f32,
+    pub z: f32,
+    pub half_x: f32,
+    pub half_z: f32,
+    pub height: f32,
+    /// How light its concrete is, so that pieces do not all look alike.
+    pub shade: f32,
+}
+
 pub struct Terrain {
     is_ground: Vec<bool>,
     colors: Vec<[f32; 3]>,
+    ruins: Vec<RuinPiece>,
+}
+
+/// A repeatable random number from 0 to 1.
+fn next_random(state: &mut u32) -> f32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    (*state & 0xFFFF) as f32 / 65535.0
+}
+
+/// The remains of one square building: what is left of its four walls, in broken stretches
+/// of uneven height, and some rubble inside.
+fn add_ruin(pieces: &mut Vec<RuinPiece>, terrain: &Terrain, x: f32, z: f32, random: &mut u32) {
+    const THICKNESS: f32 = 0.09;
+    const STRETCHES: usize = 3;
+    let half = 1.0 + next_random(random) * 1.0;
+    let y = terrain.height_at(x, z);
+    for side in 0..4 {
+        for stretch in 0..STRETCHES {
+            // About a third of the wall has fallen altogether.
+            if next_random(random) < 0.35 {
+                continue;
+            }
+            let along = ((stretch as f32 + 0.5) / STRETCHES as f32 * 2.0 - 1.0) * half;
+            let half_length = half / STRETCHES as f32;
+            let (dx, dz, half_x, half_z) = match side {
+                0 => (along, -half, half_length, THICKNESS),
+                1 => (along, half, half_length, THICKNESS),
+                2 => (-half, along, THICKNESS, half_length),
+                _ => (half, along, THICKNESS, half_length),
+            };
+            pieces.push(RuinPiece {
+                x: x + dx,
+                y,
+                z: z + dz,
+                half_x,
+                half_z,
+                height: 0.2 + next_random(random) * 1.1,
+                shade: 0.7 + next_random(random) * 0.3,
+            });
+        }
+    }
+    for _ in 0..4 {
+        let size = 0.1 + next_random(random) * 0.18;
+        pieces.push(RuinPiece {
+            x: x + (next_random(random) * 2.0 - 1.0) * half * 0.8,
+            y,
+            z: z + (next_random(random) * 2.0 - 1.0) * half * 0.8,
+            half_x: size,
+            half_z: size,
+            height: size * 1.2,
+            shade: 0.5 + next_random(random) * 0.3,
+        });
+    }
 }
 
 fn grid_index(u: usize, v: usize) -> usize {
@@ -73,11 +148,46 @@ impl Terrain {
                 colors.push(base.map(|c| c * (1.0 + grain * 2.0 * GRAIN)));
             }
         }
-        Terrain { is_ground, colors }
+        let mut terrain = Terrain { is_ground, colors, ruins: Vec::new() };
+        let mut random = (seed + 1).wrapping_mul(0x9E37_79B1) | 1;
+        let mut pieces = Vec::new();
+        // Inset from the map's edges, so that no ruin hangs over them.
+        let (inset, span) = (8.0, MAP_CELLS as f32 - 16.0);
+        for _ in 0..RUIN_COUNT {
+            let u = inset + next_random(&mut random) * span;
+            let v = inset + next_random(&mut random) * span;
+            let (x, z) = grid_to_world(u, v);
+            if crate::units::keeps_clear(x, z) {
+                add_ruin(&mut pieces, &terrain, x, z, &mut random);
+            }
+        }
+        terrain.ruins = pieces;
+        terrain
+    }
+
+    /// The destroyed buildings on this map.
+    pub fn ruins(&self) -> &[RuinPiece] {
+        &self.ruins
     }
 
     pub fn is_ground(&self, u: usize, v: usize) -> bool {
         self.is_ground[grid_index(u, v)]
+    }
+
+    /// The terrain's height under a world point, following its slopes.
+    pub fn height_at(&self, x: f32, z: f32) -> f32 {
+        let last = MAP_CELLS as f32;
+        let (u, v) = world_to_grid(x, z);
+        let (u, v) = (u.clamp(0.0, last), v.clamp(0.0, last));
+        let (u0, v0) = (u.floor().min(last - 1.0), v.floor().min(last - 1.0));
+        let (tu, tv) = (u - u0, v - v0);
+        let at = |du: usize, dv: usize| {
+            let raised = self.is_ground(u0 as usize + du, v0 as usize + dv);
+            if raised { GROUND_HEIGHT } else { 0.0 }
+        };
+        let near = at(0, 0) * (1.0 - tu) + at(1, 0) * tu;
+        let far = at(0, 1) * (1.0 - tu) + at(1, 1) * tu;
+        near * (1.0 - tv) + far * tv
     }
 }
 
@@ -226,7 +336,8 @@ impl View {
         }
     }
 
-    fn project(&self, x: f32, y: f32, z: f32) -> Option<(f32, f32)> {
+    /// A world point's place on screen; `None` if it is behind the camera.
+    pub fn project(&self, x: f32, y: f32, z: f32) -> Option<(f32, f32)> {
         let [px, py, pz] = self.position;
         let (rel_x, rel_y, rel_z) = (x - px, y - py, z - pz);
         let depth = rel_y * self.forward[0] + rel_z * self.forward[1];
@@ -237,8 +348,18 @@ impl View {
         Some((self.center.0 + self.focal * rel_x / depth, self.center.1 - self.focal * up / depth))
     }
 
+    /// Like `project`, but a point behind the camera lands far off the screen's bottom edge
+    /// on its own side, which is enough for drawing lines towards it.
+    pub fn project_clamped(&self, x: f32, y: f32, z: f32) -> (f32, f32) {
+        let [px, py, pz] = self.position;
+        let (rel_x, rel_y, rel_z) = (x - px, y - py, z - pz);
+        let depth = (rel_y * self.forward[0] + rel_z * self.forward[1]).max(NEAR);
+        let up = rel_y * self.up[0] + rel_z * self.up[1];
+        (self.center.0 + self.focal * rel_x / depth, self.center.1 - self.focal * up / depth)
+    }
+
     /// The world (x, z) on the sand plane under a screen point; `None` above the horizon.
-    fn ground_at(&self, screen_x: f32, screen_y: f32) -> Option<(f32, f32)> {
+    pub fn ground_at(&self, screen_x: f32, screen_y: f32) -> Option<(f32, f32)> {
         let side = (screen_x - self.center.0) / self.focal;
         let lift = (self.center.1 - screen_y) / self.focal;
         let ray_y = self.forward[0] + lift * self.up[0];
@@ -673,6 +794,49 @@ mod tests {
             for b in &counts[i + 1..] {
                 assert_ne!(a, b);
             }
+        }
+    }
+
+    #[test]
+    fn every_map_has_destroyed_buildings_and_each_map_has_its_own() {
+        let all: Vec<&[RuinPiece]> = (0..crate::game::MAPS.len()).map(|map| terrain(map).ruins()).collect();
+        for (map, ruins) in all.iter().enumerate() {
+            assert!(ruins.len() >= 50, "map {map} has only {} pieces", ruins.len());
+        }
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn ruins_stay_on_the_map_and_stand_on_its_terrain() {
+        for map in 0..crate::game::MAPS.len() {
+            let terrain = terrain(map);
+            for piece in terrain.ruins() {
+                let (u, v) = world_to_grid(piece.x, piece.z);
+                assert!((0.0..=LAST).contains(&u) && (0.0..=LAST).contains(&v), "{piece:?}");
+                assert!(piece.y == 0.0 || piece.y <= GROUND_HEIGHT, "{piece:?}");
+                assert!(piece.height > 0.0 && piece.half_x > 0.0 && piece.half_z > 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn ruins_are_repeatable_because_a_map_must_look_the_same_every_time() {
+        let a = Terrain::generate(2);
+        let b = Terrain::generate(2);
+        assert_eq!(a.ruins(), b.ruins());
+    }
+
+    #[test]
+    fn height_follows_the_terrain() {
+        let terrain = terrain(0);
+        for (u, v) in [(10, 10), (64, 64), (100, 30)] {
+            let (x, z) = grid_to_world(u as f32, v as f32);
+            let expected = if terrain.is_ground(u, v) { GROUND_HEIGHT } else { 0.0 };
+            assert!((terrain.height_at(x, z) - expected).abs() < 1e-4);
         }
     }
 

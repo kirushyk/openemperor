@@ -4,6 +4,7 @@ use crate::battlefield::{self, MAP_CELLS};
 use crate::font;
 use crate::hud;
 use crate::planet;
+use crate::units::{self, Unit};
 use crate::game::{
     Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, STATS_ROW_STEP,
     STATS_ROW_TOP, Screen, TeamColor, buttons, checkbox_size, color_slots, map_items, minimap_rect,
@@ -31,6 +32,12 @@ const DIM: Color = [0.0, 0.0, 0.0, 0.6];
 const INK: Color = [0.05, 0.05, 0.08, 1.0];
 const WINDOW: Color = [0.07, 0.07, 0.10, 0.78];
 const CHAT_BACKING: Color = [0.0, 0.0, 0.0, 0.45];
+const SELECTED_RING: Color = [0.35, 1.0, 0.45, 1.0];
+const RUIN_CONCRETE: [f32; 3] = [0.56, 0.54, 0.50];
+const RUIN_ON_MINIMAP: Color = [0.16, 0.15, 0.14, 1.0];
+const BOLT_GLOW: Color = [0.35, 0.55, 1.0, 0.25];
+const BOLT_HALO: Color = [0.55, 0.75, 1.0, 0.65];
+const BOLT_CORE: Color = [0.95, 0.98, 1.0, 1.0];
 const ENERGY_LOW: [f32; 3] = [0.90, 0.15, 0.12];
 const ENERGY_HIGH: [f32; 3] = [0.20, 0.85, 0.25];
 const GAUGE_EMPTY: Color = [0.10, 0.10, 0.13, 1.0];
@@ -301,6 +308,8 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
         game.width,
         game.height,
     );
+    draw_map_objects(canvas, game);
+    draw_selection_box(canvas, game);
     if let Some(faction) = game.faction {
         canvas.text_centered(faction.label(), game.width / 2.0, 40.0 * s, 4.0 * s, TEXT);
     }
@@ -309,6 +318,141 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
     draw_money(canvas, game);
     draw_sidebar(canvas, game);
     draw_chat(canvas, game);
+}
+
+/// Units and ruins as simple boxes, farthest first, shaded per face so they read as solid.
+fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
+    enum Object<'a> {
+        Unit(&'a Unit),
+        Ruin(&'a battlefield::RuinPiece),
+    }
+    let z_of = |object: &Object| match object {
+        Object::Unit(unit) => unit.z,
+        Object::Ruin(piece) => piece.z,
+    };
+    let view = battlefield::View::new(game.camera, game.width, game.height);
+    let mut order: Vec<Object> = game.units.iter().map(Object::Unit).collect();
+    order.extend(battlefield::terrain(game.battle_map).ruins().iter().map(Object::Ruin));
+    order.sort_by(|a, b| z_of(a).total_cmp(&z_of(b)));
+    for object in order {
+        match object {
+            Object::Unit(unit) => {
+                if unit.selected || game.in_selection_drag(unit) {
+                    draw_selected_ring(canvas, game, &view, unit);
+                }
+                let [r, g, b, _] = team_color(unit.color);
+                let half = units::HALF_WIDTH;
+                let footprint = (unit.x, unit.z, half, half);
+                draw_box(canvas, game, &view, footprint, (unit.y, unit.y + units::HEIGHT), [r, g, b]);
+            }
+            Object::Ruin(piece) => {
+                let color = RUIN_CONCRETE.map(|c| c * piece.shade);
+                let footprint = (piece.x, piece.z, piece.half_x, piece.half_z);
+                draw_box(canvas, game, &view, footprint, (piece.y, piece.y + piece.height), color);
+            }
+        }
+    }
+}
+
+fn draw_selected_ring(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    const SIDES: usize = 16;
+    const RADIUS: f32 = 0.55;
+    let thickness = (2.0 * ui_scale(game.height)).max(1.0);
+    let point = |i: usize| {
+        let (sin, cos) = (i as f32 / SIDES as f32 * TAU).sin_cos();
+        view.project(unit.x + RADIUS * cos, unit.y, unit.z + RADIUS * sin)
+    };
+    for i in 0..SIDES {
+        if let (Some(a), Some(b)) = (point(i), point(i + 1)) {
+            canvas.line(a, b, thickness, SELECTED_RING);
+        }
+    }
+}
+
+/// A box seen from the camera: its top, its south face, and whichever side faces the camera.
+fn draw_box(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    (x, z, half_x, half_z): (f32, f32, f32, f32),
+    (base, top): (f32, f32),
+    [r, g, b]: [f32; 3],
+) {
+    let (width, height) = (game.width, game.height);
+    let corner = |dx: f32, y: f32, dz: f32| view.project(x + dx, y, z + dz);
+    let side = if x > game.camera.x { -half_x } else { half_x };
+    let faces = [
+        ([(side, base, -half_z), (side, base, half_z), (side, top, half_z), (side, top, -half_z)], 0.6),
+        ([(-half_x, base, half_z), (half_x, base, half_z), (half_x, top, half_z), (-half_x, top, half_z)], 0.78),
+        ([(-half_x, top, -half_z), (half_x, top, -half_z), (half_x, top, half_z), (-half_x, top, half_z)], 1.0),
+    ];
+    for (points, shade) in faces {
+        let mut projected = [(0.0, 0.0); 4];
+        for (slot, (dx, y, dz)) in projected.iter_mut().zip(points) {
+            let Some(point) = corner(dx, y, dz) else { return };
+            *slot = point;
+        }
+        let off = projected.iter().all(|p| p.0 < 0.0)
+            || projected.iter().all(|p| p.0 > width)
+            || projected.iter().all(|p| p.1 < 0.0)
+            || projected.iter().all(|p| p.1 > height);
+        if off {
+            continue;
+        }
+        let color = [r * shade, g * shade, b * shade, 1.0];
+        canvas.triangle([projected[0], projected[1], projected[2]], color);
+        canvas.triangle([projected[0], projected[2], projected[3]], color);
+    }
+}
+
+/// The selection's four edges as flickering lightning. An edge that reaches off screen is
+/// drawn only up to the screen's border, and one lying fully off screen is not drawn.
+fn draw_selection_box(canvas: &mut Canvas, game: &Game) {
+    /// New bolts per second.
+    const FLICKER: f32 = 24.0;
+    let Some((left, top, right, bottom)) = game.selection_rect() else { return };
+    let s = ui_scale(game.height);
+    let (w, h) = (game.width, game.height);
+    let (cl, cr) = (left.clamp(0.0, w), right.clamp(0.0, w));
+    let (ct, cb) = (top.clamp(0.0, h), bottom.clamp(0.0, h));
+    let mut edges = Vec::new();
+    if (0.0..=h).contains(&top) {
+        edges.push(((cl, top), (cr, top)));
+    }
+    if (0.0..=h).contains(&bottom) {
+        edges.push(((cr, bottom), (cl, bottom)));
+    }
+    if (0.0..=w).contains(&left) {
+        edges.push(((left, cb), (left, ct)));
+    }
+    if (0.0..=w).contains(&right) {
+        edges.push(((right, ct), (right, cb)));
+    }
+    let frame = (game.screen_elapsed() * FLICKER) as u32;
+    for (i, (a, b)) in edges.into_iter().enumerate() {
+        let seed = frame.wrapping_mul(31).wrapping_add(i as u32 * 1009);
+        let bolt = units::lightning_points(a, b, seed, 26.0 * s, 9.0 * s);
+        for layer in [(9.0, BOLT_GLOW), (4.0, BOLT_HALO), (1.6, BOLT_CORE)] {
+            for pair in bolt.windows(2) {
+                canvas.line(pair[0], pair[1], (layer.0 * s).max(1.0), layer.1);
+            }
+        }
+        // Thin forks spitting off every few points.
+        for (j, &start) in bolt.iter().enumerate().skip(2).step_by(4) {
+            let side = if (frame + j as u32) % 2 == 0 { 1.0 } else { -1.0 };
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let length = dx.hypot(dy).max(1.0);
+            let reach = 22.0 * s;
+            let end = (
+                start.0 + dx / length * reach * 0.6 - dy / length * reach * side,
+                start.1 + dy / length * reach * 0.6 + dx / length * reach * side,
+            );
+            let fork = units::lightning_points(start, end, seed.wrapping_add(j as u32), 9.0 * s, 4.0 * s);
+            for pair in fork.windows(2) {
+                canvas.line(pair[0], pair[1], (1.2 * s).max(1.0), BOLT_HALO);
+            }
+        }
+    }
 }
 
 fn draw_money(canvas: &mut Canvas, game: &Game) {
@@ -665,6 +809,12 @@ fn draw_minimap(canvas: &mut Canvas, game: &Game) {
 fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
     let rect = hud::minimap_rect(game.width, game.height);
     draw_map_diamond(canvas, game, game.battle_map, rect);
+    let dot = (3.0 * ui_scale(game.height)).round().max(2.0);
+    for unit in &game.units {
+        let (x, y) = battlefield::world_to_minimap(rect, unit.x, unit.z);
+        let color = if unit.selected { VIEW_OUTLINE } else { team_color(unit.color) };
+        canvas.rect(x - dot / 2.0, y - dot / 2.0, dot, dot, color);
+    }
     draw_radar_sweep(canvas, rect, game.battle_time());
 
     let view = battlefield::View::new(game.camera, game.width, game.height);
@@ -736,6 +886,11 @@ fn draw_map_diamond(canvas: &mut Canvas, game: &Game, map: usize, (x, y, size): 
             canvas.triangle([a, b, c], color);
             canvas.triangle([a, c, d], color);
         }
+    }
+    let dot = (2.0 * ui_scale(game.height)).round().max(1.0);
+    for piece in terrain.ruins() {
+        let (px, py) = battlefield::world_to_minimap((x, y, size), piece.x, piece.z);
+        canvas.rect(px - dot / 2.0, py - dot / 2.0, dot, dot, RUIN_ON_MINIMAP);
     }
 }
 

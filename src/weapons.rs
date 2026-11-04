@@ -60,7 +60,7 @@ impl WeaponKind {
     }
 
     /// Mortar shells only come down on the ground. Everything else can aim up.
-    fn can_target(self, kind: UnitKind) -> bool {
+    pub fn can_target(self, kind: UnitKind) -> bool {
         self != WeaponKind::Mortar || !kind.flies()
     }
 
@@ -221,7 +221,7 @@ impl Combat {
             if units[i].cooldown > 0.0 {
                 continue;
             }
-            let Some(target) = nearest_enemy(units, i, teams) else {
+            let Some(target) = choose_target(units, i, teams) else {
                 units[i].cooldown = RETARGET_SECONDS;
                 continue;
             };
@@ -369,6 +369,17 @@ fn hurt(unit: &mut Unit, damage: f32) {
         unit.alive = false;
         unit.selected = false;
     }
+}
+
+/// The enemy it was told to attack if that one is in range, otherwise whoever is nearest.
+fn choose_target(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usize> {
+    let unit = &units[shooter];
+    let ordered = unit.target.and_then(|id| units.iter().position(|u| u.alive && u.id == id));
+    ordered
+        .filter(|&t| {
+            unit.can_attack(&units[t], teams) && distance(unit.center(), units[t].center()) <= unit.weapon.range()
+        })
+        .or_else(|| nearest_enemy(units, shooter, teams))
 }
 
 /// The nearest living enemy within a unit's weapon range.
@@ -792,6 +803,30 @@ mod tests {
         combat.launch_strike(0.0, 60.0);
         run(&mut combat, &mut units, 2.0);
         assert!(!units[0].alive);
+    }
+
+    #[test]
+    fn a_unit_fires_at_the_enemy_it_was_told_to_attack_rather_than_the_nearest() {
+        let mut far = target_at(6.0, 60.0);
+        far.id = 3;
+        let mut units = [shooter(WeaponKind::Bullet), target_at(2.0, 60.0), far];
+        units[0].target = Some(3);
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert_eq!(units[1].health, 100.0, "the nearer one is spared");
+        assert!(units[2].health < 100.0);
+    }
+
+    #[test]
+    fn until_its_target_is_in_range_a_unit_fires_at_whoever_is_nearest() {
+        let mut far = target_at(30.0, 60.0);
+        far.id = 3;
+        let mut units = [shooter(WeaponKind::Bullet), target_at(2.0, 60.0), far];
+        units[0].target = Some(3);
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert!(units[1].health < 100.0);
+        assert_eq!(units[2].health, 100.0);
     }
 
     #[test]

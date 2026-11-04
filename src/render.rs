@@ -34,7 +34,9 @@ const INK: Color = [0.05, 0.05, 0.08, 1.0];
 const WINDOW: Color = [0.07, 0.07, 0.10, 0.78];
 const CHAT_BACKING: Color = [0.0, 0.0, 0.0, 0.45];
 const SELECTED_RING: Color = [0.35, 1.0, 0.45, 1.0];
-const ORDER_LINE: Color = [0.35, 1.0, 0.45, 0.85];
+pub const ORDER_LINE: Color = [0.35, 1.0, 0.45, 0.85];
+pub const ATTACK_LINE: Color = [1.0, 0.2, 0.15, 0.85];
+pub const ATTACK_CURSOR: Color = [0.95, 0.12, 0.1, 1.0];
 const POISON_FILL: [f32; 3] = [0.25, 0.95, 0.25];
 const POISON_ALPHA: f32 = 0.32;
 const LASER_GLOW: Color = [1.0, 0.25, 0.2, 0.35];
@@ -153,6 +155,46 @@ impl Canvas {
         let (fx, fy) = (x + inset * 0.6, y + inset * 1.6);
         self.triangle([(fx, fy), (fx, fy + fill), (fx + fill * 0.72, fy + fill * 0.72)], CURSOR_FILL);
     }
+
+    /// A ring of short straight pieces.
+    fn ring(&mut self, (cx, cy): (f32, f32), r: f32, thickness: f32, c: Color) {
+        const SIDES: usize = 32;
+        let point = |i: usize| {
+            let (sin, cos) = (i as f32 / SIDES as f32 * TAU).sin_cos();
+            (cx + r * cos, cy + r * sin)
+        };
+        for i in 0..SIDES {
+            self.line(point(i), point(i + 1), thickness, c);
+        }
+    }
+
+    /// A red bullseye centered on the cursor, with four arrows around it pointing in and
+    /// slowly turning. A dark edge keeps it readable over red units and red ground.
+    fn attack_cursor(&mut self, (x, y): (f32, f32), s: f32, seconds: f32) {
+        /// Radians per second the arrows turn.
+        const SPIN: f32 = 1.5;
+        let (outer, inner) = (20.0 * s, 10.0 * s);
+        let thickness = (4.0 * s).max(1.0);
+        let edge = (2.0 * s).max(1.0);
+        for r in [outer, inner] {
+            self.ring((x, y), r, thickness + edge * 2.0, CURSOR_EDGE);
+            self.ring((x, y), r, thickness, ATTACK_CURSOR);
+        }
+        self.circle(x, y, 3.0 * s + edge, CURSOR_EDGE);
+        self.circle(x, y, 3.0 * s, ATTACK_CURSOR);
+        for arrow in 0..4 {
+            let angle = seconds * SPIN + arrow as f32 * FRAC_PI_2;
+            let (sin, cos) = angle.sin_cos();
+            // Measured out from the center and sideways from the arrow's middle.
+            let at = |out: f32, side: f32| (x + cos * out - sin * side, y + sin * out + cos * side);
+            let (tip, base, half) = (outer + 5.0 * s, outer + 19.0 * s, 8.0 * s);
+            self.triangle(
+                [at(tip - edge * 2.0, 0.0), at(base + edge, -half - edge * 1.6), at(base + edge, half + edge * 1.6)],
+                CURSOR_EDGE,
+            );
+            self.triangle([at(tip, 0.0), at(base, -half), at(base, half)], ATTACK_CURSOR);
+        }
+    }
 }
 
 pub fn clear_color(game: &Game) -> [f32; 3] {
@@ -254,7 +296,11 @@ pub fn build(game: &Game) -> Vec<Vertex> {
         }
     }
 
-    canvas.cursor(game.mouse, s);
+    if game.cursor_means_attack() {
+        canvas.attack_cursor(game.mouse, s, game.screen_elapsed());
+    } else {
+        canvas.cursor(game.mouse, s);
+    }
     canvas.vertices
 }
 
@@ -584,29 +630,47 @@ fn draw_radiation_symbol(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, c: Co
     canvas.circle(cx, cy, size * 0.08, c);
 }
 
-/// For each selected unit on its way, a dashed line along the ground to where it was sent.
+/// For each selected unit, a dashed line along the ground to what it was told to do: red to
+/// the enemy it is after, for as long as it is after one, or green to where it is going.
 fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
+    for unit in game.units.iter().filter(|u| u.selected) {
+        let enemy = unit.target.and_then(|id| game.units.iter().find(|u| u.alive && u.id == id));
+        let from = (unit.x, unit.z);
+        match enemy {
+            Some(enemy) => draw_dashed_line(canvas, game, view, from, (enemy.x, enemy.z), ATTACK_LINE),
+            None if unit.is_moving() => draw_dashed_line(canvas, game, view, from, unit.destination, ORDER_LINE),
+            None => {}
+        }
+    }
+}
+
+fn draw_dashed_line(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    from: (f32, f32),
+    to: (f32, f32),
+    color: Color,
+) {
     const DASH: f32 = 0.45;
     const GAP: f32 = 0.3;
     let thickness = (2.0 * ui_scale(game.height)).max(1.0);
     let screen = (0.0, 0.0, game.width, game.height);
-    for unit in game.units.iter().filter(|u| u.selected && u.is_moving()) {
-        let (to_x, to_z) = (unit.destination.0 - unit.x, unit.destination.1 - unit.z);
-        let length = to_x.hypot(to_z);
-        let (dir_x, dir_z) = (to_x / length, to_z / length);
-        let mut along = 0.0;
-        while along < length {
-            let end = (along + DASH).min(length);
-            let a = (unit.x + dir_x * along, unit.z + dir_z * along);
-            let b = (unit.x + dir_x * end, unit.z + dir_z * end);
-            let visible = view
-                .project_ground_line(a, b)
-                .and_then(|(a, b)| battlefield::clip_to_rect(a, b, screen));
-            if let Some((a, b)) = visible {
-                canvas.line(a, b, thickness, ORDER_LINE);
-            }
-            along += DASH + GAP;
+    let (to_x, to_z) = (to.0 - from.0, to.1 - from.1);
+    let length = to_x.hypot(to_z);
+    let (dir_x, dir_z) = (to_x / length, to_z / length);
+    let mut along = 0.0;
+    while along < length {
+        let end = (along + DASH).min(length);
+        let a = (from.0 + dir_x * along, from.1 + dir_z * along);
+        let b = (from.0 + dir_x * end, from.1 + dir_z * end);
+        let visible = view
+            .project_ground_line(a, b)
+            .and_then(|(a, b)| battlefield::clip_to_rect(a, b, screen));
+        if let Some((a, b)) = visible {
+            canvas.line(a, b, thickness, color);
         }
+        along += DASH + GAP;
     }
 }
 

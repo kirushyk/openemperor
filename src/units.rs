@@ -30,6 +30,11 @@ const SQUASH_LURE: f32 = 4.0;
 /// How nearly ahead that infantry must be, as the cosine of the angle off its way: it will
 /// not turn back for anyone behind it.
 const SQUASH_LURE_AHEAD: f32 = 0.3;
+/// A unit told to attack closes to this share of its weapon's range, so that a target
+/// shifting about a little does not keep it starting and stopping.
+const ATTACK_REACH: f32 = 0.9;
+/// A unit after a target that covers less than this share of its usual step is wedged.
+const WEDGED_SHARE: f32 = 0.25;
 /// Rounds of separating overlapping units per step.
 const SEPARATION_ROUNDS: usize = 4;
 
@@ -117,6 +122,9 @@ pub struct Unit {
     /// Where its owner last sent it (x, z). This is never forgotten: being pushed aside
     /// only delays the unit, which then walks back.
     pub destination: (f32, f32),
+    /// The id of the enemy its owner told it to attack. It goes after this one until the
+    /// enemy dies or a new move order replaces it.
+    pub target: Option<u32>,
     /// A heavy unit squashes enemy infantry it drives over. Every vehicle is heavy for now.
     pub heavy: bool,
     pub alive: bool,
@@ -133,6 +141,14 @@ impl Unit {
 
     fn remaining(&self) -> f32 {
         (self.destination.0 - self.x).hypot(self.destination.1 - self.z)
+    }
+
+    /// Whether its weapon can be turned on another unit.
+    pub fn can_attack(&self, other: &Unit, teams: &[usize]) -> bool {
+        self.alive
+            && other.alive
+            && are_enemies(teams, self.owner, other.owner)
+            && self.weapon.can_target(other.kind)
     }
 
     /// Whether it could be at this spot. Aircraft only have to stay on the map.
@@ -173,6 +189,7 @@ impl Unit {
             kind,
             heading: -FRAC_PI_2,
             destination: (x, z),
+            target: None,
             heavy: kind == UnitKind::Vehicle,
             alive: true,
             blocked_for: 0.0,
@@ -246,6 +263,7 @@ fn spawn_group(
                 kind,
                 heading: -FRAC_PI_2,
                 destination: (x, z),
+                target: None,
                 heavy: kind == UnitKind::Vehicle,
                 alive: true,
                 blocked_for: 0.0,
@@ -369,8 +387,43 @@ fn order_layer(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, teams:
             .min_by(|&a, &b| distance(&units[i], slots[a]).total_cmp(&distance(&units[i], slots[b])));
         let Some(nearest) = nearest else { return };
         units[i].destination = slots.swap_remove(nearest);
+        units[i].target = None;
         units[i].blocked_for = 0.0;
         units[i].best_remaining = f32::INFINITY;
+    }
+}
+
+/// Tells every selected unit able to fight this enemy to go after it. The others carry on
+/// with what they were doing.
+pub fn order_attack(units: &mut [Unit], enemy: usize, teams: &[usize]) {
+    let enemy = units[enemy];
+    for unit in units.iter_mut().filter(|u| u.selected) {
+        if unit.can_attack(&enemy, teams) {
+            unit.target = Some(enemy.id);
+            unit.blocked_for = 0.0;
+            unit.best_remaining = f32::INFINITY;
+        }
+    }
+}
+
+/// Points everyone with a target at it, or stops them once it is within reach. A unit whose
+/// target is gone stays where it is.
+fn chase_targets(units: &mut [Unit]) {
+    for i in 0..units.len() {
+        let Some(id) = units[i].target else { continue };
+        if !units[i].alive {
+            continue;
+        }
+        let (x, z) = (units[i].x, units[i].z);
+        let Some(enemy) = units.iter().find(|u| u.alive && u.id == id).copied() else {
+            units[i].target = None;
+            units[i].destination = (x, z);
+            continue;
+        };
+        let center = units[i].center();
+        let away = (enemy.x - center.0).hypot(enemy.center().1 - center.1).hypot(enemy.z - center.2);
+        let in_reach = away <= units[i].weapon.range() * ATTACK_REACH;
+        units[i].destination = if in_reach { (x, z) } else { (enemy.x, enemy.z) };
     }
 }
 
@@ -553,6 +606,7 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
 
 fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
     let mut held_back = vec![false; units.len()];
+    let started_at: Vec<(f32, f32)> = units.iter().map(|u| (u.x, u.z)).collect();
     for i in 0..units.len() {
         if !units[i].is_moving() {
             continue;
@@ -587,13 +641,17 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
             continue;
         }
         held_back[i] |= push_out_of_ruins(unit, terrain);
+        // Wedged against those who stay put, a chaser would otherwise press on forever.
+        let moved = (unit.x - started_at[i].0).hypot(unit.z - started_at[i].1);
+        held_back[i] |= unit.target.is_some() && moved < unit.kind.speed() * dt * WEDGED_SHARE;
         unit.y = terrain.height_at(unit.x, unit.z);
         give_up_if_stuck(unit, held_back[i], dt);
     }
 }
 
 /// Crowds only delay a unit, so its order stands. If water, lava or a ruin keeps it from
-/// getting any nearer, there is no way through without path finding: it settles for here.
+/// getting any nearer, or it is wedged on its way to a target, there is no way through
+/// without path finding: it settles for here and forgets the target.
 fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
     if !unit.is_moving() {
         unit.blocked_for = 0.0;
@@ -607,6 +665,7 @@ fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
         unit.blocked_for += dt;
         if unit.blocked_for > BLOCKED_PATIENCE {
             unit.destination = (unit.x, unit.z);
+            unit.target = None;
             unit.blocked_for = 0.0;
         }
     }
@@ -614,6 +673,7 @@ fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
 
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
+    chase_targets(units);
     // Spheres only start to overlap when something moves.
     if !units.iter().any(Unit::is_moving) {
         return;
@@ -621,6 +681,7 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
     let steps = (dt / MAX_STEP).ceil().max(1.0);
     for _ in 0..steps as usize {
         step(units, terrain, teams, dt / steps);
+        chase_targets(units);
     }
 }
 
@@ -872,6 +933,122 @@ mod tests {
         assert!(planes.iter().all(|u| u.owner == 0 && u.altitude == CRUISE_ALTITUDE && !u.heavy));
         assert!(planes.iter().all(|u| u.weapon == WeaponKind::Missile));
         assert!(units.iter().filter(|u| !u.kind.flies()).all(|u| u.altitude == 0.0));
+    }
+
+    fn attacker_and_enemy(enemy_x: f32) -> [Unit; 2] {
+        let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry), enemy_at(enemy_x, 60.0, UnitKind::Infantry)];
+        units[1].id = 7;
+        units[0].selected = true;
+        units[0].weapon = WeaponKind::Bullet;
+        units
+    }
+
+    #[test]
+    fn a_unit_told_to_attack_closes_to_within_range_and_stops_there() {
+        let mut units = attacker_and_enemy(20.0);
+        order_attack(&mut units, 1, &TWO_SIDES);
+        assert_eq!(units[0].target, Some(7));
+        for _ in 0..400 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert!(!units[0].is_moving());
+        let away = units[1].x - units[0].x;
+        assert!(away <= WeaponKind::Bullet.range(), "in range: {away}");
+        assert!(away > WeaponKind::Bullet.range() * 0.8, "and no nearer than needed: {away}");
+        assert_eq!(units[0].target, Some(7), "it remembers");
+    }
+
+    #[test]
+    fn a_unit_follows_a_target_that_moves_away() {
+        let mut units = attacker_and_enemy(5.0);
+        order_attack(&mut units, 1, &TWO_SIDES);
+        advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        assert!(!units[0].is_moving(), "already in range");
+        units[1].x = 25.0;
+        units[1].destination = (25.0, 60.0);
+        for _ in 0..400 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert!(units[0].x > 15.0, "it went after it: {:?}", units[0]);
+    }
+
+    #[test]
+    fn a_unit_stops_where_it_is_when_its_target_dies() {
+        let mut units = attacker_and_enemy(20.0);
+        order_attack(&mut units, 1, &TWO_SIDES);
+        for _ in 0..10 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        units[1].alive = false;
+        let at = units[0].x;
+        advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        assert_eq!(units[0].target, None);
+        assert!(!units[0].is_moving());
+        assert_eq!(units[0].x, at);
+    }
+
+    #[test]
+    fn a_move_order_replaces_the_target() {
+        let mut units = attacker_and_enemy(20.0);
+        order_attack(&mut units, 1, &TWO_SIDES);
+        order_move(&mut units, (-5.0, 60.0), open_ground(), &TWO_SIDES);
+        assert_eq!(units[0].target, None);
+        for _ in 0..100 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert!(units[0].x < -4.0, "{:?}", units[0]);
+    }
+
+    #[test]
+    fn only_selected_units_able_to_fight_it_take_the_order() {
+        let plane = Unit { id: 7, ..enemy_at(20.0, 60.0, UnitKind::Aircraft) };
+        let mut mortar = unit_at(0.0, 60.0, UnitKind::Vehicle);
+        mortar.selected = true;
+        mortar.weapon = WeaponKind::Mortar;
+        let mut idle = unit_at(0.0, 62.0, UnitKind::Infantry);
+        idle.weapon = WeaponKind::Bullet;
+        let mut gunner = unit_at(0.0, 64.0, UnitKind::Infantry);
+        gunner.selected = true;
+        gunner.weapon = WeaponKind::Bullet;
+        let mut units = [mortar, idle, gunner, plane];
+        order_attack(&mut units, 3, &TWO_SIDES);
+        assert_eq!(units[0].target, None, "mortars cannot aim up");
+        assert_eq!(units[1].target, None, "not selected");
+        assert_eq!(units[2].target, Some(7));
+    }
+
+    #[test]
+    fn a_unit_cut_off_from_its_target_gives_up_on_it() {
+        let terrain = Terrain::open_with_ruins(vec![
+            wall(0.0, 56.0, 4.0, 0.2, 2.0),
+            wall(0.0, 64.0, 4.0, 0.2, 2.0),
+            wall(-4.0, 60.0, 0.2, 4.0, 2.0),
+            wall(4.0, 60.0, 0.2, 4.0, 2.0),
+        ]);
+        let mut units = attacker_and_enemy(20.0);
+        order_attack(&mut units, 1, &TWO_SIDES);
+        for _ in 0..1200 {
+            advance(&mut units, &terrain, &TWO_SIDES, 0.05);
+        }
+        assert_eq!(units[0].target, None);
+        assert!(!units[0].is_moving(), "{:?}", units[0]);
+    }
+
+    #[test]
+    fn a_unit_wedged_behind_others_gives_up_on_its_target() {
+        // A row of parked vehicles too tight to pass, across the way to the target.
+        let mut units = vec![unit_at(0.0, 60.0, UnitKind::Infantry), enemy_at(20.0, 60.0, UnitKind::Infantry)];
+        units[1].id = 7;
+        units[0].selected = true;
+        units[0].weapon = WeaponKind::Bullet;
+        for i in -8..=8 {
+            units.push(unit_at(1.5, 60.0 + i as f32 * 0.9, UnitKind::Vehicle));
+        }
+        order_attack(&mut units, 1, &TWO_SIDES);
+        for _ in 0..1200 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert!(!units[0].is_moving(), "{:?}", units[0]);
     }
 
     #[test]

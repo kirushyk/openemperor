@@ -62,6 +62,15 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
     units
 }
 
+/// Whether a point lies where a group can start, which must be land even on a planet whose
+/// lower terrain is water or lava. Opponents spread around the whole ring.
+pub fn needs_land(x: f32, z: f32) -> bool {
+    const REACH: f32 = 5.0;
+    let from_middle = x.hypot(z - MAP_MIDDLE_Z);
+    let from_second_group = (x - SECOND_GROUP_X).hypot(z - MAP_MIDDLE_Z);
+    from_middle < REACH || from_second_group < REACH || (from_middle - OPPONENT_RING).abs() < REACH
+}
+
 /// Whether a map object may stand here, away from every place a group can start.
 pub fn keeps_clear(x: f32, z: f32) -> bool {
     let from_middle = x.hypot(z - MAP_MIDDLE_Z);

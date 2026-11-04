@@ -782,11 +782,11 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
 fn draw_ally(canvas: &mut Canvas, ally: Ally, cx: f32, cy: f32, r: f32, px: f32) {
     match ally {
         Ally::None => canvas.text_centered("None", cx, cy, px, QUIET),
-        Ally::Triangle => canvas.polygon(cx, cy, r, 3, -FRAC_PI_2, TEXT),
-        Ally::Square => canvas.polygon(cx, cy, r, 4, FRAC_PI_4, TEXT),
-        Ally::Diamond => canvas.polygon(cx, cy, r, 4, 0.0, TEXT),
-        Ally::Hexagon => canvas.polygon(cx, cy, r, 6, 0.0, TEXT),
-        Ally::Star => canvas.star(cx, cy, r, r * 0.42, 5, -FRAC_PI_2, TEXT),
+        Ally::T => canvas.polygon(cx, cy, r, 3, -FRAC_PI_2, TEXT),
+        Ally::X => canvas.polygon(cx, cy, r, 4, FRAC_PI_4, TEXT),
+        Ally::G => canvas.polygon(cx, cy, r, 4, 0.0, TEXT),
+        Ally::F => canvas.polygon(cx, cy, r, 6, 0.0, TEXT),
+        Ally::S => canvas.star(cx, cy, r, r * 0.42, 5, -FRAC_PI_2, TEXT),
     }
 }
 
@@ -876,9 +876,9 @@ fn draw_map_diamond(canvas: &mut Canvas, game: &Game, map: usize, (x, y, size): 
     for v in (0..MAP_CELLS).step_by(STEP) {
         for u in (0..MAP_CELLS).step_by(STEP) {
             let base = if terrain.is_ground(u + STEP / 2, v + STEP / 2) {
-                battlefield::GROUND
+                terrain.upper_color()
             } else {
-                battlefield::SAND
+                terrain.lower_color()
             };
             let color = [base[0], base[1], base[2], 1.0];
             let (a, b) = (to_screen(u, v), to_screen(u + STEP, v));

@@ -85,27 +85,28 @@ pub enum Difficulty {
     Hard,
 }
 
-/// An ally slot holds one of five mini factions, each shown as a shape, or nobody.
-/// A side can befriend at most two, and never the same one twice.
+/// An ally slot holds one of the five mini factions, or nobody. A side can befriend at most
+/// two, and never the same one twice. Each is drawn as its own shape: T is a triangle, X a
+/// square, G a diamond, F a hexagon and S a star.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ally {
     None,
-    Triangle,
-    Square,
-    Diamond,
-    Hexagon,
-    Star,
+    T,
+    X,
+    G,
+    F,
+    S,
 }
 
 impl Ally {
     fn next(self) -> Self {
         match self {
-            Ally::None => Ally::Triangle,
-            Ally::Triangle => Ally::Square,
-            Ally::Square => Ally::Diamond,
-            Ally::Diamond => Ally::Hexagon,
-            Ally::Hexagon => Ally::Star,
-            Ally::Star => Ally::None,
+            Ally::None => Ally::T,
+            Ally::T => Ally::X,
+            Ally::X => Ally::G,
+            Ally::G => Ally::F,
+            Ally::F => Ally::S,
+            Ally::S => Ally::None,
         }
     }
 }
@@ -179,7 +180,19 @@ pub struct Opponent {
 }
 
 pub const OPPONENT_SLOTS: usize = 7;
-pub const MAPS: [&str; 5] = ["Map 1", "Map 2", "Map 3", "Map 4", "Map 5"];
+/// Named after the planet each is on; `battlefield::MAP_PLANETS` lists those.
+pub const MAPS: [&str; 10] = [
+    "A - Map 1",
+    "A - Map 2",
+    "A - Map 3",
+    "A - Map 4",
+    "A - Map 5",
+    "C - Map 1",
+    "D - Map 1",
+    "G - Map 1",
+    "S - Map 1",
+    "T - Map 1",
+];
 pub const COMMANDER_NAME_MAX: usize = 16;
 
 /// Choices on the skirmish setup screen. Kept while the game runs, not saved between runs.
@@ -2089,7 +2102,7 @@ mod tests {
         let rows = game.stats_rows();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].name, "Commander");
-        assert_eq!(rows[0].allies, [Ally::Triangle, Ally::None]);
+        assert_eq!(rows[0].allies, [Ally::T, Ally::None]);
         assert_eq!(rows[0].color, game.skirmish.color);
         assert_eq!(rows[1].name, "AI 1 (Competent)");
         assert_eq!(rows[2].color, game.skirmish.opponents[1].color);
@@ -2717,12 +2730,35 @@ mod tests {
     #[test]
     fn map_dropdown_opens_selects_and_closes() {
         let mut game = in_setup();
-        assert_eq!(MAPS.len(), 5);
         click_widget(&mut game, Action::MapDropdown);
         assert!(game.dropdown_open);
         click(&mut game, Action::SelectMap(3));
         assert_eq!(game.skirmish.map, 3);
         assert!(!game.dropdown_open);
+    }
+
+    #[test]
+    fn the_whole_map_list_fits_the_screen_and_every_map_can_be_played() {
+        for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+            let items = map_items(w, h);
+            assert_eq!(items.len(), MAPS.len());
+            let last = items.last().unwrap();
+            assert!(last.y + last.h <= h, "at {w}x{h}");
+            for item in &items {
+                let width = crate::font::text_width(item.label) * small_text_px(h);
+                assert!(width + 16.0 * ui_scale(h) < item.w, "{} at {w}x{h}", item.label);
+            }
+        }
+        for map in 0..MAPS.len() {
+            let mut game = in_setup();
+            click_widget(&mut game, Action::MapDropdown);
+            click(&mut game, Action::SelectMap(map));
+            click_widget(&mut game, Action::StartBattle);
+            game.update(LOADING_SECONDS);
+            assert_eq!(game.screen, Screen::InGame);
+            assert_eq!(game.battle_map, map);
+            assert!(!game.units.is_empty());
+        }
     }
 
     #[test]
@@ -2830,19 +2866,19 @@ mod tests {
             assert!(left == Ally::None || left != right, "{left:?} twice");
         }
 
-        let mut allies = [Ally::Triangle, Ally::None];
+        let mut allies = [Ally::T, Ally::None];
         cycle_ally(&mut allies, 1);
-        assert_eq!(allies, [Ally::Triangle, Ally::Square], "triangle is skipped");
+        assert_eq!(allies, [Ally::T, Ally::X], "T is skipped");
 
-        let mut allies = [Ally::Star, Ally::Hexagon];
+        let mut allies = [Ally::S, Ally::F];
         cycle_ally(&mut allies, 1);
-        assert_eq!(allies, [Ally::Star, Ally::None], "star is skipped, none is still allowed");
+        assert_eq!(allies, [Ally::S, Ally::None], "S is skipped, none is still allowed");
 
         let mut allies = [Ally::None, Ally::None];
         cycle_ally(&mut allies, 0);
         cycle_ally(&mut allies, 0);
         cycle_ally(&mut allies, 1);
-        assert_eq!(allies, [Ally::Square, Ally::Triangle], "both slots can be filled");
+        assert_eq!(allies, [Ally::X, Ally::T], "both slots can be filled");
     }
 
     #[test]
@@ -2850,7 +2886,7 @@ mod tests {
         let mut game = in_setup();
         click_widget(&mut game, Action::CycleOpponentAlly(0, 0));
         click_widget(&mut game, Action::CycleOpponentAlly(0, 1));
-        assert_eq!(game.skirmish.opponents[0].allies, [Ally::Triangle, Ally::Square]);
+        assert_eq!(game.skirmish.opponents[0].allies, [Ally::T, Ally::X]);
     }
 
     #[test]
@@ -2863,11 +2899,11 @@ mod tests {
         }
         assert_eq!(
             seen,
-            [Ally::Triangle, Ally::Square, Ally::Diamond, Ally::Hexagon, Ally::Star, Ally::None]
+            [Ally::T, Ally::X, Ally::G, Ally::F, Ally::S, Ally::None]
         );
         assert_eq!(game.skirmish.allies[0], Ally::None);
         click_widget(&mut game, Action::CycleAlly(0));
-        assert_eq!(game.skirmish.allies, [Ally::Triangle, Ally::None]);
+        assert_eq!(game.skirmish.allies, [Ally::T, Ally::None]);
     }
 
     fn set_ai_players(game: &mut Game, count: i32) {
@@ -3002,7 +3038,7 @@ mod tests {
         for _ in 0..2 {
             click_widget(&mut game, Action::CycleOpponentAlly(1, 1));
         }
-        assert_eq!(game.skirmish.opponents[1].allies, [Ally::None, Ally::Square]);
+        assert_eq!(game.skirmish.opponents[1].allies, [Ally::None, Ally::X]);
         assert_eq!(game.skirmish.opponents[0].allies, [Ally::None, Ally::None]);
     }
 

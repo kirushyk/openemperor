@@ -16,11 +16,72 @@ pub const MAP_CELLS: usize = 128;
 const CELL: f32 = 0.5;
 /// How far ground rises above sand, in world units.
 const GROUND_HEIGHT: f32 = 0.7;
-/// Noise above this is ground, below it sand.
+/// Noise above this is the upper terrain, below it the lower.
 const GROUND_THRESHOLD: f32 = 0.54;
+/// More land where the lower terrain cannot be walked on.
+const LAND_THRESHOLD: f32 = 0.5;
 
-pub const SAND: [f32; 3] = [0.78, 0.64, 0.40];
-pub const GROUND: [f32; 3] = [0.40, 0.30, 0.21];
+const SAND: [f32; 3] = [0.78, 0.64, 0.40];
+const GROUND: [f32; 3] = [0.40, 0.30, 0.21];
+
+/// Which world a map is on, which sets how its two heights look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Planet {
+    /// Sand and rocky ground.
+    A,
+    /// Home of faction A: water and grass.
+    C,
+    /// Home of faction O: ice and snow.
+    D,
+    /// Home of faction H: lava and the same ground as planet A.
+    G,
+    /// A prison planet, nobody's home.
+    S,
+    /// Home of the mini faction T.
+    T,
+}
+
+impl Planet {
+    fn lower_color(self) -> [f32; 3] {
+        match self {
+            Planet::A => SAND,
+            Planet::C => [0.13, 0.36, 0.60],
+            Planet::D => [0.66, 0.82, 0.93],
+            Planet::G => [0.90, 0.28, 0.05],
+            Planet::S => [0.44, 0.42, 0.40],
+            Planet::T => [0.47, 0.50, 0.30],
+        }
+    }
+
+    fn upper_color(self) -> [f32; 3] {
+        match self {
+            Planet::A | Planet::G => GROUND,
+            Planet::C => [0.24, 0.50, 0.20],
+            Planet::D => [0.96, 0.97, 1.00],
+            Planet::S => [0.24, 0.23, 0.25],
+            Planet::T => [0.30, 0.25, 0.30],
+        }
+    }
+
+    /// Water and lava: nothing can stand on the lower terrain.
+    fn lower_is_solid(self) -> bool {
+        !matches!(self, Planet::C | Planet::G)
+    }
+}
+
+/// The planet of each map in `game::MAPS`.
+pub const MAP_PLANETS: [Planet; crate::game::MAPS.len()] = [
+    Planet::A,
+    Planet::A,
+    Planet::A,
+    Planet::A,
+    Planet::A,
+    Planet::C,
+    Planet::D,
+    Planet::G,
+    Planet::S,
+    Planet::T,
+];
 /// How strongly the surface grain varies the color, either way.
 const GRAIN: f32 = 0.22;
 
@@ -68,6 +129,7 @@ pub struct RuinPiece {
 }
 
 pub struct Terrain {
+    planet: Planet,
     is_ground: Vec<bool>,
     colors: Vec<[f32; 3]>,
     ruins: Vec<RuinPiece>,
@@ -137,32 +199,57 @@ impl Terrain {
         let mut is_ground = Vec::with_capacity(count);
         let mut colors = Vec::with_capacity(count);
         let seed = 101 + map as u32 * 13;
+        let planet = MAP_PLANETS[map];
+        let threshold = if planet.lower_is_solid() { GROUND_THRESHOLD } else { LAND_THRESHOLD };
         for v in 0..=MAP_CELLS {
             for u in 0..=MAP_CELLS {
                 let (fu, fv) = (u as f32 / MAP_CELLS as f32, v as f32 / MAP_CELLS as f32);
                 let height = fractal_noise([fu * 2.5, fv * 2.5, 0.5], seed);
-                let ground = height > GROUND_THRESHOLD;
+                let (x, z) = grid_to_world(u as f32, v as f32);
+                let ground = height > threshold
+                    || (!planet.lower_is_solid() && crate::units::needs_land(x, z));
                 let grain = fractal_noise([fu * 30.0, fv * 30.0, 2.5], seed + 500) - 0.5;
-                let base = if ground { GROUND } else { SAND };
+                let base = if ground { planet.upper_color() } else { planet.lower_color() };
                 is_ground.push(ground);
                 colors.push(base.map(|c| c * (1.0 + grain * 2.0 * GRAIN)));
             }
         }
-        let mut terrain = Terrain { is_ground, colors, ruins: Vec::new() };
+        let mut terrain = Terrain { planet, is_ground, colors, ruins: Vec::new() };
         let mut random = (seed + 1).wrapping_mul(0x9E37_79B1) | 1;
         let mut pieces = Vec::new();
         // Inset from the map's edges, so that no ruin hangs over them.
         let (inset, span) = (8.0, MAP_CELLS as f32 - 16.0);
-        for _ in 0..RUIN_COUNT {
+        // Land is scarcer where the lower terrain cannot hold anything, so look harder there.
+        let tries = if planet.lower_is_solid() { RUIN_COUNT } else { RUIN_COUNT * 8 };
+        let mut placed = 0;
+        for _ in 0..tries {
             let u = inset + next_random(&mut random) * span;
             let v = inset + next_random(&mut random) * span;
             let (x, z) = grid_to_world(u, v);
-            if crate::units::keeps_clear(x, z) {
+            if placed < RUIN_COUNT && crate::units::keeps_clear(x, z) && terrain.can_hold_ruin(x, z) {
                 add_ruin(&mut pieces, &terrain, x, z, &mut random);
+                placed += 1;
             }
         }
         terrain.ruins = pieces;
         terrain
+    }
+
+    /// Nothing stands in water or lava, so there the whole site must be on land.
+    fn can_hold_ruin(&self, x: f32, z: f32) -> bool {
+        const SITE: f32 = 2.4;
+        self.planet.lower_is_solid()
+            || [(-SITE, -SITE), (SITE, -SITE), (SITE, SITE), (-SITE, SITE), (0.0, 0.0)]
+                .iter()
+                .all(|(dx, dz)| self.height_at(x + dx, z + dz) >= GROUND_HEIGHT - 0.001)
+    }
+
+    pub fn lower_color(&self) -> [f32; 3] {
+        self.planet.lower_color()
+    }
+
+    pub fn upper_color(&self) -> [f32; 3] {
+        self.planet.upper_color()
     }
 
     /// The destroyed buildings on this map.
@@ -797,11 +884,73 @@ mod tests {
         }
     }
 
+    fn map_on(planet: Planet) -> usize {
+        MAP_PLANETS.iter().position(|p| *p == planet).unwrap()
+    }
+
+    #[test]
+    fn map_names_start_with_their_planets_letter() {
+        for (name, planet) in crate::game::MAPS.iter().zip(MAP_PLANETS) {
+            assert!(name.starts_with(&format!("{planet:?} ")), "{name} on {planet:?}");
+        }
+    }
+
+    #[test]
+    fn every_planet_has_a_map_and_looks_different() {
+        let planets = [Planet::A, Planet::C, Planet::D, Planet::G, Planet::S, Planet::T];
+        for (i, a) in planets.iter().enumerate() {
+            assert!(MAP_PLANETS.contains(a));
+            assert_ne!(a.lower_color(), a.upper_color(), "{a:?} needs two visible heights");
+            for b in &planets[i + 1..] {
+                assert_ne!(a.lower_color(), b.lower_color(), "{a:?} and {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn planets_have_the_requested_colors() {
+        let blue_ish = |c: [f32; 3]| c[2] > c[0] && c[2] > c[1];
+        let green_ish = |c: [f32; 3]| c[1] > c[0] && c[1] > c[2];
+        let red_ish = |c: [f32; 3]| c[0] > c[1] && c[0] > c[2];
+        let bright = |c: [f32; 3]| c.iter().sum::<f32>() > 2.0;
+        assert_eq!(Planet::A.lower_color(), SAND);
+        assert!(blue_ish(Planet::C.lower_color()), "water");
+        assert!(green_ish(Planet::C.upper_color()), "grass");
+        assert!(blue_ish(Planet::D.lower_color()) && bright(Planet::D.lower_color()), "ice");
+        assert!(bright(Planet::D.upper_color()), "snow");
+        assert!(red_ish(Planet::G.lower_color()), "lava");
+        assert_eq!(Planet::G.upper_color(), Planet::A.upper_color(), "the same upper terrain");
+    }
+
+    #[test]
+    fn terrain_colors_follow_the_planet() {
+        let water = terrain(map_on(Planet::C));
+        assert_eq!(water.lower_color(), Planet::C.lower_color());
+        assert_eq!(water.upper_color(), Planet::C.upper_color());
+    }
+
+    #[test]
+    fn on_water_and_lava_every_start_area_is_land_and_ruins_stay_on_land() {
+        for planet in [Planet::C, Planet::G] {
+            let terrain = terrain(map_on(planet));
+            let colors = [crate::game::TeamColor::Blue; 8];
+            for count in 2..=colors.len() {
+                for unit in crate::units::spawn(terrain, &colors[..count]) {
+                    assert!((unit.y - GROUND_HEIGHT).abs() < 0.001, "{planet:?} with {count}: {unit:?}");
+                }
+            }
+            for piece in terrain.ruins() {
+                let height = terrain.height_at(piece.x, piece.z);
+                assert!((height - GROUND_HEIGHT).abs() < 0.001, "{planet:?}: {piece:?}");
+            }
+        }
+    }
+
     #[test]
     fn every_map_has_destroyed_buildings_and_each_map_has_its_own() {
         let all: Vec<&[RuinPiece]> = (0..crate::game::MAPS.len()).map(|map| terrain(map).ruins()).collect();
         for (map, ruins) in all.iter().enumerate() {
-            assert!(ruins.len() >= 50, "map {map} has only {} pieces", ruins.len());
+            assert!(ruins.len() >= 15, "map {map} has only {} pieces", ruins.len());
         }
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {

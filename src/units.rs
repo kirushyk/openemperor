@@ -1,8 +1,9 @@
-//! Placeholder units and the geometry of selecting them.
+//! Placeholder units, buildings among them, and the geometry of selecting them.
 
 use crate::battlefield::{MAP_MIDDLE_Z, RuinPiece, Terrain};
 use crate::weapons::WeaponKind;
 use crate::game::TeamColor;
+use std::cmp::Ordering;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 /// About how tall a unit stands, in world units.
@@ -46,6 +47,8 @@ pub enum UnitKind {
     Vehicle,
     /// Stays in the air, passing over water, lava, ruins and anyone on the ground.
     Aircraft,
+    /// A building: it never moves and takes no orders, and turns its two tubes by itself.
+    Tower,
 }
 
 impl UnitKind {
@@ -55,7 +58,12 @@ impl UnitKind {
             UnitKind::Infantry => 0.25,
             UnitKind::Vehicle => 0.45,
             UnitKind::Aircraft => 0.4,
+            UnitKind::Tower => 0.6,
         }
+    }
+
+    pub fn is_building(self) -> bool {
+        self == UnitKind::Tower
     }
 
     pub fn flies(self) -> bool {
@@ -72,6 +80,7 @@ impl UnitKind {
             UnitKind::Infantry => 100.0,
             UnitKind::Vehicle => 300.0,
             UnitKind::Aircraft => 150.0,
+            UnitKind::Tower => 600.0,
         }
     }
 
@@ -81,6 +90,7 @@ impl UnitKind {
             UnitKind::Infantry => 2.5,
             UnitKind::Vehicle => 4.5,
             UnitKind::Aircraft => 7.0,
+            UnitKind::Tower => 0.0,
         }
     }
 }
@@ -97,6 +107,16 @@ const OPPONENT_RING: f32 = 29.4;
 const CLEARANCE: f32 = 9.0;
 /// A block of the player's this deep has a row of aircraft.
 const ROWS_WITH_AIRCRAFT: usize = 4;
+/// How far to the side of its group's middle the player's tower stands.
+const PLAYER_TOWER_OFFSET: f32 = -3.4;
+/// How far to the side of its group's middle an opponent's tower stands. Not so far that it
+/// leaves the land kept clear around the ring.
+const OPPONENT_TOWER_OFFSET: f32 = 3.5;
+/// How high a tower's tubes are.
+pub const TUBE_HEIGHT: f32 = 1.26;
+/// How far ahead of a tower's middle its tubes end, and how far apart they stand from it.
+const TUBE_REACH: f32 = 0.7;
+pub const TUBE_SPREAD: f32 = 0.18;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Unit {
@@ -128,6 +148,8 @@ pub struct Unit {
     /// A heavy unit squashes enemy infantry it drives over. Every vehicle is heavy for now.
     pub heavy: bool,
     pub alive: bool,
+    /// Which of a tower's two tubes fires next.
+    pub second_tube: bool,
     blocked_for: f32,
     /// Its nearest approach to the destination since it set off.
     best_remaining: f32,
@@ -166,9 +188,29 @@ impl Unit {
         (self.x, self.sphere_y(), self.z)
     }
 
-    /// Where its shots come from.
+    /// Where its shots come from: a tower takes turns with the ends of its two tubes.
     pub fn muzzle(&self) -> (f32, f32, f32) {
+        if self.kind.is_building() {
+            let (sin, cos) = self.heading.sin_cos();
+            let side = if self.second_tube { TUBE_SPREAD } else { -TUBE_SPREAD };
+            return (
+                self.x + cos * TUBE_REACH - sin * side,
+                self.y + TUBE_HEIGHT,
+                self.z + sin * TUBE_REACH + cos * side,
+            );
+        }
         (self.x, self.y + self.altitude + HEIGHT * 0.8, self.z)
+    }
+
+    /// The height on screen that a click aims at.
+    pub fn pick_height(&self) -> f32 {
+        let above_feet = if self.kind.is_building() { TUBE_HEIGHT * 0.7 } else { HEIGHT / 2.0 };
+        self.y + self.altitude + above_feet
+    }
+
+    /// Whether the player can select it, and so give it orders.
+    pub fn is_selectable(&self) -> bool {
+        self.owner == 0 && !self.kind.is_building()
     }
 
     /// A lone player's unit standing at a point, ready to fire with bullets.
@@ -192,19 +234,20 @@ impl Unit {
             target: None,
             heavy: kind == UnitKind::Vehicle,
             alive: true,
+            second_tube: false,
             blocked_for: 0.0,
             best_remaining: f32::INFINITY,
         }
     }
 }
 
-/// What a block of units carries: vehicles have mortars and aircraft have missiles. The
+/// What a block of units carries: vehicles have mortars, and aircraft and towers missiles. The
 /// player's infantry mixes the three small arms by column, so that all of them are on the
 /// field, and opponents' have bullets.
 fn weapon_for(kind: UnitKind, owner: usize, column: usize) -> WeaponKind {
     match (kind, owner, column % 3) {
         (UnitKind::Vehicle, _, _) => WeaponKind::Mortar,
-        (UnitKind::Aircraft, _, _) => WeaponKind::Missile,
+        (UnitKind::Aircraft | UnitKind::Tower, _, _) => WeaponKind::Missile,
         (UnitKind::Infantry, 0, 1) => WeaponKind::Missile,
         (UnitKind::Infantry, 0, 2) => WeaponKind::Laser,
         (UnitKind::Infantry, _, _) => WeaponKind::Bullet,
@@ -248,37 +291,55 @@ fn spawn_group(
             let x = cx + (col as f32 - (cols - 1) as f32 / 2.0) * SPACING;
             let z = cz + (row as f32 - (rows - 1) as f32 / 2.0) * SPACING;
             let kind = kind_in_block(owner, row, rows);
-            units.push(Unit {
-                id: units.len() as u32,
-                health: kind.max_health(),
-                weapon: weapon_for(kind, owner, col),
-                cooldown: 0.0,
-                altitude: kind.altitude(),
-                x,
-                y: terrain.height_at(x, z),
-                z,
-                owner,
-                color,
-                selected: false,
-                kind,
-                heading: -FRAC_PI_2,
-                destination: (x, z),
-                target: None,
-                heavy: kind == UnitKind::Vehicle,
-                alive: true,
-                blocked_for: 0.0,
-                best_remaining: f32::INFINITY,
-            });
+            place_unit(units, terrain, (x, z), kind, weapon_for(kind, owner, col), (owner, color));
         }
     }
 }
 
-/// The player gets a block at the map's middle and another a long scroll away. Each opponent
-/// gets one block, evenly around a ring. `colors` holds the player's, then the opponents'.
+fn place_unit(
+    units: &mut Vec<Unit>,
+    terrain: &Terrain,
+    (x, z): (f32, f32),
+    kind: UnitKind,
+    weapon: WeaponKind,
+    (owner, color): (usize, TeamColor),
+) {
+    units.push(Unit {
+        id: units.len() as u32,
+        health: kind.max_health(),
+        weapon,
+        cooldown: 0.0,
+        altitude: kind.altitude(),
+        x,
+        y: terrain.height_at(x, z),
+        z,
+        owner,
+        color,
+        selected: false,
+        kind,
+        heading: -FRAC_PI_2,
+        destination: (x, z),
+        target: None,
+        heavy: kind == UnitKind::Vehicle,
+        alive: true,
+        second_tube: false,
+        blocked_for: 0.0,
+        best_remaining: f32::INFINITY,
+    });
+}
+
+fn place_tower(units: &mut Vec<Unit>, terrain: &Terrain, at: (f32, f32), side: (usize, TeamColor)) {
+    place_unit(units, terrain, at, UnitKind::Tower, weapon_for(UnitKind::Tower, side.0, 0), side);
+}
+
+/// The player gets a block and a tower at the map's middle and another block a long scroll
+/// away. Each opponent gets one block and a tower, evenly around a ring. `colors` holds the
+/// player's, then the opponents'.
 pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
     let mut units = Vec::new();
     let player = (0, colors[0]);
     spawn_group(&mut units, terrain, (0.0, MAP_MIDDLE_Z), (4, ROWS_WITH_AIRCRAFT), player);
+    place_tower(&mut units, terrain, (PLAYER_TOWER_OFFSET, MAP_MIDDLE_Z), player);
     spawn_group(&mut units, terrain, (SECOND_GROUP_X, MAP_MIDDLE_Z), (4, 2), player);
     let opponents = colors.len() - 1;
     for (i, &color) in colors[1..].iter().enumerate() {
@@ -287,6 +348,8 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
         let (sin, cos) = angle.sin_cos();
         let center = (OPPONENT_RING * sin, MAP_MIDDLE_Z - OPPONENT_RING * cos);
         spawn_group(&mut units, terrain, center, (3, 2), (i + 1, color));
+        let tower = (center.0 + OPPONENT_TOWER_OFFSET * cos, center.1 + OPPONENT_TOWER_OFFSET * sin);
+        place_tower(&mut units, terrain, tower, (i + 1, color));
     }
     units
 }
@@ -374,7 +437,10 @@ fn order_layer(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, teams:
     let any_heavy = units.iter().any(|u| in_layer(u) && u.selected && u.heavy);
     let taken: Vec<(f32, f32)> = units
         .iter()
-        .filter(|u| in_layer(u) && !u.selected && u.alive && !(any_heavy && are_enemies(teams, 0, u.owner)))
+        .filter(|u| {
+            let can_be_run_over = any_heavy && are_enemies(teams, 0, u.owner) && !u.kind.is_building();
+            in_layer(u) && !u.selected && u.alive && !can_be_run_over
+        })
         .map(|u| u.destination)
         .collect();
     let mut chosen: Vec<usize> = (0..units.len()).filter(|&i| in_layer(&units[i]) && units[i].selected).collect();
@@ -493,7 +559,7 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
 }
 
 /// The shortest signed turn from one heading to another.
-fn turn_between(from: f32, to: f32) -> f32 {
+pub fn turn_between(from: f32, to: f32) -> f32 {
     (to - from + PI).rem_euclid(TAU) - PI
 }
 
@@ -515,7 +581,7 @@ fn walk(unit: &mut Unit, terrain: &Terrain, (dir_x, dir_z): (f32, f32), dt: f32)
 
 /// Pushes a unit's sphere out of any ruin it reaches. Returns whether it touched one.
 fn push_out_of_ruins(unit: &mut Unit, terrain: &Terrain) -> bool {
-    if unit.kind.flies() {
+    if unit.kind.flies() || unit.kind.is_building() {
         return false;
     }
     let radius = unit.kind.radius();
@@ -585,11 +651,13 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 // Exactly on top of each other, any fixed direction will do.
                 let (nx, nz) = if flat > 0.0001 { (dx / flat, dz / flat) } else { (1.0, 0.0) };
                 let overlap = touching - flat.hypot(dy);
-                // Infantry cannot shove something heavy: it takes the whole push itself.
-                let (share_a, share_b) = match (units[a].heavy, units[b].heavy) {
-                    (true, false) => (0.0, 1.0),
-                    (false, true) => (1.0, 0.0),
-                    _ => (0.5, 0.5),
+                // Infantry cannot shove something heavy: it takes the whole push itself. Nothing
+                // shoves a building.
+                let solid = |unit: &Unit| (unit.kind.is_building(), unit.heavy);
+                let (share_a, share_b) = match solid(&units[a]).cmp(&solid(&units[b])) {
+                    Ordering::Greater => (0.0, 1.0),
+                    Ordering::Less => (1.0, 0.0),
+                    Ordering::Equal => (0.5, 0.5),
                 };
                 for (i, sign, share) in [(a, -1.0, share_a), (b, 1.0, share_b)] {
                     let push = overlap * share;
@@ -632,6 +700,7 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
                 unit.heading += turn.clamp(-most, most);
                 held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
             }
+            UnitKind::Tower => {}
         }
     }
     squash(units, teams);
@@ -743,7 +812,7 @@ mod tests {
             assert!(own.iter().any(|u| u.weapon == weapon), "{weapon:?}");
         }
         assert!(own.iter().filter(|u| u.kind == UnitKind::Vehicle).all(|u| u.weapon == WeaponKind::Mortar));
-        assert!(units.iter().filter(|u| u.owner != 0).all(|u| u.weapon == WeaponKind::Bullet));
+        assert!(units.iter().filter(|u| u.kind == UnitKind::Infantry && u.owner != 0).all(|u| u.weapon == WeaponKind::Bullet));
     }
 
     #[test]
@@ -1052,6 +1121,74 @@ mod tests {
     }
 
     #[test]
+    fn everyone_starts_with_one_tower_of_their_color_with_missiles() {
+        let units = spawn(terrain(0), &COLORS);
+        for owner in 0..COLORS.len() {
+            let towers: Vec<_> = units.iter().filter(|u| u.owner == owner && u.kind == UnitKind::Tower).collect();
+            assert_eq!(towers.len(), 1);
+            assert_eq!(towers[0].color, COLORS[owner]);
+            assert_eq!(towers[0].weapon, WeaponKind::Missile);
+            assert_eq!(towers[0].health, UnitKind::Tower.max_health());
+            assert!(!towers[0].is_selectable());
+        }
+    }
+
+    #[test]
+    fn towers_stand_on_land_on_every_map_with_any_number_of_opponents() {
+        let colors = [
+            TeamColor::Blue,
+            TeamColor::Red,
+            TeamColor::Cyan,
+            TeamColor::Orange,
+            TeamColor::Green,
+            TeamColor::Violet,
+            TeamColor::Yellow,
+            TeamColor::LightPink,
+        ];
+        for map in 0..crate::game::MAPS.len() {
+            for count in 2..=colors.len() {
+                let terrain = terrain(map);
+                for unit in spawn(terrain, &colors[..count]).iter().filter(|u| u.kind.is_building()) {
+                    assert!(terrain.can_walk(unit.x, unit.z), "map {map}, {count} sides: {unit:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_moves_a_tower_or_runs_it_over() {
+        let mut units = [unit_at(-4.0, 60.0, UnitKind::Vehicle), enemy_at(0.0, 60.0, UnitKind::Tower)];
+        units[0].heading = 0.0;
+        units[0].destination = (4.0, 60.0);
+        for _ in 0..400 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert!(units[1].alive, "not squashed");
+        assert_eq!((units[1].x, units[1].z), (0.0, 60.0), "not pushed");
+        assert!(!units[0].is_moving(), "and the vehicle drove around it: {:?}", units[0]);
+    }
+
+    #[test]
+    fn no_order_sends_anyone_right_onto_a_tower() {
+        let mut units = [unit_at(-8.0, 60.0, UnitKind::Vehicle), enemy_at(0.0, 60.0, UnitKind::Tower)];
+        units[0].selected = true;
+        order_move(&mut units, (0.0, 60.0), open_ground(), &TWO_SIDES);
+        assert_ne!(units[0].destination, (0.0, 60.0));
+    }
+
+    #[test]
+    fn a_towers_two_tubes_stand_side_by_side_ahead_of_it_where_it_is_aimed() {
+        let mut tower = unit_at(0.0, 60.0, UnitKind::Tower);
+        tower.heading = 0.0;
+        let first = tower.muzzle();
+        tower.second_tube = true;
+        let second = tower.muzzle();
+        assert!(first.0 > 0.0 && second.0 > 0.0, "ahead of it, to the east");
+        assert_eq!(first.0, second.0);
+        assert!((first.2 - second.2).abs() > 0.2, "side by side");
+    }
+
+    #[test]
     fn enemies_are_told_apart_by_team() {
         assert!(are_enemies(&[0, 1, 2], 0, 1));
         assert!(!are_enemies(&[0, 1, 0], 0, 2), "the same team is allied");
@@ -1060,9 +1197,9 @@ mod tests {
     }
 
     #[test]
-    fn opponents_have_only_infantry_and_the_player_has_vehicles_that_are_heavy() {
+    fn opponents_have_only_infantry_and_towers_and_the_player_has_vehicles_that_are_heavy() {
         let units = spawn(terrain(0), &COLORS);
-        assert!(units.iter().filter(|u| u.owner != 0).all(|u| u.kind == UnitKind::Infantry));
+        assert!(units.iter().filter(|u| u.owner != 0).all(|u| matches!(u.kind, UnitKind::Infantry | UnitKind::Tower)));
         assert!(units.iter().any(|u| u.owner == 0 && u.kind == UnitKind::Vehicle));
         assert!(units.iter().all(|u| u.heavy == (u.kind == UnitKind::Vehicle)));
     }

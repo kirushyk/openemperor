@@ -602,7 +602,7 @@ fn draw_health_bar(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
     if unit.health >= unit.kind.max_health() {
         return;
     }
-    let Some((x, y)) = view.project(unit.x, unit.y + unit.altitude + 1.0, unit.z) else { return };
+    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else { return };
     let s = ui_scale(game.height);
     let (width, height) = (30.0 * s, (4.0 * s).max(2.0));
     let share = (unit.health / unit.kind.max_health()).clamp(0.0, 1.0);
@@ -708,6 +708,20 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
             draw_turned_box(canvas, game, view, body, (base, base + 0.16), color);
             let fin = (tail_x, tail_z, 0.07, 0.015, unit.heading);
             draw_turned_box(canvas, game, view, fin, (base + 0.16, base + 0.32), color.map(|c| c * 0.85));
+        }
+        UnitKind::Tower => {
+            let (right_x, right_z) = (-forward_z, forward_x);
+            let wall = (unit.x, unit.z, 0.5, 0.5, 0.0);
+            let head_base = units::TUBE_HEIGHT - 0.2;
+            draw_turned_box(canvas, game, view, wall, (unit.y, unit.y + head_base), color.map(|c| c * 0.8));
+            let head = (unit.x, unit.z, 0.3, 0.3, unit.heading);
+            draw_turned_box(canvas, game, view, head, (unit.y + head_base, unit.y + head_base + 0.34), color);
+            let (ahead_x, ahead_z) = ahead(0.4);
+            for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
+                let tube = (ahead_x + right_x * side, ahead_z + right_z * side, 0.3, 0.06, unit.heading);
+                let height = (unit.y + units::TUBE_HEIGHT - 0.06, unit.y + units::TUBE_HEIGHT + 0.06);
+                draw_turned_box(canvas, game, view, tube, height, color.map(|c| c * 0.5));
+            }
         }
     }
 }
@@ -1226,7 +1240,8 @@ fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
     for unit in &game.units {
         let (x, y) = battlefield::world_to_minimap(rect, unit.x, unit.z);
         let color = if unit.selected { VIEW_OUTLINE } else { team_color(unit.color) };
-        canvas.rect(x - dot / 2.0, y - dot / 2.0, dot, dot, color);
+        let size = if unit.kind.is_building() { dot * 2.0 } else { dot };
+        canvas.rect(x - size / 2.0, y - size / 2.0, size, size, color);
     }
     draw_radar_sweep(canvas, rect, game.battle_time());
 

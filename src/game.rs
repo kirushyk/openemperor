@@ -39,7 +39,7 @@ pub enum Outcome {
     Defeat,
 }
 
-/// One side of the battle statistics. Buildings stay at zero until they exist.
+/// One side of the battle statistics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Casualties {
     pub infantry: i32,
@@ -54,6 +54,7 @@ impl Casualties {
             UnitKind::Infantry => self.infantry += 1,
             UnitKind::Vehicle => self.vehicles += 1,
             UnitKind::Aircraft => self.aircraft += 1,
+            UnitKind::Tower => self.buildings += 1,
         }
     }
 }
@@ -1195,7 +1196,7 @@ impl Game {
     /// spot below it and by the spot it appears over on screen, since a box drawn around
     /// what the player sees should catch it.
     pub fn in_selection_drag(&self, unit: &Unit) -> bool {
-        let Some(rectangle) = self.selection_ground().filter(|_| unit.owner == 0) else { return false };
+        let Some(rectangle) = self.selection_ground().filter(|_| unit.is_selectable()) else { return false };
         units::in_selection(rectangle, unit) || self.appears_in_selection(rectangle, unit)
     }
 
@@ -1245,7 +1246,7 @@ impl Game {
         }
         let selected: Vec<&Unit> = self.units.iter().filter(|u| u.selected).collect();
         let (enemy, enemy_distance) = self.unit_near_cursor(|u| selected.iter().any(|s| s.can_attack(u, &self.teams)))?;
-        let own = self.unit_near_cursor(|u| u.owner == 0);
+        let own = self.unit_near_cursor(Unit::is_selectable);
         own.is_none_or(|(_, own_distance)| enemy_distance < own_distance).then_some(enemy)
     }
 
@@ -1293,7 +1294,7 @@ impl Game {
 
     /// The nearest of the player's units to the cursor, within reach of a click.
     fn unit_under_cursor(&self) -> Option<usize> {
-        self.unit_near_cursor(|u| u.owner == 0).map(|(i, _)| i)
+        self.unit_near_cursor(Unit::is_selectable).map(|(i, _)| i)
     }
 
     /// The nearest wanted unit to the cursor within reach of a click, and how far it is.
@@ -1303,8 +1304,7 @@ impl Game {
         let mut best = None;
         let mut best_distance = reach;
         for (i, unit) in self.units.iter().enumerate().filter(|(_, u)| wanted(u)) {
-            let middle = unit.y + unit.altitude + units::HEIGHT / 2.0;
-            let Some((x, y)) = view.project(unit.x, middle, unit.z) else { continue };
+            let Some((x, y)) = view.project(unit.x, unit.pick_height(), unit.z) else { continue };
             let distance = (x - self.mouse.0).hypot(y - self.mouse.1);
             if distance <= best_distance {
                 best = Some((i, distance));
@@ -2494,7 +2494,7 @@ mod tests {
     fn statistics_count_kills_and_losses_by_kind_but_not_allies() {
         let mut game = in_battle();
         game.teams[2] = game.teams[0];
-        let enemy_infantry = game.units.iter().filter(|u| u.owner == 1).count() as i32;
+        let enemy_infantry = game.units.iter().filter(|u| u.owner == 1 && u.kind == UnitKind::Infantry).count() as i32;
         let lost_infantry = game
             .units
             .iter()
@@ -2521,7 +2521,10 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
-        let count = game.units.iter().filter(|u| u.owner == 1).count() as i32;
+        // A tower cannot be run over, so this enemy has none.
+        let tower = tower_of(&game, 1);
+        game.units[tower].alive = false;
+        let count = game.units.iter().filter(|u| u.owner == 1 && u.kind == UnitKind::Infantry).count() as i32;
         for _ in 0..4000 {
             let Some(target) = game.units.iter().find(|u| u.owner == 1) else { break };
             let target = (target.x, target.z);
@@ -2784,7 +2787,7 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
-        let enemies = game.units.iter().filter(|u| u.owner == 1).count() as i32;
+        let enemies = game.units.iter().filter(|u| u.owner == 1 && u.kind == UnitKind::Infantry).count() as i32;
         let target = game.units.iter().find(|u| u.owner == 1).map(|u| (u.x, u.z)).unwrap();
         // Everyone of the player's walks into range and fires by themselves.
         select_first_group(&mut game);
@@ -2797,6 +2800,7 @@ mod tests {
         }
         assert_eq!(game.outcome, Some(Outcome::Victory));
         assert_eq!(game.killed.infantry, enemies);
+        assert_eq!(game.killed.buildings, 1, "its tower fell too");
     }
 
     #[test]
@@ -3247,6 +3251,68 @@ mod tests {
         assert!(line_vertices(&game, crate::render::ATTACK_LINE) > 0);
     }
 
+    fn tower_of(game: &Game, owner: usize) -> usize {
+        game.units.iter().position(|u| u.owner == owner && u.kind == UnitKind::Tower).unwrap()
+    }
+
+    #[test]
+    fn the_players_tower_cannot_be_selected_but_stands_in_the_box() {
+        let mut game = in_battle();
+        let tower = tower_of(&game, 0);
+        let (from, to) = around_first_group();
+        drag_select(&mut game, from, to);
+        assert!(!game.units[tower].selected);
+
+        game.handle(Event::RightDown);
+        let unit = game.units[tower];
+        let (x, y) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
+        click_at(&mut game, x, y);
+        assert_eq!(selected_count(&game), 0);
+    }
+
+    #[test]
+    fn an_enemy_tower_can_be_clicked_and_destroyed_and_counts_as_a_building() {
+        let mut game = in_battle();
+        let tower = tower_of(&game, 1);
+        let (x, z) = (game.camera.x + 6.0, game.camera.z);
+        (game.units[tower].x, game.units[tower].z, game.units[tower].destination) = (x, z, (x, z));
+        let id = game.units[tower].id;
+        select_first_group(&mut game);
+        let unit = game.units[tower];
+        let (px, py) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
+        game.handle(Event::MouseMove(px, py));
+        assert!(game.cursor_means_attack());
+        click_at(&mut game, px, py);
+        assert!(game.units.iter().filter(|u| u.selected).all(|u| u.target == Some(id)));
+
+        for _ in 0..4000 {
+            game.update(0.05);
+            if !game.units.iter().any(|u| u.id == id) {
+                break;
+            }
+        }
+        assert!(!game.units.iter().any(|u| u.id == id), "it fell");
+        assert_eq!(game.killed.buildings, 1);
+    }
+
+    #[test]
+    fn a_battle_is_not_won_while_an_enemy_tower_stands_nor_lost_while_ones_own_does() {
+        let mut game = in_battle();
+        let enemies = all_enemies(&game);
+        for unit in game.units.iter_mut().filter(|u| enemies.contains(&u.owner) && !u.kind.is_building()) {
+            unit.alive = false;
+        }
+        game.update(0.01);
+        assert_eq!(game.outcome, None, "towers still stand");
+
+        let mut game = in_battle();
+        for unit in game.units.iter_mut().filter(|u| u.owner == 0 && !u.kind.is_building()) {
+            unit.alive = false;
+        }
+        game.update(0.01);
+        assert_eq!(game.outcome, None, "the player's tower still stands");
+    }
+
     #[test]
     fn a_box_with_shift_adds_to_the_selection() {
         let mut game = in_battle();
@@ -3603,7 +3669,7 @@ mod tests {
             }
         }
         game.handle(Event::MouseUp);
-        let players = game.units.iter().filter(|u| u.owner == 0).count();
+        let players = game.units.iter().filter(|u| u.is_selectable()).count();
         assert!(players > FIRST_GROUP, "there is a second group");
         assert_eq!(selected_count(&game), players, "both groups, a screen apart");
     }

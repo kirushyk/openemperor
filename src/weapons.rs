@@ -1,10 +1,10 @@
 //! The ways of killing: bullets, missiles, lasers, mortars and the superweapon.
 //!
 //! Everything here is plain simulation with no drawing. Units fire by themselves at the
-//! nearest enemy in range, on the move or standing still.
+//! nearest enemy in range, on the move or standing still. Towers first turn their tubes.
 
 use crate::battlefield::Terrain;
-use crate::units::{Unit, UnitKind, are_enemies};
+use crate::units::{Unit, UnitKind, are_enemies, turn_between};
 
 /// The longest simulation step, in seconds; longer frames are divided up.
 const MAX_STEP: f32 = 0.05;
@@ -23,6 +23,12 @@ const MISSILE_BLAST_RADIUS: f32 = 0.8;
 const SHELL_SPEED: f32 = 7.0;
 const SHELL_ARC: f32 = 0.35;
 const SHELL_BLAST_RADIUS: f32 = 1.6;
+
+/// Radians per second a tower turns its tubes: fast at a target, slowly while looking out.
+const TOWER_TURN: f32 = 2.0;
+const TOWER_IDLE_TURN: f32 = 0.5;
+/// A tower must point this close to its target, in radians, before it fires.
+const TOWER_ALIGNMENT: f32 = 0.1;
 
 const BEAM_SECONDS: f32 = 0.2;
 const BLAST_SECONDS: f32 = 0.5;
@@ -82,10 +88,10 @@ impl WeaponKind {
         }
     }
 
-    /// Bullets barely scratch armor.
+    /// Bullets barely scratch armor or walls.
     fn damage_to(self, kind: UnitKind) -> f32 {
         match (self, kind) {
-            (WeaponKind::Bullet, UnitKind::Vehicle) => self.damage() * 0.25,
+            (WeaponKind::Bullet, UnitKind::Vehicle | UnitKind::Tower) => self.damage() * 0.25,
             _ => self.damage(),
         }
     }
@@ -218,6 +224,7 @@ impl Combat {
                 continue;
             }
             units[i].cooldown -= dt;
+            let aimed = !units[i].kind.is_building() || turn_tubes(units, i, teams, dt);
             if units[i].cooldown > 0.0 {
                 continue;
             }
@@ -225,6 +232,9 @@ impl Combat {
                 units[i].cooldown = RETARGET_SECONDS;
                 continue;
             };
+            if !aimed {
+                continue;
+            }
             let weapon = units[i].weapon;
             units[i].cooldown = weapon.cooldown();
             let (from, to) = (units[i].muzzle(), units[target].center());
@@ -250,6 +260,7 @@ impl Combat {
                         target_id: units[target].id,
                         fuel: MISSILE_FUEL_SECONDS,
                     });
+                    units[i].second_tube = !units[i].second_tube;
                 }
                 WeaponKind::Mortar => {
                     let flat = (to.0 - from.0).hypot(to.2 - from.2);
@@ -369,6 +380,20 @@ fn hurt(unit: &mut Unit, damage: f32) {
         unit.alive = false;
         unit.selected = false;
     }
+}
+
+/// Turns a tower towards whoever it would fire at, or slowly around while nobody is in
+/// range. Returns whether it now points at a target.
+fn turn_tubes(units: &mut [Unit], tower: usize, teams: &[usize], dt: f32) -> bool {
+    let Some(target) = choose_target(units, tower, teams) else {
+        units[tower].heading += TOWER_IDLE_TURN * dt;
+        return false;
+    };
+    let (dx, dz) = (units[target].x - units[tower].x, units[target].z - units[tower].z);
+    let turn = turn_between(units[tower].heading, dz.atan2(dx));
+    let most = TOWER_TURN * dt;
+    units[tower].heading += turn.clamp(-most, most);
+    (turn - turn.clamp(-most, most)).abs() <= TOWER_ALIGNMENT
 }
 
 /// The enemy it was told to attack if that one is in range, otherwise whoever is nearest.
@@ -827,6 +852,77 @@ mod tests {
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         assert!(units[1].health < 100.0);
         assert_eq!(units[2].health, 100.0);
+    }
+
+    fn tower() -> Unit {
+        let mut unit = Unit::for_test(0.0, 60.0, UnitKind::Tower);
+        unit.id = 1;
+        unit.weapon = WeaponKind::Missile;
+        unit.heading = 0.0;
+        unit
+    }
+
+    #[test]
+    fn a_tower_turns_its_tubes_to_its_target_before_it_fires() {
+        // The target is due west, behind the tubes pointing east.
+        let mut units = [tower(), target_at(-8.0, 60.0)];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.5);
+        assert!(combat.missiles.is_empty(), "still turning");
+        assert_ne!(units[0].heading, 0.0);
+        run(&mut combat, &mut units, 1.5);
+        assert_eq!(combat.missiles.len(), 1, "now it fires");
+        assert!(units[0].heading.cos() < -0.9, "facing west: {}", units[0].heading);
+    }
+
+    #[test]
+    fn a_tower_keeps_turning_slowly_while_nobody_is_in_range() {
+        let mut units = [tower(), target_at(40.0, 60.0)];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 2.0);
+        assert!(combat.missiles.is_empty());
+        assert!((units[0].heading - TOWER_IDLE_TURN * 2.0).abs() < 0.01, "{}", units[0].heading);
+    }
+
+    #[test]
+    fn a_tower_fires_from_each_tube_in_turn_and_its_missiles_hit() {
+        let mut units = [tower(), target_at(8.0, 60.0)];
+        let mut combat = Combat::default();
+        let mut launched_from = Vec::new();
+        let mut known = 0;
+        for _ in 0..200 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            if combat.missiles.len() > known {
+                launched_from.push(combat.missiles.last().unwrap().position);
+            }
+            known = combat.missiles.len();
+        }
+        assert!(launched_from.len() >= 2, "{launched_from:?}");
+        assert!(distance(launched_from[0], launched_from[1]) > 0.1, "from the other tube");
+        assert!(units[1].health < 100.0);
+    }
+
+    #[test]
+    fn a_tower_shoots_at_aircraft_too() {
+        let mut units = [tower(), plane_at(5.0, 60.0)];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 4.0);
+        assert!(units[1].health < UnitKind::Aircraft.max_health());
+    }
+
+    #[test]
+    fn a_tower_is_destroyed_by_enough_fire_and_bullets_barely_scratch_it() {
+        assert!(WeaponKind::Bullet.damage_to(UnitKind::Tower) < WeaponKind::Bullet.damage());
+        let mut enemy_tower = tower();
+        enemy_tower.owner = 1;
+        enemy_tower.cooldown = 100_000.0;
+        let mut units = [shooter(WeaponKind::Laser), enemy_tower];
+        units[0].x = -5.0;
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 10.0);
+        assert!(units[1].alive && units[1].health < UnitKind::Tower.max_health(), "it takes a while");
+        run(&mut combat, &mut units, 40.0);
+        assert!(!units[1].alive, "but it falls");
     }
 
     #[test]

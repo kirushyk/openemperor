@@ -2,7 +2,7 @@
 
 use crate::battlefield::{self, Camera};
 use crate::hud;
-use crate::units::{self, Unit};
+use crate::units::{self, Unit, UnitKind};
 use crate::platform::{Event, Key};
 
 pub const INTRO_SECONDS: f32 = 3.0;
@@ -16,6 +16,39 @@ const CLICK_SLOP: f32 = 6.0;
 const PICK_RADIUS: f32 = 25.0;
 /// A placeholder reading until buildings produce and consume energy.
 const STARTING_ENERGY: i32 = 65;
+
+/// How long the Victory or Defeat message stays up, in seconds.
+pub const OUTCOME_SECONDS: f32 = 10.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BattleKind {
+    Tutorial,
+    Skirmish,
+    Campaign,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Victory,
+    Defeat,
+}
+
+/// One side of the battle statistics. Buildings stay at zero until they exist.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Casualties {
+    pub infantry: i32,
+    pub vehicles: i32,
+    pub buildings: i32,
+}
+
+impl Casualties {
+    fn count(&mut self, unit: &Unit) {
+        match unit.kind {
+            UnitKind::Infantry => self.infantry += 1,
+            UnitKind::Vehicle => self.vehicles += 1,
+        }
+    }
+}
 
 /// The sidebar's three build menus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +99,8 @@ pub enum Screen {
     /// Esc on the battlefield. This and the options and credits screens opened from it
     /// draw over the battle while `Game::in_battle` holds.
     EscapeMenu,
+    /// What was killed and lost, after the Victory or Defeat message.
+    BattleStats,
 }
 
 /// One line of the diplomacy window.
@@ -386,6 +421,7 @@ pub enum Action {
     SaveGame,
     ExitGame,
     ReturnToGame,
+    LeaveBattleStats,
     /// The sidebar's fake buttons, which do nothing yet.
     HudSmall(usize),
     HudWide(usize),
@@ -472,6 +508,9 @@ const SINGLE_PLAYER_MENU: &[(Action, &str, Anchor)] = &[
 ];
 
 const BACK_ONLY: &[(Action, &str, Anchor)] = &[(Action::Back, "Back", Anchor::BottomLeft)];
+
+const BATTLE_STATS: &[(Action, &str, Anchor)] =
+    &[(Action::LeaveBattleStats, "Continue", Anchor::BottomRight)];
 
 const ESCAPE_MENU: &[(Action, &str, Anchor)] = &[
     (Action::LoadGame, "Load Game", Anchor::Center),
@@ -946,6 +985,7 @@ pub fn buttons(screen: Screen, width: f32, height: f32) -> Vec<Button> {
         Screen::MainMenu => MAIN_MENU,
         Screen::SinglePlayerMenu => SINGLE_PLAYER_MENU,
         Screen::EscapeMenu => ESCAPE_MENU,
+        Screen::BattleStats => BATTLE_STATS,
         Screen::Options | Screen::Credits | Screen::FactionSelect | Screen::SkirmishSetup => BACK_ONLY,
     };
     let s = ui_scale(height);
@@ -1013,6 +1053,16 @@ pub struct Game {
     /// Paused with the Pause key rather than by a menu being open.
     pub key_paused: bool,
     pub stats_open: bool,
+    pub battle_kind: BattleKind,
+    /// The team of each owner, player first. Sharing a team is how allies will work.
+    pub teams: Vec<usize>,
+    /// Set once the battle is decided, and kept for the statistics.
+    pub outcome: Option<Outcome>,
+    outcome_elapsed: f32,
+    pub killed: Casualties,
+    pub lost: Casualties,
+    /// Counts up from 0 through a campaign.
+    pub campaign_mission: usize,
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
     pub units: Vec<Unit>,
@@ -1027,7 +1077,6 @@ pub struct Game {
     pub chat: Vec<&'static str>,
     next_chat_at: f32,
     chat_random: u32,
-    skirmish_battle: bool,
     /// Seconds of battle played, which stand still while paused.
     battle_time: f32,
     /// Seconds since the current screen opened.
@@ -1059,6 +1108,13 @@ impl Game {
             pausable: true,
             key_paused: false,
             stats_open: false,
+            battle_kind: BattleKind::Tutorial,
+            teams: vec![0],
+            outcome: None,
+            outcome_elapsed: 0.0,
+            killed: Casualties::default(),
+            lost: Casualties::default(),
+            campaign_mission: 0,
             minimap_dragging: false,
             units: Vec::new(),
             selection_anchor: None,
@@ -1068,7 +1124,6 @@ impl Game {
             chat: Vec::new(),
             next_chat_at: 0.0,
             chat_random: 0x9E37_79B9,
-            skirmish_battle: false,
             battle_time: 0.0,
             screen_elapsed: 0.0,
         }
@@ -1148,7 +1203,7 @@ impl Game {
                 unit.selected = i == picked;
             }
         } else if let Some(target) = self.view().ground_at(self.mouse.0, self.mouse.1) {
-            units::order_move(&mut self.units, target, battlefield::terrain(self.battle_map));
+            units::order_move(&mut self.units, target, battlefield::terrain(self.battle_map), &self.teams);
         }
         self.selection_anchor = None;
     }
@@ -1197,19 +1252,29 @@ impl Game {
     /// The player, then each opponent in this battle.
     pub fn stats_rows(&self) -> Vec<StatsRow> {
         let setup = &self.skirmish;
-        if !self.skirmish_battle {
+        if self.battle_kind != BattleKind::Skirmish {
             let color = match self.faction {
                 Some(Faction::H) => TeamColor::Red,
                 Some(Faction::O) => TeamColor::Cyan,
                 Some(Faction::A) | None => TeamColor::Blue,
             };
-            return vec![StatsRow {
-                name: setup.commander.clone(),
-                faction: self.faction,
-                color,
-                allies: [Ally::None; 2],
-                money: self.player_money(),
-            }];
+            let enemy_color = if color == TeamColor::Red { TeamColor::Blue } else { TeamColor::Red };
+            return vec![
+                StatsRow {
+                    name: setup.commander.clone(),
+                    faction: self.faction,
+                    color,
+                    allies: [Ally::None; 2],
+                    money: self.player_money(),
+                },
+                StatsRow {
+                    name: "Enemy".to_string(),
+                    faction: None,
+                    color: enemy_color,
+                    allies: [Ally::None; 2],
+                    money: self.money[1],
+                },
+            ];
         }
         let mut rows = vec![StatsRow {
             name: setup.commander.clone(),
@@ -1228,6 +1293,56 @@ impl Game {
             });
         }
         rows
+    }
+
+    /// Counts the dead, clears them away, and decides the battle if that ends it: it is won
+    /// when no enemy of the player is left, and lost when the player has nothing left.
+    fn settle_casualties(&mut self) {
+        for unit in self.units.iter().filter(|u| !u.alive) {
+            if unit.owner == 0 {
+                self.lost.count(unit);
+            } else if units::are_enemies(&self.teams, 0, unit.owner) {
+                self.killed.count(unit);
+            }
+        }
+        self.units.retain(|u| u.alive);
+        if self.outcome.is_some() {
+            return;
+        }
+        let player_left = self.units.iter().any(|u| u.owner == 0);
+        let enemies_left = self.units.iter().any(|u| units::are_enemies(&self.teams, 0, u.owner));
+        self.outcome = if !player_left {
+            Some(Outcome::Defeat)
+        } else if !enemies_left {
+            Some(Outcome::Victory)
+        } else {
+            None
+        };
+        if self.outcome.is_some() {
+            self.key_paused = false;
+            self.outcome_elapsed = 0.0;
+        }
+    }
+
+    fn show_battle_stats(&mut self) {
+        self.in_battle = false;
+        self.stats_open = false;
+        self.set_screen(Screen::BattleStats);
+    }
+
+    /// Past the statistics, each kind of battle returns to where it belongs. A campaign
+    /// moves on after a victory and replays the mission after a defeat.
+    fn leave_battle_stats(&mut self) {
+        match self.battle_kind {
+            BattleKind::Skirmish => self.set_screen(Screen::SkirmishSetup),
+            BattleKind::Tutorial => self.set_screen(Screen::SinglePlayerMenu),
+            BattleKind::Campaign => {
+                if self.outcome == Some(Outcome::Victory) {
+                    self.campaign_mission += 1;
+                }
+                self.start_battle(self.campaign_mission % MAPS.len(), self.faction, BattleKind::Campaign);
+            }
+        }
     }
 
     fn leave_battle(&mut self) {
@@ -1262,10 +1377,15 @@ impl Game {
         }
     }
 
-    fn start_battle(&mut self, map: usize, faction: Option<Faction>, skirmish: bool) {
+    fn start_battle(&mut self, map: usize, faction: Option<Faction>, kind: BattleKind) {
+        let skirmish = kind == BattleKind::Skirmish;
         self.battle_map = map;
         self.faction = faction;
-        self.skirmish_battle = skirmish;
+        self.battle_kind = kind;
+        self.outcome = None;
+        self.outcome_elapsed = 0.0;
+        self.killed = Casualties::default();
+        self.lost = Casualties::default();
         self.camera = Camera::centered();
         self.in_battle = true;
         self.pausable = true;
@@ -1277,11 +1397,12 @@ impl Game {
         self.money = if skirmish {
             vec![self.skirmish.money; 1 + self.skirmish.ai_players as usize]
         } else {
-            vec![DEFAULT_BATTLE_MONEY]
+            vec![DEFAULT_BATTLE_MONEY; 2]
         };
         self.chat.clear();
         self.next_chat_at = 1.0;
         let colors: Vec<TeamColor> = self.stats_rows().iter().map(|row| row.color).collect();
+        self.teams = (0..colors.len()).collect();
         self.units = units::spawn(battlefield::terrain(map), &colors);
         self.set_screen(Screen::Loading);
     }
@@ -1417,7 +1538,12 @@ impl Game {
         }
         let mut widgets = Vec::new();
         if self.screen == Screen::InGame && !self.key_paused {
-            widgets = hud::all_buttons(self.width, self.height);
+            widgets = if self.outcome.is_some() {
+                // The battle is over: nothing more can be built.
+                hud::command_buttons(self.width, self.height)
+            } else {
+                hud::all_buttons(self.width, self.height)
+            };
         }
         if self.screen == Screen::SkirmishSetup {
             widgets = setup_widgets(self.width, self.height);
@@ -1459,17 +1585,26 @@ impl Game {
             Screen::InGame => Some(Screen::EscapeMenu),
             Screen::EscapeMenu => Some(Screen::InGame),
             Screen::FactionSelect | Screen::SkirmishSetup => Some(Screen::SinglePlayerMenu),
-            Screen::Intro | Screen::MainMenu | Screen::Loading | Screen::Movie(_) => None,
+            Screen::Intro | Screen::MainMenu | Screen::Loading | Screen::Movie(_) | Screen::BattleStats => None,
         }
     }
 
     fn go_back(&mut self) {
+        if self.screen == Screen::BattleStats {
+            self.leave_battle_stats();
+            return;
+        }
         // With the message box up, Escape answers it instead of leaving the screen.
         if self.confirming.take().is_some() {
             return;
         }
         if self.stats_open {
             self.stats_open = false;
+            return;
+        }
+        if self.screen == Screen::InGame && self.outcome.is_some() {
+            // Past the message goes on to the statistics, not to the battlefield menu.
+            self.show_battle_stats();
             return;
         }
         if self.dropdown_open || self.color_open {
@@ -1487,13 +1622,22 @@ impl Game {
         if self.in_battle && !self.is_paused() {
             self.battle_time += dt;
             self.update_chat();
-            units::advance(&mut self.units, battlefield::terrain(self.battle_map), dt);
+            units::advance(&mut self.units, battlefield::terrain(self.battle_map), &self.teams, dt);
+            if self.screen == Screen::InGame {
+                self.settle_casualties();
+            }
         }
         match self.screen {
             Screen::Intro if self.screen_elapsed >= INTRO_SECONDS => self.set_screen(Screen::MainMenu),
             Screen::Loading if self.screen_elapsed >= LOADING_SECONDS => self.set_screen(Screen::InGame),
             Screen::Movie(faction) if self.screen_elapsed >= MOVIE_SECONDS => self.finish_movie(faction),
+            Screen::InGame if self.outcome.is_some() && self.outcome_elapsed + dt >= OUTCOME_SECONDS => {
+                self.show_battle_stats();
+            }
             Screen::InGame => {
+                if self.outcome.is_some() {
+                    self.outcome_elapsed += dt;
+                }
                 self.camera.ease_zoom(dt);
                 if self.focused && !self.key_paused && !self.minimap_dragging {
                     let direction = battlefield::edge_direction(self.mouse, self.width, self.height);
@@ -1571,7 +1715,7 @@ impl Game {
             Event::KeyDown(key) => match (self.screen, key) {
                 (Screen::Intro, _) => self.set_screen(Screen::MainMenu),
                 (Screen::Movie(faction), _) => self.finish_movie(faction),
-                (Screen::InGame, Key::Pause) if self.pausable => {
+                (Screen::InGame, Key::Pause) if self.pausable && self.outcome.is_none() => {
                     self.key_paused = !self.key_paused;
                     self.selection_anchor = None;
                 }
@@ -1591,15 +1735,19 @@ impl Game {
             Action::Tab(Tab::Credits) => self.set_screen(Screen::Credits),
             Action::Tab(tab) => self.tab = tab,
             Action::Toggle(toggle) => self.flip(toggle),
-            Action::Tutorial => self.start_battle(0, None, false),
+            Action::Tutorial => self.start_battle(0, None, BattleKind::Tutorial),
+            Action::LeaveBattleStats => self.leave_battle_stats(),
             Action::ExitGame => self.leave_battle(),
             Action::ReturnToGame => self.set_screen(Screen::InGame),
             Action::StartCampaign => self.set_screen(Screen::FactionSelect),
             Action::Faction(faction) => self.set_screen(Screen::Movie(faction)),
             Action::CancelFaction => self.confirming = None,
-            Action::ConfirmFaction => self.start_battle(0, self.confirming, false),
+            Action::ConfirmFaction => {
+                self.campaign_mission = 0;
+                self.start_battle(0, self.confirming, BattleKind::Campaign);
+            }
             Action::SkirmishBattle => self.set_screen(Screen::SkirmishSetup),
-            Action::StartBattle => self.start_battle(self.skirmish.map, None, true),
+            Action::StartBattle => self.start_battle(self.skirmish.map, None, BattleKind::Skirmish),
             Action::NameField => self.name_focused = true,
             Action::MapDropdown => self.dropdown_open = true,
             Action::SelectMap(map) => {
@@ -2136,15 +2284,298 @@ mod tests {
     }
 
     #[test]
-    fn diplomacy_outside_a_skirmish_lists_only_the_player() {
+    fn diplomacy_outside_a_skirmish_lists_the_player_and_one_enemy() {
         let mut game = in_faction_select();
         pick(&mut game, Faction::O);
         click(&mut game, Action::ConfirmFaction);
         game.update(LOADING_SECONDS);
         let rows = game.stats_rows();
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].faction, Some(Faction::O));
         assert_eq!(rows[0].color, TeamColor::Cyan);
+        assert_ne!(rows[1].color, rows[0].color);
+    }
+
+    #[test]
+    fn a_red_player_faces_an_enemy_of_another_color() {
+        let mut game = in_faction_select();
+        pick(&mut game, Faction::H);
+        click(&mut game, Action::ConfirmFaction);
+        let rows = game.stats_rows();
+        assert_eq!(rows[0].color, TeamColor::Red);
+        assert_ne!(rows[1].color, TeamColor::Red);
+    }
+
+    /// Kills every unit of the given owners and lets the game notice.
+    fn kill_owners(game: &mut Game, owners: &[usize]) {
+        for unit in game.units.iter_mut().filter(|u| owners.contains(&u.owner)) {
+            unit.alive = false;
+        }
+        game.update(0.01);
+    }
+
+    fn all_enemies(game: &Game) -> Vec<usize> {
+        (1..game.teams.len()).filter(|&o| units::are_enemies(&game.teams, 0, o)).collect()
+    }
+
+    fn win(game: &mut Game) {
+        let enemies = all_enemies(game);
+        kill_owners(game, &enemies);
+        assert_eq!(game.outcome, Some(Outcome::Victory));
+    }
+
+    fn tutorial_battle() -> Game {
+        let mut game = in_menu();
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::Tutorial);
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.screen, Screen::InGame);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        game
+    }
+
+    fn campaign_battle() -> Game {
+        let mut game = in_faction_select();
+        pick(&mut game, Faction::A);
+        click(&mut game, Action::ConfirmFaction);
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.screen, Screen::InGame);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        game
+    }
+
+    #[test]
+    fn every_kind_of_battle_starts_undecided_with_enemies_to_beat() {
+        for mut game in [in_battle(), tutorial_battle(), campaign_battle()] {
+            game.update(1.0);
+            assert_eq!(game.outcome, None);
+            assert!(!all_enemies(&game).is_empty());
+        }
+    }
+
+    #[test]
+    fn killing_every_enemy_wins_and_losing_everything_loses() {
+        let mut game = in_battle();
+        let enemies = all_enemies(&game);
+        kill_owners(&mut game, &enemies[1..]);
+        assert_eq!(game.outcome, None, "one is still left");
+        win(&mut game);
+
+        let mut game = in_battle();
+        kill_owners(&mut game, &[0]);
+        assert_eq!(game.outcome, Some(Outcome::Defeat));
+    }
+
+    #[test]
+    fn allies_need_not_be_beaten() {
+        let mut game = in_battle();
+        // Opponent 2 is on the player's side.
+        game.teams[2] = game.teams[0];
+        let enemies = all_enemies(&game);
+        assert!(!enemies.contains(&2));
+        kill_owners(&mut game, &enemies);
+        assert_eq!(game.outcome, Some(Outcome::Victory));
+        assert!(game.units.iter().any(|u| u.owner == 2), "the ally is still there");
+    }
+
+    #[test]
+    fn statistics_count_kills_and_losses_by_kind_but_not_allies() {
+        let mut game = in_battle();
+        game.teams[2] = game.teams[0];
+        let enemy_infantry = game.units.iter().filter(|u| u.owner == 1).count() as i32;
+        let lost_infantry = game
+            .units
+            .iter()
+            .filter(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
+            .count() as i32;
+        kill_owners(&mut game, &[1, 2]);
+        assert_eq!(game.killed.infantry, enemy_infantry, "allies do not count");
+        assert_eq!(game.killed.vehicles, 0);
+
+        let vehicles = game.units.iter().filter(|u| u.owner == 0 && u.kind == UnitKind::Vehicle).count() as i32;
+        for unit in game.units.iter_mut().filter(|u| u.owner == 0 && u.kind == UnitKind::Infantry) {
+            unit.alive = false;
+        }
+        game.update(0.01);
+        assert_eq!(game.lost, Casualties { infantry: lost_infantry, vehicles: 0, buildings: 0 });
+        assert!(vehicles > 0);
+    }
+
+    #[test]
+    fn driving_over_every_enemy_really_wins_a_skirmish() {
+        let mut game = in_setup();
+        let ai = slider(&game, SliderId::AiPlayers);
+        drag(&mut game, SliderId::AiPlayers, ai.x_of(1));
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        let count = game.units.iter().filter(|u| u.owner == 1).count() as i32;
+        let vehicle = game.units.iter().position(|u| u.heavy).unwrap();
+        for _ in 0..4000 {
+            let Some(target) = game.units.iter().find(|u| u.owner == 1) else { break };
+            let target = (target.x, target.z);
+            game.units[vehicle].destination = target;
+            game.update(0.05);
+            if game.outcome.is_some() {
+                break;
+            }
+        }
+        assert_eq!(game.outcome, Some(Outcome::Victory));
+        assert_eq!(game.killed.infantry, count);
+    }
+
+    #[test]
+    fn the_message_lasts_ten_seconds_then_shows_the_statistics() {
+        let mut game = in_battle();
+        win(&mut game);
+        game.update(OUTCOME_SECONDS - 0.5);
+        assert_eq!(game.screen, Screen::InGame, "still up");
+        game.update(1.0);
+        assert_eq!(game.screen, Screen::BattleStats);
+        assert!(!game.in_battle);
+    }
+
+    #[test]
+    fn escape_skips_the_message_and_never_opens_the_battlefield_menu() {
+        let mut game = in_battle();
+        win(&mut game);
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::BattleStats);
+
+        let mut game = in_battle();
+        kill_owners(&mut game, &[0]);
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::BattleStats, "after a defeat too");
+    }
+
+    #[test]
+    fn during_the_message_you_can_navigate_but_not_use_the_build_menu() {
+        let mut game = in_battle();
+        win(&mut game);
+
+        let tab = hud::build_tabs(W, H)[1];
+        click_at(&mut game, tab.x + 1.0, tab.y + 1.0);
+        assert_eq!(game.build_tab, BuildTab::Infantry, "tabs no longer work");
+        let cell = hud::grid_cells(W, H)[0];
+        game.handle(Event::MouseMove(cell.x + 1.0, cell.y + 1.0));
+        assert_eq!(game.hovered(), None, "nor does the grid");
+
+        let start = game.camera;
+        game.handle(Event::MouseMove(W - 1.0, H / 2.0));
+        game.update(0.2);
+        assert_ne!(game.camera, start, "the camera still scrolls");
+        game.handle(Event::Wheel(5.0));
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        game.update(0.5);
+        assert!(game.camera.zoom > 0.0, "and zooms");
+    }
+
+    #[test]
+    fn the_pause_key_does_nothing_once_the_battle_is_over() {
+        let mut game = in_battle();
+        win(&mut game);
+        game.handle(Event::KeyDown(Key::Pause));
+        assert!(!game.key_paused);
+    }
+
+    #[test]
+    fn statistics_lead_to_the_setup_screen_after_a_skirmish() {
+        for leave in [Event::KeyDown(Key::Escape), Event::MouseUp] {
+            let mut game = in_battle();
+            win(&mut game);
+            game.handle(Event::KeyDown(Key::Escape));
+            assert_eq!(game.buttons()[0].action, Action::LeaveBattleStats);
+            if leave == Event::MouseUp {
+                click(&mut game, Action::LeaveBattleStats);
+            } else {
+                game.handle(leave);
+            }
+            assert_eq!(game.screen, Screen::SkirmishSetup);
+        }
+    }
+
+    #[test]
+    fn statistics_lead_to_the_tutorial_button_after_a_tutorial() {
+        let mut game = tutorial_battle();
+        win(&mut game);
+        game.handle(Event::KeyDown(Key::Escape));
+        click(&mut game, Action::LeaveBattleStats);
+        assert_eq!(game.screen, Screen::SinglePlayerMenu);
+        assert!(actions(&game).contains(&Action::Tutorial));
+    }
+
+    #[test]
+    fn a_campaign_moves_to_the_next_mission_after_a_victory_and_replays_after_a_defeat() {
+        let mut game = campaign_battle();
+        assert_eq!(game.campaign_mission, 0);
+        win(&mut game);
+        game.handle(Event::KeyDown(Key::Escape));
+        click(&mut game, Action::LeaveBattleStats);
+        assert_eq!(game.screen, Screen::Loading);
+        assert_eq!(game.campaign_mission, 1);
+        assert_eq!(game.battle_map, 1, "on another map");
+        assert_eq!(game.faction, Some(Faction::A), "for the same faction");
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.outcome, None, "a fresh start");
+        assert_eq!(game.killed, Casualties::default());
+
+        kill_owners(&mut game, &[0]);
+        assert_eq!(game.outcome, Some(Outcome::Defeat));
+        game.handle(Event::KeyDown(Key::Escape));
+        click(&mut game, Action::LeaveBattleStats);
+        assert_eq!(game.campaign_mission, 1, "the same mission again");
+    }
+
+    #[test]
+    fn a_new_campaign_starts_at_the_first_mission() {
+        let mut game = campaign_battle();
+        win(&mut game);
+        game.handle(Event::KeyDown(Key::Escape));
+        click(&mut game, Action::LeaveBattleStats);
+        game.update(LOADING_SECONDS);
+        leave_battle(&mut game);
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::StartCampaign);
+        pick(&mut game, Faction::O);
+        click(&mut game, Action::ConfirmFaction);
+        assert_eq!(game.campaign_mission, 0);
+    }
+
+    #[test]
+    fn campaign_missions_keep_working_past_the_last_map() {
+        let mut game = campaign_battle();
+        for _ in 0..MAPS.len() + 2 {
+            win(&mut game);
+            game.handle(Event::KeyDown(Key::Escape));
+            click(&mut game, Action::LeaveBattleStats);
+            game.update(LOADING_SECONDS);
+            assert_eq!(game.screen, Screen::InGame);
+        }
+    }
+
+    #[test]
+    fn every_screen_and_battle_state_draws_without_trouble() {
+        let check = |game: &Game| assert!(!crate::render::build(game).is_empty(), "{:?}", game.screen);
+        let mut game = in_menu();
+        check(&game);
+        click(&mut game, Action::SinglePlayer);
+        check(&game);
+        let mut battle = in_battle();
+        check(&battle);
+        battle.handle(Event::KeyDown(Key::Tab));
+        check(&battle);
+        battle.handle(Event::KeyDown(Key::Tab));
+        battle.handle(Event::KeyDown(Key::Pause));
+        check(&battle);
+        battle.handle(Event::KeyDown(Key::Pause));
+        battle.handle(Event::KeyDown(Key::Escape));
+        check(&battle);
+        battle.handle(Event::KeyDown(Key::Escape));
+        win(&mut battle);
+        check(&battle);
+        battle.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(battle.screen, Screen::BattleStats);
+        check(&battle);
     }
 
     #[test]

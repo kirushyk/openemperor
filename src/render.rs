@@ -6,7 +6,7 @@ use crate::hud;
 use crate::planet;
 use crate::units::{self, Unit, UnitKind};
 use crate::game::{
-    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, STATS_ROW_STEP,
+    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, Outcome, STATS_ROW_STEP,
     STATS_ROW_TOP, Screen, TeamColor, buttons, checkbox_size, color_slots, map_items, minimap_rect,
     modal_rect, opponent_row, opponent_widgets, options_panel, setup_checkboxes, setup_widgets,
     small_text_px, stats_rect, ui_scale,
@@ -34,6 +34,7 @@ const WINDOW: Color = [0.07, 0.07, 0.10, 0.78];
 const CHAT_BACKING: Color = [0.0, 0.0, 0.0, 0.45];
 const SELECTED_RING: Color = [0.35, 1.0, 0.45, 1.0];
 const ORDER_LINE: Color = [0.35, 1.0, 0.45, 0.85];
+const DEFEAT_RED: Color = [0.92, 0.22, 0.18, 1.0];
 const RUIN_CONCRETE: [f32; 3] = [0.56, 0.54, 0.50];
 const RUIN_ON_MINIMAP: Color = [0.16, 0.15, 0.14, 1.0];
 const BOLT_GLOW: Color = [0.35, 0.55, 1.0, 0.25];
@@ -177,6 +178,7 @@ pub fn build(game: &Game) -> Vec<Vertex> {
         | Screen::FactionSelect
         | Screen::SkirmishSetup
         | Screen::EscapeMenu
+        | Screen::BattleStats
         | Screen::InGame => {
             if game.in_battle {
                 draw_battle(&mut canvas, game);
@@ -188,7 +190,7 @@ pub fn build(game: &Game) -> Vec<Vertex> {
                 Screen::Options => Some("Main Options"),
                 Screen::Credits => Some("Credits"),
                 Screen::FactionSelect => Some("Choose Faction"),
-                Screen::InGame | Screen::SkirmishSetup | Screen::EscapeMenu => None,
+                Screen::InGame | Screen::SkirmishSetup | Screen::EscapeMenu | Screen::BattleStats => None,
                 _ => Some(TITLE),
             };
             if let Some(title) = title {
@@ -202,6 +204,15 @@ pub fn build(game: &Game) -> Vec<Vertex> {
                 if game.stats_open {
                     draw_diplomacy(&mut canvas, game);
                 }
+                if let Some(outcome) = game.outcome {
+                    let (text, color) = outcome_look(outcome);
+                    canvas.text_centered(text, cx, game.height * 0.4, 16.0 * s, color);
+                    let hint_y = game.height * 0.4 + 110.0 * s;
+                    canvas.text_centered("Esc to continue", cx, hint_y, small_text_px(game.height), TEXT);
+                }
+            }
+            if game.screen == Screen::BattleStats {
+                draw_battle_stats(&mut canvas, game);
             }
             if game.screen == Screen::SkirmishSetup {
                 draw_skirmish_setup(&mut canvas, game);
@@ -295,6 +306,40 @@ fn draw_planet(canvas: &mut Canvas, game: &Game, faction: Faction, (cx, cy, r): 
     planet::draw(&mut canvas.vertices, faction, cx, cy, r - border, game.screen_elapsed());
 }
 
+fn outcome_look(outcome: Outcome) -> (&'static str, Color) {
+    match outcome {
+        Outcome::Victory => ("Victory", GOLD),
+        Outcome::Defeat => ("Defeat", DEFEAT_RED),
+    }
+}
+
+/// What was killed and lost in the battle just ended, by kind.
+fn draw_battle_stats(canvas: &mut Canvas, game: &Game) {
+    let s = ui_scale(game.height);
+    let px = 4.0 * s;
+    let cx = game.width / 2.0;
+    canvas.text_centered("Battle Statistics", cx, 150.0 * s, 8.0 * s, GOLD);
+    if let Some(outcome) = game.outcome {
+        let (text, color) = outcome_look(outcome);
+        canvas.text_centered(text, cx, 280.0 * s, 6.0 * s, color);
+    }
+    let (kind_x, killed_x, lost_x) = (cx - 330.0 * s, cx + 130.0 * s, cx + 340.0 * s);
+    let header_y = 420.0 * s;
+    canvas.text_centered("Killed", killed_x, header_y, px, QUIET);
+    canvas.text_centered("Lost", lost_x, header_y, px, QUIET);
+    let rows = [
+        ("Infantry", game.killed.infantry, game.lost.infantry),
+        ("Vehicles", game.killed.vehicles, game.lost.vehicles),
+        ("Buildings", game.killed.buildings, game.lost.buildings),
+    ];
+    for (i, (name, killed, lost)) in rows.into_iter().enumerate() {
+        let y = header_y + (i + 1) as f32 * 90.0 * s;
+        canvas.text_left(name, kind_x, y, px.round().max(1.0), TEXT);
+        canvas.text_centered(&killed.to_string(), killed_x, y, px, TEXT);
+        canvas.text_centered(&lost.to_string(), lost_x, y, px, TEXT);
+    }
+}
+
 fn button_circle(b: Button) -> (f32, f32, f32) {
     (b.x + b.w / 2.0, b.y + b.h / 2.0, b.w / 2.0)
 }
@@ -312,7 +357,8 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
     draw_map_objects(canvas, game);
     draw_selection_box(canvas, game);
     if let Some(faction) = game.faction {
-        canvas.text_centered(faction.label(), game.width / 2.0, 40.0 * s, 4.0 * s, TEXT);
+        let label = format!("{} - Mission {}", faction.label(), game.campaign_mission + 1);
+        canvas.text_centered(&label, game.width / 2.0, 40.0 * s, 4.0 * s, TEXT);
     }
     draw_energy_gauge(canvas, game);
     draw_battle_minimap(canvas, game);

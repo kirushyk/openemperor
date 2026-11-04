@@ -261,6 +261,18 @@ impl Terrain {
             && (self.planet.lower_is_solid() || self.height_at(x, z) >= GROUND_HEIGHT * 0.5)
     }
 
+    /// Flat sand holding only the given ruins, for testing how units meet them.
+    #[cfg(test)]
+    pub fn open_with_ruins(ruins: Vec<RuinPiece>) -> Self {
+        let count = (MAP_CELLS + 1) * (MAP_CELLS + 1);
+        Terrain {
+            planet: Planet::A,
+            is_ground: vec![false; count],
+            colors: vec![SAND; count],
+            ruins,
+        }
+    }
+
     /// The destroyed buildings on this map.
     pub fn ruins(&self) -> &[RuinPiece] {
         &self.ruins

@@ -1087,19 +1087,33 @@ impl Game {
         battlefield::View::new(self.camera, self.width, self.height)
     }
 
-    /// The selection on screen as (left, top, right, bottom), while dragging one. It can
-    /// reach far off screen, since its start stays where it was on the map.
-    pub fn selection_rect(&self) -> Option<(f32, f32, f32, f32)> {
+    /// The selection while dragging one: a rectangle on the ground as (west, north, east,
+    /// south), between where the drag started on the map and the ground under the cursor.
+    pub fn selection_ground(&self) -> Option<(f32, f32, f32, f32)> {
         let (x, z) = self.selection_anchor?;
-        let a = self.view().project_clamped(x, 0.0, z);
-        let b = self.mouse;
-        Some((a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)))
+        let (cursor_x, cursor_z) = self.view().ground_at(self.mouse.0, self.mouse.1)?;
+        Some((x.min(cursor_x), z.min(cursor_z), x.max(cursor_x), z.max(cursor_z)))
+    }
+
+    /// The selection's four edges as they appear on screen, with perspective, each cut down
+    /// to the part that is visible.
+    pub fn selection_edges(&self) -> Vec<((f32, f32), (f32, f32))> {
+        let Some((west, north, east, south)) = self.selection_ground() else { return Vec::new() };
+        let view = self.view();
+        let screen = (0.0, 0.0, self.width, self.height);
+        let corners = [(west, north), (east, north), (east, south), (west, south)];
+        (0..corners.len())
+            .filter_map(|i| {
+                let (a, b) = view.project_ground_line(corners[i], corners[(i + 1) % corners.len()])?;
+                battlefield::clip_to_rect(a, b, screen)
+            })
+            .collect()
     }
 
     /// Whether the drag in progress would select this unit.
     pub fn in_selection_drag(&self, unit: &Unit) -> bool {
-        match self.selection_anchor {
-            Some(anchor) if unit.owner == 0 => units::in_selection(&self.view(), anchor, self.mouse, unit),
+        match self.selection_ground() {
+            Some(rectangle) if unit.owner == 0 => units::in_selection(rectangle, unit),
             _ => false,
         }
     }
@@ -1117,11 +1131,12 @@ impl Game {
     }
 
     /// Ends the drag: a real box selects the player's units in it, replacing the old
-    /// selection, and anything smaller acts as a click.
+    /// selection, and anything that stayed near its start on screen acts as a click.
     fn finish_selection(&mut self) {
-        let Some((left, top, right, bottom)) = self.selection_rect() else { return };
+        let Some((x, z)) = self.selection_anchor else { return };
+        let start = self.view().project_clamped(x, 0.0, z);
         let slop = CLICK_SLOP * ui_scale(self.height);
-        let is_click = right - left < slop && bottom - top < slop;
+        let is_click = (start.0 - self.mouse.0).abs() < slop && (start.1 - self.mouse.1).abs() < slop;
         let picked = if is_click { self.unit_under_cursor() } else { None };
         let selected: Vec<bool> = self
             .units
@@ -2286,7 +2301,7 @@ mod tests {
         let (from, to) = around_first_group();
         drag_select(&mut game, from, to);
         assert_eq!(selected_count(&game), 12, "the first group, not the far one");
-        assert!(game.selection_rect().is_none(), "the box ends with the release");
+        assert!(game.selection_ground().is_none(), "the box ends with the release");
     }
 
     #[test]
@@ -2340,9 +2355,74 @@ mod tests {
         game.update(0.2);
         assert!(game.camera.x > Camera::centered().x, "the edge still scrolls during a drag");
         assert_eq!(game.selection_anchor, Some(anchored), "fixed on the map");
-        let (left, _, right, _) = game.selection_rect().unwrap();
-        assert!(left < start.0 - 10.0, "on screen it slid away from where it began: {left}");
-        assert_eq!(right, W - 1.0, "the other corner stays on the cursor");
+        let (west, _, east, _) = game.selection_ground().unwrap();
+        assert_eq!(west, anchored.0, "the start stays where it was on the ground");
+        let under_cursor = game.view().ground_at(W - 1.0, H / 2.0).unwrap();
+        assert!((east - under_cursor.0).abs() < 0.001, "the other corner stays under the cursor");
+        let on_screen = game.view().project(anchored.0, 0.0, anchored.1).unwrap();
+        assert!(on_screen.0 < start.0 - 10.0, "on screen the start slid away: {on_screen:?}");
+    }
+
+    #[test]
+    fn the_selection_is_a_rectangle_on_the_ground_seen_in_perspective() {
+        let mut game = in_battle();
+        game.handle(Event::Wheel(10.0));
+        settle_zoom(&mut game);
+        assert_eq!(game.camera.zoom, 0.5, "the low position shows perspective best");
+        game.handle(Event::MouseMove(W / 2.0 - 300.0, H / 2.0 - 300.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseMove(W / 2.0 + 300.0, H / 2.0 + 300.0));
+
+        let edges = game.selection_edges();
+        assert_eq!(edges.len(), 4);
+        // Clockwise from the far edge: far, right, near, left.
+        let (far, right, near, left) = (edges[0], edges[1], edges[2], edges[3]);
+        let width = |edge: ((f32, f32), (f32, f32))| (edge.1.0 - edge.0.0).abs();
+        assert!(width(far) < width(near) * 0.95, "the far edge looks shorter");
+        assert!((far.0.1 - far.1.1).abs() < 0.01, "far and near edges stay level");
+        assert!(width(right) > 1.0 && width(left) > 1.0, "the sides lean inward");
+        for edge in edges {
+            assert!((edge.0.0 - edge.1.0).abs() + (edge.0.1 - edge.1.1).abs() > 1.0);
+        }
+    }
+
+    #[test]
+    fn the_selection_decides_by_ground_position_not_screen_position() {
+        let mut game = in_battle();
+        game.handle(Event::Wheel(10.0));
+        settle_zoom(&mut game);
+        let view = game.view();
+        let a = (W / 2.0 - 500.0, H / 2.0 - 400.0);
+        let b = (W / 2.0 + 500.0, H / 2.0 + 400.0);
+        let corner_a = view.ground_at(a.0, a.1).unwrap();
+        let corner_b = view.ground_at(b.0, b.1).unwrap();
+        // Just inside the far edge's width on the ground, though the near edge is what
+        // would bound it in a rectangle drawn on the screen.
+        let inside_x = corner_b.0 - 0.1;
+        game.units[0].x = inside_x;
+        game.units[0].z = corner_a.1 + 0.1;
+        game.units[1].x = corner_b.0 + 0.1;
+        game.units[1].z = corner_a.1 + 0.1;
+        drag_select(&mut game, a, b);
+        assert!(game.units[0].selected, "inside on the ground");
+        assert!(!game.units[1].selected, "outside on the ground");
+    }
+
+    #[test]
+    fn edges_past_the_screen_are_cut_at_its_border() {
+        let mut game = in_battle();
+        let (from, _) = around_first_group();
+        game.handle(Event::MouseMove(from.0, from.1));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseMove(W - 1.0, H - 1.0));
+        for _ in 0..100 {
+            game.update(0.05);
+            for (a, b) in game.selection_edges() {
+                for (x, y) in [a, b] {
+                    assert!((-0.01..=W + 0.01).contains(&x) && (-0.01..=H + 0.01).contains(&y), "{x}, {y}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -2377,10 +2457,12 @@ mod tests {
         for _ in 0..200 {
             game.update(0.05);
         }
-        let rect = game.selection_rect().expect("the drag survives the anchor leaving the screen");
-        assert!(rect.3 > H, "the box reaches past the bottom of the screen: {rect:?}");
+        let anchor = game.selection_anchor.expect("the drag survives the start leaving the screen");
+        assert!(game.view().project(anchor.0, 0.0, anchor.1).is_none(), "its start is behind the camera");
+        assert!(game.selection_ground().is_some());
+        assert!(!game.selection_edges().is_empty(), "the visible part still draws");
         game.handle(Event::MouseUp);
-        assert!(game.selection_rect().is_none());
+        assert!(game.selection_ground().is_none());
     }
 
     #[test]
@@ -2389,31 +2471,31 @@ mod tests {
         let cell = hud::grid_cells(W, H)[0];
         game.handle(Event::MouseMove(cell.x + 1.0, cell.y + 1.0));
         game.handle(Event::MouseDown);
-        assert!(game.selection_rect().is_none(), "button");
+        assert!(game.selection_ground().is_none(), "button");
         game.handle(Event::MouseUp);
 
         // The gap between two sidebar blocks has no button, but it is not battlefield.
         game.handle(Event::MouseMove(cell.x + 1.0, cell.y - 2.0));
         game.handle(Event::MouseDown);
-        assert!(game.selection_rect().is_none(), "gap");
+        assert!(game.selection_ground().is_none(), "gap");
         game.handle(Event::MouseUp);
 
         let (x, y, size) = hud::minimap_rect(W, H);
         game.handle(Event::MouseMove(x + size / 2.0, y + size / 2.0));
         game.handle(Event::MouseDown);
-        assert!(game.selection_rect().is_none(), "minimap");
+        assert!(game.selection_ground().is_none(), "minimap");
         game.handle(Event::MouseUp);
 
         game.handle(Event::KeyDown(Key::Pause));
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         game.handle(Event::MouseDown);
-        assert!(game.selection_rect().is_none(), "paused");
+        assert!(game.selection_ground().is_none(), "paused");
         game.handle(Event::MouseUp);
         game.handle(Event::KeyDown(Key::Pause));
 
         game.handle(Event::KeyDown(Key::Tab));
         game.handle(Event::MouseDown);
-        assert!(game.selection_rect().is_none(), "diplomacy window open");
+        assert!(game.selection_ground().is_none(), "diplomacy window open");
     }
 
     #[test]
@@ -2422,21 +2504,21 @@ mod tests {
         let begin = |game: &mut Game| {
             game.handle(Event::MouseMove(100.0, H - 200.0));
             game.handle(Event::MouseDown);
-            assert!(game.selection_rect().is_some());
+            assert!(game.selection_ground().is_some());
         };
 
         let mut game = in_battle();
         drag_select(&mut game, from, to);
         begin(&mut game);
         game.handle(Event::KeyDown(Key::Escape));
-        assert!(game.selection_rect().is_none(), "the menu cancels");
+        assert!(game.selection_ground().is_none(), "the menu cancels");
         assert_eq!(selected_count(&game), 12);
 
         let mut game = in_battle();
         drag_select(&mut game, from, to);
         begin(&mut game);
         game.handle(Event::Focus(false));
-        assert!(game.selection_rect().is_none(), "losing focus cancels");
+        assert!(game.selection_ground().is_none(), "losing focus cancels");
         game.handle(Event::Focus(true));
         game.handle(Event::MouseUp);
         assert_eq!(selected_count(&game), 12);
@@ -2445,7 +2527,7 @@ mod tests {
         drag_select(&mut game, from, to);
         begin(&mut game);
         game.handle(Event::KeyDown(Key::Pause));
-        assert!(game.selection_rect().is_none(), "pausing cancels");
+        assert!(game.selection_ground().is_none(), "pausing cancels");
     }
 
     #[test]

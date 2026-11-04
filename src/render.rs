@@ -405,31 +405,13 @@ fn draw_box(
     }
 }
 
-/// The selection's four edges as flickering lightning. An edge that reaches off screen is
-/// drawn only up to the screen's border, and one lying fully off screen is not drawn.
+/// The selection's four edges as flickering lightning, where they lie on the ground.
 fn draw_selection_box(canvas: &mut Canvas, game: &Game) {
     /// New bolts per second.
     const FLICKER: f32 = 24.0;
-    let Some((left, top, right, bottom)) = game.selection_rect() else { return };
     let s = ui_scale(game.height);
-    let (w, h) = (game.width, game.height);
-    let (cl, cr) = (left.clamp(0.0, w), right.clamp(0.0, w));
-    let (ct, cb) = (top.clamp(0.0, h), bottom.clamp(0.0, h));
-    let mut edges = Vec::new();
-    if (0.0..=h).contains(&top) {
-        edges.push(((cl, top), (cr, top)));
-    }
-    if (0.0..=h).contains(&bottom) {
-        edges.push(((cr, bottom), (cl, bottom)));
-    }
-    if (0.0..=w).contains(&left) {
-        edges.push(((left, cb), (left, ct)));
-    }
-    if (0.0..=w).contains(&right) {
-        edges.push(((right, ct), (right, cb)));
-    }
     let frame = (game.screen_elapsed() * FLICKER) as u32;
-    for (i, (a, b)) in edges.into_iter().enumerate() {
+    for (i, (a, b)) in game.selection_edges().into_iter().enumerate() {
         let seed = frame.wrapping_mul(31).wrapping_add(i as u32 * 1009);
         let bolt = units::lightning_points(a, b, seed, 26.0 * s, 9.0 * s);
         for layer in [(9.0, BOLT_GLOW), (4.0, BOLT_HALO), (1.6, BOLT_CORE)] {

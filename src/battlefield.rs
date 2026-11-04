@@ -435,6 +435,33 @@ impl View {
         Some((self.center.0 + self.focal * rel_x / depth, self.center.1 - self.focal * up / depth))
     }
 
+    /// A straight line on the sand plane as it appears on screen, cut where it passes behind
+    /// the camera; `None` if all of it is behind.
+    pub fn project_ground_line(
+        &self,
+        a: (f32, f32),
+        b: (f32, f32),
+    ) -> Option<((f32, f32), (f32, f32))> {
+        let depth = |point: (f32, f32)| {
+            let rel_y = -self.position[1];
+            let rel_z = point.1 - self.position[2];
+            rel_y * self.forward[0] + rel_z * self.forward[1]
+        };
+        let (depth_a, depth_b) = (depth(a), depth(b));
+        // Just in front of the limit, so that rounding cannot put a cut end behind it.
+        let limit = NEAR + 0.01;
+        if depth_a < limit && depth_b < limit {
+            return None;
+        }
+        let cut = |behind: (f32, f32), ahead: (f32, f32), d_behind: f32, d_ahead: f32| {
+            let t = (limit - d_behind) / (d_ahead - d_behind);
+            (behind.0 + (ahead.0 - behind.0) * t, behind.1 + (ahead.1 - behind.1) * t)
+        };
+        let from = if depth_a < limit { cut(a, b, depth_a, depth_b) } else { a };
+        let to = if depth_b < limit { cut(b, a, depth_b, depth_a) } else { b };
+        Some((self.project(from.0, 0.0, from.1)?, self.project(to.0, 0.0, to.1)?))
+    }
+
     /// Like `project`, but a point behind the camera lands far off the screen's bottom edge
     /// on its own side, which is enough for drawing lines towards it.
     pub fn project_clamped(&self, x: f32, y: f32, z: f32) -> (f32, f32) {
@@ -487,19 +514,28 @@ pub fn minimap_to_world((x, y, size): (f32, f32, f32), px: f32, py: f32) -> Opti
     Some(((px - (x + size / 2.0)) / (size / 2.0) * half_map, (py - y) / (size / 2.0) * half_map))
 }
 
-/// The part of a segment inside a square, if any (Liang-Barsky).
+/// The part of a segment inside a square, if any.
 pub fn clip_to_square(
     a: (f32, f32),
     b: (f32, f32),
     (x, y, size): (f32, f32, f32),
 ) -> Option<((f32, f32), (f32, f32))> {
+    clip_to_rect(a, b, (x, y, size, size))
+}
+
+/// The part of a segment inside a rectangle, if any (Liang-Barsky).
+pub fn clip_to_rect(
+    a: (f32, f32),
+    b: (f32, f32),
+    (x, y, width, height): (f32, f32, f32, f32),
+) -> Option<((f32, f32), (f32, f32))> {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let (mut from, mut to) = (0.0_f32, 1.0_f32);
     for (delta, distance) in [
         (-dx, a.0 - x),
-        (dx, x + size - a.0),
+        (dx, x + width - a.0),
         (-dy, a.1 - y),
-        (dy, y + size - a.1),
+        (dy, y + height - a.1),
     ] {
         if delta == 0.0 {
             if distance < 0.0 {
@@ -801,6 +837,30 @@ mod tests {
         assert!((back.0 - 1250.0).abs() < 0.01 && (back.1 - 260.0).abs() < 0.01);
         assert_eq!(minimap_to_world(rect, 999.0, 300.0), None);
         assert_eq!(minimap_to_world(rect, 1200.0, 500.0), None, "past the bottom edge");
+    }
+
+    #[test]
+    fn ground_lines_project_and_are_cut_behind_the_camera() {
+        let mut camera = at_zoom(0.5);
+        camera.z = 30.0;
+        let view = View::new(camera, W, H);
+        let (ahead, behind) = ((2.0, 25.0), (2.0, 80.0));
+        assert!(view.project(behind.0, 0.0, behind.1).is_none(), "really behind");
+
+        let (a, b) = view.project_ground_line(ahead, behind).expect("part of it is visible");
+        assert_eq!(a, view.project(ahead.0, 0.0, ahead.1).unwrap(), "the visible end stays put");
+        assert!(b.1 > a.1, "it runs towards the viewer");
+        assert!(view.project_ground_line((0.0, 80.0), (5.0, 90.0)).is_none(), "all behind");
+
+        let whole = view.project_ground_line((0.0, 20.0), (5.0, 22.0)).unwrap();
+        assert_eq!(whole.0, view.project(0.0, 0.0, 20.0).unwrap());
+    }
+
+    #[test]
+    fn segments_clip_to_a_rectangle() {
+        let area = (0.0, 0.0, 20.0, 10.0);
+        assert_eq!(clip_to_rect((-5.0, 5.0), (25.0, 5.0), area), Some(((0.0, 5.0), (20.0, 5.0))));
+        assert_eq!(clip_to_rect((5.0, 12.0), (15.0, 12.0), area), None);
     }
 
     #[test]

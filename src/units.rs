@@ -1,6 +1,6 @@
 //! Placeholder units and the geometry of selecting them.
 
-use crate::battlefield::{MAP_MIDDLE_Z, Terrain, View};
+use crate::battlefield::{MAP_MIDDLE_Z, Terrain};
 use crate::game::TeamColor;
 use std::f32::consts::TAU;
 
@@ -80,20 +80,9 @@ pub fn keeps_clear(x: f32, z: f32) -> bool {
         && (from_middle - OPPONENT_RING).abs() > CLEARANCE * 0.6
 }
 
-/// Whether a unit lies in the selection between a remembered ground point and the cursor.
-/// That is a rectangle on screen. A point behind the camera has no place on screen, so if
-/// either is behind it, the test falls back to the same box measured on the ground.
-pub fn in_selection(view: &View, anchor: (f32, f32), cursor: (f32, f32), unit: &Unit) -> bool {
-    let middle = unit.y + HEIGHT / 2.0;
-    if let (Some(a), Some(u)) = (view.project(anchor.0, 0.0, anchor.1), view.project(unit.x, middle, unit.z)) {
-        let (x0, x1) = (a.0.min(cursor.0), a.0.max(cursor.0));
-        let (y0, y1) = (a.1.min(cursor.1), a.1.max(cursor.1));
-        return u.0 >= x0 && u.0 <= x1 && u.1 >= y0 && u.1 <= y1;
-    }
-    let Some(ground) = view.ground_at(cursor.0, cursor.1) else { return false };
-    let (x0, x1) = (anchor.0.min(ground.0), anchor.0.max(ground.0));
-    let (z0, z1) = (anchor.1.min(ground.1), anchor.1.max(ground.1));
-    unit.x >= x0 && unit.x <= x1 && unit.z >= z0 && unit.z <= z1
+/// Whether a unit stands inside a rectangle on the ground: (west, north, east, south).
+pub fn in_selection((west, north, east, south): (f32, f32, f32, f32), unit: &Unit) -> bool {
+    unit.x >= west && unit.x <= east && unit.z >= north && unit.z <= south
 }
 
 fn scramble(mut value: u32) -> u32 {
@@ -133,7 +122,7 @@ pub fn lightning_points(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::battlefield::{Camera, terrain};
+    use crate::battlefield::{Camera, View, terrain};
 
     const COLORS: [TeamColor; 4] = [TeamColor::Blue, TeamColor::Red, TeamColor::Cyan, TeamColor::Green];
 
@@ -215,18 +204,22 @@ mod tests {
     }
 
     #[test]
-    fn selection_falls_back_to_the_ground_when_the_anchor_is_behind_the_camera() {
-        let mut camera = Camera::centered();
-        camera.zoom = 0.5;
-        camera.z -= 40.0;
-        let view = View::new(camera, 2880.0, 1800.0);
-        let anchor = (-3.0, 70.0);
-        assert!(view.project(anchor.0, 0.0, anchor.1).is_none(), "behind the camera");
+    fn selection_is_tested_on_the_ground_including_its_borders() {
+        let rectangle = (-3.0, 50.0, 8.0, 70.0);
         let unit = Unit { x: 0.0, y: 0.0, z: 60.0, owner: 0, color: TeamColor::Blue, selected: false };
-        // The cursor's ground point is well north and east of the unit.
-        assert!(in_selection(&view, anchor, (2880.0, 0.0), &unit));
-        let outside = Unit { x: -10.0, ..unit };
-        assert!(!in_selection(&view, anchor, (2880.0, 0.0), &outside));
+        assert!(in_selection(rectangle, &unit));
+        assert!(in_selection(rectangle, &Unit { x: 8.0, z: 50.0, ..unit }), "on the border");
+        assert!(!in_selection(rectangle, &Unit { x: -3.1, ..unit }), "west of it");
+        assert!(!in_selection(rectangle, &Unit { x: 8.1, ..unit }), "east of it");
+        assert!(!in_selection(rectangle, &Unit { z: 49.9, ..unit }), "north of it");
+        assert!(!in_selection(rectangle, &Unit { z: 70.1, ..unit }), "south of it");
+    }
+
+    #[test]
+    fn a_units_height_does_not_change_whether_it_is_selected() {
+        let rectangle = (-3.0, 50.0, 8.0, 70.0);
+        let low = Unit { x: 0.0, y: 0.0, z: 60.0, owner: 0, color: TeamColor::Blue, selected: false };
+        assert_eq!(in_selection(rectangle, &low), in_selection(rectangle, &Unit { y: 0.7, ..low }));
     }
 
     #[test]

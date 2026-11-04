@@ -1,0 +1,6 @@
+#!/bin/sh
+# Refuses to go on if any Rust code is not formatted with cargo fmt.
+if ! cargo fmt --check >/dev/null 2>&1; then
+    echo "Rust code is not formatted: run cargo fmt, then try again." >&2
+    exit 1
+fi

@@ -13,6 +13,12 @@ pub struct Vertex {
     pub a: f32,
 }
 
+impl Vertex {
+    pub fn new((x, y): (f32, f32), [r, g, b, a]: [f32; 4]) -> Self {
+        Vertex { x, y, r, g, b, a }
+    }
+}
+
 #[repr(C)]
 struct RawEvent {
     kind: i32,
@@ -69,7 +75,7 @@ impl Platform {
         let title = CString::new(title).map_err(|e| e.to_string())?;
         let (mut width, mut height) = (0, 0);
         // SAFETY: the pointers are valid for the duration of the call.
-        let ok = unsafe { oe_init(title.as_ptr(), &mut width, &mut height) };
+        let ok = unsafe { oe_init(title.as_ptr(), &raw mut width, &raw mut height) };
         if ok == 0 {
             return Err("could not create the fullscreen window".into());
         }
@@ -80,7 +86,7 @@ impl Platform {
         let mut raw = RawEvent { kind: 0, a: 0, b: 0, x: 0.0, y: 0.0 };
         loop {
             // SAFETY: `raw` is a valid, correctly laid out OeEvent.
-            if unsafe { oe_poll_event(&mut raw) } == 0 {
+            if unsafe { oe_poll_event(&raw mut raw) } == 0 {
                 return None;
             }
             let event = match raw.kind {

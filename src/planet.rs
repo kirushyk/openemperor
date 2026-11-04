@@ -81,9 +81,14 @@ fn mix(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+fn mix_colors(from: [f32; 3], to: [f32; 3], t: f32) -> [f32; 3] {
+    let t = t.clamp(0.0, 1.0);
+    [mix(from[0], to[0], t), mix(from[1], to[1], t), mix(from[2], to[2], t)]
+}
+
 /// Smooth 3D value noise from 0 to 1. Sampling in 3D means the surface has no seam.
 fn value_noise(p: [f32; 3], seed: u32) -> f32 {
-    let base = p.map(|v| v.floor());
+    let base = p.map(f32::floor);
     let [ix, iy, iz] = base.map(|v| v as i32);
     let [fx, fy, fz] = [0, 1, 2].map(|i| {
         let t = p[i] - base[i];
@@ -115,24 +120,20 @@ fn surface_color(point: [f32; 3], faction: Faction) -> [f32; 3] {
     const SHORE: f32 = 0.52;
     let [deep, shallow, land] = palette(faction);
     let height = fractal_noise(point, seed(faction));
-    let (from, to, t) = if height < SHORE {
-        (deep, shallow, (height - 0.25) / (SHORE - 0.25))
+    if height < SHORE {
+        mix_colors(deep, shallow, (height - 0.25) / (SHORE - 0.25))
     } else {
-        (shallow, land, (height - SHORE) / 0.08)
-    };
-    let t = t.clamp(0.0, 1.0);
-    [mix(from[0], to[0], t), mix(from[1], to[1], t), mix(from[2], to[2], t)]
+        mix_colors(shallow, land, (height - SHORE) / 0.08)
+    }
 }
 
 fn sandy_color(point: [f32; 3]) -> [f32; 3] {
     let height = fractal_noise(point, SANDY_SEED);
-    let (from, to, t) = if height < 0.5 {
-        (SAND_LOW, SAND_MIDDLE, (height - 0.25) / 0.25)
+    if height < 0.5 {
+        mix_colors(SAND_LOW, SAND_MIDDLE, (height - 0.25) / 0.25)
     } else {
-        (SAND_MIDDLE, SAND_HIGH, (height - 0.5) / 0.2)
-    };
-    let t = t.clamp(0.0, 1.0);
-    [mix(from[0], to[0], t), mix(from[1], to[1], t), mix(from[2], to[2], t)]
+        mix_colors(SAND_MIDDLE, SAND_HIGH, (height - 0.5) / 0.2)
+    }
 }
 
 /// Clear where the noise is low, thickening smoothly where it is high.
@@ -171,14 +172,6 @@ fn build_sphere(
     Mesh { rows, cols, points, colors, alphas }
 }
 
-fn faction_index(faction: Faction) -> usize {
-    match faction {
-        Faction::A => 0,
-        Faction::H => 1,
-        Faction::O => 2,
-    }
-}
-
 /// Meshes per faction: detailed, then coarse. Built once, on first use.
 fn meshes() -> &'static [[Mesh; 2]; 3] {
     static MESHES: OnceLock<[[Mesh; 2]; 3]> = OnceLock::new();
@@ -191,7 +184,7 @@ fn meshes() -> &'static [[Mesh; 2]; 3] {
 /// Appends the visible half of a planet, turned to where it is after `seconds`.
 pub fn draw(out: &mut Vec<Vertex>, faction: Faction, cx: f32, cy: f32, radius: f32, seconds: f32) {
     let lod = usize::from(radius < DETAIL_RADIUS);
-    let mesh = &meshes()[faction_index(faction)][lod];
+    let mesh = &meshes()[faction as usize][lod];
     let spin = start_angle(faction) + seconds * SPIN_SPEED;
     draw_mesh(out, mesh, (cx, cy, radius), spin, AXIAL_TILT);
 }
@@ -225,7 +218,7 @@ fn draw_mesh(out: &mut Vec<Vertex>, mesh: &Mesh, (cx, cy, radius): (f32, f32, f3
     let vertex = |i: usize| {
         let [x, y, _] = turned[i];
         let [r, g, b] = mesh.colors[i];
-        Vertex { x, y, r, g, b, a: mesh.alphas[i] }
+        Vertex::new((x, y), [r, g, b, mesh.alphas[i]])
     };
     for row in 0..mesh.rows {
         for col in 0..mesh.cols {
@@ -285,7 +278,7 @@ mod tests {
 
     #[test]
     fn the_sandy_planet_turns_very_slowly_and_its_clouds_a_bit_differently() {
-        assert!(SANDY_SPIN < SPIN_SPEED / 10.0, "much slower than the faction planets");
+        const { assert!(SANDY_SPIN < SPIN_SPEED / 10.0, "much slower than the faction planets") };
         assert_ne!(CLOUD_SPIN, SANDY_SPIN);
         assert_ne!(CLOUD_TILT, AXIAL_TILT);
         assert_ne!(sandy(0.0), sandy(30.0));
@@ -339,7 +332,7 @@ mod tests {
     fn surfaces_vary_and_have_both_sea_and_land() {
         for faction in [Faction::A, Faction::H, Faction::O] {
             let [deep, _, land] = palette(faction);
-            let colors = &meshes()[faction_index(faction)][0].colors;
+            let colors = &meshes()[faction as usize][0].colors;
             let near = |c: &[f32; 3], target: [f32; 3]| {
                 (c[0] - target[0]).abs() + (c[1] - target[1]).abs() + (c[2] - target[2]).abs() < 0.25
             };

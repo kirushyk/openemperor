@@ -17,6 +17,19 @@ const SLOT_SPACING: f32 = 1.3;
 const SLOT_SEARCH_RINGS: i32 = 40;
 /// The longest simulation step, in seconds; longer frames are divided up.
 const MAX_STEP: f32 = 0.05;
+
+/// A point in the world: x east, y up, z south.
+pub type Point = (f32, f32, f32);
+
+pub fn distance(a: Point, b: Point) -> f32 {
+    (a.0 - b.0).hypot(a.1 - b.1).hypot(a.2 - b.2)
+}
+
+/// How to divide a frame of `dt` seconds: the number of steps and how long each one is.
+pub fn substeps(dt: f32) -> (usize, f32) {
+    let steps = (dt / MAX_STEP).ceil().max(1.0);
+    (steps as usize, dt / steps)
+}
 /// A vehicle must point this close to its way, in radians, before it drives.
 const DRIVE_ALIGNMENT: f32 = 0.15;
 /// How far ahead, beyond touching, a unit starts to steer around another.
@@ -356,6 +369,17 @@ impl Unit {
         self.kind == UnitKind::Vehicle || (self.kind.flies() && self.altitude <= 0.0)
     }
 
+    /// Forgets any target and stays where it is.
+    fn stand_down(&mut self) {
+        self.target = None;
+        self.destination = (self.x, self.z);
+    }
+
+    fn reset_progress(&mut self) {
+        self.blocked_for = 0.0;
+        self.best_remaining = f32::INFINITY;
+    }
+
     /// Whether it can be forced to fire on another unit, whoever that is.
     pub fn can_fire_on(&self, other: &Unit) -> bool {
         self.alive && other.alive && self.id != other.id && self.weapon.can_target(other.kind, other.altitude)
@@ -570,14 +594,9 @@ fn place_unit(
     });
 }
 
-fn place_tower(units: &mut Vec<Unit>, terrain: &Terrain, at: (f32, f32), side: (usize, TeamColor)) {
+fn place_building(units: &mut Vec<Unit>, terrain: &Terrain, at: (f32, f32), role: Role, side: (usize, TeamColor)) {
     let id = units.len() as u32;
-    place_unit(units, terrain, at, Role::Tower, Role::Tower.weapon(), side, id);
-}
-
-fn place_flame_tower(units: &mut Vec<Unit>, terrain: &Terrain, at: (f32, f32), side: (usize, TeamColor)) {
-    let id = units.len() as u32;
-    place_unit(units, terrain, at, Role::FlameTower, Role::FlameTower.weapon(), side, id);
+    place_unit(units, terrain, at, role, role.weapon(), side, id);
 }
 
 /// Adds a new unit at the free spot nearest to a point, if there is one. Returns whether
@@ -616,8 +635,8 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
     let mut units = Vec::new();
     let player = (0, colors[0]);
     spawn_group(&mut units, terrain, (0.0, MAP_MIDDLE_Z), (4, ROWS_WITH_AIRCRAFT), player);
-    place_tower(&mut units, terrain, (PLAYER_TOWER_OFFSET, MAP_MIDDLE_Z), player);
-    place_flame_tower(&mut units, terrain, (-PLAYER_TOWER_OFFSET, MAP_MIDDLE_Z), player);
+    place_building(&mut units, terrain, (PLAYER_TOWER_OFFSET, MAP_MIDDLE_Z), Role::Tower, player);
+    place_building(&mut units, terrain, (-PLAYER_TOWER_OFFSET, MAP_MIDDLE_Z), Role::FlameTower, player);
     spawn_group(&mut units, terrain, (SECOND_GROUP_X, MAP_MIDDLE_Z), (4, 2), player);
     let opponents = colors.len() - 1;
     for (i, &color) in colors[1..].iter().enumerate() {
@@ -627,9 +646,9 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
         let center = (OPPONENT_RING * sin, MAP_MIDDLE_Z - OPPONENT_RING * cos);
         spawn_group(&mut units, terrain, center, (3, 2), (i + 1, color));
         let tower = (center.0 + OPPONENT_TOWER_OFFSET * cos, center.1 + OPPONENT_TOWER_OFFSET * sin);
-        place_tower(&mut units, terrain, tower, (i + 1, color));
+        place_building(&mut units, terrain, tower, Role::Tower, (i + 1, color));
         let flame = (center.0 - OPPONENT_TOWER_OFFSET * cos, center.1 - OPPONENT_TOWER_OFFSET * sin);
-        place_flame_tower(&mut units, terrain, flame, (i + 1, color));
+        place_building(&mut units, terrain, flame, Role::FlameTower, (i + 1, color));
     }
     units
 }
@@ -736,15 +755,13 @@ fn order_layer(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, teams:
         let Some(nearest) = nearest else { return };
         units[i].destination = slots.swap_remove(nearest);
         units[i].target = None;
-        units[i].blocked_for = 0.0;
-        units[i].best_remaining = f32::INFINITY;
+        units[i].reset_progress();
     }
 }
 
 fn set_target(unit: &mut Unit, target: Target) {
     unit.target = Some(target);
-    unit.blocked_for = 0.0;
-    unit.best_remaining = f32::INFINITY;
+    unit.reset_progress();
 }
 
 /// Tells every selected unit able to fight this enemy, or fix this friend, to go after it.
@@ -795,8 +812,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                     _ => units[i].can_attack(u, teams) || units[i].can_fix(u, teams),
                 };
                 let Some(other_index) = units.iter().position(|u| u.alive && u.id == id && fit(u)) else {
-                    units[i].target = None;
-                    units[i].destination = (x, z);
+                    units[i].stand_down();
                     continue;
                 };
                 let other = units[other_index];
@@ -804,8 +820,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                     let touching = units[i].kind.radius() + other.kind.radius() + CAPTURE_MARGIN;
                     if (other.x - x).hypot(other.z - z) <= touching {
                         (units[other_index].owner, units[other_index].color) = (units[i].owner, units[i].color);
-                        units[i].target = None;
-                        units[i].destination = (x, z);
+                        units[i].stand_down();
                     } else {
                         units[i].destination = (other.x, other.z);
                     }
@@ -817,8 +832,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
         if units[i].deployed {
             continue;
         }
-        let center = units[i].center();
-        let away = (goal.0 - center.0).hypot(goal.1 - center.1).hypot(goal.2 - center.2);
+        let away = distance(goal, units[i].center());
         let in_reach = away <= units[i].weapon.range() * ATTACK_REACH;
         units[i].destination = if in_reach { (x, z) } else { (goal.0, goal.2) };
     }
@@ -1057,8 +1071,7 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
 /// without path finding: it settles for here and forgets the target.
 fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
     if !unit.is_moving() {
-        unit.blocked_for = 0.0;
-        unit.best_remaining = f32::INFINITY;
+        unit.reset_progress();
         return;
     }
     if unit.remaining() < unit.best_remaining - PROGRESS {
@@ -1067,8 +1080,7 @@ fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
     } else if held_back {
         unit.blocked_for += dt;
         if unit.blocked_for > BLOCKED_PATIENCE {
-            unit.destination = (unit.x, unit.z);
-            unit.target = None;
+            unit.stand_down();
             unit.blocked_for = 0.0;
         }
     }
@@ -1081,16 +1093,21 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
     if !units.iter().any(Unit::is_moving) {
         return;
     }
-    let steps = (dt / MAX_STEP).ceil().max(1.0);
-    for _ in 0..steps as usize {
-        step(units, terrain, teams, dt / steps);
+    let (steps, step_seconds) = substeps(dt);
+    for _ in 0..steps {
+        step(units, terrain, teams, step_seconds);
         chase_targets(units, terrain, teams);
     }
 }
 
-/// Whether a unit stands inside a rectangle on the ground: (west, north, east, south).
-pub fn in_selection((west, north, east, south): (f32, f32, f32, f32), unit: &Unit) -> bool {
-    unit.x >= west && unit.x <= east && unit.z >= north && unit.z <= south
+/// Whether a point on the ground is inside a rectangle: (west, north, east, south).
+pub fn in_rectangle((west, north, east, south): (f32, f32, f32, f32), x: f32, z: f32) -> bool {
+    x >= west && x <= east && z >= north && z <= south
+}
+
+/// Whether a unit stands inside a rectangle on the ground.
+pub fn in_selection(rectangle: (f32, f32, f32, f32), unit: &Unit) -> bool {
+    in_rectangle(rectangle, unit.x, unit.z)
 }
 
 fn scramble(mut value: u32) -> u32 {
@@ -1458,10 +1475,10 @@ mod tests {
     #[test]
     fn everyone_starts_with_a_flame_tower_as_well_in_their_color() {
         let units = spawn(terrain(0), &COLORS);
-        for owner in 0..COLORS.len() {
+        for (owner, &color) in COLORS.iter().enumerate() {
             let flame: Vec<_> = units.iter().filter(|u| u.owner == owner && u.role == Role::FlameTower).collect();
             assert_eq!(flame.len(), 1);
-            assert_eq!(flame[0].color, COLORS[owner]);
+            assert_eq!(flame[0].color, color);
             assert_eq!(flame[0].weapon, WeaponKind::Flame);
             assert!(!flame[0].is_selectable());
         }
@@ -1470,10 +1487,10 @@ mod tests {
     #[test]
     fn everyone_starts_with_one_tower_of_their_color_with_missiles() {
         let units = spawn(terrain(0), &COLORS);
-        for owner in 0..COLORS.len() {
+        for (owner, &color) in COLORS.iter().enumerate() {
             let towers: Vec<_> = units.iter().filter(|u| u.owner == owner && u.role == Role::Tower).collect();
             assert_eq!(towers.len(), 1);
-            assert_eq!(towers[0].color, COLORS[owner]);
+            assert_eq!(towers[0].color, color);
             assert_eq!(towers[0].weapon, WeaponKind::Missile);
             assert_eq!(towers[0].health, UnitKind::Tower.max_health());
             assert!(!towers[0].is_selectable());
@@ -1482,16 +1499,7 @@ mod tests {
 
     #[test]
     fn towers_stand_on_land_on_every_map_with_any_number_of_opponents() {
-        let colors = [
-            TeamColor::Blue,
-            TeamColor::Red,
-            TeamColor::Cyan,
-            TeamColor::Orange,
-            TeamColor::Green,
-            TeamColor::Violet,
-            TeamColor::Yellow,
-            TeamColor::LightPink,
-        ];
+        let colors = crate::game::TEAM_COLORS;
         for map in 0..crate::game::MAPS.len() {
             for count in 2..=colors.len() {
                 let terrain = terrain(map);
@@ -1861,13 +1869,11 @@ mod tests {
         let mut unit = unit_at(0.0, 60.0, UnitKind::Vehicle);
         let (health, power, speed) = (unit.max_health(), unit.attack_power(), unit.speed());
         assert_eq!(unit.rank(), 0);
-        let mut last_rank = 0;
-        for needed in RANK_EXPERIENCE {
+        for (rank, needed) in (0..).zip(RANK_EXPERIENCE) {
             unit.experience = needed - 1;
-            assert_eq!(unit.rank(), last_rank, "not yet at {needed}");
+            assert_eq!(unit.rank(), rank, "not yet at {needed}");
             unit.experience = needed;
-            assert_eq!(unit.rank(), last_rank + 1);
-            last_rank += 1;
+            assert_eq!(unit.rank(), rank + 1);
         }
         assert_eq!(unit.rank(), 3, "the highest");
         unit.experience = 1000;
@@ -2275,10 +2281,10 @@ mod tests {
     #[test]
     fn everyone_gets_units_in_their_own_color_on_the_map() {
         let units = spawn(terrain(0), &COLORS);
-        for owner in 0..COLORS.len() {
+        for (owner, &color) in COLORS.iter().enumerate() {
             let own: Vec<_> = units.iter().filter(|u| u.owner == owner).collect();
             assert!(!own.is_empty());
-            assert!(own.iter().all(|u| u.color == COLORS[owner]));
+            assert!(own.iter().all(|u| u.color == color));
         }
         for unit in &units {
             let reach = unit.x.abs() + (unit.z - MAP_MIDDLE_Z).abs();
@@ -2308,16 +2314,7 @@ mod tests {
 
     #[test]
     fn no_unit_starts_inside_a_ruin_on_any_map() {
-        let colors = [
-            TeamColor::Blue,
-            TeamColor::Red,
-            TeamColor::Cyan,
-            TeamColor::Orange,
-            TeamColor::Green,
-            TeamColor::Violet,
-            TeamColor::Yellow,
-            TeamColor::LightPink,
-        ];
+        let colors = crate::game::TEAM_COLORS;
         for map in 0..crate::game::MAPS.len() {
             for count in 2..=colors.len() {
                 let terrain = terrain(map);

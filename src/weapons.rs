@@ -5,10 +5,10 @@
 //! ahead first turns to face its target.
 
 use crate::battlefield::Terrain;
-use crate::units::{Role, Target, Unit, UnitKind, are_enemies, are_friends, turn_between};
+use crate::units::{
+    Point, Role, Target, Unit, UnitKind, are_enemies, are_friends, distance, substeps, turn_between,
+};
 
-/// The longest simulation step, in seconds; longer frames are divided up.
-const MAX_STEP: f32 = 0.05;
 /// A unit with nothing in range looks again this often, in seconds.
 const RETARGET_SECONDS: f32 = 0.25;
 
@@ -25,11 +25,12 @@ const SHELL_SPEED: f32 = 7.0;
 const SHELL_ARC: f32 = 0.35;
 const SHELL_BLAST_RADIUS: f32 = 1.6;
 
-/// Radians per second a tower turns its tubes: fast at a target, slowly while looking out.
-const TOWER_TURN: f32 = 2.0;
+/// Radians per second whatever must face its target turns towards it.
+const AIM_TURN: f32 = 2.0;
+/// Radians per second a tower turns while looking out.
 const TOWER_IDLE_TURN: f32 = 0.5;
-/// A tower must point this close to its target, in radians, before it fires.
-const TOWER_ALIGNMENT: f32 = 0.1;
+/// How close to its target it must point, in radians, before it fires.
+const AIM_ALIGNMENT: f32 = 0.1;
 
 /// Fire and gas stay low: anything higher than this above the ground is out of their reach.
 const SPRAY_CEILING: f32 = 2.0;
@@ -193,8 +194,6 @@ impl WeaponKind {
     }
 }
 
-type Point = (f32, f32, f32);
-
 /// Who fired something, kept with shots in flight: it may rank up or die before they land.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shooter {
@@ -207,10 +206,6 @@ impl Shooter {
     fn of(unit: &Unit) -> Self {
         Shooter { id: unit.id, owner: unit.owner, power: unit.attack_power() }
     }
-}
-
-fn distance(a: Point, b: Point) -> f32 {
-    (a.0 - b.0).hypot(a.1 - b.1).hypot(a.2 - b.2)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -229,7 +224,6 @@ pub struct Missile {
 pub struct Shell {
     start: Point,
     landing: Point,
-    owner: usize,
     elapsed: f32,
     duration: f32,
     arc: f32,
@@ -337,9 +331,9 @@ impl Combat {
 
     /// Advances everything by `dt` seconds. Units killed are left marked as not alive.
     pub fn advance(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
-        let steps = (dt / MAX_STEP).ceil().max(1.0);
-        for _ in 0..steps as usize {
-            self.step(units, teams, terrain, dt / steps);
+        let (steps, step_seconds) = substeps(dt);
+        for _ in 0..steps {
+            self.step(units, teams, terrain, step_seconds);
         }
     }
 
@@ -350,22 +344,10 @@ impl Combat {
         self.fall_strikes(units, dt);
         self.poison_land(units, dt);
         heal_veterans(units, dt);
-        for beam in &mut self.beams {
-            beam.life -= dt / BEAM_SECONDS;
-        }
-        self.beams.retain(|b| b.life > 0.0);
-        for flare in &mut self.flares {
-            flare.life -= dt / FLARE_SECONDS;
-        }
-        self.flares.retain(|f| f.life > 0.0);
-        for spray in &mut self.sprays {
-            spray.life -= dt / SPRAY_SECONDS;
-        }
-        self.sprays.retain(|s| s.life > 0.0);
-        for blast in &mut self.blasts {
-            blast.life -= dt / BLAST_SECONDS;
-        }
-        self.blasts.retain(|b| b.life > 0.0);
+        fade(&mut self.beams, dt / BEAM_SECONDS, |b| &mut b.life);
+        fade(&mut self.flares, dt / FLARE_SECONDS, |f| &mut f.life);
+        fade(&mut self.sprays, dt / SPRAY_SECONDS, |s| &mut s.life);
+        fade(&mut self.blasts, dt / BLAST_SECONDS, |b| &mut b.life);
     }
 
     fn fire(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
@@ -382,7 +364,7 @@ impl Combat {
                 continue;
             }
             let aim = choose_aim(units, i, teams, terrain);
-            let aimed = !must_aim || turn_tubes(units, i, aim, dt);
+            let aimed = !must_aim || turn_to_aim(units, i, aim, dt);
             if units[i].cooldown > 0.0 {
                 continue;
             }
@@ -390,77 +372,77 @@ impl Combat {
                 units[i].cooldown = RETARGET_SECONDS;
                 continue;
             };
-            if !aimed {
-                continue;
+            if aimed {
+                self.shoot(units, i, aim, teams);
             }
-            let weapon = units[i].weapon;
-            units[i].cooldown = weapon.cooldown();
-            let from = units[i].muzzle();
-            let shooter = Shooter::of(&units[i]);
-            let (to, target) = match aim {
-                Aim::Unit(t) => (units[t].center(), Some(t)),
-                Aim::Place(place) => (place, None),
-            };
-            // Only firing as ordered at a place or a friend can hurt friends.
-            let forced = match target {
-                Some(t) => units[i].target == Some(Target::Forced(units[t].id)),
-                None => true,
-            };
-            if let Some(size) = weapon.flare() {
-                self.flares.push(Flare { at: from, size, life: 1.0 });
+        }
+    }
+
+    /// Fires a unit's weapon at its aim and starts its reload.
+    fn shoot(&mut self, units: &mut [Unit], i: usize, aim: Aim, teams: &[usize]) {
+        let weapon = units[i].weapon;
+        units[i].cooldown = weapon.cooldown();
+        let from = units[i].muzzle();
+        let shooter = Shooter::of(&units[i]);
+        let (to, target) = match aim {
+            Aim::Unit(t) => (units[t].center(), Some(t)),
+            Aim::Place(place) => (place, None),
+        };
+        // Only firing as ordered at a place or a friend can hurt friends.
+        let forced = target.is_none_or(|t| units[i].target == Some(Target::Forced(units[t].id)));
+        if let Some(size) = weapon.flare() {
+            self.flares.push(Flare { at: from, size, life: 1.0 });
+        }
+        match weapon {
+            WeaponKind::Bullet
+            | WeaponKind::Sniper
+            | WeaponKind::Pistol
+            | WeaponKind::Cannon
+            | WeaponKind::AutoGun => strike(units, i, target, to, weapon, teams),
+            WeaponKind::Flame | WeaponKind::Gas => self.spray(units, i, teams, forced),
+            WeaponKind::Laser => {
+                strike(units, i, target, to, weapon, teams);
+                self.beams.push(Beam { from, to, life: 1.0, repair: false });
             }
-            match weapon {
-                WeaponKind::Bullet
-                | WeaponKind::Sniper
-                | WeaponKind::Pistol
-                | WeaponKind::Cannon
-                | WeaponKind::AutoGun => strike(units, i, target, to, weapon, teams),
-                WeaponKind::Flame | WeaponKind::Gas => self.spray(units, i, teams, forced),
-                WeaponKind::Laser => {
-                    strike(units, i, target, to, weapon, teams);
-                    self.beams.push(Beam { from, to, life: 1.0, repair: false });
+            WeaponKind::Repair => {
+                if let Some(t) = target {
+                    let fixed = &mut units[t];
+                    fixed.health = (fixed.health + REPAIR_HEALTH).min(fixed.max_health());
+                    self.beams.push(Beam { from, to, life: 1.0, repair: true });
                 }
-                WeaponKind::Repair => {
-                    if let Some(t) = target {
-                        let fixed = &mut units[t];
-                        fixed.health = (fixed.health + REPAIR_HEALTH).min(fixed.max_health());
-                        self.beams.push(Beam { from, to, life: 1.0, repair: true });
-                    }
-                }
-                WeaponKind::Unarmed => {}
-                WeaponKind::Missile | WeaponKind::AirMissile => {
-                    // From the ground it is launched upward, so that it visibly rises and turns
-                    // towards its target. From the air it has a clear shot.
-                    let (dx, dz) = (to.0 - from.0, to.2 - from.2);
-                    let flat = dx.hypot(dz).max(0.0001);
-                    let direction = if units[i].kind.flies() {
-                        direction_to(from, to)
-                    } else {
-                        direction_to((0.0, 0.0, 0.0), (dx / flat, 0.8, dz / flat))
-                    };
-                    self.missiles.push(Missile {
-                        position: from,
-                        direction,
-                        target_id: target.map_or(NO_UNIT, |t| units[t].id),
-                        place: target.is_none().then_some(to),
-                        shooter,
-                        fuel: MISSILE_FUEL_SECONDS,
-                    });
-                    units[i].second_tube = !units[i].second_tube;
-                }
-                WeaponKind::Mortar => {
-                    let flat = (to.0 - from.0).hypot(to.2 - from.2);
-                    self.shells.push(Shell {
-                        start: from,
-                        landing: to,
-                        owner: units[i].owner,
-                        elapsed: 0.0,
-                        duration: (flat / SHELL_SPEED).max(0.2),
-                        arc: flat * SHELL_ARC,
-                        hurts_all: forced,
-                        shooter,
-                    });
-                }
+            }
+            WeaponKind::Unarmed => {}
+            WeaponKind::Missile | WeaponKind::AirMissile => {
+                // From the ground it is launched upward, so that it visibly rises and turns
+                // towards its target. From the air it has a clear shot.
+                let (dx, dz) = (to.0 - from.0, to.2 - from.2);
+                let flat = dx.hypot(dz).max(0.0001);
+                let direction = if units[i].kind.flies() {
+                    direction_to(from, to)
+                } else {
+                    direction_to((0.0, 0.0, 0.0), (dx / flat, 0.8, dz / flat))
+                };
+                self.missiles.push(Missile {
+                    position: from,
+                    direction,
+                    target_id: target.map_or(NO_UNIT, |t| units[t].id),
+                    place: target.is_none().then_some(to),
+                    shooter,
+                    fuel: MISSILE_FUEL_SECONDS,
+                });
+                units[i].second_tube = !units[i].second_tube;
+            }
+            WeaponKind::Mortar => {
+                let flat = (to.0 - from.0).hypot(to.2 - from.2);
+                self.shells.push(Shell {
+                    start: from,
+                    landing: to,
+                    elapsed: 0.0,
+                    duration: (flat / SHELL_SPEED).max(0.2),
+                    arc: flat * SHELL_ARC,
+                    hurts_all: forced,
+                    shooter,
+                });
             }
         }
     }
@@ -511,7 +493,7 @@ impl Combat {
             missile.position = (x + dx * step, y + dy * step, z + dz * step);
             missile.fuel -= dt;
 
-            let reached = target.is_some_and(|t| {
+            let reached = target.filter(|&t| {
                 distance(missile.position, units[t].center()) <= units[t].kind.radius() + MISSILE_FUSE
             });
             let (x, y, z) = missile.position;
@@ -527,8 +509,7 @@ impl Combat {
                     }
                 }
                 self.blasts.push(Blast { at: missile.position, radius: MISSILE_BLAST_RADIUS, life: 1.0 });
-            } else if reached {
-                let t = target.unwrap_or(0);
+            } else if let Some(t) = reached {
                 hit(units, t, WeaponKind::Missile, missile.shooter, teams);
                 self.blasts.push(Blast { at: missile.position, radius: MISSILE_BLAST_RADIUS, life: 1.0 });
             } else if y <= terrain.height_at(x, z) || missile.fuel <= 0.0 {
@@ -552,7 +533,7 @@ impl Combat {
             // Only enemies of whoever fired are hurt, so that units can fire freely.
             for index in 0..units.len() {
                 let unit = units[index];
-                if unit.alive && (shell.hurts_all || are_enemies(teams, shell.owner, unit.owner)) {
+                if unit.alive && (shell.hurts_all || are_enemies(teams, shell.shooter.owner, unit.owner)) {
                     let away = distance(shell.landing, unit.center());
                     let reach = SHELL_BLAST_RADIUS + unit.kind.radius();
                     if away < reach {
@@ -598,6 +579,15 @@ impl Combat {
         }
         self.poison.retain(|z| z.life > 0.0);
     }
+}
+
+/// Counts down each item's life and removes those it runs out for.
+fn fade<T>(items: &mut Vec<T>, by: f32, life: impl Fn(&mut T) -> &mut f32) {
+    items.retain_mut(|item| {
+        let life = life(item);
+        *life -= by;
+        *life > 0.0
+    });
 }
 
 /// A shot striking at once: its target, or whoever stands at the place it was fired at.
@@ -678,22 +668,23 @@ fn choose_aim(units: &[Unit], shooter: usize, teams: &[usize], terrain: &Terrain
 
 /// Turns whatever must face its aim towards what it would fire at. A tower with nothing to fire at
 /// keeps looking slowly around. Returns whether it now points at its aim.
-fn turn_tubes(units: &mut [Unit], tower: usize, aim: Option<Aim>, dt: f32) -> bool {
+fn turn_to_aim(units: &mut [Unit], index: usize, aim: Option<Aim>, dt: f32) -> bool {
     let goal = match aim {
         Some(Aim::Unit(t)) => (units[t].x, units[t].z),
         Some(Aim::Place((x, _, z))) => (x, z),
         None => {
-            if units[tower].kind.is_building() {
-                units[tower].heading += TOWER_IDLE_TURN * dt;
+            if units[index].kind.is_building() {
+                units[index].heading += TOWER_IDLE_TURN * dt;
             }
             return false;
         }
     };
-    let (dx, dz) = (goal.0 - units[tower].x, goal.1 - units[tower].z);
-    let turn = turn_between(units[tower].heading, dz.atan2(dx));
-    let most = TOWER_TURN * dt;
-    units[tower].heading += turn.clamp(-most, most);
-    (turn - turn.clamp(-most, most)).abs() <= TOWER_ALIGNMENT
+    let (dx, dz) = (goal.0 - units[index].x, goal.1 - units[index].z);
+    let turn = turn_between(units[index].heading, dz.atan2(dx));
+    let most = AIM_TURN * dt;
+    let turned = turn.clamp(-most, most);
+    units[index].heading += turned;
+    (turn - turned).abs() <= AIM_ALIGNMENT
 }
 
 /// The enemy it was told to attack if that one is in range, otherwise whoever is nearest.
@@ -934,7 +925,8 @@ mod tests {
         assert_eq!(turn_towards(from, from, 0.1), from);
 
         // The same turning rate holds however far off the target is, even almost behind it.
-        for away in [(-1.0, 0.0, 0.0), (-0.9999, 0.0141, 0.0), (-0.7071, 0.7071, 0.0)] {
+        let half_turn = std::f32::consts::FRAC_1_SQRT_2;
+        for away in [(-1.0, 0.0, 0.0), (-0.9999, 0.0141, 0.0), (-half_turn, half_turn, 0.0)] {
             let turned = turn_towards(from, away, 0.1);
             assert!((angle_from_start(turned) - 0.1).abs() < 0.001, "{away:?} gave {turned:?}");
             let length = distance((0.0, 0.0, 0.0), turned);

@@ -1,11 +1,10 @@
 //! Game flow and menu logic. No OS or GPU code, so it runs under `cargo test`.
 
 use crate::battlefield::{self, Camera};
-use crate::hud;
-use crate::units::{self, Role, Unit, UnitKind};
-use crate::hud::DEPLOY_BUTTON;
-use crate::weapons::{Combat, STRIKE_RADIUS};
+use crate::hud::{self, DEPLOY_BUTTON};
 use crate::platform::{Event, Key};
+use crate::units::{self, Role, Unit, UnitKind};
+use crate::weapons::Combat;
 
 pub const INTRO_SECONDS: f32 = 3.0;
 pub const LOADING_SECONDS: f32 = 2.0;
@@ -461,8 +460,9 @@ pub enum Action {
     ExitGame,
     ReturnToGame,
     LeaveBattleStats,
-    /// The sidebar's fake buttons, which do nothing yet.
+    /// The sidebar's small buttons, which do nothing yet.
     HudSmall(usize),
+    /// The sidebar's wide buttons: `hud::DEPLOY_BUTTON`, and one that does nothing yet.
     HudWide(usize),
     BuildCell(usize),
     BuildTab(BuildTab),
@@ -708,7 +708,7 @@ pub fn checkbox_size(height: f32) -> f32 {
     CHECKBOX_SIZE * ui_scale(height)
 }
 
-/// The three factions form a triangle: A on top, B and C below.
+/// The three factions form a triangle: A on top, H and O below.
 fn faction_buttons(width: f32, height: f32) -> Vec<Button> {
     const RADIUS: f32 = 130.0;
     const SPREAD: f32 = 200.0;
@@ -953,20 +953,23 @@ pub fn setup_checkboxes(width: f32, height: f32) -> Vec<Button> {
 pub const STATS_ROW_TOP: f32 = 120.0;
 pub const STATS_ROW_STEP: f32 = 76.0;
 
-/// The diplomacy window as (x, y, w, h), centered on the screen.
-pub fn stats_rect(width: f32, height: f32) -> (f32, f32, f32, f32) {
+/// A rectangle of this size at 1080 pixels tall, centered on the screen, as (x, y, w, h).
+fn centered_rect(w: f32, h: f32, width: f32, height: f32) -> (f32, f32, f32, f32) {
     let s = ui_scale(height);
-    let (w, h) = (1000.0 * s, 760.0 * s);
+    let (w, h) = (w * s, h * s);
     ((width - w) / 2.0, (height - h) / 2.0, w, h)
+}
+
+/// The diplomacy window as (x, y, w, h).
+pub fn stats_rect(width: f32, height: f32) -> (f32, f32, f32, f32) {
+    centered_rect(1000.0, 760.0, width, height)
 }
 
 pub const CONFIRM_MESSAGE: &str = "Are you sure you will play for those guys?";
 
-/// The confirmation message box as (x, y, w, h), centered on the screen.
+/// The confirmation message box as (x, y, w, h).
 pub fn modal_rect(width: f32, height: f32) -> (f32, f32, f32, f32) {
-    let s = ui_scale(height);
-    let (w, h) = (900.0 * s, 320.0 * s);
-    ((width - w) / 2.0, (height - h) / 2.0, w, h)
+    centered_rect(900.0, 320.0, width, height)
 }
 
 pub fn modal_buttons(width: f32, height: f32) -> Vec<Button> {
@@ -1199,11 +1202,6 @@ impl Game {
         self.battle_kind != BattleKind::Skirmish || self.skirmish.superweapons
     }
 
-    /// The radius of the superweapon's blast and of the land it poisons.
-    pub fn strike_radius(&self) -> f32 {
-        STRIKE_RADIUS
-    }
-
     fn view(&self) -> battlefield::View {
         battlefield::View::new(self.camera, self.width, self.height)
     }
@@ -1246,11 +1244,7 @@ impl Game {
         let view = self.view();
         let (x, y, z) = unit.center();
         let appears_over = view.project(x, y, z).and_then(|(px, py)| view.ground_at(px, py));
-        appears_over.is_some_and(|(x, z)| {
-            let mut seen = *unit;
-            (seen.x, seen.z) = (x, z);
-            units::in_selection(rectangle, &seen)
-        })
+        appears_over.is_some_and(|(x, z)| units::in_rectangle(rectangle, x, z))
     }
 
     /// Whether the cursor is over the battlefield itself, with nothing in the way.
@@ -1277,6 +1271,10 @@ impl Game {
         (start.0 - self.mouse.0).abs() < slop && (start.1 - self.mouse.1).abs() < slop
     }
 
+    fn selected_units(&self) -> Vec<&Unit> {
+        self.units.iter().filter(|u| u.selected).collect()
+    }
+
     fn can_order_attack_here(&self) -> bool {
         self.cursor_on_battlefield() && !self.aiming_strike && !self.minimap_dragging && self.is_click_so_far()
     }
@@ -1288,7 +1286,7 @@ impl Game {
         if !self.can_order_attack_here() {
             return None;
         }
-        let selected: Vec<&Unit> = self.units.iter().filter(|u| u.selected).collect();
+        let selected = self.selected_units();
         let able = |u: &Unit| selected.iter().any(|s| s.can_attack(u, &self.teams) || s.can_fix(u, &self.teams));
         let (chosen, distance) = self.unit_near_cursor(able)?;
         let own = self.unit_near_cursor(Unit::is_selectable);
@@ -1342,7 +1340,7 @@ impl Game {
         if !self.control_held || !self.can_order_attack_here() {
             return None;
         }
-        let selected: Vec<&Unit> = self.units.iter().filter(|u| u.selected).collect();
+        let selected = self.selected_units();
         let able = |u: &Unit| {
             selected.iter().any(|s| s.can_fire_on(u) || s.can_attack(u, &self.teams) || s.can_fix(u, &self.teams))
         };
@@ -1357,7 +1355,7 @@ impl Game {
 
     /// What the cursor should look like: what a click here would make the selected units do.
     pub fn cursor_look(&self) -> CursorLook {
-        let selected: Vec<&Unit> = self.units.iter().filter(|u| u.selected).collect();
+        let selected = self.selected_units();
         let look_at = |u: &Unit| {
             let armed = |s: &&Unit| s.can_attack(u, &self.teams) || (self.control_held && s.can_fire_on(u));
             if selected.iter().any(armed) { CursorLook::Attack } else { CursorLook::Heal }
@@ -1378,8 +1376,9 @@ impl Game {
     /// selection. Anything that stayed near its start on screen is a click: on one of the
     /// player's units it selects that unit, on an enemy they can fight it sends them after
     /// that enemy, and elsewhere it sends them there. With Control held it orders an attack
-    /// on whatever is there, friend or bare ground. With `adding`, what it picks joins the selection instead, and a click that picks
-    /// nothing does nothing, so that a near miss does not send everyone off.
+    /// on whatever is there, friend or bare ground. With `adding`, what it picks joins the
+    /// selection instead, and a click that picks nothing does nothing, so that a near miss
+    /// does not send everyone off.
     fn finish_selection(&mut self, adding: bool) {
         if self.selection_anchor.is_none() {
             return;
@@ -1443,23 +1442,15 @@ impl Game {
         self.money[0]
     }
 
-    fn next_random(&mut self) -> u32 {
-        // Xorshift: plenty for fake messages, and it needs no dependency.
-        self.chat_random ^= self.chat_random << 13;
-        self.chat_random ^= self.chat_random >> 17;
-        self.chat_random ^= self.chat_random << 5;
-        self.chat_random
-    }
-
     /// Posts a random message every few seconds of battle, scrolling out the oldest.
     fn update_chat(&mut self) {
         while self.battle_time >= self.next_chat_at {
-            let index = self.next_random() as usize % hud::CHAT_MESSAGES.len();
+            let index = battlefield::xorshift(&mut self.chat_random) as usize % hud::CHAT_MESSAGES.len();
             self.chat.push(hud::CHAT_MESSAGES[index]);
             if self.chat.len() > hud::CHAT_LINES {
                 self.chat.remove(0);
             }
-            self.next_chat_at += 3.0 + (self.next_random() % 5) as f32;
+            self.next_chat_at += 3.0 + (battlefield::xorshift(&mut self.chat_random) % 5) as f32;
         }
     }
 
@@ -1626,11 +1617,11 @@ impl Game {
         self.set_screen(Screen::Loading);
     }
 
-    /// Seconds since the current screen opened, for simple animation.
     pub fn menu_seconds(&self) -> f32 {
         self.menu_seconds
     }
 
+    /// Seconds since the current screen opened, for simple animation.
     pub fn screen_elapsed(&self) -> f32 {
         self.screen_elapsed
     }
@@ -1754,10 +1745,10 @@ impl Game {
             return None;
         }
         let (x, y) = self.mouse;
-        let buttons = self.buttons().into_iter();
+        let mut buttons = self.buttons().into_iter();
         if self.dropdown_open || self.color_open {
             // An open list takes all input; what lies around it stays inactive.
-            return buttons.into_iter().find(|b| b.contains(x, y)).map(|b| b.action);
+            return buttons.find(|b| b.contains(x, y)).map(|b| b.action);
         }
         let mut widgets = Vec::new();
         if self.screen == Screen::InGame && !self.key_paused {
@@ -1836,8 +1827,7 @@ impl Game {
             return;
         }
         if self.dropdown_open || self.color_open {
-            self.dropdown_open = false;
-            self.color_open = false;
+            self.close_lists();
             return;
         }
         if let Some(parent) = self.parent() {
@@ -1945,8 +1935,7 @@ impl Game {
                     self.activate(action);
                 } else {
                     // A click on anything else closes an open list.
-                    self.dropdown_open = false;
-                    self.color_open = false;
+                    self.close_lists();
                 }
             }
             Event::KeyDown(key) if self.name_focused => self.edit_name(key),
@@ -2017,28 +2006,30 @@ impl Game {
             Action::CycleOpponentAlly(slot, ally) => {
                 cycle_ally(&mut self.skirmish.opponents[slot].allies, ally);
             }
-            // Not designed yet: these buttons respond to hover but do nothing.
             Action::BuildTab(tab) => self.build_tab = tab,
-            Action::BuildCell(cell) if Game::build_role(self.build_tab, cell).is_some() => {
-                if let Some(role) = Game::build_role(self.build_tab, cell) {
-                    self.produce(role);
-                }
-            }
+            Action::BuildCell(cell) => self.activate_build_cell(cell),
             Action::HudWide(DEPLOY_BUTTON) => units::toggle_deploy(&mut self.units),
-            Action::BuildCell(SUPERWEAPON_CELL)
-                if self.build_tab == BuildTab::Vehicles
-                    && self.superweapon_allowed()
-                    && self.strike_recharge <= 0.0 =>
-            {
-                self.aiming_strike = true;
-            }
-            Action::Multiplayer
-            | Action::LoadGame
-            | Action::SaveGame
-            | Action::HudSmall(_)
-            | Action::HudWide(_)
-            | Action::BuildCell(_) => {}
+            // Not designed yet: these buttons respond to hover but do nothing.
+            Action::Multiplayer | Action::LoadGame | Action::SaveGame | Action::HudSmall(_) | Action::HudWide(_) => {}
         }
+    }
+
+    /// Makes what the cell makes, or gets the superweapon ready to aim.
+    fn activate_build_cell(&mut self, cell: usize) {
+        if let Some(role) = Game::build_role(self.build_tab, cell) {
+            self.produce(role);
+        } else if self.build_tab == BuildTab::Vehicles
+            && cell == SUPERWEAPON_CELL
+            && self.superweapon_allowed()
+            && self.strike_recharge <= 0.0
+        {
+            self.aiming_strike = true;
+        }
+    }
+
+    fn close_lists(&mut self) {
+        self.dropdown_open = false;
+        self.color_open = false;
     }
 
     fn set_screen(&mut self, screen: Screen) {
@@ -2049,8 +2040,7 @@ impl Game {
         self.selection_anchor = None;
         self.confirming = None;
         self.name_focused = false;
-        self.dropdown_open = false;
-        self.color_open = false;
+        self.close_lists();
         self.screen_elapsed = 0.0;
     }
 }
@@ -3010,7 +3000,7 @@ mod tests {
             assert!(x >= 0.0 && y >= 0.0 && x + ww <= w && y + wh <= h, "at {w}x{h}");
             let s = ui_scale(h);
             assert!(text_width("AI 7 (Defensive)") * small_text_px(h) < 380.0 * s);
-            assert!(STATS_ROW_TOP + 8.0 * STATS_ROW_STEP <= 760.0, "eight rows fit");
+            const { assert!(STATS_ROW_TOP + 8.0 * STATS_ROW_STEP <= 760.0, "eight rows fit") };
         }
     }
 

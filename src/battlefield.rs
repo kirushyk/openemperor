@@ -12,6 +12,8 @@ use crate::platform::Vertex;
 use std::sync::OnceLock;
 
 pub const MAP_CELLS: usize = 128;
+const GRID_LAST: f32 = MAP_CELLS as f32;
+const GRID_POINTS: usize = (MAP_CELLS + 1) * (MAP_CELLS + 1);
 /// World units per grid step along each world axis.
 const CELL: f32 = 0.5;
 /// How far ground rises above sand, in world units.
@@ -135,12 +137,17 @@ pub struct Terrain {
     ruins: Vec<RuinPiece>,
 }
 
-/// A repeatable random number from 0 to 1.
-fn next_random(state: &mut u32) -> f32 {
+/// Xorshift: repeatable, and it needs no dependency.
+pub fn xorshift(state: &mut u32) -> u32 {
     *state ^= *state << 13;
     *state ^= *state >> 17;
     *state ^= *state << 5;
-    (*state & 0xFFFF) as f32 / 65535.0
+    *state
+}
+
+/// A repeatable random number from 0 to 1.
+fn next_random(state: &mut u32) -> f32 {
+    (xorshift(state) & 0xFFFF) as f32 / 65535.0
 }
 
 /// The remains of one square building: what is left of its four walls, in broken stretches
@@ -195,9 +202,8 @@ fn grid_index(u: usize, v: usize) -> usize {
 
 impl Terrain {
     fn generate(map: usize) -> Self {
-        let count = (MAP_CELLS + 1) * (MAP_CELLS + 1);
-        let mut is_ground = Vec::with_capacity(count);
-        let mut colors = Vec::with_capacity(count);
+        let mut is_ground = Vec::with_capacity(GRID_POINTS);
+        let mut colors = Vec::with_capacity(GRID_POINTS);
         let seed = 101 + map as u32 * 13;
         let planet = MAP_PLANETS[map];
         let threshold = if planet.lower_is_solid() { GROUND_THRESHOLD } else { LAND_THRESHOLD };
@@ -259,19 +265,17 @@ impl Terrain {
     }
 
     pub fn on_map(&self, x: f32, z: f32) -> bool {
-        let last = MAP_CELLS as f32;
         let (u, v) = world_to_grid(x, z);
-        (0.0..=last).contains(&u) && (0.0..=last).contains(&v)
+        (0.0..=GRID_LAST).contains(&u) && (0.0..=GRID_LAST).contains(&v)
     }
 
     /// Flat sand holding only the given ruins, for testing how units meet them.
     #[cfg(test)]
     pub fn open_with_ruins(ruins: Vec<RuinPiece>) -> Self {
-        let count = (MAP_CELLS + 1) * (MAP_CELLS + 1);
         Terrain {
             planet: Planet::A,
-            is_ground: vec![false; count],
-            colors: vec![SAND; count],
+            is_ground: vec![false; GRID_POINTS],
+            colors: vec![SAND; GRID_POINTS],
             ruins,
         }
     }
@@ -287,10 +291,9 @@ impl Terrain {
 
     /// The terrain's height under a world point, following its slopes.
     pub fn height_at(&self, x: f32, z: f32) -> f32 {
-        let last = MAP_CELLS as f32;
         let (u, v) = world_to_grid(x, z);
-        let (u, v) = (u.clamp(0.0, last), v.clamp(0.0, last));
-        let (u0, v0) = (u.floor().min(last - 1.0), v.floor().min(last - 1.0));
+        let (u, v) = (u.clamp(0.0, GRID_LAST), v.clamp(0.0, GRID_LAST));
+        let (u0, v0) = (u.floor().min(GRID_LAST - 1.0), v.floor().min(GRID_LAST - 1.0));
         let (tu, tv) = (u - u0, v - v0);
         let at = |du: usize, dv: usize| {
             let raised = self.is_ground(u0 as usize + du, v0 as usize + dv);
@@ -357,8 +360,7 @@ impl Camera {
     /// Moves the target, sliding along the map's edges rather than leaving the diamond.
     fn move_by(&mut self, dx: f32, dz: f32) {
         let (u, v) = world_to_grid(self.x + dx, self.z + dz);
-        let limit = MAP_CELLS as f32;
-        (self.x, self.z) = grid_to_world(u.clamp(0.0, limit), v.clamp(0.0, limit));
+        (self.x, self.z) = grid_to_world(u.clamp(0.0, GRID_LAST), v.clamp(0.0, GRID_LAST));
     }
 
     /// One frame of edge scrolling. Slower when low, so the ground crosses the screen at
@@ -380,20 +382,19 @@ impl Camera {
     fn move_diagonally(&mut self, dx: f32, dz: f32) {
         let (u, v) = world_to_grid(self.x, self.z);
         let (du, dv) = world_to_grid(dx, dz);
-        let limit = MAP_CELLS as f32;
         let blocked = |position: f32, step: f32| {
-            (position >= limit && step > 0.0) || (position <= 0.0 && step < 0.0)
+            (position >= GRID_LAST && step > 0.0) || (position <= 0.0 && step < 0.0)
         };
         let slide = |other: f32, step: f32| {
-            let middle = limit / 2.0;
+            let middle = GRID_LAST / 2.0;
             let end = if other < middle {
                 0.0
             } else if other > middle {
-                limit
+                GRID_LAST
             } else if step > 0.0 {
                 0.0
             } else {
-                limit
+                GRID_LAST
             };
             let distance = step.abs();
             if end > other { (other + distance).min(end) } else { (other - distance).max(end) }
@@ -405,7 +406,7 @@ impl Camera {
         } else {
             (u + du, v + dv)
         };
-        (self.x, self.z) = grid_to_world(u.clamp(0.0, limit), v.clamp(0.0, limit));
+        (self.x, self.z) = grid_to_world(u.clamp(0.0, GRID_LAST), v.clamp(0.0, GRID_LAST));
     }
 
     /// How far between the two positions: 0 at the top, 1 from the bottom position onward.
@@ -452,16 +453,22 @@ impl View {
         (self.position[0], self.position[2])
     }
 
+    /// A world point seen from the camera: how far to the side, how far up, and how deep.
+    fn relative(&self, x: f32, y: f32, z: f32) -> (f32, f32, f32) {
+        let [px, py, pz] = self.position;
+        let (side, rel_y, rel_z) = (x - px, y - py, z - pz);
+        let up = rel_y * self.up[0] + rel_z * self.up[1];
+        (side, up, rel_y * self.forward[0] + rel_z * self.forward[1])
+    }
+
+    fn to_screen(&self, side: f32, up: f32, depth: f32) -> (f32, f32) {
+        (self.center.0 + self.focal * side / depth, self.center.1 - self.focal * up / depth)
+    }
+
     /// A world point's place on screen; `None` if it is behind the camera.
     pub fn project(&self, x: f32, y: f32, z: f32) -> Option<(f32, f32)> {
-        let [px, py, pz] = self.position;
-        let (rel_x, rel_y, rel_z) = (x - px, y - py, z - pz);
-        let depth = rel_y * self.forward[0] + rel_z * self.forward[1];
-        if depth < NEAR {
-            return None;
-        }
-        let up = rel_y * self.up[0] + rel_z * self.up[1];
-        Some((self.center.0 + self.focal * rel_x / depth, self.center.1 - self.focal * up / depth))
+        let (side, up, depth) = self.relative(x, y, z);
+        (depth >= NEAR).then(|| self.to_screen(side, up, depth))
     }
 
     /// A straight line on the sand plane as it appears on screen, cut where it passes behind
@@ -471,11 +478,7 @@ impl View {
         a: (f32, f32),
         b: (f32, f32),
     ) -> Option<((f32, f32), (f32, f32))> {
-        let depth = |point: (f32, f32)| {
-            let rel_y = -self.position[1];
-            let rel_z = point.1 - self.position[2];
-            rel_y * self.forward[0] + rel_z * self.forward[1]
-        };
+        let depth = |point: (f32, f32)| self.relative(point.0, 0.0, point.1).2;
         let (depth_a, depth_b) = (depth(a), depth(b));
         // Just in front of the limit, so that rounding cannot put a cut end behind it.
         let limit = NEAR + 0.01;
@@ -494,11 +497,8 @@ impl View {
     /// Like `project`, but a point behind the camera lands far off the screen's bottom edge
     /// on its own side, which is enough for drawing lines towards it.
     pub fn project_clamped(&self, x: f32, y: f32, z: f32) -> (f32, f32) {
-        let [px, py, pz] = self.position;
-        let (rel_x, rel_y, rel_z) = (x - px, y - py, z - pz);
-        let depth = (rel_y * self.forward[0] + rel_z * self.forward[1]).max(NEAR);
-        let up = rel_y * self.up[0] + rel_z * self.up[1];
-        (self.center.0 + self.focal * rel_x / depth, self.center.1 - self.focal * up / depth)
+        let (side, up, depth) = self.relative(x, y, z);
+        self.to_screen(side, up, depth.max(NEAR))
     }
 
     /// The world (x, z) on the sand plane under a screen point; `None` above the horizon.
@@ -530,8 +530,7 @@ impl View {
 
 /// A world point's place on a minimap square whose inscribed diamond is the whole map.
 pub fn world_to_minimap((x, y, size): (f32, f32, f32), world_x: f32, world_z: f32) -> (f32, f32) {
-    let half_map = MAP_CELLS as f32 * CELL;
-    (x + size / 2.0 + world_x / half_map * size / 2.0, y + world_z / half_map * size / 2.0)
+    (x + size / 2.0 + world_x / MAP_MIDDLE_Z * size / 2.0, y + world_z / MAP_MIDDLE_Z * size / 2.0)
 }
 
 /// The world point under a minimap position, or `None` outside the minimap's square.
@@ -539,8 +538,7 @@ pub fn minimap_to_world((x, y, size): (f32, f32, f32), px: f32, py: f32) -> Opti
     if px < x || px >= x + size || py < y || py >= y + size {
         return None;
     }
-    let half_map = MAP_CELLS as f32 * CELL;
-    Some(((px - (x + size / 2.0)) / (size / 2.0) * half_map, (py - y) / (size / 2.0) * half_map))
+    Some(((px - (x + size / 2.0)) / (size / 2.0) * MAP_MIDDLE_Z, (py - y) / (size / 2.0) * MAP_MIDDLE_Z))
 }
 
 /// The part of a segment inside a square, if any.
@@ -576,31 +574,31 @@ pub fn clip_to_rect(
             to = to.min(distance / delta);
         }
     }
-    (from <= to).then(|| {
-        (
-            (a.0 + dx * from, a.1 + dy * from),
-            (a.0 + dx * to, a.1 + dy * to),
-        )
-    })
+    (from <= to).then_some(((a.0 + dx * from, a.1 + dy * from), (a.0 + dx * to, a.1 + dy * to)))
+}
+
+/// Whether all these screen points lie beyond one side of a screen, so that nothing between
+/// them can show.
+pub fn all_off_screen(points: &[(f32, f32)], width: f32, height: f32) -> bool {
+    points.iter().all(|p| p.0 < 0.0)
+        || points.iter().all(|p| p.0 > width)
+        || points.iter().all(|p| p.1 < 0.0)
+        || points.iter().all(|p| p.1 > height)
 }
 
 /// Which way the cursor pushes the camera, with length 1 or 0. Corners push diagonally.
 pub fn edge_direction(mouse: (f32, f32), width: f32, height: f32) -> (f32, f32) {
     let margin = EDGE_MARGIN * crate::game::ui_scale(height);
-    let dx = if mouse.0 <= margin {
-        -1.0
-    } else if mouse.0 >= width - 1.0 - margin {
-        1.0
-    } else {
-        0.0
+    let push = |position: f32, size: f32| {
+        if position <= margin {
+            -1.0
+        } else if position >= size - 1.0 - margin {
+            1.0
+        } else {
+            0.0
+        }
     };
-    let dz = if mouse.1 <= margin {
-        -1.0
-    } else if mouse.1 >= height - 1.0 - margin {
-        1.0
-    } else {
-        0.0
-    };
+    let (dx, dz) = (push(mouse.0, width), push(mouse.1, height));
     let length = f32::hypot(dx, dz);
     if length > 0.0 { (dx / length, dz / length) } else { (0.0, 0.0) }
 }
@@ -614,18 +612,13 @@ pub fn draw(out: &mut Vec<Vertex>, terrain: &Terrain, camera: Camera, width: f32
         let (x, z) = grid_to_world(u as f32, v as f32);
         let y = if terrain.is_ground[index] { GROUND_HEIGHT } else { 0.0 };
         let [r, g, b] = terrain.colors[index];
-        view.project(x, y, z).map(|(x, y)| Vertex { x, y, r, g, b, a: 1.0 })
+        view.project(x, y, z).map(|point| Vertex::new(point, [r, g, b, 1.0]))
     };
     for u in 0..MAP_CELLS {
         for v in 0..MAP_CELLS {
             let corners = [point(u, v), point(u + 1, v), point(u + 1, v + 1), point(u, v + 1)];
             let [Some(a), Some(b), Some(c), Some(d)] = corners else { continue };
-            let quad = [a, b, c, d];
-            let off_screen = quad.iter().all(|p| p.x < 0.0)
-                || quad.iter().all(|p| p.x > width)
-                || quad.iter().all(|p| p.y < 0.0)
-                || quad.iter().all(|p| p.y > height);
-            if !off_screen {
+            if !all_off_screen(&[a, b, c, d].map(|p| (p.x, p.y)), width, height) {
                 out.extend([a, b, c, a, c, d]);
             }
         }

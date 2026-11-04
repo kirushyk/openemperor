@@ -112,7 +112,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             push_event(e);
             return 0;
         case WM_KEYUP:
-            if (wp != VK_CONTROL) break;
+            if (wp != VK_CONTROL) return DefWindowProcA(hwnd, msg, wp, lp);
             e.kind = OE_EVENT_CONTROL;
             e.a = 0;
             push_event(e);

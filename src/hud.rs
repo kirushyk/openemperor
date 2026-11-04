@@ -23,6 +23,10 @@ pub const DEPLOY_BUTTON: usize = 0;
 pub const GRID_COLUMNS: usize = 3;
 pub const GRID_ROWS: usize = 5;
 
+const SMALL_SIZE: f32 = (PANEL_W - GAP * (SMALL_COUNT - 1) as f32) / SMALL_COUNT as f32;
+const GRID_TOP: f32 = SMALL_ROW_Y + SMALL_SIZE + GAP + WIDE_H + GAP;
+const CELL_SIZE: f32 = (PANEL_W - GAP * (GRID_COLUMNS - 1) as f32) / GRID_COLUMNS as f32;
+
 /// The gauge runs clockwise from 7 o'clock to 12 o'clock, in degrees from 12 o'clock.
 pub const GAUGE_START_DEGREES: f32 = 210.0;
 pub const GAUGE_END_DEGREES: f32 = 360.0;
@@ -88,7 +92,7 @@ pub fn command_buttons(width: f32, height: f32) -> Vec<Button> {
     const WIDE_LABELS: [&str; WIDE_COUNT] = ["Deploy", "Fake B"];
     let s = ui_scale(height);
     let left = panel_x(width, height);
-    let small = (PANEL_W - GAP * (SMALL_COUNT - 1) as f32) / SMALL_COUNT as f32;
+    let small = SMALL_SIZE;
     let wide = (PANEL_W - GAP * (WIDE_COUNT - 1) as f32) / WIDE_COUNT as f32;
     let wide_y = SMALL_ROW_Y + small + GAP;
     let mut all = Vec::new();
@@ -115,20 +119,11 @@ pub fn command_buttons(width: f32, height: f32) -> Vec<Button> {
     all
 }
 
-fn grid_top() -> f32 {
-    let small = (PANEL_W - GAP * (SMALL_COUNT - 1) as f32) / SMALL_COUNT as f32;
-    SMALL_ROW_Y + small + GAP + WIDE_H + GAP
-}
-
-fn cell_size() -> f32 {
-    (PANEL_W - GAP * (GRID_COLUMNS - 1) as f32) / GRID_COLUMNS as f32
-}
-
 /// The active tab's grid of square buttons: 5 rows of 3, numbered left to right, top down.
 pub fn grid_cells(width: f32, height: f32) -> Vec<Button> {
     let s = ui_scale(height);
     let left = panel_x(width, height);
-    let cell = cell_size();
+    let cell = CELL_SIZE;
     let mut all = Vec::new();
     for row in 0..GRID_ROWS {
         for col in 0..GRID_COLUMNS {
@@ -136,7 +131,7 @@ pub fn grid_cells(width: f32, height: f32) -> Vec<Button> {
                 action: Action::BuildCell(row * GRID_COLUMNS + col),
                 label: "",
                 x: left + col as f32 * (cell + GAP) * s,
-                y: (grid_top() + row as f32 * (cell + GAP)) * s,
+                y: (GRID_TOP + row as f32 * (cell + GAP)) * s,
                 w: cell * s,
                 h: cell * s,
             });
@@ -154,14 +149,14 @@ pub fn build_tabs(width: f32, height: f32) -> Vec<Button> {
     ];
     let s = ui_scale(height);
     let x = panel_x(width, height) - (GAP + TAB_W) * s;
-    let cell = cell_size();
+    let cell = CELL_SIZE;
     TABS.iter()
         .enumerate()
         .map(|(i, &(tab, label))| Button {
             action: Action::BuildTab(tab),
             label,
             x,
-            y: (grid_top() + i as f32 * (cell + GAP)) * s,
+            y: (GRID_TOP + i as f32 * (cell + GAP)) * s,
             w: TAB_W * s,
             h: cell * s,
         })

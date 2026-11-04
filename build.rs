@@ -1,6 +1,7 @@
 //! Compiles the per-OS shim with the system compiler. No `cc` crate on purpose.
 
 use std::env;
+use std::fmt::Write;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -57,10 +58,12 @@ fn build_linux(out: &Path) {
             .arg(&spv));
         let bytes = fs::read(&spv).unwrap();
         let words: Vec<String> = bytes
-            .chunks_exact(4)
-            .map(|w| format!("0x{:08x}", u32::from_le_bytes([w[0], w[1], w[2], w[3]])))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&word| format!("0x{:08x}", u32::from_le_bytes(word)))
             .collect();
-        header += &format!("static const uint32_t {name}[] = {{{}}};\n", words.join(","));
+        writeln!(header, "static const uint32_t {name}[] = {{{}}};", words.join(",")).unwrap();
     }
     fs::write(out.join("quad_spv.h"), header).unwrap();
 

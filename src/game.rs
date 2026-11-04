@@ -2,7 +2,8 @@
 
 use crate::battlefield::{self, Camera};
 use crate::hud;
-use crate::units::{self, Unit, UnitKind};
+use crate::units::{self, Role, Unit, UnitKind};
+use crate::hud::DEPLOY_BUTTON;
 use crate::weapons::{Combat, STRIKE_RADIUS};
 use crate::platform::{Event, Key};
 
@@ -19,7 +20,11 @@ const PICK_RADIUS: f32 = 25.0;
 const STARTING_ENERGY: i32 = 65;
 
 /// The Vehicles menu's cell holding the superweapon.
-pub const SUPERWEAPON_CELL: usize = 0;
+pub const SUPERWEAPON_CELL: usize = 3;
+/// What each tab's first cells produce, in order.
+const INFANTRY_BUILDS: [Role; 5] =
+    [Role::Scout, Role::LightInfantry, Role::Sniper, Role::Engineer, Role::KInfantry];
+const VEHICLE_BUILDS: [Role; 3] = [Role::Tank, Role::RepairVehicle, Role::Catapult];
 /// Seconds of battle before the superweapon can fire again.
 pub const SUPERWEAPON_RECHARGE: f32 = 60.0;
 
@@ -1083,6 +1088,8 @@ pub struct Game {
     /// Where a selection drag started, as a point on the map (x, z), so that it stays put
     /// on the ground while the camera moves.
     selection_anchor: Option<(f32, f32)>,
+    /// New units get ids never used in this battle, so a missile cannot chase the wrong one.
+    next_unit_id: u32,
     pub build_tab: BuildTab,
     pub energy: i32,
     /// The player's money first, then each opponent's.
@@ -1135,6 +1142,7 @@ impl Game {
             aiming_strike: false,
             strike_recharge: 0.0,
             selection_anchor: None,
+            next_unit_id: 0,
             build_tab: BuildTab::Infantry,
             energy: STARTING_ENERGY,
             money: vec![DEFAULT_BATTLE_MONEY],
@@ -1248,6 +1256,44 @@ impl Game {
         let (enemy, enemy_distance) = self.unit_near_cursor(|u| selected.iter().any(|s| s.can_attack(u, &self.teams)))?;
         let own = self.unit_near_cursor(Unit::is_selectable);
         own.is_none_or(|(_, own_distance)| enemy_distance < own_distance).then_some(enemy)
+    }
+
+    /// What a cell of the build menu makes.
+    pub fn build_role(tab: BuildTab, cell: usize) -> Option<Role> {
+        match tab {
+            BuildTab::Infantry => INFANTRY_BUILDS.get(cell).copied(),
+            BuildTab::Vehicles => VEHICLE_BUILDS.get(cell).copied(),
+            BuildTab::Buildings => None,
+        }
+    }
+
+    /// Adds a unit of the player's next to their tower, or their first unit if it is gone.
+    /// There is no cost or waiting yet.
+    fn produce(&mut self, role: Role) {
+        let tower = self.units.iter().find(|u| u.owner == 0 && u.kind.is_building());
+        let Some(beside) = tower.or_else(|| self.units.iter().find(|u| u.owner == 0)) else { return };
+        let (near, color) = ((beside.x, beside.z), beside.color);
+        let terrain = battlefield::terrain(self.battle_map);
+        if units::produce(&mut self.units, terrain, role, near, (0, color), self.next_unit_id) {
+            self.next_unit_id += 1;
+        }
+    }
+
+    /// The tip text for what the cursor is over: a button making something, or a unit.
+    pub fn tip(&self) -> Option<&'static str> {
+        if !self.toggle_value(Toggle::ToolTips) {
+            return None;
+        }
+        if let Some(Action::BuildCell(cell)) = self.hovered() {
+            if self.build_tab == BuildTab::Vehicles && cell == SUPERWEAPON_CELL {
+                return Some("Superweapon");
+            }
+            return Game::build_role(self.build_tab, cell).map(Role::name);
+        }
+        if !self.cursor_on_battlefield() || self.selection_anchor.is_some() {
+            return None;
+        }
+        self.unit_near_cursor(|_| true).map(|(i, _)| self.units[i].name())
     }
 
     /// Whether the cursor should show that a click means attack.
@@ -1494,6 +1540,7 @@ impl Game {
         let colors: Vec<TeamColor> = self.stats_rows().iter().map(|row| row.color).collect();
         self.teams = (0..colors.len()).collect();
         self.units = units::spawn(battlefield::terrain(map), &colors);
+        self.next_unit_id = self.units.len() as u32;
         self.combat = Combat::default();
         self.aiming_strike = false;
         self.strike_recharge = 0.0;
@@ -1825,6 +1872,7 @@ impl Game {
                     self.selection_anchor = None;
                 }
                 (Screen::InGame, Key::Tab) => self.stats_open = !self.stats_open,
+                (Screen::InGame, Key::Char('d' | 'D')) if !self.key_paused => units::toggle_deploy(&mut self.units),
                 (_, Key::Escape) => self.go_back(),
                 _ => {}
             },
@@ -1880,6 +1928,12 @@ impl Game {
             }
             // Not designed yet: these buttons respond to hover but do nothing.
             Action::BuildTab(tab) => self.build_tab = tab,
+            Action::BuildCell(cell) if Game::build_role(self.build_tab, cell).is_some() => {
+                if let Some(role) = Game::build_role(self.build_tab, cell) {
+                    self.produce(role);
+                }
+            }
+            Action::HudWide(DEPLOY_BUTTON) => units::toggle_deploy(&mut self.units),
             Action::BuildCell(SUPERWEAPON_CELL)
                 if self.build_tab == BuildTab::Vehicles
                     && self.superweapon_allowed()
@@ -2823,7 +2877,9 @@ mod tests {
         game.combat.launch_strike(x, z);
         game.combat.poison.push(crate::weapons::PoisonZone { x, z, life: 30.0 });
         game.combat.blasts.push(crate::weapons::Blast { at: (x, 0.0, z), radius: 2.0, life: 0.5 });
-        game.combat.beams.push(crate::weapons::Beam { from: (x, 1.0, z), to: (x + 3.0, 1.0, z), life: 0.5 });
+        game.combat.beams.push(crate::weapons::Beam { from: (x, 1.0, z), to: (x + 3.0, 1.0, z), life: 0.5, repair: false });
+        game.combat.beams.push(crate::weapons::Beam { from: (x, 1.0, z), to: (x + 3.0, 1.0, z), life: 0.5, repair: true });
+        game.combat.flares.push(crate::weapons::Flare { at: (x, 1.0, z), size: 7.0, life: 0.5 });
         game.units[0].health = 10.0;
         assert!(!crate::render::build(&game).is_empty());
         pick_superweapon(&mut game);
@@ -3311,6 +3367,186 @@ mod tests {
         }
         game.update(0.01);
         assert_eq!(game.outcome, None, "the player's tower still stands");
+    }
+
+    #[test]
+    fn each_infantry_button_makes_its_unit_at_once_beside_the_tower_in_the_players_color() {
+        let names = ["Scout", "Light Infantry", "Sniper", "Engineer", "K Infantry"];
+        let mut game = in_battle();
+        for (cell, name) in names.into_iter().enumerate() {
+            let before = game.units.len();
+            click_hud(&mut game, Action::BuildCell(cell));
+            assert_eq!(game.units.len(), before + 1, "{name}");
+            let new = game.units[before];
+            assert_eq!(new.name(), name);
+            assert_eq!(new.owner, 0);
+            assert_eq!(new.color, game.units[0].color);
+            let tower = game.units[tower_of(&game, 0)];
+            assert!((new.x - tower.x).hypot(new.z - tower.z) < 8.0, "{new:?}");
+            assert!(game.units[..before].iter().all(|u| u.id != new.id), "its id is its own");
+        }
+    }
+
+    #[test]
+    fn each_vehicle_button_makes_its_vehicle_and_the_superweapon_comes_after_them() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        for (cell, name) in ["Tank", "Repair Vehicle", "Catapult"].into_iter().enumerate() {
+            let before = game.units.len();
+            click_hud(&mut game, Action::BuildCell(cell));
+            assert_eq!(game.units.len(), before + 1);
+            assert_eq!(game.units[before].name(), name);
+            assert_eq!(game.units[before].kind, UnitKind::Vehicle);
+        }
+        assert!(!game.aiming_strike);
+        let before = game.units.len();
+        click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
+        assert!(game.aiming_strike);
+        assert_eq!(game.units.len(), before);
+    }
+
+    #[test]
+    fn other_build_cells_still_make_nothing_nor_does_a_finished_battle() {
+        let mut game = in_battle();
+        let before = game.units.len();
+        click_hud(&mut game, Action::BuildCell(5));
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        click_hud(&mut game, Action::BuildCell(0));
+        assert_eq!(game.units.len(), before);
+
+        let mut game = in_battle();
+        let enemies = all_enemies(&game);
+        kill_owners(&mut game, &enemies);
+        assert!(game.outcome.is_some());
+        let before = game.units.len();
+        click_hud(&mut game, Action::BuildCell(0));
+        assert_eq!(game.units.len(), before);
+    }
+
+    #[test]
+    fn new_units_can_be_selected_and_sent_at_once() {
+        let mut game = in_battle();
+        let before = game.units.len();
+        click_hud(&mut game, Action::BuildCell(1));
+        let new = game.units[before];
+        let (x, y) = game.view().project(new.x, new.pick_height(), new.z).unwrap();
+        click_at(&mut game, x, y);
+        assert!(game.units[before].selected);
+        click_at(&mut game, W / 2.0 - 800.0, H / 2.0 + 300.0);
+        assert!(game.units[before].is_moving());
+    }
+
+    fn select_new(game: &mut Game, cell: usize) -> usize {
+        let index = game.units.len();
+        click_hud(game, Action::BuildCell(cell));
+        let new = game.units[index];
+        let (x, y) = game.view().project(new.x, new.pick_height(), new.z).unwrap();
+        click_at(game, x, y);
+        assert!(game.units[index].selected);
+        index
+    }
+
+    #[test]
+    fn the_deploy_button_and_the_d_key_switch_selected_k_infantry() {
+        let mut game = in_battle();
+        let k = select_new(&mut game, 4);
+        click_hud(&mut game, Action::HudWide(DEPLOY_BUTTON));
+        assert!(game.units[k].deployed);
+        game.handle(Event::KeyDown(Key::Char('d')));
+        assert!(!game.units[k].deployed);
+    }
+
+    #[test]
+    fn a_scout_alone_never_turns_the_cursor_into_a_bullseye() {
+        let mut game = in_battle();
+        let (_, (x, y)) = enemy_beside_first_group(&mut game);
+        select_new(&mut game, 0);
+        game.handle(Event::MouseMove(x, y));
+        assert!(!game.cursor_means_attack());
+    }
+
+    #[test]
+    fn an_engineer_really_captures_an_enemy_tower_which_then_wins_the_battle() {
+        let mut game = in_setup();
+        let ai = slider(&game, SliderId::AiPlayers);
+        drag(&mut game, SliderId::AiPlayers, ai.x_of(1));
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        for unit in game.units.iter_mut().filter(|u| u.owner == 1 && !u.kind.is_building()) {
+            unit.alive = false;
+        }
+        let tower = tower_of(&game, 1);
+        // Disarmed, tough enough to outlast the player's own fire, and moved into view.
+        game.units[tower].cooldown = 1e9;
+        game.units[tower].health = 1e9;
+        let (x, z) = (game.camera.x + 6.0, game.camera.z);
+        (game.units[tower].x, game.units[tower].z, game.units[tower].destination) = (x, z, (x, z));
+        game.update(0.01);
+        let id = game.units.iter().find(|u| u.owner == 1).unwrap().id;
+        let engineer = select_new(&mut game, 3);
+        let engineer_id = game.units[engineer].id;
+        let enemy = game.units.iter().position(|u| u.id == id).unwrap();
+        let unit = game.units[enemy];
+        let (px, py) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
+        click_at(&mut game, px, py);
+        for _ in 0..800 {
+            game.update(0.05);
+            if game.outcome.is_some() {
+                break;
+            }
+        }
+        assert_eq!(game.outcome, Some(Outcome::Victory));
+        let captured = game.units.iter().find(|u| u.id == id).unwrap();
+        let engineer = game.units.iter().find(|u| u.id == engineer_id).unwrap();
+        assert_eq!((captured.owner, captured.color), (0, engineer.color));
+        assert_eq!(game.killed.buildings, 0, "taken, not destroyed");
+    }
+
+    #[test]
+    fn tip_text_names_units_under_the_cursor_and_what_buttons_make() {
+        let mut game = in_battle();
+        let cell = |i: usize| {
+            hud::all_buttons(W, H).into_iter().find(|b| b.action == Action::BuildCell(i)).unwrap()
+        };
+        for (i, name) in ["Scout", "Light Infantry", "Sniper", "Engineer", "K Infantry"].into_iter().enumerate() {
+            let b = cell(i);
+            game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
+            assert_eq!(game.tip(), Some(name));
+        }
+        let b = cell(7);
+        game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
+        assert_eq!(game.tip(), None, "that cell makes nothing");
+
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        for (i, name) in ["Tank", "Repair Vehicle", "Catapult", "Superweapon"].into_iter().enumerate() {
+            let b = cell(i);
+            game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
+            assert_eq!(game.tip(), Some(name));
+        }
+
+        let tower = game.units[tower_of(&game, 0)];
+        let (x, y) = game.view().project(tower.x, tower.pick_height(), tower.z).unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert_eq!(game.tip(), Some("Tower"), "one's own");
+        let (_, (x, y)) = enemy_beside_first_group(&mut game);
+        game.handle(Event::MouseMove(x, y));
+        assert_eq!(game.tip(), Some("Light Infantry"), "and enemies");
+        assert!(!crate::render::build(&game).is_empty());
+
+        game.handle(Event::MouseMove(W / 2.0 - 800.0, H / 2.0 + 300.0));
+        assert_eq!(game.tip(), None, "bare ground");
+    }
+
+    #[test]
+    fn the_tool_tips_option_turns_tip_text_off() {
+        let mut game = in_battle();
+        let tower = game.units[tower_of(&game, 0)];
+        let (x, y) = game.view().project(tower.x, tower.pick_height(), tower.z).unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert!(game.tip().is_some());
+        game.flip(Toggle::ToolTips);
+        assert_eq!(game.tip(), None);
     }
 
     #[test]

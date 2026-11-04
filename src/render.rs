@@ -4,7 +4,7 @@ use crate::battlefield::{self, MAP_CELLS};
 use crate::font;
 use crate::hud;
 use crate::planet;
-use crate::units::{self, Unit, UnitKind};
+use crate::units::{self, Role, Unit, UnitKind};
 use crate::game::{
     Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, Outcome,
     SUPERWEAPON_CELL, STATS_ROW_STEP,
@@ -41,6 +41,10 @@ const POISON_FILL: [f32; 3] = [0.25, 0.95, 0.25];
 const POISON_ALPHA: f32 = 0.32;
 const LASER_GLOW: Color = [1.0, 0.25, 0.2, 0.35];
 const LASER_CORE: Color = [1.0, 0.9, 0.85, 1.0];
+const REPAIR_GLOW: Color = [0.3, 1.0, 0.5, 0.35];
+const REPAIR_CORE: Color = [0.85, 1.0, 0.9, 1.0];
+const FLARE_GLOW: [f32; 3] = [1.0, 0.7, 0.2];
+const FLARE_CORE: [f32; 3] = [1.0, 0.97, 0.8];
 const BLAST_COLOR: [f32; 3] = [1.0, 0.62, 0.15];
 const MISSILE_BODY: Color = [0.95, 0.95, 0.9, 1.0];
 const MISSILE_FLAME: Color = [1.0, 0.6, 0.15, 0.8];
@@ -296,12 +300,29 @@ pub fn build(game: &Game) -> Vec<Vertex> {
         }
     }
 
+    if let Some(tip) = game.tip() {
+        draw_tip(&mut canvas, game, tip);
+    }
     if game.cursor_means_attack() {
         canvas.attack_cursor(game.mouse, s, game.screen_elapsed());
     } else {
         canvas.cursor(game.mouse, s);
     }
     canvas.vertices
+}
+
+/// A small label below and to the right of the cursor, kept on the screen.
+fn draw_tip(canvas: &mut Canvas, game: &Game, text: &str) {
+    let s = ui_scale(game.height);
+    let px = small_text_px(game.height);
+    let pad = 6.0 * s;
+    let border = (2.0 * s).round().max(1.0);
+    let (w, h) = (font::text_width(text) * px + pad * 2.0, font::CAP_HEIGHT * px + pad * 2.0);
+    let x = (game.mouse.0 + 26.0 * s).min(game.width - w);
+    let y = (game.mouse.1 + 34.0 * s).min(game.height - h);
+    canvas.rect(x - border, y - border, w + border * 2.0, h + border * 2.0, BORDER);
+    canvas.rect(x, y, w, h, PANEL);
+    canvas.text_left(text, x + pad, y + h / 2.0, px, TEXT);
 }
 
 fn draw_button(canvas: &mut Canvas, game: &Game, b: Button) {
@@ -535,10 +556,21 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
         let from = view.project(beam.from.0, beam.from.1, beam.from.2);
         let to = view.project(beam.to.0, beam.to.1, beam.to.2);
         if let (Some(a), Some(b)) = (from, to) {
-            let [r, g, bl, alpha] = LASER_GLOW;
+            let (glow, core) = if beam.repair { (REPAIR_GLOW, REPAIR_CORE) } else { (LASER_GLOW, LASER_CORE) };
+            let [r, g, bl, alpha] = glow;
             canvas.line(a, b, 9.0 * s, [r, g, bl, alpha * beam.life]);
-            let [r, g, bl, alpha] = LASER_CORE;
+            let [r, g, bl, alpha] = core;
             canvas.line(a, b, (2.5 * s).max(1.0), [r, g, bl, alpha * beam.life]);
+        }
+    }
+    for flare in &game.combat.flares {
+        let (x, y, z) = flare.at;
+        if let Some((px, py)) = view.project(x, y, z) {
+            let size = flare.size * s;
+            let [r, g, b] = FLARE_GLOW;
+            canvas.star(px, py, size, size * 0.35, 6, flare.life, [r, g, b, 0.8 * flare.life]);
+            let [r, g, b] = FLARE_CORE;
+            canvas.circle(px, py, size * 0.35, [r, g, b, flare.life]);
         }
     }
     for missile in &game.combat.missiles {
@@ -599,13 +631,13 @@ fn draw_strike_aim(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
 
 /// A small bar over anyone who has been hurt.
 fn draw_health_bar(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
-    if unit.health >= unit.kind.max_health() {
+    if unit.health >= unit.max_health() {
         return;
     }
     let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else { return };
     let s = ui_scale(game.height);
     let (width, height) = (30.0 * s, (4.0 * s).max(2.0));
-    let share = (unit.health / unit.kind.max_health()).clamp(0.0, 1.0);
+    let share = (unit.health / unit.max_health()).clamp(0.0, 1.0);
     canvas.rect(x - width / 2.0, y, width, height, HEALTH_BAD);
     canvas.rect(x - width / 2.0, y, width * share, height, HEALTH_GOOD);
 }
@@ -684,8 +716,63 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
     let ahead = |by: f32| (unit.x + forward_x * by, unit.z + forward_z * by);
     match unit.kind {
         UnitKind::Infantry => {
-            let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
-            draw_turned_box(canvas, game, view, body, (unit.y, unit.y + 0.6), color);
+            let barrel = |by: f32, half: f32, thick: f32| {
+                let (x, z) = ahead(by);
+                (x, z, half, thick, unit.heading)
+            };
+            let dark = color.map(|c| c * 0.5);
+            let y = unit.y;
+            match (unit.role, unit.deployed) {
+                (Role::KInfantry, true) => {
+                    let base = (unit.x, unit.z, 0.3, 0.22, unit.heading);
+                    draw_turned_box(canvas, game, view, base, (y, y + 0.22), color);
+                    draw_turned_box(canvas, game, view, barrel(0.45, 0.3, 0.05), (y + 0.14, y + 0.22), dark);
+                }
+                (Role::KInfantry, false) => {
+                    let body = (unit.x, unit.z, 0.17, 0.17, unit.heading);
+                    draw_turned_box(canvas, game, view, body, (y, y + 0.66), color);
+                }
+                (Role::Scout, _) => {
+                    let body = (unit.x, unit.z, 0.1, 0.1, unit.heading);
+                    draw_turned_box(canvas, game, view, body, (y, y + 0.45), color);
+                }
+                (Role::Sniper, _) => {
+                    let body = (unit.x, unit.z, 0.1, 0.1, unit.heading);
+                    draw_turned_box(canvas, game, view, body, (y, y + 0.6), color);
+                    draw_turned_box(canvas, game, view, barrel(0.3, 0.26, 0.02), (y + 0.4, y + 0.44), dark);
+                }
+                (Role::Engineer, _) => {
+                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
+                    draw_turned_box(canvas, game, view, body, (y, y + 0.5), color);
+                    let hat = (unit.x, unit.z, 0.18, 0.18, unit.heading);
+                    draw_turned_box(canvas, game, view, hat, (y + 0.5, y + 0.58), [0.95, 0.85, 0.3]);
+                }
+                _ => {
+                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
+                    draw_turned_box(canvas, game, view, body, (y, y + 0.6), color);
+                }
+            }
+        }
+        UnitKind::Vehicle if unit.role == Role::RepairVehicle => {
+            let hull = (unit.x, unit.z, 0.42, 0.26, unit.heading);
+            let top = unit.y + 0.3;
+            draw_turned_box(canvas, game, view, hull, (unit.y, top), color);
+            // A white cross on its roof.
+            let long = (unit.x, unit.z, 0.2, 0.06, unit.heading);
+            let wide = (unit.x, unit.z, 0.06, 0.2, unit.heading);
+            draw_turned_box(canvas, game, view, long, (top, top + 0.03), [0.95, 0.95, 0.95]);
+            draw_turned_box(canvas, game, view, wide, (top, top + 0.03), [0.95, 0.95, 0.95]);
+        }
+        UnitKind::Vehicle if unit.role == Role::Catapult => {
+            let hull = (unit.x, unit.z, 0.42, 0.26, unit.heading);
+            let top = unit.y + 0.22;
+            draw_turned_box(canvas, game, view, hull, (unit.y, top), color);
+            let (arm_x, arm_z) = ahead(-0.08);
+            let arm = (arm_x, arm_z, 0.36, 0.04, unit.heading);
+            draw_turned_box(canvas, game, view, arm, (top + 0.14, top + 0.2), color.map(|c| c * 0.6));
+            let (bucket_x, bucket_z) = ahead(-0.42);
+            let bucket = (bucket_x, bucket_z, 0.09, 0.09, unit.heading);
+            draw_turned_box(canvas, game, view, bucket, (top + 0.1, top + 0.26), color.map(|c| c * 0.45));
         }
         UnitKind::Vehicle => {
             let hull = (unit.x, unit.z, 0.45, 0.28, unit.heading);
@@ -934,8 +1021,11 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
             }
             continue;
         }
-        draw_tab_symbol(canvas, game.build_tab, cx, cy, cell.w * 0.5, GOLD_DIM);
-        let label = format!("{letter}{}", i + 1);
+        // Tip text gives the full name of what it makes.
+        let makes = Game::build_role(game.build_tab, i);
+        let symbol = if makes.is_some() { GOLD } else { GOLD_DIM };
+        draw_tab_symbol(canvas, game.build_tab, cx, cy, cell.w * 0.5, symbol);
+        let label = makes.map_or(format!("{letter}{}", i + 1), |role| short_name(role).to_string());
         canvas.text_left(&label, cell.x + 6.0 * s, cell.y + 14.0 * s, chat_px(game), TEXT);
     }
     for tab in hud::build_tabs(game.width, game.height) {
@@ -948,6 +1038,18 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
         canvas.rect(tab.x + border, tab.y + border, tab.w - border * 2.0, tab.h - border * 2.0, fill);
         let color = if selected { GOLD } else { TEXT };
         draw_tab_symbol(canvas, kind, tab.x + tab.w / 2.0, tab.y + tab.h / 2.0, tab.w * 0.7, color);
+    }
+}
+
+/// A name short enough for a build menu cell.
+fn short_name(role: Role) -> &'static str {
+    match role {
+        Role::LightInfantry => "Light",
+        Role::Engineer => "Engin",
+        Role::KInfantry => "K Inf",
+        Role::RepairVehicle => "Repair",
+        Role::Catapult => "Catap",
+        _ => role.name(),
     }
 }
 

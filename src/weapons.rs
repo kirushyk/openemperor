@@ -30,7 +30,11 @@ const TOWER_IDLE_TURN: f32 = 0.5;
 /// A tower must point this close to its target, in radians, before it fires.
 const TOWER_ALIGNMENT: f32 = 0.1;
 
+/// Health a repair vehicle gives back with each pulse.
+const REPAIR_HEALTH: f32 = 12.0;
+
 const BEAM_SECONDS: f32 = 0.2;
+const FLARE_SECONDS: f32 = 0.1;
 const BLAST_SECONDS: f32 = 0.5;
 
 /// How high the radioactive missile starts, and how long it takes to come down.
@@ -53,6 +57,16 @@ pub enum WeaponKind {
     Laser,
     /// Lobbed in a ballistic arc at where the target was, exploding where it lands.
     Mortar,
+    /// Like a bullet, but slower and from farther away, and hits harder.
+    Sniper,
+    /// Like a bullet, but weak and slower.
+    Pistol,
+    /// Like a bullet, but much stronger, even against armor.
+    Cannon,
+    /// Fixes friendly vehicles nearby instead of harming anyone.
+    Repair,
+    /// Carries nothing.
+    Unarmed,
 }
 
 impl WeaponKind {
@@ -62,12 +76,33 @@ impl WeaponKind {
             WeaponKind::Missile => 12.0,
             WeaponKind::Laser => 9.0,
             WeaponKind::Mortar => 16.0,
+            WeaponKind::Sniper => 14.0,
+            WeaponKind::Pistol => 5.0,
+            WeaponKind::Cannon => 10.0,
+            WeaponKind::Repair => 3.0,
+            WeaponKind::Unarmed => 0.0,
         }
     }
 
     /// Mortar shells only come down on the ground. Everything else can aim up.
     pub fn can_target(self, kind: UnitKind) -> bool {
-        self != WeaponKind::Mortar || !kind.flies()
+        match self {
+            WeaponKind::Unarmed | WeaponKind::Repair => false,
+            WeaponKind::Mortar => !kind.flies(),
+            _ => true,
+        }
+    }
+
+    /// How large, in screen units, the flare where it is fired, if it has one. Only guns
+    /// that strike at once have one: nothing else shows where their shots come from.
+    pub fn flare(self) -> Option<f32> {
+        match self {
+            WeaponKind::Pistol => Some(5.0),
+            WeaponKind::Bullet => Some(7.0),
+            WeaponKind::Sniper => Some(9.0),
+            WeaponKind::Cannon => Some(16.0),
+            _ => None,
+        }
     }
 
     fn cooldown(self) -> f32 {
@@ -76,6 +111,11 @@ impl WeaponKind {
             WeaponKind::Missile => 3.0,
             WeaponKind::Laser => 1.2,
             WeaponKind::Mortar => 4.0,
+            WeaponKind::Sniper => 3.5,
+            WeaponKind::Pistol => 1.5,
+            WeaponKind::Cannon => 3.0,
+            WeaponKind::Repair => 0.4,
+            WeaponKind::Unarmed => RETARGET_SECONDS,
         }
     }
 
@@ -85,13 +125,19 @@ impl WeaponKind {
             WeaponKind::Missile => 60.0,
             WeaponKind::Laser => 25.0,
             WeaponKind::Mortar => 70.0,
+            WeaponKind::Sniper => 90.0,
+            WeaponKind::Pistol => 8.0,
+            WeaponKind::Cannon => 80.0,
+            WeaponKind::Repair | WeaponKind::Unarmed => 0.0,
         }
     }
 
-    /// Bullets barely scratch armor or walls.
+    /// Small arms barely scratch armor or walls.
     fn damage_to(self, kind: UnitKind) -> f32 {
         match (self, kind) {
-            (WeaponKind::Bullet, UnitKind::Vehicle | UnitKind::Tower) => self.damage() * 0.25,
+            (WeaponKind::Bullet | WeaponKind::Pistol | WeaponKind::Sniper, UnitKind::Vehicle | UnitKind::Tower) => {
+                self.damage() * 0.25
+            }
             _ => self.damage(),
         }
     }
@@ -145,6 +191,17 @@ pub struct Beam {
     pub from: Point,
     pub to: Point,
     pub life: f32,
+    /// A repair vehicle at work, not a laser.
+    pub repair: bool,
+}
+
+/// The burst of light where a gun is fired.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flare {
+    pub at: Point,
+    pub size: f32,
+    /// From 1 when it is fired down to 0.
+    pub life: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -183,6 +240,7 @@ pub struct Combat {
     pub missiles: Vec<Missile>,
     pub shells: Vec<Shell>,
     pub beams: Vec<Beam>,
+    pub flares: Vec<Flare>,
     pub blasts: Vec<Blast>,
     pub strikes: Vec<Strike>,
     pub poison: Vec<PoisonZone>,
@@ -212,6 +270,10 @@ impl Combat {
             beam.life -= dt / BEAM_SECONDS;
         }
         self.beams.retain(|b| b.life > 0.0);
+        for flare in &mut self.flares {
+            flare.life -= dt / FLARE_SECONDS;
+        }
+        self.flares.retain(|f| f.life > 0.0);
         for blast in &mut self.blasts {
             blast.life -= dt / BLAST_SECONDS;
         }
@@ -238,12 +300,23 @@ impl Combat {
             let weapon = units[i].weapon;
             units[i].cooldown = weapon.cooldown();
             let (from, to) = (units[i].muzzle(), units[target].center());
+            if let Some(size) = weapon.flare() {
+                self.flares.push(Flare { at: from, size, life: 1.0 });
+            }
             match weapon {
-                WeaponKind::Bullet => hit(&mut units[target], weapon),
+                WeaponKind::Bullet | WeaponKind::Sniper | WeaponKind::Pistol | WeaponKind::Cannon => {
+                    hit(&mut units[target], weapon);
+                }
                 WeaponKind::Laser => {
                     hit(&mut units[target], weapon);
-                    self.beams.push(Beam { from, to, life: 1.0 });
+                    self.beams.push(Beam { from, to, life: 1.0, repair: false });
                 }
+                WeaponKind::Repair => {
+                    let fixed = &mut units[target];
+                    fixed.health = (fixed.health + REPAIR_HEALTH).min(fixed.max_health());
+                    self.beams.push(Beam { from, to, life: 1.0, repair: true });
+                }
+                WeaponKind::Unarmed => {}
                 WeaponKind::Missile => {
                     // From the ground it is launched upward, so that it visibly rises and turns
                     // towards its target. From the air it has a clear shot.
@@ -399,12 +472,34 @@ fn turn_tubes(units: &mut [Unit], tower: usize, teams: &[usize], dt: f32) -> boo
 /// The enemy it was told to attack if that one is in range, otherwise whoever is nearest.
 fn choose_target(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usize> {
     let unit = &units[shooter];
+    if unit.weapon == WeaponKind::Repair {
+        return nearest_to_repair(units, shooter, teams);
+    }
     let ordered = unit.target.and_then(|id| units.iter().position(|u| u.alive && u.id == id));
     ordered
         .filter(|&t| {
             unit.can_attack(&units[t], teams) && distance(unit.center(), units[t].center()) <= unit.weapon.range()
         })
         .or_else(|| nearest_enemy(units, shooter, teams))
+}
+
+/// The nearest other hurt vehicle within reach, of the same side or an ally's.
+fn nearest_to_repair(units: &[Unit], repairer: usize, teams: &[usize]) -> Option<usize> {
+    let from = units[repairer].center();
+    let owner = units[repairer].owner;
+    let friendly = |other: usize| teams.get(owner).is_some() && teams.get(other) == teams.get(owner);
+    let reach = units[repairer].weapon.range();
+    (0..units.len())
+        .filter(|&i| {
+            let unit = &units[i];
+            i != repairer
+                && unit.alive
+                && unit.kind == UnitKind::Vehicle
+                && unit.health < unit.max_health()
+                && friendly(unit.owner)
+                && distance(from, unit.center()) <= reach + unit.kind.radius()
+        })
+        .min_by(|&a, &b| distance(from, units[a].center()).total_cmp(&distance(from, units[b].center())))
 }
 
 /// The nearest living enemy within a unit's weapon range.
@@ -495,7 +590,11 @@ mod tests {
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         assert!(units[1].health < 100.0, "hit on the first step");
-        assert_eq!(combat, Combat::default(), "nothing to see");
+        assert_eq!(combat.flares.len(), 1, "only a flare to see, where it was fired");
+        assert_eq!(combat.flares[0].at, units[0].muzzle());
+        assert!(combat.beams.is_empty() && combat.missiles.is_empty() && combat.blasts.is_empty());
+        run(&mut combat, &mut units, 0.2);
+        assert!(combat.flares.is_empty(), "and it fades");
     }
 
     #[test]
@@ -923,6 +1022,95 @@ mod tests {
         assert!(units[1].alive && units[1].health < UnitKind::Tower.max_health(), "it takes a while");
         run(&mut combat, &mut units, 40.0);
         assert!(!units[1].alive, "but it falls");
+    }
+
+    #[test]
+    fn every_gun_that_strikes_at_once_shows_a_flare_and_the_cannons_is_largest() {
+        for weapon in [WeaponKind::Bullet, WeaponKind::Sniper, WeaponKind::Pistol, WeaponKind::Cannon] {
+            let mut units = [shooter(weapon), target_at(4.0, 60.0)];
+            let mut combat = Combat::default();
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            assert!(units[1].health < 100.0, "{weapon:?}");
+            assert_eq!(combat.flares.len(), 1, "{weapon:?}");
+            assert!(combat.beams.is_empty(), "{weapon:?} leaves no line");
+        }
+        let size = |w: WeaponKind| w.flare().unwrap();
+        assert!(size(WeaponKind::Cannon) > size(WeaponKind::Sniper));
+        assert_eq!(WeaponKind::Missile.flare(), None);
+    }
+
+    #[test]
+    fn a_sniper_fires_slower_than_a_bullet_but_farther_and_harder() {
+        let (sniper, bullet) = (WeaponKind::Sniper, WeaponKind::Bullet);
+        assert!(sniper.cooldown() > bullet.cooldown());
+        assert!(sniper.range() > bullet.range());
+        assert!(sniper.damage() > bullet.damage());
+    }
+
+    #[test]
+    fn a_pistol_is_weak_and_slow_and_a_cannon_much_stronger_even_against_armor() {
+        let (pistol, cannon, bullet) = (WeaponKind::Pistol, WeaponKind::Cannon, WeaponKind::Bullet);
+        assert!(pistol.damage() < bullet.damage() && pistol.cooldown() > bullet.cooldown());
+        assert!(cannon.damage() > bullet.damage() * 4.0);
+        assert_eq!(cannon.damage_to(UnitKind::Vehicle), cannon.damage());
+    }
+
+    #[test]
+    fn the_unarmed_hold_fire_and_harm_nobody() {
+        for weapon in [WeaponKind::Unarmed, WeaponKind::Repair] {
+            let mut units = [shooter(weapon), target_at(1.0, 60.0)];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 3.0);
+            assert_eq!(units[1].health, 100.0, "{weapon:?}");
+        }
+    }
+
+    fn repair_scene(friend_owner: usize, friend_x: f32, kind: UnitKind) -> [Unit; 2] {
+        let mut repairer = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        repairer.id = 1;
+        repairer.weapon = WeaponKind::Repair;
+        let mut friend = Unit::for_test(friend_x, 60.0, kind);
+        friend.id = 2;
+        friend.owner = friend_owner;
+        friend.cooldown = 1000.0;
+        friend.health = 50.0;
+        [repairer, friend]
+    }
+
+    #[test]
+    fn a_repair_vehicle_fixes_nearby_friendly_vehicles_up_to_full_health() {
+        let mut units = repair_scene(0, 2.0, UnitKind::Vehicle);
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 1.0);
+        assert!(units[1].health > 50.0);
+        assert!(combat.beams.iter().all(|b| b.repair) && !combat.beams.is_empty() || units[1].health > 50.0);
+        run(&mut combat, &mut units, 30.0);
+        assert_eq!(units[1].health, units[1].max_health());
+    }
+
+    #[test]
+    fn a_repair_vehicle_helps_allies_but_not_enemies_infantry_or_those_far_off() {
+        let run_scene = |units: &mut [Unit; 2], teams: &[usize]| {
+            let mut combat = Combat::default();
+            for _ in 0..40 {
+                combat.advance(units, teams, flat(), 0.05);
+            }
+        };
+        let mut ally = repair_scene(1, 2.0, UnitKind::Vehicle);
+        run_scene(&mut ally, &[0, 0]);
+        assert!(ally[1].health > 50.0, "an ally");
+
+        let mut enemy = repair_scene(1, 2.0, UnitKind::Vehicle);
+        run_scene(&mut enemy, &TEAMS);
+        assert_eq!(enemy[1].health, 50.0, "an enemy");
+
+        let mut infantry = repair_scene(0, 2.0, UnitKind::Infantry);
+        run_scene(&mut infantry, &TEAMS);
+        assert_eq!(infantry[1].health, 50.0, "not a vehicle");
+
+        let mut far = repair_scene(0, 9.0, UnitKind::Vehicle);
+        run_scene(&mut far, &TEAMS);
+        assert_eq!(far[1].health, 50.0, "out of reach");
     }
 
     #[test]

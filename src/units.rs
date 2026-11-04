@@ -34,6 +34,8 @@ const SQUASH_LURE_AHEAD: f32 = 0.3;
 /// A unit told to attack closes to this share of its weapon's range, so that a target
 /// shifting about a little does not keep it starting and stopping.
 const ATTACK_REACH: f32 = 0.9;
+/// An engineer this far beyond touching a building takes it over.
+const CAPTURE_MARGIN: f32 = 0.3;
 /// A unit after a target that covers less than this share of its usual step is wedged.
 const WEDGED_SHARE: f32 = 0.25;
 /// Rounds of separating overlapping units per step.
@@ -97,6 +99,95 @@ impl UnitKind {
 
 /// How high aircraft fly, in world units.
 const CRUISE_ALTITUDE: f32 = 3.0;
+/// What a unit is, beyond how it moves: this names it and decides what it starts with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    LightInfantry,
+    /// Fast and unarmed.
+    Scout,
+    /// Fires slowly, but far and hard.
+    Sniper,
+    /// Takes enemy buildings over by reaching them.
+    Engineer,
+    /// Fires a pistol, or stands deployed and fires a cannon.
+    KInfantry,
+    Tank,
+    /// Unarmed, and fixes friendly vehicles nearby.
+    RepairVehicle,
+    /// Lobs shells in a ballistic arc.
+    Catapult,
+    Aircraft,
+    Tower,
+}
+
+impl Role {
+    pub fn kind(self) -> UnitKind {
+        match self {
+            Role::LightInfantry | Role::Scout | Role::Sniper | Role::Engineer | Role::KInfantry => UnitKind::Infantry,
+            Role::Tank | Role::RepairVehicle | Role::Catapult => UnitKind::Vehicle,
+            Role::Aircraft => UnitKind::Aircraft,
+            Role::Tower => UnitKind::Tower,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::LightInfantry => "Light Infantry",
+            Role::Scout => "Scout",
+            Role::Sniper => "Sniper",
+            Role::Engineer => "Engineer",
+            Role::KInfantry => "K Infantry",
+            Role::Tank => "Tank",
+            Role::RepairVehicle => "Repair Vehicle",
+            Role::Catapult => "Catapult",
+            Role::Aircraft => "Aircraft",
+            Role::Tower => "Tower",
+        }
+    }
+
+    fn weapon(self) -> WeaponKind {
+        match self {
+            Role::LightInfantry => WeaponKind::Bullet,
+            Role::Scout => WeaponKind::Unarmed,
+            Role::Sniper => WeaponKind::Sniper,
+            Role::Engineer | Role::KInfantry => WeaponKind::Pistol,
+            Role::Tank => WeaponKind::Cannon,
+            Role::RepairVehicle => WeaponKind::Repair,
+            Role::Catapult => WeaponKind::Mortar,
+            Role::Aircraft | Role::Tower => WeaponKind::Missile,
+        }
+    }
+
+    fn max_health(self) -> f32 {
+        match self {
+            Role::Scout => 60.0,
+            Role::Sniper => 70.0,
+            Role::Engineer => 80.0,
+            Role::KInfantry => 120.0,
+            Role::RepairVehicle => 200.0,
+            Role::Catapult => 180.0,
+            _ => self.kind().max_health(),
+        }
+    }
+
+    fn speed(self) -> f32 {
+        match self {
+            Role::Scout => 4.0,
+            Role::Catapult => 3.5,
+            _ => self.kind().speed(),
+        }
+    }
+
+    fn for_kind(kind: UnitKind) -> Self {
+        match kind {
+            UnitKind::Infantry => Role::LightInfantry,
+            UnitKind::Vehicle => Role::Tank,
+            UnitKind::Aircraft => Role::Aircraft,
+            UnitKind::Tower => Role::Tower,
+        }
+    }
+}
+
 /// Radians per second a vehicle can turn.
 const TURN_SPEED: f32 = 3.0;
 /// The player's second group, far enough east to need scrolling to from the first.
@@ -120,6 +211,9 @@ pub const TUBE_SPREAD: f32 = 0.18;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Unit {
+    pub role: Role,
+    /// Whether K Infantry has dug in with its cannon, unable to move.
+    pub deployed: bool,
     /// Stays the same for life, so that a missile can keep chasing the same unit.
     pub id: u32,
     pub health: f32,
@@ -163,6 +257,27 @@ impl Unit {
 
     fn remaining(&self) -> f32 {
         (self.destination.0 - self.x).hypot(self.destination.1 - self.z)
+    }
+
+    pub fn name(&self) -> &'static str {
+        match (self.role, self.weapon) {
+            (Role::LightInfantry, WeaponKind::Missile) => "Missile Infantry",
+            (Role::LightInfantry, WeaponKind::Laser) => "Laser Infantry",
+            (role, _) => role.name(),
+        }
+    }
+
+    pub fn max_health(&self) -> f32 {
+        self.role.max_health()
+    }
+
+    /// Whether it could take this building over.
+    pub fn can_capture(&self, other: &Unit, teams: &[usize]) -> bool {
+        self.role == Role::Engineer
+            && self.alive
+            && other.alive
+            && other.kind.is_building()
+            && are_enemies(teams, self.owner, other.owner)
     }
 
     /// Whether its weapon can be turned on another unit.
@@ -217,6 +332,8 @@ impl Unit {
     #[cfg(test)]
     pub fn for_test(x: f32, z: f32, kind: UnitKind) -> Self {
         Unit {
+            role: Role::for_kind(kind),
+            deployed: false,
             id: 0,
             health: kind.max_health(),
             weapon: WeaponKind::Bullet,
@@ -241,16 +358,13 @@ impl Unit {
     }
 }
 
-/// What a block of units carries: vehicles have mortars, and aircraft and towers missiles. The
-/// player's infantry mixes the three small arms by column, so that all of them are on the
-/// field, and opponents' have bullets.
-fn weapon_for(kind: UnitKind, owner: usize, column: usize) -> WeaponKind {
-    match (kind, owner, column % 3) {
-        (UnitKind::Vehicle, _, _) => WeaponKind::Mortar,
-        (UnitKind::Aircraft | UnitKind::Tower, _, _) => WeaponKind::Missile,
-        (UnitKind::Infantry, 0, 1) => WeaponKind::Missile,
-        (UnitKind::Infantry, 0, 2) => WeaponKind::Laser,
-        (UnitKind::Infantry, _, _) => WeaponKind::Bullet,
+/// What a block's infantry carries: the player's mixes the three small arms by column, so
+/// that all of them are on the field, and opponents' have bullets.
+fn infantry_weapon(owner: usize, column: usize) -> WeaponKind {
+    match (owner, column % 3) {
+        (0, 1) => WeaponKind::Missile,
+        (0, 2) => WeaponKind::Laser,
+        _ => WeaponKind::Bullet,
     }
 }
 
@@ -290,8 +404,13 @@ fn spawn_group(
         for col in 0..cols {
             let x = cx + (col as f32 - (cols - 1) as f32 / 2.0) * SPACING;
             let z = cz + (row as f32 - (rows - 1) as f32 / 2.0) * SPACING;
-            let kind = kind_in_block(owner, row, rows);
-            place_unit(units, terrain, (x, z), kind, weapon_for(kind, owner, col), (owner, color));
+            // A row of vehicles ends in a catapult, and the rest are tanks.
+            let (role, weapon) = match kind_in_block(owner, row, rows) {
+                UnitKind::Infantry => (Role::LightInfantry, infantry_weapon(owner, col)),
+                UnitKind::Vehicle if col + 1 == cols => (Role::Catapult, Role::Catapult.weapon()),
+                kind => (Role::for_kind(kind), Role::for_kind(kind).weapon()),
+            };
+            place_unit(units, terrain, (x, z), role, weapon, (owner, color), units.len() as u32);
         }
     }
 }
@@ -300,13 +419,17 @@ fn place_unit(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
     (x, z): (f32, f32),
-    kind: UnitKind,
+    role: Role,
     weapon: WeaponKind,
     (owner, color): (usize, TeamColor),
+    id: u32,
 ) {
+    let kind = role.kind();
     units.push(Unit {
-        id: units.len() as u32,
-        health: kind.max_health(),
+        role,
+        deployed: false,
+        id,
+        health: role.max_health(),
         weapon,
         cooldown: 0.0,
         altitude: kind.altitude(),
@@ -329,7 +452,37 @@ fn place_unit(
 }
 
 fn place_tower(units: &mut Vec<Unit>, terrain: &Terrain, at: (f32, f32), side: (usize, TeamColor)) {
-    place_unit(units, terrain, at, UnitKind::Tower, weapon_for(UnitKind::Tower, side.0, 0), side);
+    let id = units.len() as u32;
+    place_unit(units, terrain, at, Role::Tower, Role::Tower.weapon(), side, id);
+}
+
+/// Adds a new unit at the free spot nearest to a point, if there is one. Returns whether
+/// it did. Nobody stands or is headed where it appears.
+pub fn produce(
+    units: &mut Vec<Unit>,
+    terrain: &Terrain,
+    role: Role,
+    near: (f32, f32),
+    side: (usize, TeamColor),
+    id: u32,
+) -> bool {
+    let taken: Vec<(f32, f32)> = units
+        .iter()
+        .filter(|u| u.alive && !u.kind.flies())
+        .flat_map(|u| [(u.x, u.z), u.destination])
+        .collect();
+    let Some(&spot) = find_slots(terrain, near, 1, &taken, false).first() else { return false };
+    place_unit(units, terrain, spot, role, role.weapon(), side, id);
+    true
+}
+
+/// Switches every selected K Infantry between its pistol and, standing still, its cannon.
+pub fn toggle_deploy(units: &mut [Unit]) {
+    for unit in units.iter_mut().filter(|u| u.selected && u.role == Role::KInfantry) {
+        unit.deployed = !unit.deployed;
+        unit.weapon = if unit.deployed { WeaponKind::Cannon } else { WeaponKind::Pistol };
+        unit.destination = (unit.x, unit.z);
+    }
 }
 
 /// The player gets a block and a tower at the map's middle and another block a long scroll
@@ -443,7 +596,9 @@ fn order_layer(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, teams:
         })
         .map(|u| u.destination)
         .collect();
-    let mut chosen: Vec<usize> = (0..units.len()).filter(|&i| in_layer(&units[i]) && units[i].selected).collect();
+    // Deployed units are dug in and stay put.
+    let mut chosen: Vec<usize> =
+        (0..units.len()).filter(|&i| in_layer(&units[i]) && units[i].selected && !units[i].deployed).collect();
     let mut slots = find_slots(terrain, target, chosen.len(), &taken, flying);
     // Farthest first, so that those with the longest walk are not left the leftover spots.
     let distance = |unit: &Unit, spot: (f32, f32)| (unit.x - spot.0).hypot(unit.z - spot.1);
@@ -473,19 +628,36 @@ pub fn order_attack(units: &mut [Unit], enemy: usize, teams: &[usize]) {
 }
 
 /// Points everyone with a target at it, or stops them once it is within reach. A unit whose
-/// target is gone stays where it is.
-fn chase_targets(units: &mut [Unit]) {
+/// target is gone, or is no longer an enemy, stays where it is. An engineer that reaches
+/// its target building takes it over.
+fn chase_targets(units: &mut [Unit], teams: &[usize]) {
     for i in 0..units.len() {
         let Some(id) = units[i].target else { continue };
         if !units[i].alive {
             continue;
         }
         let (x, z) = (units[i].x, units[i].z);
-        let Some(enemy) = units.iter().find(|u| u.alive && u.id == id).copied() else {
+        let found = units.iter().position(|u| u.alive && u.id == id).filter(|&e| units[i].can_attack(&units[e], teams));
+        let Some(enemy_index) = found else {
             units[i].target = None;
             units[i].destination = (x, z);
             continue;
         };
+        let enemy = units[enemy_index];
+        if units[i].can_capture(&enemy, teams) {
+            let touching = units[i].kind.radius() + enemy.kind.radius() + CAPTURE_MARGIN;
+            if (enemy.x - x).hypot(enemy.z - z) <= touching {
+                (units[enemy_index].owner, units[enemy_index].color) = (units[i].owner, units[i].color);
+                units[i].target = None;
+                units[i].destination = (x, z);
+            } else {
+                units[i].destination = (enemy.x, enemy.z);
+            }
+            continue;
+        }
+        if units[i].deployed {
+            continue;
+        }
         let center = units[i].center();
         let away = (enemy.x - center.0).hypot(enemy.center().1 - center.1).hypot(enemy.z - center.2);
         let in_reach = away <= units[i].weapon.range() * ATTACK_REACH;
@@ -533,7 +705,8 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
     let mut sideways = 0.0;
     for (other_index, other) in units.iter().enumerate() {
         let other_layer = other.kind.flies() != unit.kind.flies();
-        if other_index == index || !other.alive || other_layer || can_squash(unit, other, teams) {
+        let building_to_capture = unit.target == Some(other.id) && unit.can_capture(other, teams);
+        if other_index == index || !other.alive || other_layer || building_to_capture || can_squash(unit, other, teams) {
             continue;
         }
         let (dx, dz) = (other.x - unit.x, other.z - unit.z);
@@ -566,7 +739,7 @@ pub fn turn_between(from: f32, to: f32) -> f32 {
 /// Moves a unit along its way, sliding along whatever it cannot enter. Returns whether
 /// those got in its way.
 fn walk(unit: &mut Unit, terrain: &Terrain, (dir_x, dir_z): (f32, f32), dt: f32) -> bool {
-    let distance = (unit.kind.speed() * dt).min(unit.remaining());
+    let distance = (unit.role.speed() * dt).min(unit.remaining());
     let (dx, dz) = (dir_x * distance, dir_z * distance);
     let tries = [(dx, dz), (dx, 0.0), (0.0, dz)];
     match tries.iter().find(|(tx, tz)| unit.can_enter(terrain, unit.x + tx, unit.z + tz)) {
@@ -653,7 +826,7 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 let overlap = touching - flat.hypot(dy);
                 // Infantry cannot shove something heavy: it takes the whole push itself. Nothing
                 // shoves a building.
-                let solid = |unit: &Unit| (unit.kind.is_building(), unit.heavy);
+                let solid = |unit: &Unit| (unit.kind.is_building() || unit.deployed, unit.heavy);
                 let (share_a, share_b) = match solid(&units[a]).cmp(&solid(&units[b])) {
                     Ordering::Greater => (0.0, 1.0),
                     Ordering::Less => (1.0, 0.0),
@@ -712,7 +885,7 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
         held_back[i] |= push_out_of_ruins(unit, terrain);
         // Wedged against those who stay put, a chaser would otherwise press on forever.
         let moved = (unit.x - started_at[i].0).hypot(unit.z - started_at[i].1);
-        held_back[i] |= unit.target.is_some() && moved < unit.kind.speed() * dt * WEDGED_SHARE;
+        held_back[i] |= unit.target.is_some() && moved < unit.role.speed() * dt * WEDGED_SHARE;
         unit.y = terrain.height_at(unit.x, unit.z);
         give_up_if_stuck(unit, held_back[i], dt);
     }
@@ -742,7 +915,7 @@ fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
 
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
-    chase_targets(units);
+    chase_targets(units, teams);
     // Spheres only start to overlap when something moves.
     if !units.iter().any(Unit::is_moving) {
         return;
@@ -750,7 +923,7 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
     let steps = (dt / MAX_STEP).ceil().max(1.0);
     for _ in 0..steps as usize {
         step(units, terrain, teams, dt / steps);
-        chase_targets(units);
+        chase_targets(units, teams);
     }
 }
 
@@ -811,7 +984,8 @@ mod tests {
         for weapon in [WeaponKind::Bullet, WeaponKind::Missile, WeaponKind::Laser, WeaponKind::Mortar] {
             assert!(own.iter().any(|u| u.weapon == weapon), "{weapon:?}");
         }
-        assert!(own.iter().filter(|u| u.kind == UnitKind::Vehicle).all(|u| u.weapon == WeaponKind::Mortar));
+        assert!(own.iter().any(|u| u.role == Role::Tank && u.weapon == WeaponKind::Cannon));
+        assert!(own.iter().any(|u| u.role == Role::Catapult && u.weapon == WeaponKind::Mortar));
         assert!(units.iter().filter(|u| u.kind == UnitKind::Infantry && u.owner != 0).all(|u| u.weapon == WeaponKind::Bullet));
     }
 
@@ -819,7 +993,7 @@ mod tests {
     fn every_unit_has_its_own_id_and_full_health() {
         let units = spawn(terrain(0), &COLORS);
         for (i, a) in units.iter().enumerate() {
-            assert_eq!(a.health, a.kind.max_health());
+            assert_eq!(a.health, a.max_health());
             assert!(units[i + 1..].iter().all(|b| b.id != a.id));
         }
     }
@@ -1186,6 +1360,158 @@ mod tests {
         assert!(first.0 > 0.0 && second.0 > 0.0, "ahead of it, to the east");
         assert_eq!(first.0, second.0);
         assert!((first.2 - second.2).abs() > 0.2, "side by side");
+    }
+
+    fn produced(role: Role) -> Unit {
+        let mut units = Vec::new();
+        assert!(produce(&mut units, open_ground(), role, (0.0, 60.0), (0, TeamColor::Blue), 99));
+        units[0]
+    }
+
+    #[test]
+    fn production_makes_each_role_with_its_own_equipment_and_names() {
+        let expected = [
+            (Role::Scout, WeaponKind::Unarmed, "Scout"),
+            (Role::LightInfantry, WeaponKind::Bullet, "Light Infantry"),
+            (Role::Sniper, WeaponKind::Sniper, "Sniper"),
+            (Role::Engineer, WeaponKind::Pistol, "Engineer"),
+            (Role::KInfantry, WeaponKind::Pistol, "K Infantry"),
+            (Role::Tank, WeaponKind::Cannon, "Tank"),
+            (Role::RepairVehicle, WeaponKind::Repair, "Repair Vehicle"),
+            (Role::Catapult, WeaponKind::Mortar, "Catapult"),
+        ];
+        for (role, weapon, name) in expected {
+            let unit = produced(role);
+            assert_eq!((unit.weapon, unit.name()), (weapon, name));
+            assert_eq!(unit.health, unit.max_health());
+            assert_eq!((unit.id, unit.owner), (99, 0));
+        }
+    }
+
+    #[test]
+    fn production_never_stacks_units_on_each_other() {
+        let mut units = Vec::new();
+        for id in 0..12 {
+            assert!(produce(&mut units, open_ground(), Role::Tank, (0.0, 60.0), (0, TeamColor::Blue), id));
+        }
+        assert!(largest_overlap(&units) <= 0.0, "{}", largest_overlap(&units));
+    }
+
+    #[test]
+    fn scouts_run_fast_and_can_attack_nobody() {
+        let scout = produced(Role::Scout);
+        assert!(scout.role.speed() > Role::LightInfantry.speed());
+        let enemy = enemy_at(1.0, 60.0, UnitKind::Infantry);
+        assert!(!scout.can_attack(&enemy, &TWO_SIDES));
+    }
+
+    #[test]
+    fn k_infantry_deploys_into_a_cannon_stays_put_and_can_pack_up_again() {
+        let mut units = [produced(Role::KInfantry)];
+        units[0].selected = true;
+        toggle_deploy(&mut units);
+        assert!(units[0].deployed);
+        assert_eq!(units[0].weapon, WeaponKind::Cannon);
+
+        let at = (units[0].x, units[0].z);
+        order_move(&mut units, (10.0, 60.0), open_ground(), &[0]);
+        for _ in 0..40 {
+            advance(&mut units, open_ground(), &[0], 0.05);
+        }
+        assert_eq!((units[0].x, units[0].z), at, "dug in");
+
+        toggle_deploy(&mut units);
+        assert_eq!(units[0].weapon, WeaponKind::Pistol);
+        order_move(&mut units, (10.0, 60.0), open_ground(), &[0]);
+        advance(&mut units, open_ground(), &[0], 0.05);
+        assert_ne!((units[0].x, units[0].z), at, "on the move again");
+    }
+
+    #[test]
+    fn deploying_stops_a_unit_and_only_selected_k_infantry_takes_the_order() {
+        let mut units = [produced(Role::KInfantry), produced(Role::Sniper), produced(Role::KInfantry)];
+        units[0].selected = true;
+        units[1].selected = true;
+        units[0].destination = (10.0, 60.0);
+        toggle_deploy(&mut units);
+        assert!(!units[0].is_moving());
+        assert!(!units[1].deployed);
+        assert!(!units[2].deployed);
+    }
+
+    #[test]
+    fn a_deployed_unit_told_to_attack_does_not_walk_off_after_its_target() {
+        let mut units = [produced(Role::KInfantry), enemy_at(25.0, 60.0, UnitKind::Infantry)];
+        units[1].id = 7;
+        units[0].selected = true;
+        toggle_deploy(&mut units);
+        order_attack(&mut units, 1, &TWO_SIDES);
+        for _ in 0..40 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert_eq!(units[0].target, Some(7));
+        assert!(!units[0].is_moving());
+    }
+
+    fn engineer_and_tower() -> [Unit; 2] {
+        let mut engineer = produced(Role::Engineer);
+        engineer.selected = true;
+        engineer.x = -8.0;
+        engineer.destination = (-8.0, engineer.z);
+        let mut tower = enemy_at(0.0, engineer.z, UnitKind::Tower);
+        tower.id = 7;
+        [engineer, tower]
+    }
+
+    #[test]
+    fn an_engineer_that_reaches_an_enemy_building_takes_it_over_in_its_own_color() {
+        let mut units = engineer_and_tower();
+        order_attack(&mut units, 1, &TWO_SIDES);
+        for _ in 0..200 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert_eq!(units[1].owner, 0);
+        assert_eq!(units[1].color, units[0].color);
+        assert_eq!(units[0].target, None, "its job is done");
+        assert!(!units[0].is_moving());
+        assert_eq!(units[1].health, UnitKind::Tower.max_health(), "unharmed");
+    }
+
+    #[test]
+    fn a_dead_engineer_captures_nothing_and_only_engineers_capture() {
+        let mut units = engineer_and_tower();
+        order_attack(&mut units, 1, &TWO_SIDES);
+        units[0].alive = false;
+        for _ in 0..200 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert_eq!(units[1].owner, 1);
+
+        let mut units = engineer_and_tower();
+        units[0].role = Role::LightInfantry;
+        units[0].weapon = WeaponKind::Bullet;
+        order_attack(&mut units, 1, &TWO_SIDES);
+        for _ in 0..200 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert_eq!(units[1].owner, 1);
+    }
+
+    #[test]
+    fn those_attacking_a_building_stop_when_it_changes_sides() {
+        let mut gunner = produced(Role::LightInfantry);
+        gunner.selected = true;
+        gunner.x = -20.0;
+        let mut tower = enemy_at(0.0, gunner.z, UnitKind::Tower);
+        tower.id = 7;
+        let mut units = [gunner, tower];
+        order_attack(&mut units, 1, &TWO_SIDES);
+        advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        assert!(units[0].is_moving());
+        (units[1].owner, units[1].color) = (0, TeamColor::Blue);
+        advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        assert_eq!(units[0].target, None);
+        assert!(!units[0].is_moving());
     }
 
     #[test]

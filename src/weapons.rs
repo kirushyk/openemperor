@@ -1,10 +1,11 @@
 //! The ways of killing: bullets, missiles, lasers, mortars and the superweapon.
 //!
 //! Everything here is plain simulation with no drawing. Units fire by themselves at the
-//! nearest enemy in range, on the move or standing still. Towers first turn their tubes.
+//! nearest enemy in range, most only while standing still. Whatever can only fire straight
+//! ahead first turns to face its target.
 
 use crate::battlefield::Terrain;
-use crate::units::{Target, Unit, UnitKind, are_enemies, are_friends, turn_between};
+use crate::units::{Role, Target, Unit, UnitKind, are_enemies, are_friends, turn_between};
 
 /// The longest simulation step, in seconds; longer frames are divided up.
 const MAX_STEP: f32 = 0.05;
@@ -376,7 +377,7 @@ impl Combat {
             if units[i].is_moving() && !units[i].weapon.fires_on_move() {
                 continue;
             }
-            let must_aim = units[i].kind.is_building() || units[i].weapon.spray_angle().is_some();
+            let must_aim = must_turn_to_fire(&units[i]);
             if !must_aim && units[i].cooldown > 0.0 {
                 continue;
             }
@@ -649,6 +650,11 @@ fn hurt(unit: &mut Unit, damage: f32) {
     }
 }
 
+/// Towers, sprayers and catapults can only fire the way they face.
+fn must_turn_to_fire(unit: &Unit) -> bool {
+    unit.kind.is_building() || unit.weapon.spray_angle().is_some() || unit.role == Role::Catapult
+}
+
 /// What a unit fires at this moment.
 #[derive(Clone, Copy)]
 enum Aim {
@@ -668,7 +674,7 @@ fn choose_aim(units: &[Unit], shooter: usize, teams: &[usize], terrain: &Terrain
     choose_target(units, shooter, teams).map(Aim::Unit)
 }
 
-/// Turns a tower or a sprayer towards what it would fire at. A tower with nothing to fire at
+/// Turns whatever must face its aim towards what it would fire at. A tower with nothing to fire at
 /// keeps looking slowly around. Returns whether it now points at its aim.
 fn turn_tubes(units: &mut [Unit], tower: usize, aim: Option<Aim>, dt: f32) -> bool {
     let goal = match aim {
@@ -1766,6 +1772,59 @@ mod tests {
         units[1].altitude = 0.0;
         run(&mut combat, &mut units, 1.0);
         assert!(units[1].health > 50.0, "on the ground");
+    }
+
+    fn catapult_facing_east() -> Unit {
+        let mut unit = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        unit.role = Role::Catapult;
+        unit.id = 1;
+        unit.weapon = WeaponKind::Mortar;
+        unit.heading = 0.0;
+        unit
+    }
+
+    #[test]
+    fn a_catapult_turns_to_face_a_target_to_its_side_or_behind_it_before_it_fires() {
+        for (x, z) in [(-10.0, 60.0), (0.0, 70.0), (0.0, 50.0)] {
+            let mut units = [catapult_facing_east(), target_at(x, z)];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 0.3);
+            assert!(combat.shells.is_empty(), "still turning towards {x},{z}");
+            assert_ne!(units[0].heading, 0.0);
+            for _ in 0..40 {
+                combat.advance(&mut units, &TEAMS, flat(), 0.05);
+                if !combat.shells.is_empty() {
+                    break;
+                }
+            }
+            assert_eq!(combat.shells.len(), 1, "now it fires at {x},{z}");
+            let (sin, cos) = units[0].heading.sin_cos();
+            let (dx, dz) = (x, z - 60.0);
+            let length = dx.hypot(dz);
+            assert!(cos * dx / length + sin * dz / length > 0.98, "it faces {x},{z}");
+        }
+    }
+
+    #[test]
+    fn a_catapult_facing_its_target_fires_at_once() {
+        let mut units = [catapult_facing_east(), target_at(10.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert_eq!(combat.shells.len(), 1);
+    }
+
+    #[test]
+    fn a_catapult_turns_towards_a_place_it_was_told_to_attack_and_stays_still_with_nothing_to_fire_at() {
+        let mut units = [catapult_facing_east()];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 1.0);
+        assert_eq!(units[0].heading, 0.0, "it does not look around like a tower");
+
+        units[0].target = Some(Target::Place(-10.0, 60.0));
+        run(&mut combat, &mut units, 0.3);
+        assert!(combat.shells.is_empty());
+        run(&mut combat, &mut units, 2.0);
+        assert_eq!(combat.shells.len(), 1);
     }
 
     #[test]

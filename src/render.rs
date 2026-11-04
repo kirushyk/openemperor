@@ -1847,6 +1847,7 @@ fn short_name(role: Role) -> &'static str {
         Role::RepairVehicle => "Repair",
         Role::Catapult => "Catap",
         Role::RocketLauncher => "Rocket",
+        Role::AdvancedCarryall => "Carry",
         Role::AirDefensePlatform => "AirDef",
         Role::AirDrone => "Drone",
         Role::Ornithopter => "Ornith",

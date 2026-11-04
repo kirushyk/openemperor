@@ -395,9 +395,27 @@ impl Unit {
         self.alive && (self.remaining() > ARRIVED || self.role.never_stops())
     }
 
-    /// Whether it is up in the air but would rather sit.
+    /// Whether it is up in the air but would rather sit, having nothing to go after.
     fn is_settling(&self) -> bool {
-        self.alive && self.role.lands() && self.altitude > 0.0 && !self.is_moving()
+        self.alive
+            && self.role.lands()
+            && self.altitude > 0.0
+            && self.target.is_none()
+            && !self.is_moving()
+    }
+
+    /// Whether it is sitting within reach of its target, and must go up to fire on it.
+    fn is_rising_to_fight(&self) -> bool {
+        self.alive
+            && self.role.lands()
+            && self.altitude < CRUISE_ALTITUDE
+            && self.target.is_some()
+            && !self.is_moving()
+    }
+
+    /// Whether it is high enough to fire. What lands cannot launch anything until it is up.
+    pub fn can_launch(&self) -> bool {
+        !self.role.lands() || self.altitude >= CRUISE_ALTITUDE
     }
 
     /// Whether it has no need of a spot on the ground: what lands needs one, and so does
@@ -1303,6 +1321,8 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
     for i in 0..units.len() {
         if units[i].is_settling() {
             settle(&mut units[i], terrain, dt);
+        } else if units[i].is_rising_to_fight() {
+            units[i].altitude = (units[i].altitude + CLIMB_SPEED * dt).min(CRUISE_ALTITUDE);
         }
         if !units[i].is_moving() {
             continue;
@@ -1507,7 +1527,10 @@ pub fn carry(
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
     chase_targets(units, terrain, teams);
     // Spheres only start to overlap when something moves.
-    if !units.iter().any(|u| u.is_moving() || u.is_settling()) {
+    if !units
+        .iter()
+        .any(|u| u.is_moving() || u.is_settling() || u.is_rising_to_fight())
+    {
         return;
     }
     let (steps, step_seconds) = substeps(dt);
@@ -1978,7 +2001,7 @@ mod tests {
         idle.weapon = WeaponKind::Bullet;
         let mut gunner = unit_at(0.0, 64.0, UnitKind::Infantry);
         gunner.selected = true;
-        gunner.weapon = WeaponKind::Bullet;
+        gunner.weapon = WeaponKind::Laser;
         let mut units = [mortar, idle, gunner, plane];
         order_attack(&mut units, 3, &TWO_SIDES);
         assert_eq!(units[0].target, None, "mortars cannot aim up");
@@ -2684,6 +2707,30 @@ mod tests {
         units[0].altitude = CRUISE_ALTITUDE;
         advance(&mut units, terrain, &[0], 1.0);
         assert_eq!(units[0].altitude, CRUISE_ALTITUDE);
+    }
+
+    #[test]
+    fn an_ornithopter_told_to_attack_goes_up_stays_up_to_fire_and_sits_again_once_it_is_over() {
+        let terrain = crate::battlefield::terrain(0);
+        let mut enemy = Unit::for_test(5.0, MAP_MIDDLE_Z, UnitKind::Infantry);
+        enemy.owner = 1;
+        enemy.id = 7;
+        let mut sitting = ornithopter_at(0.0, MAP_MIDDLE_Z);
+        sitting.id = 1;
+        let mut units = [sitting, enemy];
+        order_attack(&mut units, 1, &[0, 1]);
+        assert!(!units[0].can_launch());
+        for _ in 0..60 {
+            advance(&mut units, terrain, &[0, 1], 0.05);
+        }
+        assert_eq!(units[0].altitude, CRUISE_ALTITUDE, "the target is in reach");
+        assert_eq!(units[0].x, 0.0, "so it stays where it is");
+        assert!(units[0].can_launch());
+        units[1].alive = false;
+        for _ in 0..60 {
+            advance(&mut units, terrain, &[0, 1], 0.05);
+        }
+        assert_eq!(units[0].altitude, 0.0);
     }
 
     #[test]

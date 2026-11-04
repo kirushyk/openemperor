@@ -116,12 +116,17 @@ impl WeaponKind {
         }
     }
 
-    /// Mortar shells only come down on the ground, where aircraft that have landed are too.
-    /// Anti-air missiles only go for what is up in the air. Everything else can aim up.
+    /// Mortar shells and invisible bullets only reach the ground, where aircraft that have
+    /// landed are too; the automatic gun is the one bullet weapon that can aim up. Anti-air
+    /// missiles only go for what is up in the air. Everything else can aim up.
     pub fn can_target(self, kind: UnitKind, altitude: f32) -> bool {
         match self {
             WeaponKind::Unarmed | WeaponKind::Repair => false,
-            WeaponKind::Mortar => altitude <= 0.0,
+            WeaponKind::Mortar
+            | WeaponKind::Bullet
+            | WeaponKind::Sniper
+            | WeaponKind::Pistol
+            | WeaponKind::Cannon => altitude <= 0.0,
             WeaponKind::Flame | WeaponKind::Gas => altitude <= SPRAY_CEILING,
             WeaponKind::AirMissile => kind.flies() && altitude > 0.0,
             _ => true,
@@ -381,7 +386,8 @@ impl Combat {
             if units[i].cooldown <= 0.0 && units[i].rockets_fired == ROCKET_SIDES.len() {
                 units[i].rockets_fired = 0;
             }
-            if units[i].is_moving() && !units[i].weapon.fires_on_move() {
+            if !units[i].can_launch() || (units[i].is_moving() && !units[i].weapon.fires_on_move())
+            {
                 continue;
             }
             let must_aim = must_turn_to_fire(&units[i]);
@@ -1282,13 +1288,13 @@ mod tests {
     }
 
     #[test]
-    fn mortars_cannot_aim_at_aircraft_but_everything_else_can() {
+    fn mortars_cannot_aim_at_aircraft_but_lasers_and_missiles_can() {
         let mut units = [shooter(WeaponKind::Mortar), plane_at(5.0, 60.0)];
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 2.0);
         assert!(combat.shells.is_empty(), "held fire");
 
-        for weapon in [WeaponKind::Bullet, WeaponKind::Laser, WeaponKind::Missile] {
+        for weapon in [WeaponKind::Laser, WeaponKind::Missile] {
             let mut units = [shooter(weapon), plane_at(5.0, 60.0)];
             let mut combat = Combat::default();
             run(&mut combat, &mut units, 3.0);
@@ -2054,6 +2060,49 @@ mod tests {
         assert!(!can(WeaponKind::AirMissile, landed) && can(WeaponKind::AirMissile, flying));
         assert!(can(WeaponKind::Rockets, flying));
         assert!(WeaponKind::Rockets.can_target(UnitKind::Vehicle, 0.0));
+    }
+
+    #[test]
+    fn invisible_bullets_cannot_reach_the_air_but_the_automatic_gun_lasers_and_missiles_can() {
+        for weapon in [
+            WeaponKind::Bullet,
+            WeaponKind::Sniper,
+            WeaponKind::Pistol,
+            WeaponKind::Cannon,
+        ] {
+            assert!(!weapon.can_target(UnitKind::Aircraft, 4.0), "{weapon:?}");
+            assert!(
+                weapon.can_target(UnitKind::Aircraft, 0.0),
+                "{weapon:?} landed"
+            );
+            assert!(weapon.can_target(UnitKind::Infantry, 0.0), "{weapon:?}");
+        }
+        for weapon in [WeaponKind::AutoGun, WeaponKind::Laser, WeaponKind::Missile] {
+            assert!(weapon.can_target(UnitKind::Aircraft, 4.0), "{weapon:?}");
+        }
+    }
+
+    #[test]
+    fn an_ornithopter_launches_nothing_from_the_ground_only_from_up_in_the_air() {
+        let mut ornithopter = Unit::for_test(0.0, 60.0, UnitKind::Aircraft);
+        ornithopter.role = Role::Ornithopter;
+        ornithopter.weapon = WeaponKind::Rockets;
+        ornithopter.id = 1;
+        ornithopter.heading = 0.0;
+        let up = ornithopter.altitude;
+        ornithopter.altitude = 0.0;
+        let mut units = [ornithopter, target_at(5.0, 60.0)];
+        let mut combat = Combat::default();
+        for _ in 0..40 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert!(combat.missiles.is_empty(), "sitting");
+        units[0].altitude = up / 2.0;
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert!(combat.missiles.is_empty(), "on the way up");
+        units[0].altitude = up;
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert_eq!(combat.missiles.len(), 1);
     }
 
     fn rocket_launcher_facing_east() -> Unit {

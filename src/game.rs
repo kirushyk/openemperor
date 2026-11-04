@@ -41,6 +41,8 @@ const VEHICLE_BUILDS: [Role; 4] = [
 const BOTTOM_VEHICLE_BUILDS: [Role; 3] =
     [Role::AirDefensePlatform, Role::AirDrone, Role::Ornithopter];
 const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
+/// The Vehicles menu's cell for the Advanced Carryall, just above the bottom row.
+const CARRYALL_CELL: usize = BOTTOM_ROW_START - hud::GRID_COLUMNS;
 /// Seconds of battle before the superweapon can fire again.
 pub const SUPERWEAPON_RECHARGE: f32 = 60.0;
 
@@ -1423,6 +1425,7 @@ impl Game {
     pub fn build_role(tab: BuildTab, cell: usize) -> Option<Role> {
         match tab {
             BuildTab::Infantry => INFANTRY_BUILDS.get(cell).copied(),
+            BuildTab::Vehicles if cell == CARRYALL_CELL => Some(Role::AdvancedCarryall),
             BuildTab::Vehicles => VEHICLE_BUILDS
                 .get(cell)
                 .or_else(|| BOTTOM_VEHICLE_BUILDS.get(cell.checked_sub(BOTTOM_ROW_START)?))
@@ -4360,6 +4363,16 @@ mod tests {
             assert_eq!(game.units[before].kind, UnitKind::Aircraft);
         }
         assert!(!crate::render::build(&game).is_empty());
+    }
+
+    #[test]
+    fn the_vehicles_menu_makes_the_advanced_carryall_above_the_bottom_row() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        let before = game.units.len();
+        click_hud(&mut game, Action::BuildCell(CARRYALL_CELL));
+        assert_eq!(game.units[before].name(), "Advanced Carryall");
+        assert!(game.units[before].altitude > 0.0, "it hangs in the air");
     }
 
     #[test]

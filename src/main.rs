@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod battlefield;
+mod fog;
 mod font;
 mod game;
 mod hud;

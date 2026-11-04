@@ -128,6 +128,13 @@ const RANK_HEALTH: f32 = 0.25;
 const RANK_ATTACK: f32 = 0.2;
 const RANK_SPEED: f32 = 0.1;
 
+/// How far a unit sees, in world units, by what it is: it always sees as far as it can hit.
+const INFANTRY_SIGHT: f32 = 8.0;
+const VEHICLE_SIGHT: f32 = 9.0;
+const AIRCRAFT_SIGHT: f32 = 10.0;
+const TOWER_SIGHT: f32 = 10.0;
+const SCOUT_SIGHT: f32 = 14.0;
+
 /// What a unit is, beyond how it moves: this names it and decides what it starts with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -337,6 +344,18 @@ impl Unit {
             (Role::LightInfantry, WeaponKind::Laser) => "Laser Infantry",
             (role, _) => role.name(),
         }
+    }
+
+    /// How far it sees along the ground.
+    pub fn sight(&self) -> f32 {
+        let own = match (self.role, self.kind) {
+            (Role::Scout, _) => SCOUT_SIGHT,
+            (_, UnitKind::Infantry) => INFANTRY_SIGHT,
+            (_, UnitKind::Vehicle) => VEHICLE_SIGHT,
+            (_, UnitKind::Aircraft) => AIRCRAFT_SIGHT,
+            (_, UnitKind::Tower) => TOWER_SIGHT,
+        };
+        own.max(self.weapon.range() + 1.0)
     }
 
     /// From 0, with no medal, up to 3.
@@ -2244,6 +2263,22 @@ mod tests {
         }
         assert!(!units[1].alive);
         assert_eq!(units[0].experience, UnitKind::Infantry.kill_value());
+    }
+
+    #[test]
+    fn a_unit_sees_farther_than_it_can_hit_and_scouts_see_farthest_of_the_infantry() {
+        for role in [
+            Role::LightInfantry,
+            Role::Sniper,
+            Role::Tank,
+            Role::Catapult,
+            Role::Aircraft,
+            Role::Tower,
+        ] {
+            let unit = produced(role);
+            assert!(unit.sight() > unit.weapon.range(), "{role:?}");
+        }
+        assert!(produced(Role::Scout).sight() > produced(Role::LightInfantry).sight());
     }
 
     #[test]

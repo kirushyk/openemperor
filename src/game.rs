@@ -1,6 +1,7 @@
 //! Game flow and menu logic. No OS or GPU code, so it runs under `cargo test`.
 
 use crate::battlefield::{self, Camera};
+use crate::fog::{Fog, Sight};
 use crate::hud::{self, DEPLOY_BUTTON};
 use crate::platform::{Event, Key};
 use crate::units::{self, Role, Unit, UnitKind};
@@ -1192,6 +1193,8 @@ pub struct Game {
     pub chat: Vec<ChatLine>,
     /// Which owners were already reported defeated.
     reported_defeated: Vec<bool>,
+    /// What the player knows of the map, when this battle has fog of war.
+    pub fog: Option<Fog>,
     /// Seconds of battle played, which stand still while paused.
     battle_time: f32,
     /// Seconds since the current screen opened.
@@ -1244,6 +1247,7 @@ impl Game {
             money: vec![DEFAULT_BATTLE_MONEY],
             chat: Vec::new(),
             reported_defeated: Vec::new(),
+            fog: None,
             battle_time: 0.0,
             screen_elapsed: 0.0,
         }
@@ -1256,6 +1260,34 @@ impl Game {
     /// A battle stands still with the Pause key on, or with a menu over it if it can.
     pub fn is_paused(&self) -> bool {
         self.in_battle && self.pausable && (self.key_paused || self.screen != Screen::InGame)
+    }
+
+    /// Fog of war can be turned on in a skirmish's setup; elsewhere it is always there.
+    fn fog_allowed(&self) -> bool {
+        self.battle_kind != BattleKind::Skirmish || self.skirmish.fog_of_war
+    }
+
+    /// What is known of a place on the map. Without fog of war, everything is in view.
+    pub fn sight_at(&self, x: f32, z: f32) -> Sight {
+        self.fog.as_ref().map_or(Sight::Visible, |fog| fog.at(x, z))
+    }
+
+    /// Whether the player can see this unit: their own and allies' always, others only in view.
+    pub fn shows(&self, unit: &Unit) -> bool {
+        units::are_friends(&self.teams, 0, unit.owner)
+            || self.sight_at(unit.x, unit.z) == Sight::Visible
+    }
+
+    /// Sees the map anew from where the player's and allies' units stand now.
+    fn update_fog(&mut self) {
+        if let Some(fog) = &mut self.fog {
+            let teams = &self.teams;
+            fog.update(
+                self.units
+                    .iter()
+                    .filter(|u| u.alive && units::are_friends(teams, 0, u.owner)),
+            );
+        }
     }
 
     /// The superweapon can be turned off in a skirmish's setup; elsewhere it is always there.
@@ -1546,6 +1578,7 @@ impl Game {
         let reach = PICK_RADIUS * ui_scale(self.height);
         let mut best = None;
         let mut best_distance = reach;
+        let wanted = |unit: &Unit| self.shows(unit) && wanted(unit);
         for (i, unit) in self.units.iter().enumerate().filter(|(_, u)| wanted(u)) {
             let Some((x, y)) = view.project(unit.x, unit.pick_height(), unit.z) else {
                 continue;
@@ -1763,6 +1796,8 @@ impl Game {
         self.reported_defeated = vec![false; colors.len()];
         self.units = units::spawn(battlefield::terrain(map), &colors);
         self.next_unit_id = self.units.len() as u32;
+        self.fog = self.fog_allowed().then(Fog::new);
+        self.update_fog();
         self.combat = Combat::default();
         self.aiming_strike = false;
         self.strike_recharge = 0.0;
@@ -2015,6 +2050,7 @@ impl Game {
             if self.screen == Screen::InGame {
                 self.settle_casualties();
             }
+            self.update_fog();
         }
         match self.screen {
             Screen::Intro if self.screen_elapsed >= INTRO_SECONDS => {
@@ -4649,6 +4685,179 @@ mod tests {
                 .filter(|u| u.owner == 0)
                 .any(|u| u.experience > 0)
         );
+    }
+
+    fn in_fog_battle() -> Game {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::Toggle(Toggle::FogOfWar));
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.screen, Screen::InGame);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        game
+    }
+
+    fn drawn_black(game: &Game) -> usize {
+        crate::render::build(game)
+            .iter()
+            .filter(|v| [v.r, v.g, v.b, v.a] == [0.0, 0.0, 0.0, 1.0])
+            .count()
+    }
+
+    #[test]
+    fn fog_follows_the_setup_checkbox_in_a_skirmish_and_is_always_on_elsewhere() {
+        assert!(in_battle().fog.is_none(), "off by default");
+        assert!(in_fog_battle().fog.is_some());
+        let mut game = in_menu();
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::Tutorial);
+        assert!(game.fog.is_some());
+    }
+
+    #[test]
+    fn without_fog_everything_shows_and_with_it_the_unexplored_is_black() {
+        let plain = in_battle();
+        assert_eq!(plain.sight_at(30.0, 30.0), Sight::Visible);
+        assert!(plain.units.iter().all(|u| plain.shows(u)));
+
+        let fog = in_fog_battle();
+        let tower = fog.units[tower_of(&fog, 1)];
+        assert_eq!(fog.sight_at(tower.x, tower.z), Sight::Unexplored);
+        assert!(!fog.shows(&tower));
+        assert!(
+            drawn_black(&fog) > drawn_black(&plain),
+            "the unknown is drawn black"
+        );
+    }
+
+    #[test]
+    fn the_player_starts_seeing_around_their_own_units_and_allies_share_what_they_see() {
+        let game = in_fog_battle();
+        for unit in game.units.iter().filter(|u| u.owner == 0) {
+            assert_eq!(game.sight_at(unit.x, unit.z), Sight::Visible, "{unit:?}");
+            assert!(game.shows(unit));
+        }
+
+        let mut game = in_fog_battle();
+        game.teams[1] = game.teams[0];
+        game.update(0.01);
+        let ally = game.units.iter().find(|u| u.owner == 1).unwrap();
+        assert_eq!(game.sight_at(ally.x, ally.z), Sight::Visible);
+        assert!(game.shows(ally));
+    }
+
+    #[test]
+    fn hidden_enemies_are_not_drawn_named_or_targeted_until_seen() {
+        let mut game = in_fog_battle();
+        let enemy = game.units.iter().position(|u| u.owner == 1).unwrap();
+        let drawn_with = crate::render::build(&game).len();
+        let (id, unit) = (game.units[enemy].id, game.units.remove(enemy));
+        assert_eq!(
+            crate::render::build(&game).len(),
+            drawn_with,
+            "not on the map or the minimap"
+        );
+        game.units.insert(enemy, unit);
+
+        select_first_group(&mut game);
+        let (x, z) = (game.camera.x + 6.0, game.camera.z);
+        let unit = &mut game.units[enemy];
+        (unit.x, unit.z, unit.destination, unit.cooldown) = (x, z, (x, z), 1e9);
+        let unit = game.units[enemy];
+        assert_eq!(unit.id, id);
+        let (px, py) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
+        game.handle(Event::MouseMove(px, py));
+        assert!(game.shows(&unit), "in view, it can be pointed at");
+        assert!(game.cursor_means_attack());
+        assert_eq!(game.tip(), Some("Light Infantry"));
+        assert!(
+            crate::render::build(&game).len() > drawn_with,
+            "and it is drawn"
+        );
+    }
+
+    #[test]
+    fn an_enemy_in_land_the_player_only_remembers_does_not_show_and_cannot_be_clicked() {
+        let mut game = in_fog_battle();
+        game.units
+            .retain(|u| u.owner != 0 || u.kind == UnitKind::Vehicle);
+        let keep = game.units.iter().position(|u| u.owner == 0).unwrap();
+        let (x, z) = (game.camera.x, game.camera.z);
+        game.units[keep].cooldown = 1e9;
+        game.update(0.01);
+        assert_eq!(game.sight_at(x, z), Sight::Visible);
+
+        // Off it goes, and an enemy walks in behind it.
+        let kept = game.units[keep].id;
+        game.units.retain(|u| u.owner != 0 || u.id == kept);
+        let keep = game.units.iter().position(|u| u.owner == 0).unwrap();
+        (game.units[keep].x, game.units[keep].destination.0) = (x + 40.0, x + 40.0);
+        let enemy = game.units.iter().position(|u| u.owner == 1).unwrap();
+        (
+            game.units[enemy].x,
+            game.units[enemy].z,
+            game.units[enemy].destination,
+        ) = (x, z, (x, z));
+        game.units[enemy].cooldown = 1e9;
+        game.update(0.01);
+        assert_eq!(game.sight_at(x, z), Sight::Explored);
+        let unit = game.units[enemy];
+        assert!(!game.shows(&unit));
+
+        game.units[keep].selected = true;
+        let (px, py) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
+        game.handle(Event::MouseMove(px, py));
+        assert!(!game.cursor_means_attack());
+        assert_eq!(game.tip(), None);
+    }
+
+    #[test]
+    fn moving_units_uncover_more_of_the_map() {
+        let mut game = in_fog_battle();
+        let (far_x, far_z) = (game.camera.x - 25.0, game.camera.z);
+        assert_eq!(game.sight_at(far_x, far_z), Sight::Unexplored);
+        let scout = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Aircraft)
+            .unwrap();
+        game.units[scout].destination = (far_x, far_z);
+        for _ in 0..200 {
+            game.update(0.05);
+        }
+        assert_eq!(
+            game.sight_at(far_x, far_z),
+            Sight::Visible,
+            "explored by flying there"
+        );
+    }
+
+    #[test]
+    fn fog_draws_without_trouble_with_effects_in_and_out_of_view() {
+        let mut game = in_fog_battle();
+        let (x, z) = (game.camera.x, game.camera.z);
+        for (x, z) in [(x, z), (0.0, 5.0)] {
+            game.combat
+                .poison
+                .push(crate::weapons::PoisonZone { x, z, life: 30.0 });
+            game.combat.blasts.push(crate::weapons::Blast {
+                at: (x, 0.0, z),
+                radius: 2.0,
+                life: 0.5,
+            });
+            game.combat.flares.push(crate::weapons::Flare {
+                at: (x, 1.0, z),
+                size: 7.0,
+                life: 0.5,
+            });
+        }
+        assert!(!crate::render::build(&game).is_empty());
     }
 
     #[test]

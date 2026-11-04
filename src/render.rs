@@ -1,6 +1,7 @@
 //! Turns game state into a triangle list. Backends only ever see colored triangles.
 
 use crate::battlefield::{self, MAP_CELLS};
+use crate::fog::{Fog, Sight};
 use crate::font;
 use crate::game::{
     Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Faction, Game, MAPS,
@@ -647,6 +648,7 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
     battlefield::draw(
         &mut canvas.vertices,
         battlefield::terrain(game.battle_map),
+        game.fog.as_ref(),
         game.camera,
         game.width,
         game.height,
@@ -688,7 +690,11 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     draw_poison(canvas, game, &view);
     draw_order_lines(canvas, game, &view);
     let is_marked = |unit: &Unit| unit.selected || game.in_selection_drag(unit);
-    let mut flying: Vec<&Unit> = game.units.iter().filter(|u| u.kind.flies()).collect();
+    let mut flying: Vec<&Unit> = game
+        .units
+        .iter()
+        .filter(|u| u.kind.flies() && game.shows(u))
+        .collect();
     flying.sort_by(|a, b| a.z.total_cmp(&b.z));
     for unit in &flying {
         draw_shadow(canvas, &view, (unit.x, unit.y, unit.z), unit.kind.radius());
@@ -699,13 +705,14 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     let mut order: Vec<Object> = game
         .units
         .iter()
-        .filter(|u| !u.kind.flies())
+        .filter(|u| !u.kind.flies() && game.shows(u))
         .map(Object::Unit)
         .collect();
     order.extend(
         battlefield::terrain(game.battle_map)
             .ruins()
             .iter()
+            .filter(|piece| game.sight_at(piece.x, piece.z) != Sight::Unexplored)
             .map(Object::Ruin),
     );
     order.sort_by(|a, b| z_of(a).total_cmp(&z_of(b)));
@@ -720,7 +727,8 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
                 draw_medals(canvas, game, &view, unit);
             }
             Object::Ruin(piece) => {
-                let color = RUIN_CONCRETE.map(|c| c * piece.shade);
+                let shade = piece.shade * game.sight_at(piece.x, piece.z).shade();
+                let color = RUIN_CONCRETE.map(|c| c * shade);
                 let footprint = (piece.x, piece.z, piece.half_x, piece.half_z);
                 draw_box(
                     canvas,
@@ -784,7 +792,12 @@ fn draw_ground_disc(
 
 /// Poisoned land glows green, breathing gently, and fades during its last seconds.
 fn draw_poison(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
-    for zone in &game.combat.poison {
+    for zone in game
+        .combat
+        .poison
+        .iter()
+        .filter(|z| game.sight_at(z.x, z.z) == Sight::Visible)
+    {
         let fade = (zone.life / 5.0).min(1.0);
         let breath = 0.85 + 0.15 * (game.battle_time() * 2.0).sin();
         let alpha = POISON_ALPHA * fade * breath;
@@ -802,7 +815,14 @@ fn draw_poison(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
 /// Shots in the air and explosions, drawn over everything standing on the map.
 fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     let s = ui_scale(game.height);
-    for beam in &game.combat.beams {
+    // What happens where the player cannot see stays hidden.
+    let seen = |(x, _, z): (f32, f32, f32)| game.sight_at(x, z) == Sight::Visible;
+    for beam in game
+        .combat
+        .beams
+        .iter()
+        .filter(|b| seen(b.from) || seen(b.to))
+    {
         let from = view.project(beam.from.0, beam.from.1, beam.from.2);
         let to = view.project(beam.to.0, beam.to.1, beam.to.2);
         if let (Some(a), Some(b)) = (from, to) {
@@ -815,10 +835,10 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
             canvas.line(a, b, (2.5 * s).max(1.0), faded(core, beam.life));
         }
     }
-    for spray in &game.combat.sprays {
+    for spray in game.combat.sprays.iter().filter(|s| seen(s.from)) {
         draw_spray(canvas, view, spray);
     }
-    for flare in &game.combat.flares {
+    for flare in game.combat.flares.iter().filter(|f| seen(f.at)) {
         let (x, y, z) = flare.at;
         if let Some((px, py)) = view.project(x, y, z) {
             let size = flare.size * s;
@@ -832,7 +852,7 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
             canvas.circle(px, py, size * 0.35, with_alpha(FLARE_CORE, flare.life));
         }
     }
-    for missile in &game.combat.missiles {
+    for missile in game.combat.missiles.iter().filter(|m| seen(m.position)) {
         let (x, y, z) = missile.position;
         let (dx, dy, dz) = missile.direction;
         let back = |by: f32| view.project(x - dx * by, y - dy * by, z - dz * by);
@@ -841,7 +861,7 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
             canvas.line(nose, tail, (4.0 * s).max(1.0), MISSILE_BODY);
         }
     }
-    for shell in &game.combat.shells {
+    for shell in game.combat.shells.iter().filter(|s| seen(s.position())) {
         let (_, ground, _) = shell.landing();
         let (x, y, z) = shell.position();
         draw_shadow(canvas, view, (x, ground, z), 0.16);
@@ -868,7 +888,7 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
             (0.0, 0.25),
         );
     }
-    for blast in &game.combat.blasts {
+    for blast in game.combat.blasts.iter().filter(|b| seen(b.at)) {
         let (x, y, z) = blast.at;
         let reach = blast.radius * (1.2 - blast.life * 0.6);
         draw_ground_disc(
@@ -1005,7 +1025,7 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
             Some(Target::Unit(id) | Target::Forced(id)) => game
                 .units
                 .iter()
-                .find(|u| u.alive && u.id == id)
+                .find(|u| u.alive && u.id == id && game.shows(u))
                 .map(|u| (u.x, u.z)),
             None => None,
         };
@@ -1889,7 +1909,7 @@ fn draw_minimap(canvas: &mut Canvas, game: &Game) {
     let s = ui_scale(game.height);
     let px = small_text_px(game.height);
     let (x, y, size) = minimap_rect(game.width, game.height);
-    draw_map_diamond(canvas, game, game.skirmish.map, (x, y, size));
+    draw_map_diamond(canvas, game, game.skirmish.map, None, (x, y, size));
 
     let (mid_x, mid_y) = (x + size / 2.0, y + size / 2.0);
     let inset = 16.0 * s;
@@ -1902,14 +1922,19 @@ fn draw_minimap(canvas: &mut Canvas, game: &Game) {
 /// The battlefield's minimap: terrain, a radar sweep, then the outline of the view.
 fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
     let rect = hud::minimap_rect(game.width, game.height);
-    draw_map_diamond(canvas, game, game.battle_map, rect);
-    for zone in &game.combat.poison {
+    draw_map_diamond(canvas, game, game.battle_map, game.fog.as_ref(), rect);
+    for zone in game
+        .combat
+        .poison
+        .iter()
+        .filter(|z| game.sight_at(z.x, z.z) == Sight::Visible)
+    {
         let (x, y) = battlefield::world_to_minimap(rect, zone.x, zone.z);
         let radius = STRIKE_RADIUS / battlefield::MAP_MIDDLE_Z * rect.2 / 2.0;
         canvas.circle(x, y, radius, with_alpha(POISON_FILL, 0.45));
     }
     let dot = (3.0 * ui_scale(game.height)).round().max(2.0);
-    for unit in &game.units {
+    for unit in game.units.iter().filter(|u| game.shows(u)) {
         let (x, y) = battlefield::world_to_minimap(rect, unit.x, unit.z);
         let color = if unit.selected {
             VIEW_OUTLINE
@@ -1980,7 +2005,13 @@ fn draw_radar_sweep(canvas: &mut Canvas, (x, y, size): (f32, f32, f32), seconds:
     );
 }
 
-fn draw_map_diamond(canvas: &mut Canvas, game: &Game, map: usize, (x, y, size): (f32, f32, f32)) {
+fn draw_map_diamond(
+    canvas: &mut Canvas,
+    game: &Game,
+    map: usize,
+    fog: Option<&Fog>,
+    (x, y, size): (f32, f32, f32),
+) {
     /// Grid steps per minimap cell.
     const STEP: usize = 4;
     let border = border_px(game.height);
@@ -2009,7 +2040,8 @@ fn draw_map_diamond(canvas: &mut Canvas, game: &Game, map: usize, (x, y, size): 
             } else {
                 terrain.lower_color()
             };
-            let color = with_alpha(base, 1.0);
+            let shade = fog.map_or(1.0, |fog| fog.at_grid(u + STEP / 2, v + STEP / 2).shade());
+            let color = with_alpha(base.map(|channel| channel * shade), 1.0);
             let (a, b) = (to_screen(u, v), to_screen(u + STEP, v));
             let (c, d) = (to_screen(u + STEP, v + STEP), to_screen(u, v + STEP));
             canvas.triangle([a, b, c], color);
@@ -2017,7 +2049,10 @@ fn draw_map_diamond(canvas: &mut Canvas, game: &Game, map: usize, (x, y, size): 
         }
     }
     let dot = border_px(game.height);
-    for piece in terrain.ruins() {
+    let known = |piece: &&battlefield::RuinPiece| {
+        fog.is_none_or(|fog| fog.at(piece.x, piece.z) != Sight::Unexplored)
+    };
+    for piece in terrain.ruins().iter().filter(known) {
         let (px, py) = battlefield::world_to_minimap((x, y, size), piece.x, piece.z);
         canvas.rect(px - dot / 2.0, py - dot / 2.0, dot, dot, RUIN_ON_MINIMAP);
     }

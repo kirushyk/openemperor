@@ -7,13 +7,14 @@
 //! 0..=MAP_CELLS: north is (0, 0), east (MAP_CELLS, 0), west (0, MAP_CELLS) and south
 //! (MAP_CELLS, MAP_CELLS). World x points east, y up and z south.
 
+use crate::fog::Fog;
 use crate::planet::fractal_noise;
 use crate::platform::Vertex;
 use std::sync::OnceLock;
 
 pub const MAP_CELLS: usize = 128;
 const GRID_LAST: f32 = MAP_CELLS as f32;
-const GRID_POINTS: usize = (MAP_CELLS + 1) * (MAP_CELLS + 1);
+pub const GRID_POINTS: usize = (MAP_CELLS + 1) * (MAP_CELLS + 1);
 /// World units per grid step along each world axis.
 const CELL: f32 = 0.5;
 /// How far ground rises above sand, in world units.
@@ -196,7 +197,7 @@ fn add_ruin(pieces: &mut Vec<RuinPiece>, terrain: &Terrain, x: f32, z: f32, rand
     }
 }
 
-fn grid_index(u: usize, v: usize) -> usize {
+pub fn grid_index(u: usize, v: usize) -> usize {
     v * (MAP_CELLS + 1) + u
 }
 
@@ -339,11 +340,11 @@ pub fn terrain(map: usize) -> &'static Terrain {
     TERRAINS[map].get_or_init(|| Terrain::generate(map))
 }
 
-fn grid_to_world(u: f32, v: f32) -> (f32, f32) {
+pub fn grid_to_world(u: f32, v: f32) -> (f32, f32) {
     ((u - v) * CELL, (u + v) * CELL)
 }
 
-fn world_to_grid(x: f32, z: f32) -> (f32, f32) {
+pub fn world_to_grid(x: f32, z: f32) -> (f32, f32) {
     ((z + x) / (2.0 * CELL), (z - x) / (2.0 * CELL))
 }
 
@@ -672,7 +673,14 @@ pub fn edge_direction(mouse: (f32, f32), width: f32, height: f32) -> (f32, f32) 
 
 /// Appends the visible terrain, farthest first. Both grid axes point towards the camera,
 /// so plain nested loops give that order.
-pub fn draw(out: &mut Vec<Vertex>, terrain: &Terrain, camera: Camera, width: f32, height: f32) {
+pub fn draw(
+    out: &mut Vec<Vertex>,
+    terrain: &Terrain,
+    fog: Option<&Fog>,
+    camera: Camera,
+    width: f32,
+    height: f32,
+) {
     let view = View::new(camera, width, height);
     let point = |u: usize, v: usize| {
         let index = grid_index(u, v);
@@ -682,7 +690,8 @@ pub fn draw(out: &mut Vec<Vertex>, terrain: &Terrain, camera: Camera, width: f32
         } else {
             0.0
         };
-        let [r, g, b] = terrain.colors[index];
+        let shade = fog.map_or(1.0, |fog| fog.at_grid(u, v).shade());
+        let [r, g, b] = terrain.colors[index].map(|channel| channel * shade);
         view.project(x, y, z)
             .map(|point| Vertex::new(point, [r, g, b, 1.0]))
     };
@@ -1103,7 +1112,7 @@ mod tests {
     fn the_bottom_position_draws_without_gaps_at_the_screen_edges() {
         for zoom in [0.5, 1.0] {
             let mut out = Vec::new();
-            draw(&mut out, terrain(0), at_zoom(zoom), W, H);
+            draw(&mut out, terrain(0), None, at_zoom(zoom), W, H);
             assert!(!out.is_empty());
             let lowest = out.iter().map(|v| v.y).fold(f32::MIN, f32::max);
             assert!(
@@ -1406,7 +1415,7 @@ mod tests {
     fn draw_only_emits_what_is_on_screen_and_follows_the_camera() {
         let terrain = terrain(0);
         let mut centered = Vec::new();
-        draw(&mut centered, terrain, Camera::centered(), W, H);
+        draw(&mut centered, terrain, None, Camera::centered(), W, H);
         assert!(!centered.is_empty());
         assert_eq!(centered.len() % 6, 0);
         let all_quads = MAP_CELLS * MAP_CELLS * 6;
@@ -1418,7 +1427,7 @@ mod tests {
         let mut moved = Vec::new();
         let mut camera = Camera::centered();
         camera.scroll((1.0, 0.0), 5, 0.5);
-        draw(&mut moved, terrain, camera, W, H);
+        draw(&mut moved, terrain, None, camera, W, H);
         assert_ne!(centered, moved);
     }
 
@@ -1426,7 +1435,7 @@ mod tests {
     fn draw_order_is_far_to_near() {
         let terrain = terrain(0);
         let mut out = Vec::new();
-        draw(&mut out, terrain, Camera::centered(), W, H);
+        draw(&mut out, terrain, None, Camera::centered(), W, H);
         // The first quad drawn is the farthest visible, so it sits higher on screen.
         let (first, last) = (out[0], out[out.len() - 1]);
         assert!(first.y < last.y);

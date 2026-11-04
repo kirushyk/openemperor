@@ -4,7 +4,7 @@ use crate::battlefield::{self, MAP_CELLS};
 use crate::font;
 use crate::hud;
 use crate::planet;
-use crate::units::{self, Unit};
+use crate::units::{self, Unit, UnitKind};
 use crate::game::{
     Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, STATS_ROW_STEP,
     STATS_ROW_TOP, Screen, TeamColor, buttons, checkbox_size, color_slots, map_items, minimap_rect,
@@ -33,6 +33,7 @@ const INK: Color = [0.05, 0.05, 0.08, 1.0];
 const WINDOW: Color = [0.07, 0.07, 0.10, 0.78];
 const CHAT_BACKING: Color = [0.0, 0.0, 0.0, 0.45];
 const SELECTED_RING: Color = [0.35, 1.0, 0.45, 1.0];
+const ORDER_LINE: Color = [0.35, 1.0, 0.45, 0.85];
 const RUIN_CONCRETE: [f32; 3] = [0.56, 0.54, 0.50];
 const RUIN_ON_MINIMAP: Color = [0.16, 0.15, 0.14, 1.0];
 const BOLT_GLOW: Color = [0.35, 0.55, 1.0, 0.25];
@@ -331,6 +332,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         Object::Ruin(piece) => piece.z,
     };
     let view = battlefield::View::new(game.camera, game.width, game.height);
+    draw_order_lines(canvas, game, &view);
     let mut order: Vec<Object> = game.units.iter().map(Object::Unit).collect();
     order.extend(battlefield::terrain(game.battle_map).ruins().iter().map(Object::Ruin));
     order.sort_by(|a, b| z_of(a).total_cmp(&z_of(b)));
@@ -340,10 +342,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
                 if unit.selected || game.in_selection_drag(unit) {
                     draw_selected_ring(canvas, game, &view, unit);
                 }
-                let [r, g, b, _] = team_color(unit.color);
-                let half = units::HALF_WIDTH;
-                let footprint = (unit.x, unit.z, half, half);
-                draw_box(canvas, game, &view, footprint, (unit.y, unit.y + units::HEIGHT), [r, g, b]);
+                draw_unit(canvas, game, &view, unit);
             }
             Object::Ruin(piece) => {
                 let color = RUIN_CONCRETE.map(|c| c * piece.shade);
@@ -354,13 +353,115 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     }
 }
 
+/// For each selected unit on its way, a dashed line along the ground to where it was sent.
+fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
+    const DASH: f32 = 0.45;
+    const GAP: f32 = 0.3;
+    let thickness = (2.0 * ui_scale(game.height)).max(1.0);
+    let screen = (0.0, 0.0, game.width, game.height);
+    for unit in game.units.iter().filter(|u| u.selected && u.is_moving()) {
+        let (to_x, to_z) = (unit.destination.0 - unit.x, unit.destination.1 - unit.z);
+        let length = to_x.hypot(to_z);
+        let (dir_x, dir_z) = (to_x / length, to_z / length);
+        let mut along = 0.0;
+        while along < length {
+            let end = (along + DASH).min(length);
+            let a = (unit.x + dir_x * along, unit.z + dir_z * along);
+            let b = (unit.x + dir_x * end, unit.z + dir_z * end);
+            let visible = view
+                .project_ground_line(a, b)
+                .and_then(|(a, b)| battlefield::clip_to_rect(a, b, screen));
+            if let Some((a, b)) = visible {
+                canvas.line(a, b, thickness, ORDER_LINE);
+            }
+            along += DASH + GAP;
+        }
+    }
+}
+
+/// A unit from simple boxes turned to its heading. Infantry is one tall thin block, and a
+/// vehicle is a hull with a turret and a barrel, so that its turning can be seen.
+fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    let [r, g, b, _] = team_color(unit.color);
+    let color = [r, g, b];
+    let (forward_x, forward_z) = (unit.heading.cos(), unit.heading.sin());
+    let ahead = |by: f32| (unit.x + forward_x * by, unit.z + forward_z * by);
+    match unit.kind {
+        UnitKind::Infantry => {
+            let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
+            draw_turned_box(canvas, game, view, body, (unit.y, unit.y + 0.6), color);
+        }
+        UnitKind::Vehicle => {
+            let hull = (unit.x, unit.z, 0.45, 0.28, unit.heading);
+            let (hull_top, turret_top) = (unit.y + 0.28, unit.y + 0.46);
+            draw_turned_box(canvas, game, view, hull, (unit.y, hull_top), color);
+            let turret = (unit.x, unit.z, 0.17, 0.17, unit.heading);
+            draw_turned_box(canvas, game, view, turret, (hull_top, turret_top), color.map(|c| c * 0.85));
+            let (barrel_x, barrel_z) = ahead(0.4);
+            let barrel = (barrel_x, barrel_z, 0.25, 0.04, unit.heading);
+            draw_turned_box(canvas, game, view, barrel, (hull_top + 0.06, hull_top + 0.13), color.map(|c| c * 0.6));
+        }
+    }
+}
+
+/// A box turned to any heading: (x, z, half length, half width, heading). Only the sides
+/// facing the camera are drawn, farthest first.
+fn draw_turned_box(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    (x, z, half_length, half_width, heading): (f32, f32, f32, f32, f32),
+    (base, top): (f32, f32),
+    [r, g, b]: [f32; 3],
+) {
+    let (forward_x, forward_z) = (heading.cos(), heading.sin());
+    let (right_x, right_z) = (-forward_z, forward_x);
+    let corner = |along: f32, across: f32| {
+        (
+            x + forward_x * along * half_length + right_x * across * half_width,
+            z + forward_z * along * half_length + right_z * across * half_width,
+        )
+    };
+    let corners = [corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0), corner(-1.0, -1.0)];
+    let (camera_x, camera_z) = view.position_on_ground();
+    let (width, height) = (game.width, game.height);
+    let mut face = |points: [(f32, f32, f32); 4], shade: f32| {
+        let mut projected = [(0.0, 0.0); 4];
+        for (slot, (px, py, pz)) in projected.iter_mut().zip(points) {
+            let Some(point) = view.project(px, py, pz) else { return };
+            *slot = point;
+        }
+        let off = projected.iter().all(|p| p.0 < 0.0)
+            || projected.iter().all(|p| p.0 > width)
+            || projected.iter().all(|p| p.1 < 0.0)
+            || projected.iter().all(|p| p.1 > height);
+        if !off {
+            let color = [r * shade, g * shade, b * shade, 1.0];
+            canvas.triangle([projected[0], projected[1], projected[2]], color);
+            canvas.triangle([projected[0], projected[2], projected[3]], color);
+        }
+    };
+    for i in 0..corners.len() {
+        let (a, b) = (corners[i], corners[(i + 1) % corners.len()]);
+        let (mid_x, mid_z) = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        let (normal_x, normal_z) = (mid_x - x, mid_z - z);
+        let faces_camera = normal_x * (camera_x - mid_x) + normal_z * (camera_z - mid_z) > 0.0;
+        if faces_camera {
+            // Sides turned south catch a little more of the top's brightness.
+            let southward = normal_z / normal_x.hypot(normal_z);
+            face([(a.0, base, a.1), (b.0, base, b.1), (b.0, top, b.1), (a.0, top, a.1)], 0.68 + 0.14 * southward);
+        }
+    }
+    face(corners.map(|(px, pz)| (px, top, pz)), 1.0);
+}
+
 fn draw_selected_ring(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
     const SIDES: usize = 16;
-    const RADIUS: f32 = 0.55;
+    let radius = unit.kind.radius() + 0.1;
     let thickness = (2.0 * ui_scale(game.height)).max(1.0);
     let point = |i: usize| {
         let (sin, cos) = (i as f32 / SIDES as f32 * TAU).sin_cos();
-        view.project(unit.x + RADIUS * cos, unit.y, unit.z + RADIUS * sin)
+        view.project(unit.x + radius * cos, unit.y, unit.z + radius * sin)
     };
     for i in 0..SIDES {
         if let (Some(a), Some(b)) = (point(i), point(i + 1)) {

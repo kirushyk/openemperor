@@ -46,6 +46,8 @@ pub enum Event {
     Focus(bool),
     /// Notches turned, positive away from the player.
     Wheel(f32),
+    /// The right button, or a two-finger click or tap on a Mac trackpad.
+    RightDown,
 }
 
 unsafe extern "C" {
@@ -94,6 +96,7 @@ impl Platform {
                 }),
                 7 => Event::Focus(raw.a != 0),
                 8 => Event::Wheel(raw.y),
+                9 => Event::RightDown,
                 _ => continue,
             };
             return Some(event);

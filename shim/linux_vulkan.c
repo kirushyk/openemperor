@@ -435,6 +435,10 @@ int32_t oe_poll_event(OeEvent *event) {
                     event->y = e.xbutton.button == Button4 ? 1.0f : -1.0f;
                     return 1;
                 }
+                if (e.xbutton.button == Button3) {
+                    event->kind = OE_EVENT_RIGHT_DOWN;
+                    return 1;
+                }
                 if (e.xbutton.button != Button1) break;
                 event->kind = OE_EVENT_MOUSE_DOWN;
                 return 1;

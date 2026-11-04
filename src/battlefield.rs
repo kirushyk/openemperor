@@ -252,6 +252,15 @@ impl Terrain {
         self.planet.upper_color()
     }
 
+    /// Whether a unit may stand here: on the map, and not in water or lava.
+    pub fn can_walk(&self, x: f32, z: f32) -> bool {
+        let last = MAP_CELLS as f32;
+        let (u, v) = world_to_grid(x, z);
+        (0.0..=last).contains(&u)
+            && (0.0..=last).contains(&v)
+            && (self.planet.lower_is_solid() || self.height_at(x, z) >= GROUND_HEIGHT * 0.5)
+    }
+
     /// The destroyed buildings on this map.
     pub fn ruins(&self) -> &[RuinPiece] {
         &self.ruins
@@ -421,6 +430,11 @@ impl View {
             focal: height / (2.0 * HALF_FOV_TAN) * camera.lens(),
             center: (width / 2.0, height / 2.0),
         }
+    }
+
+    /// Where the camera is in the world, as (x, z).
+    pub fn position_on_ground(&self) -> (f32, f32) {
+        (self.position[0], self.position[2])
     }
 
     /// A world point's place on screen; `None` if it is behind the camera.

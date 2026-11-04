@@ -13,7 +13,7 @@ const DEFAULT_BATTLE_MONEY: i32 = 10000;
 /// A selection smaller than this each way, at 1080 pixels tall, counts as a click.
 const CLICK_SLOP: f32 = 6.0;
 /// How near a click must land to a unit to pick it, at 1080 pixels tall.
-const PICK_RADIUS: f32 = 40.0;
+const PICK_RADIUS: f32 = 25.0;
 /// A placeholder reading until buildings produce and consume energy.
 const STARTING_ENERGY: i32 = 65;
 
@@ -1130,22 +1130,25 @@ impl Game {
         self.selection_anchor = self.view().ground_at(x, y);
     }
 
-    /// Ends the drag: a real box selects the player's units in it, replacing the old
-    /// selection, and anything that stayed near its start on screen acts as a click.
+    /// Ends the drag. A real box selects the player's units in it, replacing the old
+    /// selection. Anything that stayed near its start on screen is a click: on one of the
+    /// player's units it selects that unit, and elsewhere it sends the selected units there.
     fn finish_selection(&mut self) {
         let Some((x, z)) = self.selection_anchor else { return };
         let start = self.view().project_clamped(x, 0.0, z);
         let slop = CLICK_SLOP * ui_scale(self.height);
         let is_click = (start.0 - self.mouse.0).abs() < slop && (start.1 - self.mouse.1).abs() < slop;
-        let picked = if is_click { self.unit_under_cursor() } else { None };
-        let selected: Vec<bool> = self
-            .units
-            .iter()
-            .enumerate()
-            .map(|(i, unit)| if is_click { picked == Some(i) } else { self.in_selection_drag(unit) })
-            .collect();
-        for (unit, selected) in self.units.iter_mut().zip(selected) {
-            unit.selected = selected;
+        if !is_click {
+            let chosen: Vec<bool> = self.units.iter().map(|u| self.in_selection_drag(u)).collect();
+            for (unit, chosen) in self.units.iter_mut().zip(chosen) {
+                unit.selected = chosen;
+            }
+        } else if let Some(picked) = self.unit_under_cursor() {
+            for (i, unit) in self.units.iter_mut().enumerate() {
+                unit.selected = i == picked;
+            }
+        } else if let Some(target) = self.view().ground_at(self.mouse.0, self.mouse.1) {
+            units::order_move(&mut self.units, target, battlefield::terrain(self.battle_map));
         }
         self.selection_anchor = None;
     }
@@ -1484,6 +1487,7 @@ impl Game {
         if self.in_battle && !self.is_paused() {
             self.battle_time += dt;
             self.update_chat();
+            units::advance(&mut self.units, battlefield::terrain(self.battle_map), dt);
         }
         match self.screen {
             Screen::Intro if self.screen_elapsed >= INTRO_SECONDS => self.set_screen(Screen::MainMenu),
@@ -1508,6 +1512,14 @@ impl Game {
                 if !focused {
                     // The release may happen in another app, where the game cannot see it.
                     self.selection_anchor = None;
+                }
+            }
+            Event::RightDown => {
+                if self.screen == Screen::InGame && !self.key_paused {
+                    self.selection_anchor = None;
+                    for unit in &mut self.units {
+                        unit.selected = false;
+                    }
                 }
             }
             Event::Wheel(notches) => {
@@ -2339,8 +2351,139 @@ mod tests {
         assert_eq!(selected_count(&game), 1, "a click picks one");
         assert!(game.units[5].selected);
 
-        click_at(&mut game, 300.0, H - 300.0);
-        assert_eq!(selected_count(&game), 0, "a click on empty ground clears");
+        drag_select(&mut game, (200.0, H - 400.0), (500.0, H - 200.0));
+        assert_eq!(selected_count(&game), 0, "a box around nothing clears");
+    }
+
+    fn select_first_group(game: &mut Game) {
+        let (from, to) = around_first_group();
+        drag_select(game, from, to);
+        assert_eq!(selected_count(game), 12);
+    }
+
+    #[test]
+    fn a_click_sends_the_selected_units_to_separate_spots_there() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        let clicked = (W / 2.0 - 800.0, H / 2.0 + 300.0);
+        let target = game.view().ground_at(clicked.0, clicked.1).unwrap();
+        click_at(&mut game, clicked.0, clicked.1);
+        assert_eq!(selected_count(&game), 12, "they stay selected");
+
+        let sent: Vec<(f32, f32)> = game.units.iter().filter(|u| u.selected).map(|u| u.destination).collect();
+        for (i, a) in sent.iter().enumerate() {
+            assert!((a.0 - target.0).hypot(a.1 - target.1) < 5.0, "near the click");
+            for b in &sent[i + 1..] {
+                assert!((a.0 - b.0).hypot(a.1 - b.1) > 1.0, "not one point");
+            }
+        }
+        assert!(game.units.iter().filter(|u| !u.selected).all(|u| !u.is_moving()), "others stay");
+
+        for _ in 0..400 {
+            game.update(0.05);
+        }
+        for unit in game.units.iter().filter(|u| u.selected) {
+            assert!(!unit.is_moving(), "arrived: {unit:?}");
+        }
+    }
+
+    #[test]
+    fn the_right_button_deselects_and_units_keep_their_orders() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        click_at(&mut game, W / 2.0 - 800.0, H / 2.0 + 300.0);
+        let sent: Vec<(f32, f32)> = game.units.iter().map(|u| u.destination).collect();
+
+        game.handle(Event::RightDown);
+        assert_eq!(selected_count(&game), 0);
+        let after: Vec<(f32, f32)> = game.units.iter().map(|u| u.destination).collect();
+        assert_eq!(after, sent, "they still go where they were sent");
+
+        let moving = game.units.iter().filter(|u| u.is_moving()).count();
+        assert!(moving > 0);
+        click_at(&mut game, W / 2.0 + 800.0, H / 2.0 + 300.0);
+        let later: Vec<(f32, f32)> = game.units.iter().map(|u| u.destination).collect();
+        assert_eq!(later, sent, "a left click now sends nobody");
+    }
+
+    #[test]
+    fn the_right_button_cancels_a_box_being_dragged() {
+        let mut game = in_battle();
+        let (from, to) = around_first_group();
+        game.handle(Event::MouseMove(from.0, from.1));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseMove(to.0, to.1));
+        game.handle(Event::RightDown);
+        assert!(game.selection_ground().is_none());
+        game.handle(Event::MouseUp);
+        assert_eq!(selected_count(&game), 0);
+    }
+
+    #[test]
+    fn the_right_button_does_nothing_in_menus_or_while_paused() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        game.handle(Event::KeyDown(Key::Escape));
+        game.handle(Event::RightDown);
+        assert_eq!(selected_count(&game), 12, "in the menu");
+        game.handle(Event::KeyDown(Key::Escape));
+        game.handle(Event::KeyDown(Key::Pause));
+        game.handle(Event::RightDown);
+        assert_eq!(selected_count(&game), 12, "while paused");
+    }
+
+    #[test]
+    fn a_click_with_nothing_selected_sends_nobody() {
+        let mut game = in_battle();
+        click_at(&mut game, W / 2.0 - 800.0, H / 2.0 + 300.0);
+        assert!(game.units.iter().all(|u| !u.is_moving()));
+    }
+
+    #[test]
+    fn a_click_on_ones_own_unit_selects_it_rather_than_sending_anyone() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        let unit = game.units[3];
+        let (x, y) = game.view().project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z).unwrap();
+        click_at(&mut game, x, y);
+        assert_eq!(selected_count(&game), 1);
+        assert!(game.units.iter().all(|u| !u.is_moving()));
+    }
+
+    #[test]
+    fn dragging_a_new_box_gives_no_order() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        let (from, to) = around_first_group();
+        drag_select(&mut game, from, to);
+        assert!(game.units.iter().all(|u| !u.is_moving()));
+    }
+
+    #[test]
+    fn units_stand_still_while_the_game_is_paused() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        click_at(&mut game, W / 2.0 - 800.0, H / 2.0 + 300.0);
+        game.handle(Event::KeyDown(Key::Escape));
+        let before: Vec<(f32, f32)> = game.units.iter().map(|u| (u.x, u.z)).collect();
+        game.update(1.0);
+        let after: Vec<(f32, f32)> = game.units.iter().map(|u| (u.x, u.z)).collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn units_keep_going_when_the_screen_scrolls_away_or_they_are_deselected() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        click_at(&mut game, W / 2.0 - 800.0, H / 2.0 + 300.0);
+        drag_select(&mut game, (200.0, H - 400.0), (500.0, H - 200.0));
+        assert_eq!(selected_count(&game), 0);
+        let walking = game.units.iter().filter(|u| u.is_moving()).count();
+        assert!(walking > 0);
+        for _ in 0..400 {
+            game.update(0.05);
+        }
+        assert!(game.units.iter().all(|u| !u.is_moving()), "they still arrive");
     }
 
     #[test]

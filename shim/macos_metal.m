@@ -161,6 +161,9 @@ static int32_t translate(NSEvent *e, OeEvent *out) {
             out->y = notches;
             return 1;
         }
+        case NSEventTypeRightMouseDown:
+            out->kind = OE_EVENT_RIGHT_DOWN;
+            return 1;
         case NSEventTypeLeftMouseDown:
             out->kind = OE_EVENT_MOUSE_DOWN;
             return 1;

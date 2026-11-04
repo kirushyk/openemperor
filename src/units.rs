@@ -2,12 +2,56 @@
 
 use crate::battlefield::{MAP_MIDDLE_Z, Terrain};
 use crate::game::TeamColor;
-use std::f32::consts::TAU;
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-/// Half a unit's width and its full height, in world units.
-pub const HALF_WIDTH: f32 = 0.3;
+/// About how tall a unit stands, in world units.
 pub const HEIGHT: f32 = 0.5;
 const SPACING: f32 = 1.2;
+/// A unit this close to its destination has reached it.
+const ARRIVED: f32 = 0.12;
+/// Destinations in one order stand this far apart, enough for any two units side by side.
+const SLOT_SPACING: f32 = 1.3;
+/// How far from the clicked point to look for free destinations, in slots.
+const SLOT_SEARCH_RINGS: i32 = 40;
+/// The longest simulation step, in seconds; longer frames are divided up.
+const MAX_STEP: f32 = 0.05;
+/// A vehicle must point this close to its way, in radians, before it drives.
+const DRIVE_ALIGNMENT: f32 = 0.15;
+/// How far ahead, beyond touching, a unit starts to steer around another.
+const AVOID_MARGIN: f32 = 0.9;
+/// How long a unit keeps pressing against water or lava before it gives up, in seconds.
+const BLOCKED_PATIENCE: f32 = 2.0;
+/// Rounds of separating overlapping units per step.
+const SEPARATION_ROUNDS: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitKind {
+    /// Sets off in any direction at once.
+    Infantry,
+    /// Must turn to face its way before it drives.
+    Vehicle,
+}
+
+impl UnitKind {
+    /// The radius of the sphere it collides with.
+    pub fn radius(self) -> f32 {
+        match self {
+            UnitKind::Infantry => 0.25,
+            UnitKind::Vehicle => 0.45,
+        }
+    }
+
+    /// World units per second.
+    fn speed(self) -> f32 {
+        match self {
+            UnitKind::Infantry => 2.5,
+            UnitKind::Vehicle => 4.5,
+        }
+    }
+}
+
+/// Radians per second a vehicle can turn.
+const TURN_SPEED: f32 = 3.0;
 /// The player's second group, far enough east to need scrolling to from the first.
 const SECOND_GROUP_X: f32 = 35.0;
 /// How far from the middle each opponent's group stands.
@@ -25,9 +69,28 @@ pub struct Unit {
     pub owner: usize,
     pub color: TeamColor,
     pub selected: bool,
+    pub kind: UnitKind,
+    /// Facing, in radians: 0 points east and a quarter turn points south.
+    pub heading: f32,
+    /// Where its owner last sent it (x, z). This is never forgotten: being pushed aside
+    /// only delays the unit, which then walks back.
+    pub destination: (f32, f32),
+    blocked_for: f32,
 }
 
-/// Places a block of units centered on a world point.
+impl Unit {
+    /// Whether it still has somewhere to go.
+    pub fn is_moving(&self) -> bool {
+        (self.destination.0 - self.x).hypot(self.destination.1 - self.z) > ARRIVED
+    }
+
+    /// Its collision sphere's center height.
+    fn sphere_y(&self) -> f32 {
+        self.y + self.kind.radius()
+    }
+}
+
+/// Places a block of units centered on a world point: its last row is vehicles.
 fn spawn_group(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
@@ -39,7 +102,18 @@ fn spawn_group(
         for col in 0..cols {
             let x = cx + (col as f32 - (cols - 1) as f32 / 2.0) * SPACING;
             let z = cz + (row as f32 - (rows - 1) as f32 / 2.0) * SPACING;
-            units.push(Unit { x, y: terrain.height_at(x, z), z, owner, color, selected: false });
+            units.push(Unit {
+                x,
+                y: terrain.height_at(x, z),
+                z,
+                owner,
+                color,
+                selected: false,
+                kind: if row + 1 == rows { UnitKind::Vehicle } else { UnitKind::Infantry },
+                heading: -FRAC_PI_2,
+                destination: (x, z),
+                blocked_for: 0.0,
+            });
         }
     }
 }
@@ -78,6 +152,174 @@ pub fn keeps_clear(x: f32, z: f32) -> bool {
     from_middle > CLEARANCE
         && from_second_group > CLEARANCE
         && (from_middle - OPPONENT_RING).abs() > CLEARANCE * 0.6
+}
+
+/// Up to `count` free spots near a point, nearest first, each far enough from the others
+/// and from every point in `taken`. Spots must be walkable, so a click on water finds the
+/// nearest land.
+fn find_slots(terrain: &Terrain, target: (f32, f32), count: usize, taken: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let mut offsets = Vec::new();
+    for j in -SLOT_SEARCH_RINGS..=SLOT_SEARCH_RINGS {
+        for i in -SLOT_SEARCH_RINGS..=SLOT_SEARCH_RINGS {
+            offsets.push((i as f32 * SLOT_SPACING, j as f32 * SLOT_SPACING));
+        }
+    }
+    offsets.sort_by(|a, b| a.0.hypot(a.1).total_cmp(&b.0.hypot(b.1)));
+    let is_free = |spot: (f32, f32), others: &[(f32, f32)]| {
+        others.iter().all(|o| (o.0 - spot.0).hypot(o.1 - spot.1) >= SLOT_SPACING - 0.001)
+    };
+    let mut slots: Vec<(f32, f32)> = Vec::with_capacity(count);
+    for (dx, dz) in offsets {
+        if slots.len() == count {
+            break;
+        }
+        let spot = (target.0 + dx, target.1 + dz);
+        if terrain.can_walk(spot.0, spot.1) && is_free(spot, taken) && is_free(spot, &slots) {
+            slots.push(spot);
+        }
+    }
+    slots
+}
+
+/// Sends every selected unit to its own reserved spot near a point. Other units' destinations
+/// stay reserved, whoever owns them.
+pub fn order_move(units: &mut [Unit], target: (f32, f32), terrain: &Terrain) {
+    let taken: Vec<(f32, f32)> = units.iter().filter(|u| !u.selected).map(|u| u.destination).collect();
+    let mut chosen: Vec<usize> = (0..units.len()).filter(|&i| units[i].selected).collect();
+    let mut slots = find_slots(terrain, target, chosen.len(), &taken);
+    // Farthest first, so that those with the longest walk are not left the leftover spots.
+    let distance = |unit: &Unit, spot: (f32, f32)| (unit.x - spot.0).hypot(unit.z - spot.1);
+    chosen.sort_by(|&a, &b| distance(&units[b], target).total_cmp(&distance(&units[a], target)));
+    for i in chosen {
+        let nearest = (0..slots.len())
+            .min_by(|&a, &b| distance(&units[i], slots[a]).total_cmp(&distance(&units[i], slots[b])));
+        let Some(nearest) = nearest else { return };
+        units[i].destination = slots.swap_remove(nearest);
+        units[i].blocked_for = 0.0;
+    }
+}
+
+/// Which way to head: straight for the destination, bending right around whoever stands
+/// close ahead. Everyone keeps right, so two units meeting head-on pass each other.
+fn steering(units: &[Unit], index: usize) -> (f32, f32) {
+    let unit = &units[index];
+    let (to_x, to_z) = (unit.destination.0 - unit.x, unit.destination.1 - unit.z);
+    let length = to_x.hypot(to_z).max(0.0001);
+    let (want_x, want_z) = (to_x / length, to_z / length);
+    let (right_x, right_z) = (-want_z, want_x);
+    let mut sideways = 0.0;
+    for (other_index, other) in units.iter().enumerate() {
+        if other_index == index {
+            continue;
+        }
+        let (dx, dz) = (other.x - unit.x, other.z - unit.z);
+        let distance = dx.hypot(dz);
+        let range = unit.kind.radius() + other.kind.radius() + AVOID_MARGIN;
+        if distance < range && dx * want_x + dz * want_z > 0.0 {
+            sideways += (1.0 - distance / range) * 2.0;
+        }
+    }
+    let (x, z) = (want_x + right_x * sideways, want_z + right_z * sideways);
+    let length = x.hypot(z).max(0.0001);
+    (x / length, z / length)
+}
+
+/// The shortest signed turn from one heading to another.
+fn turn_between(from: f32, to: f32) -> f32 {
+    (to - from + PI).rem_euclid(TAU) - PI
+}
+
+/// Moves a unit towards a point on its way, sliding along water or lava it cannot enter.
+fn walk(unit: &mut Unit, terrain: &Terrain, (dir_x, dir_z): (f32, f32), dt: f32) {
+    let remaining = (unit.destination.0 - unit.x).hypot(unit.destination.1 - unit.z);
+    let distance = (unit.kind.speed() * dt).min(remaining);
+    let (dx, dz) = (dir_x * distance, dir_z * distance);
+    let tries = [(dx, dz), (dx, 0.0), (0.0, dz)];
+    match tries.iter().find(|(tx, tz)| terrain.can_walk(unit.x + tx, unit.z + tz)) {
+        Some(&(tx, tz)) => {
+            unit.x += tx;
+            unit.z += tz;
+            if tx == dx && tz == dz {
+                unit.blocked_for = 0.0;
+            } else {
+                unit.blocked_for += dt;
+            }
+        }
+        None => unit.blocked_for += dt,
+    }
+    if unit.blocked_for > BLOCKED_PATIENCE {
+        // There is no way through yet: no path finding exists. Settle for here.
+        unit.destination = (unit.x, unit.z);
+        unit.blocked_for = 0.0;
+    }
+}
+
+/// Pushes overlapping spheres apart, each taking half of the push.
+fn separate(units: &mut [Unit], terrain: &Terrain) {
+    for _ in 0..SEPARATION_ROUNDS {
+        for a in 0..units.len() {
+            for b in a + 1..units.len() {
+                let (dx, dz) = (units[b].x - units[a].x, units[b].z - units[a].z);
+                let dy = units[b].sphere_y() - units[a].sphere_y();
+                let touching = units[a].kind.radius() + units[b].kind.radius();
+                let flat = dx.hypot(dz);
+                if flat.hypot(dy) >= touching {
+                    continue;
+                }
+                // Exactly on top of each other, any fixed direction will do.
+                let (nx, nz) = if flat > 0.0001 { (dx / flat, dz / flat) } else { (1.0, 0.0) };
+                let push = (touching - flat.hypot(dy)) / 2.0;
+                for (i, sign) in [(a, -1.0), (b, 1.0)] {
+                    let (x, z) = (units[i].x + nx * push * sign, units[i].z + nz * push * sign);
+                    if terrain.can_walk(x, z) {
+                        units[i].x = x;
+                        units[i].z = z;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn step(units: &mut [Unit], terrain: &Terrain, dt: f32) {
+    for i in 0..units.len() {
+        if !units[i].is_moving() {
+            continue;
+        }
+        let (dir_x, dir_z) = steering(units, i);
+        let way = dir_z.atan2(dir_x);
+        let unit = &mut units[i];
+        match unit.kind {
+            UnitKind::Infantry => {
+                unit.heading = way;
+                walk(unit, terrain, (dir_x, dir_z), dt);
+            }
+            UnitKind::Vehicle => {
+                let turn = turn_between(unit.heading, way);
+                let most = TURN_SPEED * dt;
+                unit.heading += turn.clamp(-most, most);
+                if turn.abs() <= DRIVE_ALIGNMENT {
+                    walk(unit, terrain, (dir_x, dir_z), dt);
+                }
+            }
+        }
+    }
+    separate(units, terrain);
+    for unit in units.iter_mut() {
+        unit.y = terrain.height_at(unit.x, unit.z);
+    }
+}
+
+/// Advances every unit by `dt` seconds.
+pub fn advance(units: &mut [Unit], terrain: &Terrain, dt: f32) {
+    // Spheres only start to overlap when something moves.
+    if !units.iter().any(Unit::is_moving) {
+        return;
+    }
+    let steps = (dt / MAX_STEP).ceil().max(1.0);
+    for _ in 0..steps as usize {
+        step(units, terrain, dt / steps);
+    }
 }
 
 /// Whether a unit stands inside a rectangle on the ground: (west, north, east, south).
@@ -126,6 +368,254 @@ mod tests {
 
     const COLORS: [TeamColor; 4] = [TeamColor::Blue, TeamColor::Red, TeamColor::Cyan, TeamColor::Green];
 
+    fn unit_at(x: f32, z: f32, kind: UnitKind) -> Unit {
+        Unit {
+            x,
+            y: 0.0,
+            z,
+            owner: 0,
+            color: TeamColor::Blue,
+            selected: false,
+            kind,
+            heading: -FRAC_PI_2,
+            destination: (x, z),
+            blocked_for: 0.0,
+        }
+    }
+
+    /// A planet where everything can be walked on, at the map's middle.
+    fn open_ground() -> &'static Terrain {
+        terrain(0)
+    }
+
+    fn run(units: &mut [Unit], seconds: f32) {
+        for _ in 0..(seconds / 0.05) as usize {
+            advance(units, open_ground(), 0.05);
+        }
+    }
+
+    fn largest_overlap(units: &[Unit]) -> f32 {
+        let mut largest = 0.0_f32;
+        for (i, a) in units.iter().enumerate() {
+            for b in &units[i + 1..] {
+                let distance = (a.x - b.x).hypot(a.z - b.z).hypot(a.sphere_y() - b.sphere_y());
+                largest = largest.max(a.kind.radius() + b.kind.radius() - distance);
+            }
+        }
+        largest
+    }
+
+    #[test]
+    fn infantry_sets_off_at_once_in_any_direction() {
+        for destination in [(5.0, 60.0), (-5.0, 60.0), (0.0, 55.0), (0.0, 65.0)] {
+            let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry)];
+            units[0].destination = destination;
+            advance(&mut units, open_ground(), 0.05);
+            let moved = (units[0].x - 0.0).hypot(units[0].z - 60.0);
+            assert!((moved - 2.5 * 0.05).abs() < 0.001, "{destination:?}: moved {moved}");
+        }
+    }
+
+    #[test]
+    fn a_vehicle_turns_first_and_only_then_drives() {
+        // Facing north, sent south: a half turn away.
+        let mut units = [unit_at(0.0, 60.0, UnitKind::Vehicle)];
+        units[0].destination = (0.0, 66.0);
+        let start_heading = units[0].heading;
+        advance(&mut units, open_ground(), 0.2);
+        assert_eq!((units[0].x, units[0].z), (0.0, 60.0), "still in place");
+        assert_ne!(units[0].heading, start_heading, "but turning");
+
+        run(&mut units, 1.5);
+        assert!(units[0].z > 60.0, "drives once it faces the way");
+        assert!(units[0].heading.sin() > 0.9, "facing south: {}", units[0].heading);
+    }
+
+    #[test]
+    fn a_vehicle_facing_its_way_needs_no_turn() {
+        let mut units = [unit_at(0.0, 60.0, UnitKind::Vehicle)];
+        units[0].destination = (0.0, 50.0);
+        advance(&mut units, open_ground(), 0.05);
+        assert!(units[0].z < 60.0);
+    }
+
+    #[test]
+    fn vehicles_turn_the_short_way() {
+        assert!((turn_between(3.0, -3.0) - (TAU - 6.0)).abs() < 0.001);
+        assert!((turn_between(-3.0, 3.0) + (TAU - 6.0)).abs() < 0.001);
+        assert!(turn_between(1.0, 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn units_arrive_and_stop() {
+        for kind in [UnitKind::Infantry, UnitKind::Vehicle] {
+            let mut units = [unit_at(0.0, 60.0, kind)];
+            units[0].destination = (6.0, 62.0);
+            run(&mut units, 8.0);
+            assert!(!units[0].is_moving(), "{kind:?} arrived");
+            let settled = (units[0].x, units[0].z);
+            run(&mut units, 1.0);
+            assert_eq!((units[0].x, units[0].z), settled, "{kind:?} stays");
+        }
+    }
+
+    #[test]
+    fn units_follow_the_terrain_height_as_they_walk() {
+        let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry)];
+        units[0].destination = (20.0, 45.0);
+        for _ in 0..100 {
+            advance(&mut units, open_ground(), 0.05);
+            assert_eq!(units[0].y, open_ground().height_at(units[0].x, units[0].z));
+        }
+    }
+
+    #[test]
+    fn an_order_reserves_separate_spots_near_the_click() {
+        let mut units: Vec<Unit> = (0..12)
+            .map(|i| {
+                let mut unit = unit_at(i as f32 * 1.2 - 6.0, 60.0, UnitKind::Infantry);
+                unit.selected = true;
+                unit
+            })
+            .collect();
+        order_move(&mut units, (0.0, 50.0), open_ground());
+        for (i, a) in units.iter().enumerate() {
+            let from_click = (a.destination.0 - 0.0).hypot(a.destination.1 - 50.0);
+            assert!(from_click < SLOT_SPACING * 3.0, "near the click: {from_click}");
+            for b in &units[i + 1..] {
+                let apart = (a.destination.0 - b.destination.0).hypot(a.destination.1 - b.destination.1);
+                assert!(apart >= SLOT_SPACING - 0.01, "too close: {apart}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_order_keeps_off_spots_others_have_reserved() {
+        let mut units = vec![unit_at(0.0, 60.0, UnitKind::Infantry), unit_at(2.0, 60.0, UnitKind::Infantry)];
+        units[0].destination = (0.0, 50.0);
+        units[1].selected = true;
+        order_move(&mut units, (0.0, 50.0), open_ground());
+        assert_ne!(units[1].destination, units[0].destination);
+        let apart = (units[1].destination.0).hypot(units[1].destination.1 - 50.0);
+        assert!(apart >= SLOT_SPACING - 0.01);
+        assert_eq!(units[0].destination, (0.0, 50.0), "unselected units keep their orders");
+    }
+
+    #[test]
+    fn a_group_ordered_again_may_reuse_its_own_spots() {
+        let mut units = vec![unit_at(0.0, 60.0, UnitKind::Infantry)];
+        units[0].selected = true;
+        order_move(&mut units, (0.0, 50.0), open_ground());
+        let first = units[0].destination;
+        order_move(&mut units, (0.0, 50.0), open_ground());
+        assert_eq!(units[0].destination, first);
+    }
+
+    #[test]
+    fn head_on_units_pass_each_other_and_both_arrive() {
+        for kind in [UnitKind::Infantry, UnitKind::Vehicle] {
+            let mut units = [unit_at(-5.0, 60.0, kind), unit_at(5.0, 60.0, kind)];
+            units[0].destination = (5.0, 60.0);
+            units[1].destination = (-5.0, 60.0);
+            for _ in 0..400 {
+                advance(&mut units, open_ground(), 0.05);
+                assert!(largest_overlap(&units) < 0.05, "{kind:?} overlap");
+            }
+            assert!(!units[0].is_moving() && !units[1].is_moving(), "{kind:?}: {units:?}");
+        }
+    }
+
+    #[test]
+    fn a_large_crowd_crossing_another_never_overlaps_and_everyone_arrives() {
+        let mut units = Vec::new();
+        for i in 0..10 {
+            for (side, kind) in [(-1.0, UnitKind::Infantry), (1.0, UnitKind::Vehicle)] {
+                let mut unit = unit_at(side * 8.0, 55.0 + i as f32 * 1.3, kind);
+                unit.destination = (-side * 8.0, 55.0 + i as f32 * 1.3);
+                units.push(unit);
+            }
+        }
+        for _ in 0..1600 {
+            advance(&mut units, open_ground(), 0.05);
+            assert!(largest_overlap(&units) < 0.1, "overlap {}", largest_overlap(&units));
+        }
+        let stuck: Vec<_> = units.iter().filter(|u| u.is_moving()).collect();
+        assert!(stuck.is_empty(), "still going: {stuck:?}");
+    }
+
+    #[test]
+    fn a_unit_pushed_aside_remembers_where_it_was_sent_and_walks_back() {
+        // The second starts touching the first and sets off through it, so it must shove it.
+        let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry), unit_at(-0.3, 60.0, UnitKind::Vehicle)];
+        let home = units[0].destination;
+        units[1].heading = 0.0;
+        units[1].destination = (6.0, 60.0);
+        let mut displaced = 0.0_f32;
+        for _ in 0..400 {
+            advance(&mut units, open_ground(), 0.05);
+            displaced = displaced.max((units[0].x - home.0).hypot(units[0].z - home.1));
+        }
+        assert!(displaced > 0.05, "it really was pushed: {displaced}");
+        assert_eq!(units[0].destination, home, "the order is not forgotten");
+        assert!(!units[0].is_moving(), "back where it was sent: {:?}", units[0]);
+        assert!(!units[1].is_moving(), "and the vehicle got past: {:?}", units[1]);
+    }
+
+    #[test]
+    fn a_blocked_unit_presses_on_for_a_while_without_losing_its_order() {
+        // A wall of waiting units across its way only delays it.
+        let mut units = vec![unit_at(0.0, 65.0, UnitKind::Infantry)];
+        units[0].destination = (0.0, 55.0);
+        for i in -4..=4 {
+            units.push(unit_at(i as f32 * 0.6, 60.0, UnitKind::Infantry));
+        }
+        let sent_to = units[0].destination;
+        run(&mut units, 2.0);
+        assert_eq!(units[0].destination, sent_to);
+    }
+
+    fn map_with_impassable_lower_terrain() -> &'static Terrain {
+        let index = crate::battlefield::MAP_PLANETS
+            .iter()
+            .position(|p| *p == crate::battlefield::Planet::C)
+            .unwrap();
+        terrain(index)
+    }
+
+    #[test]
+    fn orders_on_water_go_to_the_nearest_land() {
+        let terrain = map_with_impassable_lower_terrain();
+        // Find a spot of open water.
+        let mut water = None;
+        'search: for x in -40..=40 {
+            for z in 30..=100 {
+                if !terrain.can_walk(x as f32, z as f32) && (x as f32).abs() + (z as f32 - 64.0).abs() < 50.0 {
+                    water = Some((x as f32, z as f32));
+                    break 'search;
+                }
+            }
+        }
+        let water = water.expect("this map has water");
+        let mut unit = unit_at(0.0, 64.0, UnitKind::Infantry);
+        unit.selected = true;
+        let mut units = [unit];
+        order_move(&mut units, water, terrain);
+        assert!(terrain.can_walk(units[0].destination.0, units[0].destination.1));
+    }
+
+    #[test]
+    fn units_never_enter_water_and_give_up_when_it_blocks_them() {
+        let terrain = map_with_impassable_lower_terrain();
+        let mut units = [unit_at(0.0, 64.0, UnitKind::Infantry)];
+        // Straight across whatever lies to the far north, past the land ring.
+        units[0].destination = (0.0, 2.0);
+        for _ in 0..2000 {
+            advance(&mut units, terrain, 0.05);
+            assert!(terrain.can_walk(units[0].x, units[0].z), "{:?}", units[0]);
+        }
+        assert!(!units[0].is_moving(), "it does not press on forever: {:?}", units[0]);
+    }
+
     #[test]
     fn everyone_gets_units_in_their_own_color_on_the_map() {
         let units = spawn(terrain(0), &COLORS);
@@ -155,7 +645,7 @@ mod tests {
         let units = spawn(terrain(1), &colors);
         for (i, a) in units.iter().enumerate() {
             for b in &units[i + 1..] {
-                assert!((a.x - b.x).hypot(a.z - b.z) > HALF_WIDTH * 2.0, "{a:?} and {b:?}");
+                assert!((a.x - b.x).hypot(a.z - b.z) > a.kind.radius() + b.kind.radius(), "{a:?} and {b:?}");
             }
         }
     }
@@ -177,8 +667,8 @@ mod tests {
                 let terrain = terrain(map);
                 for unit in spawn(terrain, &colors[..count]) {
                     for piece in terrain.ruins() {
-                        let gap_x = (unit.x - piece.x).abs() - HALF_WIDTH - piece.half_x;
-                        let gap_z = (unit.z - piece.z).abs() - HALF_WIDTH - piece.half_z;
+                        let gap_x = (unit.x - piece.x).abs() - unit.kind.radius() - piece.half_x;
+                        let gap_z = (unit.z - piece.z).abs() - unit.kind.radius() - piece.half_z;
                         assert!(gap_x > 0.0 || gap_z > 0.0, "map {map}: {unit:?} in {piece:?}");
                     }
                 }
@@ -206,7 +696,7 @@ mod tests {
     #[test]
     fn selection_is_tested_on_the_ground_including_its_borders() {
         let rectangle = (-3.0, 50.0, 8.0, 70.0);
-        let unit = Unit { x: 0.0, y: 0.0, z: 60.0, owner: 0, color: TeamColor::Blue, selected: false };
+        let unit = unit_at(0.0, 60.0, UnitKind::Infantry);
         assert!(in_selection(rectangle, &unit));
         assert!(in_selection(rectangle, &Unit { x: 8.0, z: 50.0, ..unit }), "on the border");
         assert!(!in_selection(rectangle, &Unit { x: -3.1, ..unit }), "west of it");
@@ -218,7 +708,7 @@ mod tests {
     #[test]
     fn a_units_height_does_not_change_whether_it_is_selected() {
         let rectangle = (-3.0, 50.0, 8.0, 70.0);
-        let low = Unit { x: 0.0, y: 0.0, z: 60.0, owner: 0, color: TeamColor::Blue, selected: false };
+        let low = unit_at(0.0, 60.0, UnitKind::Infantry);
         assert_eq!(in_selection(rectangle, &low), in_selection(rectangle, &Unit { y: 0.7, ..low }));
     }
 

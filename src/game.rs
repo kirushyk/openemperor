@@ -63,12 +63,14 @@ pub enum Outcome {
     Defeat,
 }
 
-/// The cursor's three looks.
+/// The cursor's looks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorLook {
     Arrow,
     Attack,
     Heal,
+    /// A selected carryall would pick up or put down a vehicle here.
+    Carry,
 }
 
 /// One message in the battle's chat.
@@ -1177,6 +1179,8 @@ pub struct Game {
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
     pub units: Vec<Unit>,
+    /// Vehicles carryalls hold, which are out of `units` meanwhile.
+    pub carried: Vec<units::Carried>,
     pub combat: Combat,
     /// The superweapon is chosen and waiting for a click on the map.
     pub aiming_strike: bool,
@@ -1241,6 +1245,7 @@ impl Game {
             campaign_mission: 0,
             minimap_dragging: false,
             units: Vec::new(),
+            carried: Vec::new(),
             combat: Combat::default(),
             aiming_strike: false,
             strike_recharge: 0.0,
@@ -1406,7 +1411,7 @@ impl Game {
         let able = |u: &Unit| {
             selected
                 .iter()
-                .any(|s| s.can_attack(u, &self.teams) || s.can_fix(u, &self.teams))
+                .any(|s| s.can_attack(u, &self.teams) || s.can_tend(u, &self.teams))
         };
         let (chosen, distance) = self.unit_near_cursor(able)?;
         let own = self.unit_near_cursor(Unit::is_selectable);
@@ -1478,7 +1483,7 @@ impl Game {
         let selected = self.selected_units();
         let able = |u: &Unit| {
             selected.iter().any(|s| {
-                s.can_fire_on(u) || s.can_attack(u, &self.teams) || s.can_fix(u, &self.teams)
+                s.can_fire_on(u) || s.can_attack(u, &self.teams) || s.can_tend(u, &self.teams)
             })
         };
         if let Some((unit, _)) = self.unit_near_cursor(able) {
@@ -1500,17 +1505,29 @@ impl Game {
                 |s: &&Unit| s.can_attack(u, &self.teams) || (self.control_held && s.can_fire_on(u));
             if selected.iter().any(armed) {
                 CursorLook::Attack
-            } else {
+            } else if selected.iter().any(|s| s.can_fix(u, &self.teams)) {
                 CursorLook::Heal
+            } else {
+                CursorLook::Carry
             }
         };
         match self.forced_order_under_cursor() {
             Some(AttackOrder::Place(_)) => CursorLook::Attack,
             Some(AttackOrder::Unit(unit)) => look_at(&self.units[unit]),
-            None => self
-                .attackable_under_cursor()
-                .map_or(CursorLook::Arrow, |unit| look_at(&self.units[unit])),
+            None => match self.attackable_under_cursor() {
+                Some(unit) => look_at(&self.units[unit]),
+                None if self.would_put_down_here() => CursorLook::Carry,
+                None => CursorLook::Arrow,
+            },
         }
+    }
+
+    /// Whether a click would send a selected carryall here to put down what it holds.
+    fn would_put_down_here(&self) -> bool {
+        self.can_order_attack_here()
+            && self.selected_units().iter().any(|u| u.carrying)
+            && self.unit_under_cursor().is_none()
+            && self.view().ground_at(self.mouse.0, self.mouse.1).is_some()
     }
 
     #[cfg(test)]
@@ -1804,6 +1821,7 @@ impl Game {
         self.next_unit_id = self.units.len() as u32;
         self.fog = self.fog_allowed().then(Fog::new);
         self.update_fog();
+        self.carried.clear();
         self.combat = Combat::default();
         self.aiming_strike = false;
         self.strike_recharge = 0.0;
@@ -2048,6 +2066,7 @@ impl Game {
             units::advance(&mut self.units, terrain, &self.teams, dt);
             self.combat
                 .advance(&mut self.units, &self.teams, terrain, dt);
+            units::carry(&mut self.units, &mut self.carried, terrain, &self.teams, dt);
             let was_recharging = self.strike_recharge > 0.0;
             self.strike_recharge = (self.strike_recharge - dt).max(0.0);
             if was_recharging && self.strike_recharge <= 0.0 && self.superweapon_allowed() {
@@ -3847,7 +3866,9 @@ mod tests {
             .iter()
             .filter(|u| u.selected && u.target == Some(crate::units::Target::Unit(id)))
             .count();
-        assert_eq!(sent, FIRST_GROUP);
+        let armed = |u: &&Unit| u.selected && u.weapon != crate::weapons::WeaponKind::Unarmed;
+        assert_eq!(sent, game.units.iter().filter(armed).count());
+        assert!(sent > 0);
 
         for _ in 0..600 {
             game.update(0.05);
@@ -3877,7 +3898,7 @@ mod tests {
         assert!(
             game.units
                 .iter()
-                .filter(|u| u.selected)
+                .filter(|u| u.selected && u.weapon != crate::weapons::WeaponKind::Unarmed)
                 .all(|u| u.target == Some(crate::units::Target::Unit(id)))
         );
     }
@@ -3989,7 +4010,7 @@ mod tests {
         assert!(
             game.units
                 .iter()
-                .filter(|u| u.selected)
+                .filter(|u| u.selected && u.weapon != crate::weapons::WeaponKind::Unarmed)
                 .all(|u| u.target == Some(crate::units::Target::Unit(id)))
         );
 
@@ -4124,6 +4145,79 @@ mod tests {
         click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START + 2));
         assert_eq!(game.units.last().unwrap().name(), "Ornithopter");
         assert_eq!(game.units.last().unwrap().altitude, 0.0);
+    }
+
+    #[test]
+    fn a_selected_carryall_shows_the_carry_cursor_over_a_vehicle_and_where_it_can_put_one_down() {
+        let mut game = in_battle();
+        let carryall = game
+            .units
+            .iter()
+            .position(|u| u.role == Role::AdvancedCarryall && u.owner == 0);
+        let carryall = carryall.expect("the player starts with some");
+        let tank = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .unwrap();
+        let unit = game.units[tank];
+        let (x, y) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert_eq!(game.cursor_look(), CursorLook::Arrow, "nothing selected");
+        game.units[carryall].selected = true;
+        assert_eq!(game.cursor_look(), CursorLook::Carry);
+        click_at(&mut game, x, y);
+        assert_eq!(
+            game.units[carryall].target,
+            Some(crate::units::Target::Unit(unit.id))
+        );
+
+        let carrier = game.units[carryall];
+        game.units.retain(|u| u.id == carrier.id);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        assert_eq!(game.cursor_look(), CursorLook::Arrow, "nothing in hand");
+        game.units[0].carrying = true;
+        assert_eq!(game.cursor_look(), CursorLook::Carry);
+        assert!(!crate::render::build(&game).is_empty());
+    }
+
+    #[test]
+    fn a_vehicle_carried_when_its_carryall_is_lost_is_counted_lost_too() {
+        let mut game = in_battle();
+        let tank = game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.role == Role::Tank)
+            .unwrap();
+        let (tank_id, at) = (tank.id, (tank.x, tank.z));
+        let carryall = game
+            .units
+            .iter()
+            .position(|u| u.role == Role::AdvancedCarryall && u.owner == 0);
+        let carryall = carryall.unwrap();
+        game.units[carryall].x = at.0;
+        game.units[carryall].z = at.1;
+        game.units[carryall].destination = at;
+        game.units[carryall].target = Some(crate::units::Target::Unit(tank_id));
+        game.update(0.05);
+        assert_eq!(game.carried.len(), 1);
+        assert!(!game.units.iter().any(|u| u.id == tank_id));
+        assert!(!crate::render::build(&game).is_empty(), "it draws, hanging");
+
+        let carrier_id = game.carried[0].carrier;
+        game.units
+            .iter_mut()
+            .find(|u| u.id == carrier_id)
+            .unwrap()
+            .alive = false;
+        game.update(0.05);
+        assert!(game.carried.is_empty());
+        assert!(!game.units.iter().any(|u| u.id == tank_id));
+        assert_eq!(game.lost.aircraft, 1);
+        assert_eq!(game.lost.vehicles, 1);
     }
 
     #[test]
@@ -4569,7 +4663,11 @@ mod tests {
         let place = game.view().ground_at(x, y).unwrap();
         game.handle(Event::Control(true));
         click_at(&mut game, x, y);
-        for unit in game.units.iter().filter(|u| u.selected) {
+        for unit in game
+            .units
+            .iter()
+            .filter(|u| u.selected && u.weapon != crate::weapons::WeaponKind::Unarmed)
+        {
             assert_eq!(
                 unit.target,
                 Some(crate::units::Target::Place(place.0, place.1))

@@ -125,6 +125,11 @@ const CRUISE_ALTITUDE: f32 = 4.0;
 const CLIMB_SPEED: f32 = 2.5;
 /// How far from where it was sent something that never stops circles.
 const CIRCLE_RADIUS: f32 = 3.5;
+/// How near right above a vehicle a carryall must be to pick it up.
+const LIFT_REACH: f32 = 0.3;
+/// World units per second a carried vehicle is pulled up or let down, and how high it hangs.
+const WINCH_SPEED: f32 = 3.0;
+const HANG_HEIGHT: f32 = CRUISE_ALTITUDE - 0.6;
 /// Radians it leans into the sharpest turn, and how quickly it gets there, per second.
 const MOST_BANK: f32 = 0.6;
 const BANK_RATE: f32 = 4.0;
@@ -161,7 +166,8 @@ pub enum Role {
     Catapult,
     /// Fires a salvo of rockets from its two racks, then reloads for a long time.
     RocketLauncher,
-    Aircraft,
+    /// Hangs in the air, unarmed, and carries friendly vehicles to where it is told.
+    AdvancedCarryall,
     /// Hangs in the air and fires an automatic gun at the air and the ground alike.
     AirDefensePlatform,
     /// A delta wing that can never stop: it circles where it was sent, and fires its missiles
@@ -191,9 +197,10 @@ impl Role {
             Role::Tank | Role::RepairVehicle | Role::Catapult | Role::RocketLauncher => {
                 UnitKind::Vehicle
             }
-            Role::Aircraft | Role::AirDefensePlatform | Role::AirDrone | Role::Ornithopter => {
-                UnitKind::Aircraft
-            }
+            Role::AdvancedCarryall
+            | Role::AirDefensePlatform
+            | Role::AirDrone
+            | Role::Ornithopter => UnitKind::Aircraft,
             Role::Tower | Role::FlameTower => UnitKind::Tower,
         }
     }
@@ -209,7 +216,7 @@ impl Role {
             Role::RepairVehicle => "Repair Vehicle",
             Role::Catapult => "Catapult",
             Role::RocketLauncher => "Rocket Launcher",
-            Role::Aircraft => "Aircraft",
+            Role::AdvancedCarryall => "Advanced Carryall",
             Role::AirDefensePlatform => "Air Defense Platform",
             Role::AirDrone => "Air Drone",
             Role::Ornithopter => "Ornithopter",
@@ -230,7 +237,8 @@ impl Role {
             Role::RepairVehicle => WeaponKind::Repair,
             Role::Catapult => WeaponKind::Mortar,
             Role::RocketLauncher | Role::Ornithopter => WeaponKind::Rockets,
-            Role::Aircraft | Role::Tower => WeaponKind::Missile,
+            Role::Tower => WeaponKind::Missile,
+            Role::AdvancedCarryall => WeaponKind::Unarmed,
             Role::AirDefensePlatform => WeaponKind::AutoGun,
             Role::AirDrone => WeaponKind::AirMissile,
             Role::FlameInfantry | Role::FlameTower => WeaponKind::Flame,
@@ -287,7 +295,7 @@ impl Role {
         match kind {
             UnitKind::Infantry => Role::LightInfantry,
             UnitKind::Vehicle => Role::Tank,
-            UnitKind::Aircraft => Role::Aircraft,
+            UnitKind::Aircraft => Role::AdvancedCarryall,
             UnitKind::Tower => Role::Tower,
         }
     }
@@ -372,6 +380,10 @@ pub struct Unit {
     pub rockets_fired: usize,
     /// How far it leans into a turn along its length, in radians: positive to its right.
     pub bank: f32,
+    /// Whether a carryall holds a vehicle.
+    pub carrying: bool,
+    /// Whether a carryall is to put down what it holds when it gets where it is going.
+    unloading: bool,
     blocked_for: f32,
     /// Its nearest approach to the destination since it set off.
     best_remaining: f32,
@@ -388,9 +400,10 @@ impl Unit {
         self.alive && self.role.lands() && self.altitude > 0.0 && !self.is_moving()
     }
 
-    /// Whether it counts as being on the ground where others are concerned.
+    /// Whether it has no need of a spot on the ground: what lands needs one, and so does
+    /// whatever has a vehicle to put down.
     fn keeps_to_the_air(&self) -> bool {
-        self.kind.flies() && !self.role.lands()
+        self.kind.flies() && !self.role.lands() && !self.carrying
     }
 
     fn remaining(&self) -> f32 {
@@ -482,6 +495,22 @@ impl Unit {
             && self.id != other.id
             && other.can_be_repaired()
             && are_friends(teams, self.owner, other.owner)
+    }
+
+    /// Whether it could pick this vehicle up: a carryall with nothing in hand can take
+    /// friendly vehicles.
+    pub fn can_lift(&self, other: &Unit, teams: &[usize]) -> bool {
+        self.role == Role::AdvancedCarryall
+            && !self.carrying
+            && self.alive
+            && other.alive
+            && other.kind == UnitKind::Vehicle
+            && are_friends(teams, self.owner, other.owner)
+    }
+
+    /// Whether it would go to another unit to fix it or pick it up.
+    pub fn can_tend(&self, other: &Unit, teams: &[usize]) -> bool {
+        self.can_fix(other, teams) || self.can_lift(other, teams)
     }
 
     /// Whether it could take this building over.
@@ -590,6 +619,8 @@ impl Unit {
             second_tube: false,
             rockets_fired: 0,
             bank: 0.0,
+            carrying: false,
+            unloading: false,
             blocked_for: 0.0,
             best_remaining: f32::INFINITY,
         }
@@ -703,6 +734,8 @@ fn place_unit(
         second_tube: false,
         rockets_fired: 0,
         bank: 0.0,
+        carrying: false,
+        unloading: false,
         blocked_for: 0.0,
         best_remaining: f32::INFINITY,
     });
@@ -809,7 +842,10 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
         );
         place_building(&mut units, terrain, flame, Role::FlameTower, (i + 1, color));
         // Above the block: something for the player's anti-air to go after.
-        for (role, side) in [(Role::Aircraft, -SPACING), (Role::AirDrone, SPACING)] {
+        for (role, side) in [
+            (Role::AdvancedCarryall, -SPACING),
+            (Role::AirDrone, SPACING),
+        ] {
             let at = (center.0 + side * cos, center.1 + side * sin);
             let id = units.len() as u32;
             place_unit(
@@ -943,6 +979,7 @@ fn order_layer(
         let Some(nearest) = nearest else { return };
         units[i].destination = slots.swap_remove(nearest);
         units[i].target = None;
+        units[i].unloading = units[i].carrying;
         units[i].reset_progress();
     }
 }
@@ -957,7 +994,7 @@ fn set_target(unit: &mut Unit, target: Target) {
 pub fn order_attack(units: &mut [Unit], chosen: usize, teams: &[usize]) {
     let chosen = units[chosen];
     for unit in units.iter_mut().filter(|u| u.selected) {
-        if unit.can_attack(&chosen, teams) || unit.can_fix(&chosen, teams) {
+        if unit.can_attack(&chosen, teams) || unit.can_tend(&chosen, teams) {
             set_target(unit, Target::Unit(chosen.id));
         }
     }
@@ -967,7 +1004,7 @@ pub fn order_attack(units: &mut [Unit], chosen: usize, teams: &[usize]) {
 pub fn order_force_attack(units: &mut [Unit], chosen: usize, teams: &[usize]) {
     let chosen = units[chosen];
     for unit in units.iter_mut().filter(|u| u.selected) {
-        if unit.can_attack(&chosen, teams) || unit.can_fix(&chosen, teams) {
+        if unit.can_attack(&chosen, teams) || unit.can_tend(&chosen, teams) {
             set_target(unit, Target::Unit(chosen.id));
         } else if unit.can_fire_on(&chosen) {
             set_target(unit, Target::Forced(chosen.id));
@@ -1004,7 +1041,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
             Target::Unit(id) | Target::Forced(id) => {
                 let fit = |u: &Unit| match target {
                     Target::Forced(_) => units[i].can_fire_on(u),
-                    _ => units[i].can_attack(u, teams) || units[i].can_fix(u, teams),
+                    _ => units[i].can_attack(u, teams) || units[i].can_tend(u, teams),
                 };
                 let Some(other_index) = units.iter().position(|u| u.alive && u.id == id && fit(u))
                 else {
@@ -1379,6 +1416,91 @@ fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
             unit.blocked_for = 0.0;
         }
     }
+}
+
+/// A vehicle on its way up or down under a carryall, or hanging there. It is out of the battle
+/// meanwhile: nothing can hit it, and it does nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Carried {
+    pub carrier: u32,
+    /// Its `y` is how high it hangs right now, for drawing.
+    pub vehicle: Unit,
+    /// How far above the ground.
+    height: f32,
+}
+
+/// Picks up vehicles that carryalls have reached, moves those carried along, and puts them
+/// down where they were sent. A vehicle whose carryall is gone is left marked as not alive.
+pub fn carry(
+    units: &mut Vec<Unit>,
+    carried: &mut Vec<Carried>,
+    terrain: &Terrain,
+    teams: &[usize],
+    dt: f32,
+) {
+    for i in 0..units.len() {
+        let Some(Target::Unit(id)) = units[i].target else {
+            continue;
+        };
+        let carrier = units[i];
+        let Some(index) = units.iter().position(|u| {
+            u.id == id && carrier.can_lift(u, teams) && {
+                (u.x - carrier.x).hypot(u.z - carrier.z) <= LIFT_REACH
+            }
+        }) else {
+            continue;
+        };
+        let mut vehicle = units.remove(index);
+        vehicle.selected = false;
+        vehicle.target = None;
+        carried.push(Carried {
+            carrier: carrier.id,
+            vehicle,
+            height: 0.0,
+        });
+        // Everything after the removed vehicle has moved down one.
+        let carrier = units
+            .iter_mut()
+            .find(|u| u.id == carrier.id)
+            .expect("the carrier is not the vehicle");
+        carrier.carrying = true;
+        carrier.stand_down();
+        break;
+    }
+    let mut still_carried = Vec::with_capacity(carried.len());
+    for mut load in std::mem::take(carried) {
+        let carrier = units
+            .iter_mut()
+            .find(|u| u.id == load.carrier)
+            .filter(|u| u.alive);
+        let Some(carrier) = carrier else {
+            load.vehicle.alive = false;
+            load.vehicle.selected = false;
+            units.push(load.vehicle);
+            continue;
+        };
+        let spot = (carrier.x, carrier.z);
+        let lowering = carrier.unloading
+            && !carrier.is_moving()
+            && terrain.can_walk(spot.0, spot.1)
+            && clear_of_ruins(terrain, spot);
+        let vehicle = &mut load.vehicle;
+        (vehicle.x, vehicle.z, vehicle.heading) = (spot.0, spot.1, carrier.heading);
+        let winch = if lowering { -WINCH_SPEED } else { WINCH_SPEED };
+        load.height = (load.height + winch * dt).clamp(0.0, HANG_HEIGHT);
+        vehicle.y = carrier.y + load.height;
+        if lowering && load.height <= 0.0 {
+            carrier.carrying = false;
+            carrier.unloading = false;
+            vehicle.y = terrain.height_at(spot.0, spot.1);
+            vehicle.destination = spot;
+            vehicle.reset_progress();
+            units.push(load.vehicle);
+        } else {
+            still_carried.push(load);
+        }
+    }
+    *carried = still_carried;
 }
 
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
@@ -1763,7 +1885,7 @@ mod tests {
             planes
                 .iter()
                 .filter(|u| u.owner == 0)
-                .all(|u| u.weapon == WeaponKind::Missile)
+                .all(|u| u.role == Role::AdvancedCarryall && u.weapon == WeaponKind::Unarmed)
         );
         assert!(
             units
@@ -2023,6 +2145,11 @@ mod tests {
                 Role::AirDefensePlatform,
                 WeaponKind::AutoGun,
                 "Air Defense Platform",
+            ),
+            (
+                Role::AdvancedCarryall,
+                WeaponKind::Unarmed,
+                "Advanced Carryall",
             ),
             (Role::AirDrone, WeaponKind::AirMissile, "Air Drone"),
             (Role::Ornithopter, WeaponKind::Rockets, "Ornithopter"),
@@ -2437,7 +2564,7 @@ mod tests {
             Role::Tank,
             Role::Catapult,
             Role::RocketLauncher,
-            Role::Aircraft,
+            Role::AdvancedCarryall,
             Role::Tower,
         ] {
             let unit = produced(role);
@@ -2577,7 +2704,108 @@ mod tests {
         let colors = [TeamColor::Blue, TeamColor::Red];
         let units = spawn(terrain, &colors);
         let of_opponent = |role| units.iter().any(|u| u.owner == 1 && u.role == role);
-        assert!(of_opponent(Role::Aircraft) && of_opponent(Role::AirDrone));
+        assert!(of_opponent(Role::AdvancedCarryall) && of_opponent(Role::AirDrone));
+    }
+
+    fn carry_scene() -> (Vec<Unit>, Vec<Carried>) {
+        let mut carryall = Unit::for_test(0.0, MAP_MIDDLE_Z, UnitKind::Aircraft);
+        carryall.role = Role::AdvancedCarryall;
+        carryall.weapon = WeaponKind::Unarmed;
+        carryall.id = 1;
+        carryall.selected = true;
+        let mut tank = Unit::for_test(4.0, MAP_MIDDLE_Z, UnitKind::Vehicle);
+        tank.id = 2;
+        tank.health = 123.0;
+        (vec![carryall, tank], Vec::new())
+    }
+
+    fn run_carry(units: &mut Vec<Unit>, carried: &mut Vec<Carried>, seconds: f32) {
+        let terrain = crate::battlefield::terrain(0);
+        for _ in 0..(seconds / 0.05) as usize {
+            advance(units, terrain, &[0], 0.05);
+            carry(units, carried, terrain, &[0], 0.05);
+        }
+    }
+
+    #[test]
+    fn a_carryall_goes_to_a_friendly_vehicle_picks_it_up_and_puts_it_down_where_sent() {
+        let terrain = crate::battlefield::terrain(0);
+        let (mut units, mut carried) = carry_scene();
+        assert_eq!(units[0].weapon, Role::AdvancedCarryall.weapon());
+        order_attack(&mut units, 1, &[0]);
+        assert_eq!(units[0].target, Some(Target::Unit(2)));
+        run_carry(&mut units, &mut carried, 2.0);
+        assert_eq!(units.len(), 1, "out of the battle");
+        assert_eq!(carried.len(), 1);
+        assert!(units[0].carrying && units[0].target.is_none());
+        assert!(carried[0].vehicle.y > 2.0, "hauled up");
+        assert_eq!(
+            (carried[0].vehicle.x, carried[0].vehicle.z),
+            (units[0].x, units[0].z)
+        );
+
+        // It stays up until it is told where to put it.
+        run_carry(&mut units, &mut carried, 2.0);
+        assert_eq!(carried.len(), 1);
+
+        let goal = (9.0, MAP_MIDDLE_Z + 2.0);
+        order_move(&mut units, goal, terrain, &[0]);
+        run_carry(&mut units, &mut carried, 4.0);
+        assert!(carried.is_empty());
+        assert!(!units[0].carrying);
+        let tank = units
+            .iter()
+            .find(|u| u.id == 2)
+            .expect("back on the ground");
+        assert!((tank.x - goal.0).hypot(tank.z - goal.1) < 0.2, "{tank:?}");
+        assert_eq!(tank.y, terrain.height_at(tank.x, tank.z));
+        assert_eq!(tank.health, 123.0, "as it was");
+        assert!(!tank.selected);
+        assert!(!tank.is_moving(), "it stays where it was put");
+
+        // And flying on with nothing, it does not try to put anything down.
+        order_move(&mut units, (0.0, MAP_MIDDLE_Z), terrain, &[0]);
+        assert!(!units.iter().any(|u| u.unloading));
+    }
+
+    #[test]
+    fn a_vehicle_dies_with_the_carryall_carrying_it() {
+        let (mut units, mut carried) = carry_scene();
+        order_attack(&mut units, 1, &[0]);
+        run_carry(&mut units, &mut carried, 2.0);
+        units[0].alive = false;
+        run_carry(&mut units, &mut carried, 0.05);
+        assert!(carried.is_empty());
+        let tank = units
+            .iter()
+            .find(|u| u.id == 2)
+            .expect("left to be counted");
+        assert!(!tank.alive);
+    }
+
+    #[test]
+    fn a_carryall_only_lifts_friendly_vehicles_one_at_a_time() {
+        let (units, _) = carry_scene();
+        let (carryall, tank) = (units[0], units[1]);
+        assert!(carryall.can_lift(&tank, &[0]));
+        assert!(
+            carryall.can_lift(&Unit { owner: 1, ..tank }, &[0, 0]),
+            "an ally"
+        );
+        assert!(
+            !carryall.can_lift(&Unit { owner: 1, ..tank }, &[0, 1]),
+            "an enemy"
+        );
+        let soldier = Unit::for_test(1.0, 60.0, UnitKind::Infantry);
+        assert!(!carryall.can_lift(&soldier, &[0]));
+        assert!(!carryall.can_lift(&carryall, &[0]));
+        let full = Unit {
+            carrying: true,
+            ..carryall
+        };
+        assert!(!full.can_lift(&tank, &[0]));
+        assert!(!tank.can_lift(&carryall, &[0]));
+        assert!(!full.keeps_to_the_air(), "it wants a spot on the ground");
     }
 
     #[test]

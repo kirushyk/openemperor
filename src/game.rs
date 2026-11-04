@@ -1886,6 +1886,11 @@ impl Game {
                 }
                 (Screen::InGame, Key::Tab) => self.stats_open = !self.stats_open,
                 (Screen::InGame, Key::Char('d' | 'D')) if !self.key_paused => units::toggle_deploy(&mut self.units),
+                (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => {
+                    for unit in &mut self.units {
+                        unit.selected = unit.is_selectable();
+                    }
+                }
                 (_, Key::Escape) => self.go_back(),
                 _ => {}
             },
@@ -3606,6 +3611,34 @@ mod tests {
         assert!(game.tip().is_some());
         game.flip(Toggle::ToolTips);
         assert_eq!(game.tip(), None);
+    }
+
+    #[test]
+    fn the_a_key_selects_all_the_players_units_anywhere_on_the_map() {
+        let mut game = in_battle();
+        let everyone = game.units.iter().filter(|u| u.is_selectable()).count();
+        assert!(everyone > FIRST_GROUP, "including the group off screen");
+        game.handle(Event::KeyDown(Key::Char('a')));
+        assert_eq!(selected_count(&game), everyone);
+        assert!(game.units.iter().filter(|u| u.selected).all(|u| u.owner == 0), "no enemies");
+        assert!(game.units.iter().filter(|u| u.selected).all(|u| !u.kind.is_building()), "no towers");
+
+        game.handle(Event::RightDown);
+        game.handle(Event::KeyDown(Key::Char('A')));
+        assert_eq!(selected_count(&game), everyone, "with Shift or Caps Lock too");
+    }
+
+    #[test]
+    fn the_a_key_does_nothing_while_paused_in_menus_or_typing_a_name() {
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Pause));
+        game.handle(Event::KeyDown(Key::Char('a')));
+        assert_eq!(selected_count(&game), 0, "paused");
+
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Escape));
+        game.handle(Event::KeyDown(Key::Char('a')));
+        assert_eq!(selected_count(&game), 0, "in the menu");
     }
 
     #[test]

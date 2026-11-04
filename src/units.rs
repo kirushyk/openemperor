@@ -380,6 +380,8 @@ pub struct Unit {
     pub rockets_fired: usize,
     /// How far it leans into a turn along its length, in radians: positive to its right.
     pub bank: f32,
+    /// Whether what sits on the ground has an enemy near enough to go up and fire on.
+    alerted: bool,
     /// Whether a carryall holds a vehicle.
     pub carrying: bool,
     /// Whether a carryall is to put down what it holds when it gets where it is going.
@@ -395,21 +397,26 @@ impl Unit {
         self.alive && (self.remaining() > ARRIVED || self.role.never_stops())
     }
 
+    /// Whether it has a fight to be up in the air for: an order, or an enemy nearby.
+    fn has_a_fight(&self) -> bool {
+        self.target.is_some() || self.alerted
+    }
+
     /// Whether it is up in the air but would rather sit, having nothing to go after.
     fn is_settling(&self) -> bool {
         self.alive
             && self.role.lands()
             && self.altitude > 0.0
-            && self.target.is_none()
+            && !self.has_a_fight()
             && !self.is_moving()
     }
 
-    /// Whether it is sitting within reach of its target, and must go up to fire on it.
+    /// Whether it is low down with a fight within reach, and must go up to fire.
     fn is_rising_to_fight(&self) -> bool {
         self.alive
             && self.role.lands()
             && self.altitude < CRUISE_ALTITUDE
-            && self.target.is_some()
+            && self.has_a_fight()
             && !self.is_moving()
     }
 
@@ -637,6 +644,7 @@ impl Unit {
             second_tube: false,
             rockets_fired: 0,
             bank: 0.0,
+            alerted: false,
             carrying: false,
             unloading: false,
             blocked_for: 0.0,
@@ -752,6 +760,7 @@ fn place_unit(
         second_tube: false,
         rockets_fired: 0,
         bank: 0.0,
+        alerted: false,
         carrying: false,
         unloading: false,
         blocked_for: 0.0,
@@ -1523,8 +1532,29 @@ pub fn carry(
     *carried = still_carried;
 }
 
+/// Tells whatever lands whether an enemy is within reach of where it would fire from, up at its
+/// cruising height. It goes up for one and comes back down once none is left.
+fn alert_landers(units: &mut [Unit], teams: &[usize]) {
+    for i in 0..units.len() {
+        if !units[i].role.lands() {
+            continue;
+        }
+        let lander = units[i];
+        let up_there = (
+            lander.x,
+            lander.y + CRUISE_ALTITUDE + lander.kind.radius(),
+            lander.z,
+        );
+        units[i].alerted = units.iter().any(|other| {
+            lander.can_attack(other, teams)
+                && distance(up_there, other.center()) <= lander.weapon.range()
+        });
+    }
+}
+
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
+    alert_landers(units, teams);
     chase_targets(units, terrain, teams);
     // Spheres only start to overlap when something moves.
     if !units
@@ -2731,6 +2761,66 @@ mod tests {
             advance(&mut units, terrain, &[0, 1], 0.05);
         }
         assert_eq!(units[0].altitude, 0.0);
+    }
+
+    #[test]
+    fn a_sitting_ornithopter_takes_off_for_an_enemy_nearby_and_sits_back_once_it_is_safe() {
+        let terrain = crate::battlefield::terrain(0);
+        let teams = [0, 1];
+        let mut enemy = Unit::for_test(5.0, MAP_MIDDLE_Z, UnitKind::Infantry);
+        enemy.owner = 1;
+        enemy.id = 7;
+        let mut sitting = ornithopter_at(0.0, MAP_MIDDLE_Z);
+        sitting.id = 1;
+        let mut units = [sitting, enemy];
+        for _ in 0..60 {
+            advance(&mut units, terrain, &teams, 0.05);
+        }
+        assert_eq!(units[0].altitude, CRUISE_ALTITUDE, "up to fight");
+        assert!(units[0].can_launch());
+        assert_eq!(units[0].target, None, "by itself, with no order");
+        assert_eq!(units[0].x, 0.0, "and it stays where it is");
+
+        units[1].alive = false;
+        for _ in 0..60 {
+            advance(&mut units, terrain, &teams, 0.05);
+        }
+        assert_eq!(units[0].altitude, 0.0, "safe, so it sits back");
+    }
+
+    #[test]
+    fn a_sitting_ornithopter_stays_down_for_far_off_enemies_and_friends() {
+        let terrain = crate::battlefield::terrain(0);
+        let mut far = Unit::for_test(20.0, MAP_MIDDLE_Z, UnitKind::Infantry);
+        far.owner = 1;
+        let mut friend = Unit::for_test(3.0, MAP_MIDDLE_Z, UnitKind::Infantry);
+        friend.owner = 2;
+        let mut units = [ornithopter_at(0.0, MAP_MIDDLE_Z), far, friend];
+        for _ in 0..40 {
+            advance(&mut units, terrain, &[0, 1, 0], 0.05);
+        }
+        assert_eq!(units[0].altitude, 0.0);
+    }
+
+    #[test]
+    fn an_ornithopter_going_up_for_a_distant_enemy_really_has_it_in_reach_from_up_there() {
+        let terrain = crate::battlefield::terrain(0);
+        let reach = WeaponKind::Rockets.range();
+        let mut ornithopter = ornithopter_at(0.0, MAP_MIDDLE_Z);
+        ornithopter.id = 1;
+        let mut enemy = Unit::for_test(reach - 2.0, MAP_MIDDLE_Z, UnitKind::Infantry);
+        enemy.owner = 1;
+        enemy.id = 7;
+        let mut units = [ornithopter, enemy];
+        for unit in &mut units {
+            unit.y = terrain.height_at(unit.x, unit.z);
+        }
+        for _ in 0..60 {
+            advance(&mut units, terrain, &[0, 1], 0.05);
+        }
+        let up_there = distance(units[0].center(), units[1].center());
+        assert_eq!(units[0].altitude, CRUISE_ALTITUDE, "{up_there}");
+        assert!(up_there <= reach, "{up_there}");
     }
 
     #[test]

@@ -1,0 +1,2337 @@
+//! Game flow and menu logic. No OS or GPU code, so it runs under `cargo test`.
+
+use crate::battlefield::{self, Camera};
+use crate::platform::{Event, Key};
+
+pub const INTRO_SECONDS: f32 = 3.0;
+pub const LOADING_SECONDS: f32 = 2.0;
+pub const MOVIE_SECONDS: f32 = 3.0;
+
+/// The three playable factions: A is blue, H red, O cyan. Each is shown as its planet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Faction {
+    A,
+    H,
+    O,
+}
+
+impl Faction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Faction::A => "Faction A",
+            Faction::H => "Faction H",
+            Faction::O => "Faction O",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Faction::A => Faction::H,
+            Faction::H => Faction::O,
+            Faction::O => Faction::A,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Screen {
+    Intro,
+    MainMenu,
+    SinglePlayerMenu,
+    Options,
+    Credits,
+    FactionSelect,
+    Movie(Faction),
+    SkirmishSetup,
+    Loading,
+    InGame,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Difficulty {
+    Easy,
+    Normal,
+    Hard,
+}
+
+/// An ally slot holds one of five mini factions, each shown as a shape, or nobody.
+/// A side can befriend at most two, and never the same one twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ally {
+    None,
+    Triangle,
+    Square,
+    Diamond,
+    Hexagon,
+    Star,
+}
+
+impl Ally {
+    fn next(self) -> Self {
+        match self {
+            Ally::None => Ally::Triangle,
+            Ally::Triangle => Ally::Square,
+            Ally::Square => Ally::Diamond,
+            Ally::Diamond => Ally::Hexagon,
+            Ally::Hexagon => Ally::Star,
+            Ally::Star => Ally::None,
+        }
+    }
+}
+
+/// Moves one ally slot to its next choice, skipping the mini faction the other slot holds.
+fn cycle_ally(allies: &mut [Ally; 2], slot: usize) {
+    let other = allies[1 - slot];
+    let mut next = allies[slot].next();
+    if next == other && next != Ally::None {
+        next = next.next();
+    }
+    allies[slot] = next;
+}
+
+/// Eight colors for at most eight players, so every player can have their own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TeamColor {
+    Blue,
+    Red,
+    Cyan,
+    Orange,
+    Green,
+    Violet,
+    Yellow,
+    LightPink,
+}
+
+pub const TEAM_COLORS: [TeamColor; 8] = [
+    TeamColor::Blue,
+    TeamColor::Red,
+    TeamColor::Cyan,
+    TeamColor::Orange,
+    TeamColor::Green,
+    TeamColor::Violet,
+    TeamColor::Yellow,
+    TeamColor::LightPink,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpponentKind {
+    Defensive,
+    Competent,
+    Attacker,
+}
+
+impl OpponentKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            OpponentKind::Defensive => "Defensive",
+            OpponentKind::Competent => "Competent",
+            OpponentKind::Attacker => "Attacker",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            OpponentKind::Defensive => OpponentKind::Competent,
+            OpponentKind::Competent => OpponentKind::Attacker,
+            OpponentKind::Attacker => OpponentKind::Defensive,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Opponent {
+    pub kind: OpponentKind,
+    pub faction: Faction,
+    pub allies: [Ally; 2],
+    /// Only meaningful while the slot is in use; assigned when the slot fills.
+    pub color: TeamColor,
+}
+
+pub const OPPONENT_SLOTS: usize = 7;
+pub const MAPS: [&str; 5] = ["Map 1", "Map 2", "Map 3", "Map 4", "Map 5"];
+pub const COMMANDER_NAME_MAX: usize = 16;
+
+/// Choices on the skirmish setup screen. Kept while the game runs, not saved between runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkirmishConfig {
+    pub commander: String,
+    pub faction: Faction,
+    pub color: TeamColor,
+    /// Left and right ally.
+    pub allies: [Ally; 2],
+    /// The first `ai_players` slots are in use.
+    pub opponents: [Opponent; OPPONENT_SLOTS],
+    /// Index into `MAPS`.
+    pub map: usize,
+    pub difficulty: Difficulty,
+    pub ai_players: i32,
+    pub money: i32,
+    pub units: i32,
+    pub superweapons: bool,
+    pub prebuilt_base: bool,
+    pub living_world: bool,
+    pub crates: bool,
+    pub fog_of_war: bool,
+}
+
+impl SkirmishConfig {
+    /// Gives slots `from..to` the first colors nobody holds. Colors already held never
+    /// change, and with eight colors for eight players one is always free.
+    fn assign_opponent_colors(&mut self, from: usize, to: usize) {
+        for i in from..to {
+            let held: Vec<TeamColor> = self.opponents[..i].iter().map(|o| o.color).collect();
+            if let Some(&free) = TEAM_COLORS
+                .iter()
+                .find(|&&c| c != self.color && !held.contains(&c))
+            {
+                self.opponents[i].color = free;
+            }
+        }
+    }
+
+    /// Colors the player may pick: their own plus any no opponent holds.
+    pub fn available_colors(&self) -> Vec<TeamColor> {
+        let opponents = &self.opponents[..self.ai_players as usize];
+        TEAM_COLORS
+            .iter()
+            .copied()
+            .filter(|&c| !opponents.iter().any(|o| o.color == c))
+            .collect()
+    }
+}
+
+impl Default for SkirmishConfig {
+    fn default() -> Self {
+        const FACTIONS: [Faction; 3] =
+            [Faction::H, Faction::A, Faction::O];
+        let mut opponents = [Opponent {
+            kind: OpponentKind::Competent,
+            faction: Faction::H,
+            allies: [Ally::None; 2],
+            color: TeamColor::Blue,
+        }; OPPONENT_SLOTS];
+        for (opponent, faction) in opponents.iter_mut().zip(FACTIONS.iter().cycle()) {
+            opponent.faction = *faction;
+        }
+        let mut config = SkirmishConfig {
+            commander: "Commander".to_string(),
+            faction: Faction::A,
+            color: TeamColor::Blue,
+            allies: [Ally::None; 2],
+            opponents,
+            map: 0,
+            difficulty: Difficulty::Normal,
+            ai_players: 3,
+            money: 10000,
+            units: 10,
+            superweapons: true,
+            prebuilt_base: false,
+            living_world: true,
+            crates: true,
+            fog_of_war: false,
+        };
+        config.assign_opponent_colors(0, config.ai_players as usize);
+        config
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Game,
+    Graphics,
+    Sound,
+    MultiplayerInfo,
+    Network,
+    Keyboard,
+    SneakPeek,
+    Credits,
+    Movies,
+}
+
+const TABS: [(Tab, &str); 9] = [
+    (Tab::Game, "Game"),
+    (Tab::Graphics, "Graphics"),
+    (Tab::Sound, "Sound"),
+    (Tab::MultiplayerInfo, "Multiplayer Info"),
+    (Tab::Network, "Network"),
+    (Tab::Keyboard, "Keyboard"),
+    (Tab::SneakPeek, "Sneak Peek"),
+    (Tab::Credits, "Credits"),
+    (Tab::Movies, "Movies"),
+];
+
+impl Tab {
+    /// Panel text for tabs that have no content yet.
+    pub fn placeholder(self) -> Option<&'static str> {
+        match self {
+            Tab::MultiplayerInfo => Some("Multiplayer Info placeholder"),
+            Tab::Network => Some("Network placeholder"),
+            Tab::Keyboard => Some("Keyboard placeholder"),
+            Tab::SneakPeek => Some("Sneak Peek placeholder"),
+            Tab::Movies => Some("Movies placeholder"),
+            // Credits opens its own screen, so its panel is never shown.
+            Tab::Game | Tab::Graphics | Tab::Sound | Tab::Credits => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SliderId {
+    GameSpeed,
+    ScrollRate,
+    MouseSpeed,
+    GraphicsQuality,
+    MusicVolume,
+    SoundVolume,
+    VoiceVolume,
+    AiPlayers,
+    Money,
+    Units,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Toggle {
+    ToolTips,
+    TargetLines,
+    Superweapons,
+    PrebuiltBase,
+    LivingWorld,
+    Crates,
+    FogOfWar,
+}
+
+/// Option values. Not applied to anything yet, and not saved between runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Settings {
+    pub game_speed: i32,
+    pub scroll_rate: i32,
+    pub mouse_speed: i32,
+    pub tool_tips: bool,
+    pub target_lines: bool,
+    /// Index into `QUALITY_STOPS`.
+    pub graphics_quality: i32,
+    pub music_volume: i32,
+    pub sound_volume: i32,
+    pub voice_volume: i32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            game_speed: 5,
+            scroll_rate: 5,
+            mouse_speed: 5,
+            tool_tips: true,
+            target_lines: true,
+            graphics_quality: 2,
+            music_volume: 80,
+            sound_volume: 80,
+            voice_volume: 80,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    Tab(Tab),
+    Toggle(Toggle),
+    Faction(Faction),
+    ConfirmFaction,
+    CancelFaction,
+    StartBattle,
+    NameField,
+    MapDropdown,
+    SelectMap(usize),
+    SetDifficulty(Difficulty),
+    CycleFaction,
+    /// 0 is the left ally, 1 the right.
+    CycleAlly(usize),
+    ColorBar,
+    PickColor(TeamColor),
+    CycleOpponentKind(usize),
+    CycleOpponentFaction(usize),
+    /// Opponent slot, then which of its two allies.
+    CycleOpponentAlly(usize, usize),
+    SinglePlayer,
+    Multiplayer,
+    Options,
+    Exit,
+    Back,
+    StartCampaign,
+    Tutorial,
+    SkirmishBattle,
+    LoadGame,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Anchor {
+    Center,
+    BottomLeft,
+    BottomRight,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Button {
+    pub action: Action,
+    pub label: &'static str,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl Button {
+    /// Round buttons fill their box as a circle.
+    pub fn is_round(&self) -> bool {
+        matches!(
+            self.action,
+            Action::Faction(_)
+                | Action::CycleFaction
+                | Action::CycleAlly(_)
+                | Action::CycleOpponentFaction(_)
+                | Action::CycleOpponentAlly(..)
+        )
+    }
+
+    fn contains(&self, x: f32, y: f32) -> bool {
+        if self.is_round() {
+            let r = self.w / 2.0;
+            let (dx, dy) = (x - (self.x + r), y - (self.y + r));
+            dx * dx + dy * dy <= r * r
+        } else {
+            x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
+        }
+    }
+}
+
+const MAIN_MENU: &[(Action, &str, Anchor)] = &[
+    (Action::SinglePlayer, "Single Player", Anchor::Center),
+    (Action::Multiplayer, "Multiplayer", Anchor::Center),
+    (Action::Exit, "Exit", Anchor::BottomLeft),
+    (Action::Options, "Options", Anchor::BottomRight),
+];
+
+const SINGLE_PLAYER_MENU: &[(Action, &str, Anchor)] = &[
+    (Action::StartCampaign, "Start Campaign", Anchor::Center),
+    (Action::Tutorial, "Tutorial", Anchor::Center),
+    (Action::SkirmishBattle, "Single Skirmish Battle", Anchor::Center),
+    (Action::LoadGame, "Load Game", Anchor::Center),
+    (Action::Back, "Back", Anchor::BottomLeft),
+];
+
+const BACK_ONLY: &[(Action, &str, Anchor)] = &[(Action::Back, "Back", Anchor::BottomLeft)];
+
+/// Layout is authored for a 1080-pixel-tall screen and scaled to the real height.
+pub fn ui_scale(height: f32) -> f32 {
+    height / 1080.0
+}
+
+/// Font pixel size for tabs and option rows. Rounds down so text never outgrows its slot.
+pub fn small_text_px(height: f32) -> f32 {
+    (3.0 * ui_scale(height) + 0.01).floor().max(1.0)
+}
+
+const PANEL_W: f32 = 900.0;
+const PANEL_H: f32 = 568.0;
+const PANEL_Y: f32 = 280.0;
+/// How far right of the screen center the panel's center sits.
+const PANEL_OFFSET: f32 = 130.0;
+const TAB_W: f32 = 320.0;
+const TAB_H: f32 = 56.0;
+const TAB_GAP: f32 = 8.0;
+const ROW_TOP: f32 = 40.0;
+const ROW_STEP: f32 = 80.0;
+const ROW_H: f32 = 72.0;
+const LABEL_X: f32 = 30.0;
+const TRACK_X: f32 = 340.0;
+const TRACK_W: f32 = 420.0;
+const CHECKBOX_SIZE: f32 = 36.0;
+
+/// The tabbed panel as (x, y, w, h).
+pub fn options_panel(width: f32, height: f32) -> (f32, f32, f32, f32) {
+    let s = ui_scale(height);
+    let x = width / 2.0 + (PANEL_OFFSET - PANEL_W / 2.0) * s;
+    (x, PANEL_Y * s, PANEL_W * s, PANEL_H * s)
+}
+
+pub const QUALITY_STOPS: &[&str] = &["Low", "Medium", "High"];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slider {
+    pub id: SliderId,
+    pub label: &'static str,
+    pub label_x: f32,
+    pub cy: f32,
+    pub track_x: f32,
+    pub track_w: f32,
+    pub min: i32,
+    pub max: i32,
+    /// Values snap to multiples of this, counted from `min`.
+    pub step: i32,
+    /// Named positions; when empty the number is shown instead.
+    pub stops: &'static [&'static str],
+    pub label_cy: f32,
+    pub value_right: f32,
+    pub handle_h: f32,
+    hit_half_height: f32,
+}
+
+impl Slider {
+    pub fn x_of(&self, value: i32) -> f32 {
+        let t = (value - self.min) as f32 / (self.max - self.min) as f32;
+        self.track_x + t * self.track_w
+    }
+
+    fn value_at(&self, x: f32) -> i32 {
+        let t = ((x - self.track_x) / self.track_w).clamp(0.0, 1.0);
+        let steps = (t * ((self.max - self.min) / self.step) as f32).round() as i32;
+        self.min + steps * self.step
+    }
+
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        let pad = self.hit_half_height;
+        x >= self.track_x - pad
+            && x <= self.track_x + self.track_w + pad
+            && (y - self.cy).abs() <= pad
+    }
+}
+
+type SliderRow = (SliderId, &'static str, i32, i32, &'static [&'static str]);
+
+const GAME_SLIDERS: &[SliderRow] = &[
+    (SliderId::GameSpeed, "Game Speed", 1, 10, &[]),
+    (SliderId::ScrollRate, "Scroll Rate", 1, 10, &[]),
+    (SliderId::MouseSpeed, "Mouse Speed", 1, 10, &[]),
+];
+const GRAPHICS_SLIDERS: &[SliderRow] =
+    &[(SliderId::GraphicsQuality, "Graphics Quality", 0, 2, QUALITY_STOPS)];
+const SOUND_SLIDERS: &[SliderRow] = &[
+    (SliderId::MusicVolume, "Music Volume", 0, 100, &[]),
+    (SliderId::SoundVolume, "Sound Volume", 0, 100, &[]),
+    (SliderId::VoiceVolume, "Voice Volume", 0, 100, &[]),
+];
+const GAME_TOGGLES: &[(Toggle, &str)] =
+    &[(Toggle::ToolTips, "Tool Tips"), (Toggle::TargetLines, "Target Lines")];
+
+pub fn sliders(tab: Tab, width: f32, height: f32) -> Vec<Slider> {
+    let rows = match tab {
+        Tab::Game => GAME_SLIDERS,
+        Tab::Graphics => GRAPHICS_SLIDERS,
+        Tab::Sound => SOUND_SLIDERS,
+        _ => &[],
+    };
+    let s = ui_scale(height);
+    let (px, py, _, _) = options_panel(width, height);
+    rows.iter()
+        .enumerate()
+        .map(|(i, &(id, label, min, max, stops))| {
+            let cy = py + (ROW_TOP + i as f32 * ROW_STEP + ROW_H / 2.0) * s;
+            Slider {
+                id,
+                label,
+                label_x: px + LABEL_X * s,
+                cy,
+                track_x: px + TRACK_X * s,
+                track_w: TRACK_W * s,
+                min,
+                max,
+                step: 1,
+                stops,
+                label_cy: cy,
+                value_right: px + (TRACK_X + TRACK_W + 110.0) * s,
+                handle_h: 44.0 * s,
+                hit_half_height: ROW_H / 2.0 * s,
+            }
+        })
+        .collect()
+}
+
+/// Checkbox rows: the whole row is clickable and the box sits at its right end.
+pub fn checkboxes(tab: Tab, width: f32, height: f32) -> Vec<Button> {
+    let toggles = if tab == Tab::Game { GAME_TOGGLES } else { &[] };
+    let first_row = sliders(tab, width, height).len();
+    let s = ui_scale(height);
+    let (px, py, _, _) = options_panel(width, height);
+    toggles
+        .iter()
+        .enumerate()
+        .map(|(i, &(toggle, label))| Button {
+            action: Action::Toggle(toggle),
+            label,
+            x: px + LABEL_X * s,
+            y: py + (ROW_TOP + (first_row + i) as f32 * ROW_STEP) * s,
+            w: (TRACK_X - LABEL_X + CHECKBOX_SIZE) * s,
+            h: ROW_H * s,
+        })
+        .collect()
+}
+
+pub fn checkbox_size(height: f32) -> f32 {
+    CHECKBOX_SIZE * ui_scale(height)
+}
+
+/// The three factions form a triangle: A on top, B and C below.
+fn faction_buttons(width: f32, height: f32) -> Vec<Button> {
+    const RADIUS: f32 = 130.0;
+    const SPREAD: f32 = 200.0;
+    const TOP_Y: f32 = 370.0;
+    const BOTTOM_Y: f32 = 716.0;
+    let s = ui_scale(height);
+    [
+        (Faction::A, 0.0, TOP_Y),
+        (Faction::H, -SPREAD, BOTTOM_Y),
+        (Faction::O, SPREAD, BOTTOM_Y),
+    ]
+    .into_iter()
+    .map(|(faction, dx, cy)| Button {
+        action: Action::Faction(faction),
+        label: faction.label(),
+        x: width / 2.0 + (dx - RADIUS) * s,
+        y: (cy - RADIUS) * s,
+        w: RADIUS * 2.0 * s,
+        h: RADIUS * 2.0 * s,
+    })
+    .collect()
+}
+
+/// One of the setup screen's outer thirds, as (x, width), with margins.
+fn setup_column(left: bool, width: f32, height: f32) -> (f32, f32) {
+    let s = ui_scale(height);
+    let w = (width / 3.0 - 48.0 * s).min(640.0 * s);
+    let x = if left { 24.0 * s } else { width * 2.0 / 3.0 + 24.0 * s };
+    (x, w)
+}
+
+/// The minimap as (x, y, size).
+pub fn minimap_rect(width: f32, height: f32) -> (f32, f32, f32) {
+    const SIZE: f32 = 300.0;
+    let s = ui_scale(height);
+    let (x, w) = setup_column(false, width, height);
+    (x + (w - SIZE * s) / 2.0, 40.0 * s, SIZE * s)
+}
+
+/// The player's color bar as (x, y, w, h), under the faction circle.
+pub fn color_bar_rect(width: f32, height: f32) -> (f32, f32, f32, f32) {
+    let s = ui_scale(height);
+    let (x, w) = setup_column(true, width, height);
+    (x, 590.0 * s, w, 44.0 * s)
+}
+
+/// The open color bar: one slot per color the player may pick.
+pub fn color_slots(colors: &[TeamColor], width: f32, height: f32) -> Vec<Button> {
+    let (x, y, w, h) = color_bar_rect(width, height);
+    let slot_w = w / colors.len().max(1) as f32;
+    colors
+        .iter()
+        .enumerate()
+        .map(|(i, &color)| Button {
+            action: Action::PickColor(color),
+            label: "",
+            x: x + i as f32 * slot_w,
+            y,
+            w: slot_w,
+            h,
+        })
+        .collect()
+}
+
+const OPPONENT_ROW_W: f32 = 408.0;
+const OPPONENT_TOP: f32 = 160.0;
+const OPPONENT_STEP: f32 = 96.0;
+const OPPONENT_ROW_H: f32 = 80.0;
+
+/// One opponent row as (x, y, w, h), in the middle third. Empty slots draw here too.
+pub fn opponent_row(slot: usize, width: f32, height: f32) -> (f32, f32, f32, f32) {
+    let s = ui_scale(height);
+    let x = (width - OPPONENT_ROW_W * s) / 2.0;
+    let y = (OPPONENT_TOP + slot as f32 * OPPONENT_STEP) * s;
+    (x, y, OPPONENT_ROW_W * s, OPPONENT_ROW_H * s)
+}
+
+/// Each row in use: a kind box in the opponent's color, a faction circle, two ally circles.
+pub fn opponent_widgets(count: usize, width: f32, height: f32) -> Vec<Button> {
+    const KIND_W: f32 = 180.0;
+    const KIND_H: f32 = 64.0;
+    const FACTION_R: f32 = 36.0;
+    const ALLY_R: f32 = 28.0;
+    const GAP: f32 = 16.0;
+    const ALLY_GAP: f32 = 12.0;
+    let s = ui_scale(height);
+    let mut all = Vec::new();
+    for slot in 0..count {
+        let (x, y, _, h) = opponent_row(slot, width, height);
+        let cy = y + h / 2.0;
+        let circle = |action, label, left: f32, r: f32| Button {
+            action,
+            label,
+            x: x + left * s,
+            y: cy - r * s,
+            w: r * 2.0 * s,
+            h: r * 2.0 * s,
+        };
+        let faction_left = KIND_W + GAP;
+        let ally_left = faction_left + FACTION_R * 2.0 + GAP;
+        all.push(Button {
+            action: Action::CycleOpponentKind(slot),
+            label: "Kind",
+            x,
+            y: cy - KIND_H / 2.0 * s,
+            w: KIND_W * s,
+            h: KIND_H * s,
+        });
+        all.push(circle(Action::CycleOpponentFaction(slot), "Faction", faction_left, FACTION_R));
+        all.push(circle(Action::CycleOpponentAlly(slot, 0), "Ally", ally_left, ALLY_R));
+        all.push(circle(
+            Action::CycleOpponentAlly(slot, 1),
+            "Ally",
+            ally_left + ALLY_R * 2.0 + ALLY_GAP,
+            ALLY_R,
+        ));
+    }
+    all
+}
+
+/// Name field, map dropdown, difficulty radios, faction and ally circles, color bar, Play.
+pub fn setup_widgets(width: f32, height: f32) -> Vec<Button> {
+    const FACTION_CY: f32 = 430.0;
+    const FACTION_R: f32 = 100.0;
+    const ALLY_R: f32 = 52.0;
+    const ALLY_OFFSET: f32 = 164.0;
+    let s = ui_scale(height);
+    let (lx, lw) = setup_column(true, width, height);
+    let (rx, rw) = setup_column(false, width, height);
+    let center = lx + lw / 2.0;
+    let circle = |action, label, dx: f32, r: f32| Button {
+        action,
+        label,
+        x: center + (dx - r) * s,
+        y: (FACTION_CY - r) * s,
+        w: r * 2.0 * s,
+        h: r * 2.0 * s,
+    };
+    let radio = |i: f32, action, label| Button {
+        action,
+        label,
+        x: rx + i * rw / 3.0,
+        y: 420.0 * s,
+        w: rw / 3.0,
+        h: 44.0 * s,
+    };
+    let (bar_x, bar_y, bar_w, bar_h) = color_bar_rect(width, height);
+    vec![
+        Button { action: Action::NameField, label: "Commander Name", x: lx, y: 84.0 * s, w: lw, h: 56.0 * s },
+        circle(Action::CycleFaction, "Faction", 0.0, FACTION_R),
+        circle(Action::CycleAlly(0), "Ally", -ALLY_OFFSET, ALLY_R),
+        circle(Action::CycleAlly(1), "Ally", ALLY_OFFSET, ALLY_R),
+        Button { action: Action::ColorBar, label: "Color", x: bar_x, y: bar_y, w: bar_w, h: bar_h },
+        Button {
+            action: Action::StartBattle,
+            label: "Play",
+            x: center - 120.0 * s,
+            y: bar_y + bar_h + 16.0 * s,
+            w: 240.0 * s,
+            h: 72.0 * s,
+        },
+        Button { action: Action::MapDropdown, label: "Map", x: rx, y: 352.0 * s, w: rw, h: 52.0 * s },
+        radio(0.0, Action::SetDifficulty(Difficulty::Easy), "Easy"),
+        radio(1.0, Action::SetDifficulty(Difficulty::Normal), "Normal"),
+        radio(2.0, Action::SetDifficulty(Difficulty::Hard), "Hard"),
+    ]
+}
+
+/// The open dropdown's entries, directly below it.
+pub fn map_items(width: f32, height: f32) -> Vec<Button> {
+    let s = ui_scale(height);
+    let (x, w) = setup_column(false, width, height);
+    MAPS.iter()
+        .enumerate()
+        .map(|(i, &label)| Button {
+            action: Action::SelectMap(i),
+            label,
+            x,
+            y: (404.0 + i as f32 * 52.0) * s,
+            w,
+            h: 52.0 * s,
+        })
+        .collect()
+}
+
+pub fn setup_sliders(width: f32, height: f32) -> Vec<Slider> {
+    const ROWS: [(SliderId, &str, i32, i32, i32); 3] = [
+        (SliderId::AiPlayers, "AI Players", 1, 7, 1),
+        (SliderId::Money, "Money", 0, 30000, 500),
+        (SliderId::Units, "Units", 0, 30, 1),
+    ];
+    let s = ui_scale(height);
+    let (x, w) = setup_column(false, width, height);
+    ROWS.iter()
+        .enumerate()
+        .map(|(i, &(id, label, min, max, step))| {
+            let y = 476.0 + i as f32 * 64.0;
+            Slider {
+                id,
+                label,
+                label_x: x,
+                cy: (y + 44.0) * s,
+                track_x: x + 10.0 * s,
+                track_w: w - 20.0 * s,
+                min,
+                max,
+                step,
+                stops: &[],
+                label_cy: (y + 12.0) * s,
+                value_right: x + w,
+                handle_h: 28.0 * s,
+                hit_half_height: 28.0 * s,
+            }
+        })
+        .collect()
+}
+
+pub fn setup_checkboxes(width: f32, height: f32) -> Vec<Button> {
+    const ROWS: [(Toggle, &str); 5] = [
+        (Toggle::Superweapons, "Superweapons"),
+        (Toggle::PrebuiltBase, "Prebuilt Base"),
+        (Toggle::LivingWorld, "Living World"),
+        (Toggle::Crates, "Crates"),
+        (Toggle::FogOfWar, "Fog of War"),
+    ];
+    let s = ui_scale(height);
+    let (x, w) = setup_column(false, width, height);
+    ROWS.iter()
+        .enumerate()
+        .map(|(i, &(toggle, label))| Button {
+            action: Action::Toggle(toggle),
+            label,
+            x,
+            y: (676.0 + i as f32 * 46.0) * s,
+            w,
+            h: 44.0 * s,
+        })
+        .collect()
+}
+
+pub const CONFIRM_MESSAGE: &str = "Are you sure you will play for those guys?";
+
+/// The confirmation message box as (x, y, w, h), centered on the screen.
+pub fn modal_rect(width: f32, height: f32) -> (f32, f32, f32, f32) {
+    let s = ui_scale(height);
+    let (w, h) = (900.0 * s, 320.0 * s);
+    ((width - w) / 2.0, (height - h) / 2.0, w, h)
+}
+
+pub fn modal_buttons(width: f32, height: f32) -> Vec<Button> {
+    const W: f32 = 240.0;
+    const H: f32 = 72.0;
+    const GAP: f32 = 40.0;
+    let s = ui_scale(height);
+    let (_, my, _, mh) = modal_rect(width, height);
+    let y = my + mh - (H + 40.0) * s;
+    vec![
+        Button {
+            action: Action::ConfirmFaction,
+            label: "OK",
+            x: width / 2.0 - (W + GAP / 2.0) * s,
+            y,
+            w: W * s,
+            h: H * s,
+        },
+        Button {
+            action: Action::CancelFaction,
+            label: "Cancel",
+            x: width / 2.0 + GAP / 2.0 * s,
+            y,
+            w: W * s,
+            h: H * s,
+        },
+    ]
+}
+
+fn tab_buttons(width: f32, height: f32) -> Vec<Button> {
+    let s = ui_scale(height);
+    let (px, py, _, _) = options_panel(width, height);
+    TABS.iter()
+        .enumerate()
+        .map(|(i, &(tab, label))| Button {
+            action: Action::Tab(tab),
+            label,
+            x: px - (TAB_GAP + TAB_W) * s,
+            y: py + i as f32 * (TAB_H + TAB_GAP) * s,
+            w: TAB_W * s,
+            h: TAB_H * s,
+        })
+        .collect()
+}
+
+pub fn buttons(screen: Screen, width: f32, height: f32) -> Vec<Button> {
+    const CENTER_W: f32 = 620.0;
+    const CORNER_W: f32 = 240.0;
+    const BUTTON_H: f32 = 72.0;
+    const GAP: f32 = 20.0;
+    const MARGIN: f32 = 48.0;
+
+    let items = match screen {
+        Screen::Intro | Screen::Loading | Screen::Movie(_) => return Vec::new(),
+        Screen::MainMenu => MAIN_MENU,
+        Screen::SinglePlayerMenu => SINGLE_PLAYER_MENU,
+        Screen::Options
+        | Screen::Credits
+        | Screen::InGame
+        | Screen::FactionSelect
+        | Screen::SkirmishSetup => BACK_ONLY,
+    };
+    let s = ui_scale(height);
+    let centered = items.iter().filter(|i| i.2 == Anchor::Center).count() as f32;
+    let stack_h = centered * BUTTON_H + (centered - 1.0) * GAP;
+    let mut y = (1080.0 - stack_h) / 2.0;
+
+    let mut all: Vec<Button> = items
+        .iter()
+        .map(|&(action, label, anchor)| {
+            let (px, py, w) = match anchor {
+                Anchor::Center => {
+                    let top = y;
+                    y += BUTTON_H + GAP;
+                    ((width - CENTER_W * s) / 2.0, top * s, CENTER_W)
+                }
+                Anchor::BottomLeft => {
+                    (MARGIN * s, (1080.0 - MARGIN - BUTTON_H) * s, CORNER_W)
+                }
+                Anchor::BottomRight => (
+                    width - (MARGIN + CORNER_W) * s,
+                    (1080.0 - MARGIN - BUTTON_H) * s,
+                    CORNER_W,
+                ),
+            };
+            Button { action, label, x: px, y: py, w: w * s, h: BUTTON_H * s }
+        })
+        .collect();
+    if screen == Screen::Options {
+        all.extend(tab_buttons(width, height));
+    }
+    if screen == Screen::FactionSelect {
+        all.extend(faction_buttons(width, height));
+    }
+    all
+}
+
+pub struct Game {
+    pub screen: Screen,
+    pub width: f32,
+    pub height: f32,
+    pub mouse: (f32, f32),
+    pub pressed: Option<Action>,
+    pub quit: bool,
+    pub tab: Tab,
+    pub settings: Settings,
+    pub dragging: Option<SliderId>,
+    /// Faction awaiting a yes or no in the message box; it blocks the screen behind it.
+    pub confirming: Option<Faction>,
+    /// Campaign faction of the current game; `None` in a single battle.
+    pub faction: Option<Faction>,
+    pub skirmish: SkirmishConfig,
+    pub name_focused: bool,
+    pub dropdown_open: bool,
+    pub color_open: bool,
+    /// Index into `MAPS` of the current battle.
+    pub battle_map: usize,
+    pub camera: Camera,
+    /// False while another app is in front; the cursor then says nothing about the game.
+    pub focused: bool,
+    /// Seconds since the current screen opened.
+    screen_elapsed: f32,
+}
+
+impl Game {
+    pub fn new(width: f32, height: f32) -> Self {
+        Game {
+            screen: Screen::Intro,
+            width,
+            height,
+            mouse: (width / 2.0, height / 2.0),
+            pressed: None,
+            quit: false,
+            tab: Tab::Game,
+            settings: Settings::default(),
+            dragging: None,
+            confirming: None,
+            faction: None,
+            skirmish: SkirmishConfig::default(),
+            name_focused: false,
+            dropdown_open: false,
+            color_open: false,
+            battle_map: 0,
+            camera: Camera::centered(),
+            focused: true,
+            screen_elapsed: 0.0,
+        }
+    }
+
+    fn start_battle(&mut self, map: usize, faction: Option<Faction>) {
+        self.battle_map = map;
+        self.faction = faction;
+        self.camera = Camera::centered();
+        self.set_screen(Screen::Loading);
+    }
+
+    /// Seconds since the current screen opened, for simple animation.
+    pub fn screen_elapsed(&self) -> f32 {
+        self.screen_elapsed
+    }
+
+    pub fn slider_value(&self, id: SliderId) -> i32 {
+        match id {
+            SliderId::GameSpeed => self.settings.game_speed,
+            SliderId::ScrollRate => self.settings.scroll_rate,
+            SliderId::MouseSpeed => self.settings.mouse_speed,
+            SliderId::GraphicsQuality => self.settings.graphics_quality,
+            SliderId::MusicVolume => self.settings.music_volume,
+            SliderId::SoundVolume => self.settings.sound_volume,
+            SliderId::VoiceVolume => self.settings.voice_volume,
+            SliderId::AiPlayers => self.skirmish.ai_players,
+            SliderId::Money => self.skirmish.money,
+            SliderId::Units => self.skirmish.units,
+        }
+    }
+
+    fn set_slider(&mut self, id: SliderId, value: i32) {
+        let old_ai_players = self.skirmish.ai_players as usize;
+        let field = match id {
+            SliderId::GameSpeed => &mut self.settings.game_speed,
+            SliderId::ScrollRate => &mut self.settings.scroll_rate,
+            SliderId::MouseSpeed => &mut self.settings.mouse_speed,
+            SliderId::GraphicsQuality => &mut self.settings.graphics_quality,
+            SliderId::MusicVolume => &mut self.settings.music_volume,
+            SliderId::SoundVolume => &mut self.settings.sound_volume,
+            SliderId::VoiceVolume => &mut self.settings.voice_volume,
+            SliderId::AiPlayers => &mut self.skirmish.ai_players,
+            SliderId::Money => &mut self.skirmish.money,
+            SliderId::Units => &mut self.skirmish.units,
+        };
+        *field = value;
+        if id == SliderId::AiPlayers {
+            self.skirmish.assign_opponent_colors(old_ai_players, value as usize);
+        }
+    }
+
+    pub fn toggle_value(&self, toggle: Toggle) -> bool {
+        match toggle {
+            Toggle::ToolTips => self.settings.tool_tips,
+            Toggle::TargetLines => self.settings.target_lines,
+            Toggle::Superweapons => self.skirmish.superweapons,
+            Toggle::PrebuiltBase => self.skirmish.prebuilt_base,
+            Toggle::LivingWorld => self.skirmish.living_world,
+            Toggle::Crates => self.skirmish.crates,
+            Toggle::FogOfWar => self.skirmish.fog_of_war,
+        }
+    }
+
+    fn flip(&mut self, toggle: Toggle) {
+        let field = match toggle {
+            Toggle::ToolTips => &mut self.settings.tool_tips,
+            Toggle::TargetLines => &mut self.settings.target_lines,
+            Toggle::Superweapons => &mut self.skirmish.superweapons,
+            Toggle::PrebuiltBase => &mut self.skirmish.prebuilt_base,
+            Toggle::LivingWorld => &mut self.skirmish.living_world,
+            Toggle::Crates => &mut self.skirmish.crates,
+            Toggle::FogOfWar => &mut self.skirmish.fog_of_war,
+        };
+        *field = !*field;
+    }
+
+    fn edit_name(&mut self, key: Key) {
+        match key {
+            Key::Char(c) if self.skirmish.commander.len() < COMMANDER_NAME_MAX => {
+                self.skirmish.commander.push(c);
+            }
+            Key::Backspace => {
+                self.skirmish.commander.pop();
+            }
+            Key::Enter | Key::Escape => self.name_focused = false,
+            Key::Char(_) | Key::Other => {}
+        }
+    }
+
+    /// Progress of the dummy loading screen, 0 to 1.
+    pub fn loading_progress(&self) -> f32 {
+        (self.screen_elapsed / LOADING_SECONDS).min(1.0)
+    }
+
+    /// The buttons that accept input right now.
+    pub fn buttons(&self) -> Vec<Button> {
+        if self.confirming.is_some() {
+            modal_buttons(self.width, self.height)
+        } else if self.dropdown_open {
+            map_items(self.width, self.height)
+        } else if self.color_open {
+            color_slots(&self.skirmish.available_colors(), self.width, self.height)
+        } else {
+            buttons(self.screen, self.width, self.height)
+        }
+    }
+
+    fn finish_movie(&mut self, faction: Faction) {
+        self.set_screen(Screen::FactionSelect);
+        self.confirming = Some(faction);
+    }
+
+    /// Sliders on screen.
+    pub fn sliders(&self) -> Vec<Slider> {
+        match self.screen {
+            Screen::Options => sliders(self.tab, self.width, self.height),
+            Screen::SkirmishSetup => setup_sliders(self.width, self.height),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Checkbox rows on screen.
+    pub fn checkboxes(&self) -> Vec<Button> {
+        match self.screen {
+            Screen::Options => checkboxes(self.tab, self.width, self.height),
+            Screen::SkirmishSetup => setup_checkboxes(self.width, self.height),
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn hovered(&self) -> Option<Action> {
+        if self.dragging.is_some() {
+            return None;
+        }
+        let (x, y) = self.mouse;
+        let buttons = self.buttons().into_iter();
+        if self.dropdown_open || self.color_open {
+            // An open list takes all input; what lies around it stays inactive.
+            return buttons.into_iter().find(|b| b.contains(x, y)).map(|b| b.action);
+        }
+        let mut widgets = Vec::new();
+        if self.screen == Screen::SkirmishSetup {
+            widgets = setup_widgets(self.width, self.height);
+            widgets.extend(opponent_widgets(
+                self.skirmish.ai_players as usize,
+                self.width,
+                self.height,
+            ));
+        }
+        buttons
+            .chain(self.checkboxes())
+            .chain(widgets)
+            .find(|b| b.contains(x, y))
+            .map(|b| b.action)
+    }
+
+    pub fn hovered_slider(&self) -> Option<SliderId> {
+        if self.dropdown_open || self.color_open {
+            return None;
+        }
+        let (x, y) = self.mouse;
+        self.sliders().iter().find(|s| s.contains(x, y)).map(|s| s.id)
+    }
+
+    fn drag_to(&mut self, x: f32) {
+        let Some(id) = self.dragging else { return };
+        if let Some(slider) = self.sliders().iter().find(|s| s.id == id) {
+            self.set_slider(id, slider.value_at(x));
+        }
+    }
+
+    /// Where Back and Escape lead, if anywhere.
+    fn parent(&self) -> Option<Screen> {
+        match self.screen {
+            Screen::SinglePlayerMenu | Screen::Options => Some(Screen::MainMenu),
+            Screen::Credits => Some(Screen::Options),
+            Screen::InGame | Screen::FactionSelect | Screen::SkirmishSetup => {
+                Some(Screen::SinglePlayerMenu)
+            }
+            Screen::Intro | Screen::MainMenu | Screen::Loading | Screen::Movie(_) => None,
+        }
+    }
+
+    fn go_back(&mut self) {
+        // With the message box up, Escape answers it instead of leaving the screen.
+        if self.confirming.take().is_some() {
+            return;
+        }
+        if self.dropdown_open || self.color_open {
+            self.dropdown_open = false;
+            self.color_open = false;
+            return;
+        }
+        if let Some(parent) = self.parent() {
+            self.set_screen(parent);
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.screen_elapsed += dt;
+        match self.screen {
+            Screen::Intro if self.screen_elapsed >= INTRO_SECONDS => self.set_screen(Screen::MainMenu),
+            Screen::Loading if self.screen_elapsed >= LOADING_SECONDS => self.set_screen(Screen::InGame),
+            Screen::Movie(faction) if self.screen_elapsed >= MOVIE_SECONDS => self.finish_movie(faction),
+            Screen::InGame if self.focused => {
+                let direction = battlefield::edge_direction(self.mouse, self.width, self.height);
+                self.camera.scroll(direction, self.settings.scroll_rate, dt);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn handle(&mut self, event: Event) {
+        match event {
+            Event::Quit => self.quit = true,
+            Event::Focus(focused) => self.focused = focused,
+            Event::Resize(w, h) => {
+                self.width = w as f32;
+                self.height = h as f32;
+                self.mouse = (self.mouse.0.min(self.width - 1.0), self.mouse.1.min(self.height - 1.0));
+            }
+            Event::MouseMove(x, y) => {
+                self.mouse = (x, y);
+                self.drag_to(x);
+            }
+            Event::MouseDown => {
+                self.name_focused = false;
+                self.pressed = self.hovered();
+                if self.pressed.is_none() {
+                    self.dragging = self.hovered_slider();
+                    self.drag_to(self.mouse.0);
+                }
+            }
+            // A button fires only if the press and the release both landed on it.
+            Event::MouseUp => {
+                self.dragging = None;
+                let pressed = self.pressed.take();
+                if self.screen == Screen::Intro {
+                    self.set_screen(Screen::MainMenu);
+                } else if let Screen::Movie(faction) = self.screen {
+                    self.finish_movie(faction);
+                } else if let Some(action) = pressed.filter(|a| Some(*a) == self.hovered()) {
+                    self.activate(action);
+                } else {
+                    // A click on anything else closes an open list.
+                    self.dropdown_open = false;
+                    self.color_open = false;
+                }
+            }
+            Event::KeyDown(key) if self.name_focused => self.edit_name(key),
+            Event::KeyDown(key) => match (self.screen, key) {
+                (Screen::Intro, _) => self.set_screen(Screen::MainMenu),
+                (Screen::Movie(faction), _) => self.finish_movie(faction),
+                (_, Key::Escape) => self.go_back(),
+                _ => {}
+            },
+        }
+    }
+
+    fn activate(&mut self, action: Action) {
+        match action {
+            Action::SinglePlayer => self.set_screen(Screen::SinglePlayerMenu),
+            Action::Options => self.set_screen(Screen::Options),
+            Action::Back => self.go_back(),
+            Action::Exit => self.quit = true,
+            Action::Tab(Tab::Credits) => self.set_screen(Screen::Credits),
+            Action::Tab(tab) => self.tab = tab,
+            Action::Toggle(toggle) => self.flip(toggle),
+            Action::Tutorial => self.start_battle(0, None),
+            Action::StartCampaign => self.set_screen(Screen::FactionSelect),
+            Action::Faction(faction) => self.set_screen(Screen::Movie(faction)),
+            Action::CancelFaction => self.confirming = None,
+            Action::ConfirmFaction => self.start_battle(0, self.confirming),
+            Action::SkirmishBattle => self.set_screen(Screen::SkirmishSetup),
+            Action::StartBattle => self.start_battle(self.skirmish.map, None),
+            Action::NameField => self.name_focused = true,
+            Action::MapDropdown => self.dropdown_open = true,
+            Action::SelectMap(map) => {
+                self.skirmish.map = map;
+                self.dropdown_open = false;
+            }
+            Action::SetDifficulty(difficulty) => self.skirmish.difficulty = difficulty,
+            Action::CycleFaction => self.skirmish.faction = self.skirmish.faction.next(),
+            Action::CycleAlly(slot) => cycle_ally(&mut self.skirmish.allies, slot),
+            Action::ColorBar => self.color_open = true,
+            Action::PickColor(color) => {
+                self.skirmish.color = color;
+                self.color_open = false;
+            }
+            Action::CycleOpponentKind(slot) => {
+                let opponent = &mut self.skirmish.opponents[slot];
+                opponent.kind = opponent.kind.next();
+            }
+            Action::CycleOpponentFaction(slot) => {
+                let opponent = &mut self.skirmish.opponents[slot];
+                opponent.faction = opponent.faction.next();
+            }
+            Action::CycleOpponentAlly(slot, ally) => {
+                cycle_ally(&mut self.skirmish.opponents[slot].allies, ally);
+            }
+            // Not designed yet: these buttons respond to hover but do nothing.
+            Action::Multiplayer | Action::LoadGame => {}
+        }
+    }
+
+    fn set_screen(&mut self, screen: Screen) {
+        self.screen = screen;
+        self.pressed = None;
+        self.dragging = None;
+        self.confirming = None;
+        self.name_focused = false;
+        self.dropdown_open = false;
+        self.color_open = false;
+        self.screen_elapsed = 0.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const W: f32 = 2880.0;
+    const H: f32 = 1800.0;
+
+    fn in_menu() -> Game {
+        let mut game = Game::new(W, H);
+        game.update(INTRO_SECONDS);
+        game
+    }
+
+    fn click(game: &mut Game, action: Action) {
+        let b = *game.buttons().iter().find(|b| b.action == action).unwrap();
+        game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+    }
+
+    fn actions(game: &Game) -> Vec<Action> {
+        game.buttons().iter().map(|b| b.action).collect()
+    }
+
+    #[test]
+    fn intro_ends_by_timer_or_input() {
+        let mut game = Game::new(W, H);
+        game.update(INTRO_SECONDS - 0.1);
+        assert_eq!(game.screen, Screen::Intro);
+        game.update(0.2);
+        assert_eq!(game.screen, Screen::MainMenu);
+
+        let mut game = Game::new(W, H);
+        game.handle(Event::KeyDown(Key::Other));
+        assert_eq!(game.screen, Screen::MainMenu);
+
+        let mut game = Game::new(W, H);
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+        assert_eq!(game.screen, Screen::MainMenu);
+    }
+
+    #[test]
+    fn skipping_the_intro_does_not_click_what_is_under_the_cursor() {
+        let mut game = Game::new(W, H);
+        let single = buttons(Screen::MainMenu, W, H)[0];
+        game.handle(Event::MouseMove(single.x + 1.0, single.y + 1.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+        assert_eq!(game.screen, Screen::MainMenu);
+    }
+
+    #[test]
+    fn main_menu_has_the_requested_layout() {
+        let game = in_menu();
+        assert_eq!(
+            actions(&game),
+            [Action::SinglePlayer, Action::Multiplayer, Action::Exit, Action::Options]
+        );
+        let b = game.buttons();
+        assert!((b[0].x + b[0].w / 2.0 - W / 2.0).abs() < 0.5, "centered horizontally");
+        assert!(b[0].y < H / 2.0 && b[1].y + b[1].h > H / 2.0, "centered vertically");
+        assert!(b[2].x < W / 2.0 && b[2].y > H / 2.0, "exit is bottom left");
+        assert!(b[3].x > W / 2.0 && b[3].y > H / 2.0, "options is bottom right");
+    }
+
+    #[test]
+    fn single_player_swaps_the_menu_and_back_restores_it() {
+        let mut game = in_menu();
+        let exit = game.buttons()[2];
+        click(&mut game, Action::SinglePlayer);
+        assert_eq!(game.screen, Screen::SinglePlayerMenu);
+        assert_eq!(
+            actions(&game),
+            [
+                Action::StartCampaign,
+                Action::Tutorial,
+                Action::SkirmishBattle,
+                Action::LoadGame,
+                Action::Back
+            ]
+        );
+        let back = game.buttons()[4];
+        assert_eq!((back.x, back.y), (exit.x, exit.y), "back takes exit's place");
+
+        click(&mut game, Action::Back);
+        assert_eq!(game.screen, Screen::MainMenu);
+    }
+
+    #[test]
+    fn escape_goes_back_only_from_the_submenu() {
+        let mut game = in_menu();
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::MainMenu);
+        assert!(!game.quit);
+        click(&mut game, Action::SinglePlayer);
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::MainMenu);
+    }
+
+    #[test]
+    fn exit_quits() {
+        let mut game = in_menu();
+        click(&mut game, Action::Exit);
+        assert!(game.quit);
+    }
+
+    #[test]
+    fn release_outside_the_button_cancels_the_click() {
+        let mut game = in_menu();
+        let b = game.buttons()[0];
+        game.handle(Event::MouseMove(b.x + 1.0, b.y + 1.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseMove(0.0, 0.0));
+        game.handle(Event::MouseUp);
+        assert_eq!(game.screen, Screen::MainMenu);
+    }
+
+    fn in_options() -> Game {
+        let mut game = in_menu();
+        click(&mut game, Action::Options);
+        game
+    }
+
+    fn slider(game: &Game, id: SliderId) -> Slider {
+        *game.sliders().iter().find(|s| s.id == id).unwrap()
+    }
+
+    fn drag(game: &mut Game, id: SliderId, to_x: f32) {
+        let s = slider(game, id);
+        game.handle(Event::MouseMove(s.x_of(game.slider_value(id)), s.cy));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseMove(to_x, s.cy));
+        game.handle(Event::MouseUp);
+    }
+
+    #[test]
+    fn options_opens_with_back_and_all_tabs_in_order() {
+        let game = in_options();
+        assert_eq!(game.screen, Screen::Options);
+        assert_eq!(game.tab, Tab::Game);
+        let labels: Vec<_> = game.buttons().iter().map(|b| b.label).collect();
+        assert_eq!(
+            labels,
+            [
+                "Back", "Game", "Graphics", "Sound", "Multiplayer Info", "Network", "Keyboard",
+                "Sneak Peek", "Credits", "Movies"
+            ]
+        );
+        let back = game.buttons()[0];
+        assert!(back.x < W / 2.0 && back.y > H / 2.0, "back is bottom left");
+    }
+
+    #[test]
+    fn panel_sits_right_of_center_with_tabs_on_its_left() {
+        let game = in_options();
+        let (px, _, pw, _) = options_panel(W, H);
+        assert!(px + pw / 2.0 > W / 2.0, "panel center is right of screen center");
+        for tab in &game.buttons()[1..] {
+            assert!(tab.x + tab.w <= px, "{} is left of the panel", tab.label);
+        }
+    }
+
+    #[test]
+    fn each_tab_shows_the_requested_controls() {
+        let names = |tab| -> Vec<_> { sliders(tab, W, H).iter().map(|s| s.label).collect() };
+        assert_eq!(names(Tab::Game), ["Game Speed", "Scroll Rate", "Mouse Speed"]);
+        assert_eq!(names(Tab::Graphics), ["Graphics Quality"]);
+        assert_eq!(names(Tab::Sound), ["Music Volume", "Sound Volume", "Voice Volume"]);
+        let boxes: Vec<_> = checkboxes(Tab::Game, W, H).iter().map(|b| b.label).collect();
+        assert_eq!(boxes, ["Tool Tips", "Target Lines"]);
+        assert!(checkboxes(Tab::Sound, W, H).is_empty());
+        for tab in [Tab::MultiplayerInfo, Tab::Network, Tab::Keyboard, Tab::SneakPeek, Tab::Movies] {
+            assert!(tab.placeholder().is_some());
+            assert!(sliders(tab, W, H).is_empty());
+        }
+    }
+
+    #[test]
+    fn slider_ranges_match_the_request() {
+        let range = |tab, i: usize| {
+            let s = sliders(tab, W, H)[i];
+            (s.min, s.max)
+        };
+        for i in 0..3 {
+            assert_eq!(range(Tab::Game, i), (1, 10));
+            assert_eq!(range(Tab::Sound, i), (0, 100));
+        }
+        assert_eq!(range(Tab::Graphics, 0), (0, 2));
+        assert_eq!(QUALITY_STOPS, ["Low", "Medium", "High"]);
+    }
+
+    #[test]
+    fn dragging_changes_the_value_and_clamps_past_the_ends() {
+        let mut game = in_options();
+        let s = slider(&game, SliderId::GameSpeed);
+        drag(&mut game, SliderId::GameSpeed, s.x_of(8));
+        assert_eq!(game.settings.game_speed, 8);
+        drag(&mut game, SliderId::GameSpeed, -1000.0);
+        assert_eq!(game.settings.game_speed, 1);
+        drag(&mut game, SliderId::GameSpeed, W + 1000.0);
+        assert_eq!(game.settings.game_speed, 10);
+        assert_eq!(game.dragging, None);
+
+        // After release, moving the mouse no longer changes anything.
+        game.handle(Event::MouseMove(s.x_of(3), s.cy));
+        assert_eq!(game.settings.game_speed, 10);
+    }
+
+    #[test]
+    fn a_drag_continues_when_the_cursor_leaves_the_row() {
+        let mut game = in_options();
+        let s = slider(&game, SliderId::ScrollRate);
+        game.handle(Event::MouseMove(s.x_of(5), s.cy));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseMove(s.x_of(9), 0.0));
+        assert_eq!(game.settings.scroll_rate, 9);
+        game.handle(Event::MouseUp);
+        assert_eq!(game.screen, Screen::Options);
+    }
+
+    #[test]
+    fn graphics_quality_snaps_to_three_stops() {
+        let mut game = in_options();
+        click(&mut game, Action::Tab(Tab::Graphics));
+        let s = slider(&game, SliderId::GraphicsQuality);
+        drag(&mut game, SliderId::GraphicsQuality, s.track_x + s.track_w * 0.45);
+        assert_eq!(game.settings.graphics_quality, 1);
+        drag(&mut game, SliderId::GraphicsQuality, s.track_x);
+        assert_eq!(game.settings.graphics_quality, 0);
+    }
+
+    #[test]
+    fn sound_volumes_are_independent() {
+        let mut game = in_options();
+        click(&mut game, Action::Tab(Tab::Sound));
+        let s = slider(&game, SliderId::VoiceVolume);
+        drag(&mut game, SliderId::VoiceVolume, s.x_of(25));
+        assert_eq!(game.settings.voice_volume, 25);
+        assert_eq!(game.settings.music_volume, Settings::default().music_volume);
+        assert_eq!(game.settings.sound_volume, Settings::default().sound_volume);
+    }
+
+    #[test]
+    fn checkboxes_flip_on_click() {
+        let mut game = in_options();
+        let row = |game: &Game, t| *game.checkboxes().iter().find(|b| b.action == Action::Toggle(t)).unwrap();
+        let b = row(&game, Toggle::TargetLines);
+        for expected in [false, true] {
+            game.handle(Event::MouseMove(b.x + 1.0, b.y + 1.0));
+            game.handle(Event::MouseDown);
+            game.handle(Event::MouseUp);
+            assert_eq!(game.settings.target_lines, expected);
+        }
+        assert!(game.settings.tool_tips, "the other checkbox is untouched");
+    }
+
+    #[test]
+    fn credits_tab_opens_a_screen_that_returns_to_options() {
+        let mut game = in_options();
+        click(&mut game, Action::Tab(Tab::Sound));
+        click(&mut game, Action::Tab(Tab::Credits));
+        assert_eq!(game.screen, Screen::Credits);
+        click(&mut game, Action::Back);
+        assert_eq!(game.screen, Screen::Options);
+        assert_eq!(game.tab, Tab::Sound, "the previous tab is still selected");
+
+        click(&mut game, Action::Tab(Tab::Credits));
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::Options);
+    }
+
+    #[test]
+    fn back_and_escape_leave_options_for_the_main_menu() {
+        let mut game = in_options();
+        click(&mut game, Action::Back);
+        assert_eq!(game.screen, Screen::MainMenu);
+        click(&mut game, Action::Options);
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::MainMenu);
+    }
+
+    #[test]
+    fn tutorial_loads_then_enters_the_game_and_back_returns_to_the_menu() {
+        let mut game = in_menu();
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::Tutorial);
+        assert_eq!(game.screen, Screen::Loading, "loading starts immediately");
+        assert_eq!(game.loading_progress(), 0.0);
+        assert!(game.buttons().is_empty());
+
+        game.update(LOADING_SECONDS / 2.0);
+        assert_eq!(game.screen, Screen::Loading);
+        assert_eq!(game.loading_progress(), 0.5);
+
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.screen, Screen::InGame);
+        assert_eq!(actions(&game), [Action::Back]);
+
+        click(&mut game, Action::Back);
+        assert_eq!(game.screen, Screen::SinglePlayerMenu);
+    }
+
+    #[test]
+    fn input_cannot_interrupt_loading() {
+        let mut game = in_menu();
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::Tutorial);
+        game.handle(Event::KeyDown(Key::Escape));
+        game.handle(Event::KeyDown(Key::Other));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+        assert_eq!(game.screen, Screen::Loading);
+    }
+
+    #[test]
+    fn replaying_the_tutorial_restarts_the_loading_timer() {
+        let mut game = in_menu();
+        for _ in 0..2 {
+            click(&mut game, Action::SinglePlayer);
+            click(&mut game, Action::Tutorial);
+            assert_eq!(game.loading_progress(), 0.0);
+            game.update(LOADING_SECONDS);
+            assert_eq!(game.screen, Screen::InGame);
+            game.handle(Event::KeyDown(Key::Escape));
+            game.handle(Event::KeyDown(Key::Escape));
+            assert_eq!(game.screen, Screen::MainMenu);
+        }
+    }
+
+    fn in_faction_select() -> Game {
+        let mut game = in_menu();
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::StartCampaign);
+        game
+    }
+
+    /// Picks a faction and lets its movie play out, leaving the message box up.
+    fn pick(game: &mut Game, faction: Faction) {
+        click(game, Action::Faction(faction));
+        game.update(MOVIE_SECONDS);
+    }
+
+    #[test]
+    fn factions_form_a_triangle_of_circles() {
+        let game = in_faction_select();
+        assert_eq!(game.screen, Screen::FactionSelect);
+        let find = |f| *game.buttons().iter().find(|b| b.action == Action::Faction(f)).unwrap();
+        let (a, b, c) = (find(Faction::A), find(Faction::H), find(Faction::O));
+        assert!(a.y < b.y && b.y == c.y, "A above, B and C level below it");
+        assert!(b.x < a.x && a.x < c.x, "A between B and C");
+        assert!((a.x - b.x - (c.x - a.x)).abs() < 0.5, "symmetric");
+        for button in [a, b, c] {
+            assert!(button.is_round());
+            assert_eq!(button.w, button.h);
+        }
+    }
+
+    #[test]
+    fn round_buttons_ignore_clicks_in_their_corners() {
+        let mut game = in_faction_select();
+        let a = game.buttons().into_iter().find(|b| b.action == Action::Faction(Faction::A)).unwrap();
+        game.handle(Event::MouseMove(a.x + 2.0, a.y + 2.0));
+        assert_eq!(game.hovered(), None);
+        game.handle(Event::MouseMove(a.x + a.w / 2.0, a.y + 2.0));
+        assert_eq!(game.hovered(), Some(Action::Faction(Faction::A)));
+    }
+
+    #[test]
+    fn picking_plays_that_factions_movie_then_asks() {
+        for faction in [Faction::A, Faction::H, Faction::O] {
+            let mut game = in_faction_select();
+            click(&mut game, Action::Faction(faction));
+            assert_eq!(game.screen, Screen::Movie(faction));
+            assert_eq!(game.confirming, None);
+            game.update(MOVIE_SECONDS);
+            assert_eq!(game.screen, Screen::FactionSelect, "returns to the same screen");
+            assert_eq!(game.confirming, Some(faction));
+        }
+    }
+
+    #[test]
+    fn movie_can_be_skipped_by_click_or_key() {
+        let mut game = in_faction_select();
+        click(&mut game, Action::Faction(Faction::H));
+        game.handle(Event::KeyDown(Key::Other));
+        assert_eq!(game.confirming, Some(Faction::H));
+
+        let mut game = in_faction_select();
+        click(&mut game, Action::Faction(Faction::H));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+        assert_eq!(game.confirming, Some(Faction::H));
+    }
+
+    #[test]
+    fn cancel_lets_the_player_pick_again() {
+        let mut game = in_faction_select();
+        pick(&mut game, Faction::A);
+        click(&mut game, Action::CancelFaction);
+        assert_eq!(game.screen, Screen::FactionSelect);
+        assert_eq!(game.confirming, None);
+
+        pick(&mut game, Faction::O);
+        assert_eq!(game.confirming, Some(Faction::O));
+
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.confirming, None, "escape cancels the message box");
+        assert_eq!(game.screen, Screen::FactionSelect);
+    }
+
+    #[test]
+    fn ok_loads_the_fake_game_whose_only_button_is_back() {
+        let mut game = in_faction_select();
+        pick(&mut game, Faction::O);
+        click(&mut game, Action::ConfirmFaction);
+        assert_eq!(game.screen, Screen::Loading);
+        assert_eq!(game.loading_progress(), 0.0);
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.screen, Screen::InGame);
+        assert_eq!(game.faction, Some(Faction::O));
+        assert_eq!(actions(&game), [Action::Back]);
+        click(&mut game, Action::Back);
+        assert_eq!(game.screen, Screen::SinglePlayerMenu);
+    }
+
+    #[test]
+    fn message_box_blocks_the_screen_behind_it() {
+        let mut game = in_faction_select();
+        let behind = buttons(Screen::FactionSelect, W, H);
+        pick(&mut game, Faction::A);
+        for b in behind {
+            game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
+            game.handle(Event::MouseDown);
+            game.handle(Event::MouseUp);
+            assert_eq!(game.screen, Screen::FactionSelect, "{} is blocked", b.label);
+            assert_eq!(game.confirming, Some(Faction::A));
+        }
+    }
+
+    #[test]
+    fn tutorial_after_a_campaign_has_no_faction() {
+        let mut game = in_faction_select();
+        pick(&mut game, Faction::H);
+        click(&mut game, Action::ConfirmFaction);
+        game.update(LOADING_SECONDS);
+        click(&mut game, Action::Back);
+        click(&mut game, Action::Tutorial);
+        assert_eq!(game.faction, None);
+    }
+
+    #[test]
+    fn faction_screen_and_message_box_fit() {
+        use crate::font::text_width;
+        for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+            let (mx, my, mw, mh) = modal_rect(w, h);
+            assert!(text_width(CONFIRM_MESSAGE) * small_text_px(h) < mw);
+            for b in modal_buttons(w, h) {
+                assert!(b.x >= mx && b.x + b.w <= mx + mw && b.y >= my && b.y + b.h <= my + mh);
+            }
+            let (a, b) = (modal_buttons(w, h)[0], modal_buttons(w, h)[1]);
+            assert!(a.x + a.w <= b.x);
+            for f in faction_buttons(w, h) {
+                let px = (4.0 * ui_scale(h)).round().max(1.0);
+                assert!(text_width(f.label) * px < f.w, "{} fits at {h}", f.label);
+            }
+        }
+    }
+
+    fn in_setup() -> Game {
+        let mut game = in_menu();
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::SkirmishBattle);
+        game
+    }
+
+    /// Clicks a setup widget or checkbox row, which `game.buttons()` does not list.
+    fn click_widget(game: &mut Game, action: Action) {
+        let (w, h) = (game.width, game.height);
+        let b = setup_widgets(w, h)
+            .into_iter()
+            .chain(setup_checkboxes(w, h))
+            .chain(opponent_widgets(game.skirmish.ai_players as usize, w, h))
+            .find(|b| b.action == action)
+            .unwrap();
+        game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+    }
+
+    fn type_key(game: &mut Game, key: Key) {
+        game.handle(Event::KeyDown(key));
+    }
+
+    #[test]
+    fn skirmish_opens_setup_with_the_requested_defaults() {
+        let game = in_setup();
+        assert_eq!(game.screen, Screen::SkirmishSetup);
+        assert_eq!(actions(&game)[0], Action::Back);
+        let back = game.buttons()[0];
+        assert!(back.x < W / 2.0 && back.y > H / 2.0, "back is bottom left");
+        let s = &game.skirmish;
+        assert!(s.superweapons && s.living_world && s.crates);
+        assert!(!s.prebuilt_base && !s.fog_of_war, "these two start unchecked");
+        assert_eq!(s.allies, [Ally::None, Ally::None]);
+    }
+
+    #[test]
+    fn setup_columns_sit_in_the_outer_thirds() {
+        for (w, h) in [(1280.0, 720.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+            for b in setup_widgets(w, h) {
+                let right = matches!(
+                    b.action,
+                    Action::MapDropdown | Action::SetDifficulty(_)
+                );
+                if right {
+                    assert!(b.x >= w * 2.0 / 3.0 - 0.5 && b.x + b.w <= w + 0.5, "{}", b.label);
+                } else {
+                    assert!(b.x >= 0.0 && b.x + b.w <= w / 3.0 + 0.5, "{}", b.label);
+                }
+            }
+            let (mx, _, size) = minimap_rect(w, h);
+            assert!(mx >= w * 2.0 / 3.0 && mx + size <= w, "minimap at {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn setup_slider_ranges_match_the_request() {
+        let range: Vec<_> = setup_sliders(W, H).iter().map(|s| (s.label, s.min, s.max)).collect();
+        assert_eq!(range, [("AI Players", 1, 7), ("Money", 0, 30000), ("Units", 0, 30)]);
+    }
+
+    #[test]
+    fn setup_sliders_drag_and_money_snaps_to_500() {
+        let mut game = in_setup();
+        let money = slider(&game, SliderId::Money);
+        drag(&mut game, SliderId::Money, money.track_x + money.track_w * 0.5);
+        assert_eq!(game.skirmish.money, 15000);
+        drag(&mut game, SliderId::Money, money.x_of(12340));
+        assert_eq!(game.skirmish.money % 500, 0);
+        drag(&mut game, SliderId::Money, W + 1000.0);
+        assert_eq!(game.skirmish.money, 30000);
+        drag(&mut game, SliderId::AiPlayers, -1000.0);
+        assert_eq!(game.skirmish.ai_players, 1);
+        drag(&mut game, SliderId::Units, W + 1000.0);
+        assert_eq!(game.skirmish.units, 30);
+    }
+
+    #[test]
+    fn map_dropdown_opens_selects_and_closes() {
+        let mut game = in_setup();
+        assert_eq!(MAPS.len(), 5);
+        click_widget(&mut game, Action::MapDropdown);
+        assert!(game.dropdown_open);
+        click(&mut game, Action::SelectMap(3));
+        assert_eq!(game.skirmish.map, 3);
+        assert!(!game.dropdown_open);
+    }
+
+    #[test]
+    fn open_dropdown_blocks_what_is_under_it_and_closes_on_outside_click() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::MapDropdown);
+        // The list covers the difficulty radios, so this click picks a map instead.
+        let hard = setup_widgets(W, H)
+            .into_iter()
+            .find(|b| b.action == Action::SetDifficulty(Difficulty::Hard))
+            .unwrap();
+        game.handle(Event::MouseMove(hard.x + hard.w / 2.0, hard.y + hard.h / 2.0));
+        assert!(matches!(game.hovered(), Some(Action::SelectMap(_))));
+
+        game.handle(Event::MouseMove(1.0, 1.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+        assert!(!game.dropdown_open);
+        assert_eq!(game.skirmish.difficulty, Difficulty::Normal);
+
+        click_widget(&mut game, Action::MapDropdown);
+        game.handle(Event::KeyDown(Key::Escape));
+        assert!(!game.dropdown_open);
+        assert_eq!(game.screen, Screen::SkirmishSetup, "escape only closed the list");
+    }
+
+    #[test]
+    fn difficulty_radios_are_exclusive() {
+        let mut game = in_setup();
+        for difficulty in [Difficulty::Hard, Difficulty::Easy, Difficulty::Normal] {
+            click_widget(&mut game, Action::SetDifficulty(difficulty));
+            assert_eq!(game.skirmish.difficulty, difficulty);
+        }
+    }
+
+    #[test]
+    fn setup_checkboxes_flip_only_themselves() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::Toggle(Toggle::FogOfWar));
+        click_widget(&mut game, Action::Toggle(Toggle::Crates));
+        assert!(game.skirmish.fog_of_war);
+        assert!(!game.skirmish.crates);
+        assert!(game.skirmish.superweapons && !game.skirmish.prebuilt_base && game.skirmish.living_world);
+    }
+
+    #[test]
+    fn commander_name_accepts_typing_and_stops_at_the_limit() {
+        let mut game = in_setup();
+        type_key(&mut game, Key::Char('x'));
+        assert_eq!(game.skirmish.commander, "Commander", "ignored until the field is clicked");
+
+        click_widget(&mut game, Action::NameField);
+        assert!(game.name_focused);
+        for _ in 0.."Commander".len() {
+            type_key(&mut game, Key::Backspace);
+        }
+        type_key(&mut game, Key::Backspace);
+        assert_eq!(game.skirmish.commander, "");
+        for c in "Lana".chars() {
+            type_key(&mut game, Key::Char(c));
+        }
+        assert_eq!(game.skirmish.commander, "Lana");
+        for _ in 0..40 {
+            type_key(&mut game, Key::Char('z'));
+        }
+        assert_eq!(game.skirmish.commander.len(), COMMANDER_NAME_MAX);
+    }
+
+    #[test]
+    fn name_focus_ends_on_enter_escape_or_click_elsewhere() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::NameField);
+        type_key(&mut game, Key::Enter);
+        assert!(!game.name_focused);
+
+        click_widget(&mut game, Action::NameField);
+        type_key(&mut game, Key::Escape);
+        assert!(!game.name_focused);
+        assert_eq!(game.screen, Screen::SkirmishSetup, "escape did not leave the screen");
+
+        click_widget(&mut game, Action::NameField);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+        assert!(!game.name_focused);
+    }
+
+    #[test]
+    fn faction_planet_cycles_a_h_o() {
+        let mut game = in_setup();
+        assert_eq!(game.skirmish.faction, Faction::A);
+        for expected in [Faction::H, Faction::O, Faction::A] {
+            click_widget(&mut game, Action::CycleFaction);
+            assert_eq!(game.skirmish.faction, expected);
+        }
+    }
+
+    #[test]
+    fn a_side_cannot_befriend_the_same_mini_faction_twice() {
+        let mut game = in_setup();
+        // Every combination reachable by clicking either slot stays free of duplicates.
+        for click_slot in [0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 0] {
+            click_widget(&mut game, Action::CycleAlly(click_slot));
+            let [left, right] = game.skirmish.allies;
+            assert!(left == Ally::None || left != right, "{left:?} twice");
+        }
+
+        let mut allies = [Ally::Triangle, Ally::None];
+        cycle_ally(&mut allies, 1);
+        assert_eq!(allies, [Ally::Triangle, Ally::Square], "triangle is skipped");
+
+        let mut allies = [Ally::Star, Ally::Hexagon];
+        cycle_ally(&mut allies, 1);
+        assert_eq!(allies, [Ally::Star, Ally::None], "star is skipped, none is still allowed");
+
+        let mut allies = [Ally::None, Ally::None];
+        cycle_ally(&mut allies, 0);
+        cycle_ally(&mut allies, 0);
+        cycle_ally(&mut allies, 1);
+        assert_eq!(allies, [Ally::Square, Ally::Triangle], "both slots can be filled");
+    }
+
+    #[test]
+    fn opponents_cannot_befriend_the_same_mini_faction_twice() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::CycleOpponentAlly(0, 0));
+        click_widget(&mut game, Action::CycleOpponentAlly(0, 1));
+        assert_eq!(game.skirmish.opponents[0].allies, [Ally::Triangle, Ally::Square]);
+    }
+
+    #[test]
+    fn each_ally_cycles_through_five_shapes_and_none_on_its_own() {
+        let mut game = in_setup();
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            click_widget(&mut game, Action::CycleAlly(1));
+            seen.push(game.skirmish.allies[1]);
+        }
+        assert_eq!(
+            seen,
+            [Ally::Triangle, Ally::Square, Ally::Diamond, Ally::Hexagon, Ally::Star, Ally::None]
+        );
+        assert_eq!(game.skirmish.allies[0], Ally::None);
+        click_widget(&mut game, Action::CycleAlly(0));
+        assert_eq!(game.skirmish.allies, [Ally::Triangle, Ally::None]);
+    }
+
+    fn set_ai_players(game: &mut Game, count: i32) {
+        let s = slider(game, SliderId::AiPlayers);
+        drag(game, SliderId::AiPlayers, s.x_of(count));
+        assert_eq!(game.skirmish.ai_players, count);
+    }
+
+    fn active_colors(game: &Game) -> Vec<TeamColor> {
+        game.skirmish.opponents[..game.skirmish.ai_players as usize]
+            .iter()
+            .map(|o| o.color)
+            .collect()
+    }
+
+    #[test]
+    fn ai_players_slider_fills_and_empties_the_opponent_slots() {
+        let mut game = in_setup();
+        let row_of = |game: &Game, slot| {
+            let (x, y, _, h) = opponent_row(slot, game.width, game.height);
+            (x + 1.0, y + h / 2.0)
+        };
+        for count in [1, 7, 2] {
+            set_ai_players(&mut game, count);
+            for slot in 0..OPPONENT_SLOTS {
+                let (x, y) = row_of(&game, slot);
+                game.handle(Event::MouseMove(x, y));
+                let expected = (slot < count as usize).then_some(Action::CycleOpponentKind(slot));
+                assert_eq!(game.hovered(), expected, "slot {slot} with {count} players");
+            }
+        }
+    }
+
+    #[test]
+    fn every_player_holds_a_different_color_at_any_count() {
+        let mut game = in_setup();
+        for count in [1, 7, 3, 5, 7] {
+            set_ai_players(&mut game, count);
+            let mut colors = active_colors(&game);
+            colors.push(game.skirmish.color);
+            let total = colors.len();
+            colors.dedup_by(|a, b| a == b);
+            for (i, a) in colors.iter().enumerate() {
+                assert!(!colors[i + 1..].contains(a), "{a:?} is held twice at {count}");
+            }
+            assert_eq!(colors.len(), total);
+        }
+    }
+
+    #[test]
+    fn colors_held_by_opponents_are_not_offered_to_the_player() {
+        let mut game = in_setup();
+        for count in 1..=7 {
+            set_ai_players(&mut game, count);
+            let offered = game.skirmish.available_colors();
+            assert_eq!(offered.len(), 8 - count as usize);
+            assert!(offered.contains(&game.skirmish.color), "own color stays");
+            for held in active_colors(&game) {
+                assert!(!offered.contains(&held));
+            }
+        }
+    }
+
+    #[test]
+    fn color_bar_opens_into_slots_and_closes_on_pick() {
+        let mut game = in_setup();
+        set_ai_players(&mut game, 3);
+        let free = game.skirmish.available_colors();
+        let pick = *free.last().unwrap();
+        click_widget(&mut game, Action::ColorBar);
+        assert!(game.color_open);
+        assert_eq!(game.buttons().len(), free.len());
+        click(&mut game, Action::PickColor(pick));
+        assert_eq!(game.skirmish.color, pick);
+        assert!(!game.color_open);
+    }
+
+    #[test]
+    fn open_color_bar_blocks_other_controls_and_escape_closes_it() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::ColorBar);
+        let play = setup_widgets(W, H).into_iter().find(|b| b.action == Action::StartBattle).unwrap();
+        game.handle(Event::MouseMove(play.x + 1.0, play.y + 1.0));
+        assert_eq!(game.hovered(), None);
+        let ai = slider(&game, SliderId::AiPlayers);
+        game.handle(Event::MouseMove(ai.x_of(7), ai.cy));
+        assert_eq!(game.hovered_slider(), None);
+        game.handle(Event::KeyDown(Key::Escape));
+        assert!(!game.color_open);
+        assert_eq!(game.screen, Screen::SkirmishSetup);
+    }
+
+    #[test]
+    fn picking_a_color_leaves_opponents_alone_and_new_opponents_avoid_it() {
+        let mut game = in_setup();
+        set_ai_players(&mut game, 3);
+        let before = active_colors(&game);
+        let pick = *game.skirmish.available_colors().last().unwrap();
+        click_widget(&mut game, Action::ColorBar);
+        click(&mut game, Action::PickColor(pick));
+        assert_eq!(active_colors(&game), before);
+
+        set_ai_players(&mut game, 7);
+        assert!(!active_colors(&game).contains(&pick));
+        assert_eq!(&active_colors(&game)[..3], &before[..]);
+    }
+
+    #[test]
+    fn removing_an_opponent_frees_its_color() {
+        let mut game = in_setup();
+        set_ai_players(&mut game, 7);
+        let last = active_colors(&game)[6];
+        assert!(!game.skirmish.available_colors().contains(&last));
+        set_ai_players(&mut game, 6);
+        assert!(game.skirmish.available_colors().contains(&last));
+    }
+
+    #[test]
+    fn opponent_controls_cycle_independently() {
+        let mut game = in_setup();
+        set_ai_players(&mut game, 2);
+        let mut kinds = Vec::new();
+        for _ in 0..3 {
+            click_widget(&mut game, Action::CycleOpponentKind(1));
+            kinds.push(game.skirmish.opponents[1].kind.label());
+        }
+        assert_eq!(kinds, ["Attacker", "Defensive", "Competent"]);
+
+        let before = game.skirmish.opponents[1].faction;
+        click_widget(&mut game, Action::CycleOpponentFaction(1));
+        assert_eq!(game.skirmish.opponents[1].faction, before.next());
+        for _ in 0..2 {
+            click_widget(&mut game, Action::CycleOpponentAlly(1, 1));
+        }
+        assert_eq!(game.skirmish.opponents[1].allies, [Ally::None, Ally::Square]);
+        assert_eq!(game.skirmish.opponents[0].allies, [Ally::None, Ally::None]);
+    }
+
+    #[test]
+    fn opponent_rows_fit_the_middle_third_and_above_nothing() {
+        use crate::font::text_width;
+        for (w, h) in [(1280.0, 720.0), (1440.0, 900.0), (1920.0, 1080.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+            let px = small_text_px(h);
+            for b in opponent_widgets(OPPONENT_SLOTS, w, h) {
+                assert!(b.x >= w / 3.0 && b.x + b.w <= w * 2.0 / 3.0, "{} at {w}x{h}", b.label);
+                assert!(b.y + b.h < buttons(Screen::SkirmishSetup, w, h)[0].y);
+                if let Action::CycleOpponentKind(_) = b.action {
+                    for kind in [OpponentKind::Defensive, OpponentKind::Competent, OpponentKind::Attacker] {
+                        assert!(text_width(kind.label()) * px < b.w, "{} at {h}", kind.label());
+                    }
+                }
+            }
+            let all = opponent_widgets(OPPONENT_SLOTS, w, h);
+            for (i, a) in all.iter().enumerate() {
+                for b in &all[i + 1..] {
+                    assert!(
+                        a.x + a.w <= b.x + 0.01 || b.x + b.w <= a.x + 0.01 || a.y + a.h <= b.y + 0.01 || b.y + b.h <= a.y + 0.01,
+                        "{:?} overlaps {:?} at {w}x{h}", a.action, b.action
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn color_bar_sits_under_the_faction_and_play_just_under_it() {
+        let all = setup_widgets(W, H);
+        let find = |action| *all.iter().find(|b| b.action == action).unwrap();
+        let (faction, bar, play) = (
+            find(Action::CycleFaction),
+            find(Action::ColorBar),
+            find(Action::StartBattle),
+        );
+        assert!(faction.y + faction.h < bar.y);
+        assert!(bar.y + bar.h <= play.y);
+        assert!(play.y - (bar.y + bar.h) < 30.0 * ui_scale(H), "play is just under the bar");
+    }
+
+    fn in_battle() -> Game {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.screen, Screen::InGame);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        game
+    }
+
+    #[test]
+    fn play_uses_the_selected_map_and_a_centered_camera() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::MapDropdown);
+        click(&mut game, Action::SelectMap(2));
+        click_widget(&mut game, Action::StartBattle);
+        assert_eq!(game.battle_map, 2);
+        assert_eq!(game.camera, Camera::centered());
+    }
+
+    #[test]
+    fn the_cursor_at_an_edge_scrolls_only_on_the_battlefield() {
+        let mut game = in_battle();
+        let start = game.camera;
+        game.update(0.5);
+        assert_eq!(game.camera, start, "cursor in the middle");
+
+        game.handle(Event::MouseMove(W - 1.0, H / 2.0));
+        game.update(0.5);
+        assert!(game.camera.x > start.x, "right edge moves east");
+        assert_eq!(game.camera.z, start.z);
+
+        let before = game.camera;
+        game.handle(Event::MouseMove(W / 2.0, 0.0));
+        game.update(0.5);
+        assert!(game.camera.z < before.z, "top edge moves north");
+
+        let before = game.camera;
+        click(&mut game, Action::Back);
+        game.handle(Event::MouseMove(W - 1.0, H / 2.0));
+        game.update(0.5);
+        assert_eq!(game.camera, before, "menus do not scroll");
+    }
+
+    #[test]
+    fn scroll_rate_option_sets_the_speed() {
+        let moved = |rate: i32| {
+            let mut game = in_battle();
+            game.settings.scroll_rate = rate;
+            game.handle(Event::MouseMove(W - 1.0, H / 2.0));
+            game.update(0.1);
+            game.camera.x - Camera::centered().x
+        };
+        assert!((moved(10) - moved(5) * 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn scrolling_stops_while_another_app_is_in_front() {
+        let mut game = in_battle();
+        let start = game.camera;
+        game.handle(Event::MouseMove(W - 1.0, H / 2.0));
+        game.handle(Event::Focus(false));
+        game.update(0.5);
+        assert_eq!(game.camera, start);
+        game.handle(Event::Focus(true));
+        game.update(0.5);
+        assert!(game.camera.x > start.x);
+    }
+
+    #[test]
+    fn a_new_battle_recenters_the_camera() {
+        let mut game = in_battle();
+        game.handle(Event::MouseMove(W - 1.0, H / 2.0));
+        game.update(0.5);
+        click(&mut game, Action::Back);
+        click(&mut game, Action::Tutorial);
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.camera, Camera::centered());
+    }
+
+    #[test]
+    fn play_runs_loading_then_a_single_battle_and_keeps_the_setup() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::SetDifficulty(Difficulty::Hard));
+        click_widget(&mut game, Action::StartBattle);
+        assert_eq!(game.screen, Screen::Loading);
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.screen, Screen::InGame);
+        assert_eq!(game.faction, None);
+        assert_eq!(actions(&game), [Action::Back]);
+        click(&mut game, Action::Back);
+        assert_eq!(game.screen, Screen::SinglePlayerMenu);
+        assert_eq!(game.skirmish.difficulty, Difficulty::Hard);
+    }
+
+    #[test]
+    fn setup_content_fits_and_does_not_collide() {
+        use crate::font::text_width;
+        for (w, h) in [(1280.0, 720.0), (1440.0, 900.0), (1920.0, 1080.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+            let px = small_text_px(h);
+            let widest = "W".repeat(COMMANDER_NAME_MAX);
+            let all = setup_widgets(w, h);
+            let name = all.iter().find(|b| b.action == Action::NameField).unwrap();
+            assert!(text_width(&widest) * px < name.w, "name at {h}");
+            for b in all.iter().filter(|b| matches!(b.action, Action::SetDifficulty(_))) {
+                let circle = 30.0 * ui_scale(h);
+                assert!(circle + text_width(b.label) * px <= b.w, "{} at {h}", b.label);
+            }
+            for s in setup_sliders(w, h) {
+                let value = text_width("30000") * px;
+                assert!(s.label_x + text_width(s.label) * px < s.value_right - value, "{} at {h}", s.label);
+            }
+            for b in setup_checkboxes(w, h) {
+                assert!(text_width(b.label) * px < b.w - checkbox_size(h), "{} at {h}", b.label);
+            }
+            let mut rows: Vec<_> = all.clone();
+            rows.extend(setup_checkboxes(w, h));
+            rows.extend(buttons(Screen::SkirmishSetup, w, h));
+            for (i, a) in rows.iter().enumerate() {
+                for b in &rows[i + 1..] {
+                    let apart = a.x + a.w <= b.x + 0.01
+                        || b.x + b.w <= a.x + 0.01
+                        || a.y + a.h <= b.y + 0.01
+                        || b.y + b.h <= a.y + 0.01;
+                    assert!(apart, "{} overlaps {} at {w}x{h}", a.label, b.label);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn options_content_fits_at_common_resolutions() {
+        use crate::font::text_width;
+        for (w, h) in [(1280.0, 720.0), (1440.0, 900.0), (1920.0, 1080.0), (2560.0, 1600.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+            let px = small_text_px(h);
+            let (panel_x, panel_y, panel_w, panel_h) = options_panel(w, h);
+            assert!(panel_x + panel_w <= w);
+            for tab in TABS.iter().map(|t| t.0) {
+                for s in sliders(tab, w, h) {
+                    assert!(s.label_x + text_width(s.label) * px < s.track_x, "{} at {h}", s.label);
+                    assert!(s.track_x + s.track_w < panel_x + panel_w);
+                    assert!(s.cy < panel_y + panel_h);
+                }
+                for b in checkboxes(tab, w, h) {
+                    assert!(text_width(b.label) * px < b.w - checkbox_size(h));
+                    assert!(b.y + b.h <= panel_y + panel_h);
+                }
+                if let Some(text) = tab.placeholder() {
+                    assert!(text_width(text) * px < panel_w);
+                }
+            }
+            for b in tab_buttons(w, h) {
+                assert!(text_width(b.label) * px < b.w, "{} at {h}", b.label);
+                assert!(b.y + b.h <= panel_y + panel_h + 0.5, "tabs fit the panel height");
+            }
+        }
+    }
+
+    #[test]
+    fn layout_stays_on_screen_across_aspect_ratios() {
+        for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2880.0, 1800.0), (5120.0, 1440.0), (1024.0, 768.0)] {
+            for screen in [Screen::MainMenu, Screen::SinglePlayerMenu, Screen::Options, Screen::Credits, Screen::InGame, Screen::FactionSelect, Screen::SkirmishSetup] {
+                let all = buttons(screen, w, h);
+                for b in &all {
+                    assert!(b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= w && b.y + b.h <= h);
+                }
+                for (i, a) in all.iter().enumerate() {
+                    for b in &all[i + 1..] {
+                        let apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+                        assert!(apart, "{} overlaps {}", a.label, b.label);
+                    }
+                }
+            }
+        }
+    }
+}

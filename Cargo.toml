@@ -1,0 +1,12 @@
+[package]
+name = "openemperor"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+# Intentionally empty: see the decisions doc.
+
+[profile.release]
+lto = true
+panic = "abort"

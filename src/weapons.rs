@@ -390,15 +390,19 @@ fn turn_towards(from: Point, to: Point, most: f32) -> Point {
     if angle <= most {
         return to;
     }
-    // Part of the way along the arc between them; opposite directions get a nudge upward.
-    let share = most / angle;
-    let mixed = (
-        from.0 + (to.0 - from.0) * share,
-        from.1 + (to.1 - from.1) * share + if cos < -0.999 { share } else { 0.0 },
-        from.2 + (to.2 - from.2) * share,
-    );
-    let length = distance((0.0, 0.0, 0.0), mixed).max(0.0001);
-    (mixed.0 / length, mixed.1 / length, mixed.2 / length)
+    // The part of `to` at right angles to `from` says which way to rotate. Facing exactly
+    // away there is none, and any sideways direction will do.
+    let mut side = (to.0 - from.0 * cos, to.1 - from.1 * cos, to.2 - from.2 * cos);
+    if distance((0.0, 0.0, 0.0), side) < 0.0001 {
+        side = if from.0.abs() < 0.9 { (1.0 - from.0 * from.0, -from.0 * from.1, -from.0 * from.2) } else { (-from.1 * from.0, 1.0 - from.1 * from.1, -from.1 * from.2) };
+    }
+    let side = direction_to((0.0, 0.0, 0.0), side);
+    let (sin_most, cos_most) = most.sin_cos();
+    (
+        from.0 * cos_most + side.0 * sin_most,
+        from.1 * cos_most + side.1 * sin_most,
+        from.2 * cos_most + side.2 * sin_most,
+    )
 }
 
 #[cfg(test)]
@@ -537,13 +541,18 @@ mod tests {
     #[test]
     fn a_missile_turns_only_so_fast() {
         let (from, to) = ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0));
+        let angle_from_start = |turned: Point| (turned.0 * from.0 + turned.1 * from.1 + turned.2 * from.2).acos();
         let turned = turn_towards(from, to, 0.1);
-        let angle = (turned.0 * from.0 + turned.1 * from.1 + turned.2 * from.2).acos();
-        assert!(angle < 0.11, "{angle}");
-        assert!(angle > 0.05, "{angle}");
+        assert!((angle_from_start(turned) - 0.1).abs() < 0.001, "the full allowed turn");
         assert_eq!(turn_towards(from, from, 0.1), from);
-        let about_face = turn_towards(from, (-1.0, 0.0, 0.0), 0.1);
-        assert!(about_face.1.abs() > 0.0, "does not get stuck turning exactly around");
+
+        // The same turning rate holds however far off the target is, even almost behind it.
+        for away in [(-1.0, 0.0, 0.0), (-0.9999, 0.0141, 0.0), (-0.7071, 0.7071, 0.0)] {
+            let turned = turn_towards(from, away, 0.1);
+            assert!((angle_from_start(turned) - 0.1).abs() < 0.001, "{away:?} gave {turned:?}");
+            let length = distance((0.0, 0.0, 0.0), turned);
+            assert!((length - 1.0).abs() < 0.001, "stays a unit vector: {length}");
+        }
     }
 
     #[test]

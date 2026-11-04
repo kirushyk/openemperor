@@ -18,7 +18,8 @@ enum {
     OE_EVENT_MOUSE_DOWN = 4, /* left button */
     OE_EVENT_MOUSE_UP = 5,   /* left button */
     OE_EVENT_KEY_DOWN = 6,   /* a = OE_KEY_*; b = printable ASCII typed, or 0 */
-    OE_EVENT_FOCUS = 7       /* a = 1 when the game gains focus, 0 when it loses it */
+    OE_EVENT_FOCUS = 7,      /* a = 1 when the game gains focus, 0 when it loses it */
+    OE_EVENT_WHEEL = 8       /* y = notches turned, positive away from the player */
 };
 
 enum {

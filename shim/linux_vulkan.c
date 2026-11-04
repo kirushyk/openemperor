@@ -425,6 +425,12 @@ int32_t oe_poll_event(OeEvent *event) {
                 event->y = (float)e.xmotion.y;
                 return 1;
             case ButtonPress:
+                /* X11 reports the wheel, and two-finger scrolling, as buttons 4 and 5. */
+                if (e.xbutton.button == Button4 || e.xbutton.button == Button5) {
+                    event->kind = OE_EVENT_WHEEL;
+                    event->y = e.xbutton.button == Button4 ? 1.0f : -1.0f;
+                    return 1;
+                }
                 if (e.xbutton.button != Button1) break;
                 event->kind = OE_EVENT_MOUSE_DOWN;
                 return 1;

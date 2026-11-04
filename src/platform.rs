@@ -41,6 +41,8 @@ pub enum Event {
     MouseUp,
     KeyDown(Key),
     Focus(bool),
+    /// Notches turned, positive away from the player.
+    Wheel(f32),
 }
 
 unsafe extern "C" {
@@ -86,6 +88,7 @@ impl Platform {
                     _ => Key::Other,
                 }),
                 7 => Event::Focus(raw.a != 0),
+                8 => Event::Wheel(raw.y),
                 _ => continue,
             };
             return Some(event);

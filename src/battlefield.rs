@@ -24,9 +24,17 @@ pub const GROUND: [f32; 3] = [0.40, 0.30, 0.21];
 /// How strongly the surface grain varies the color, either way.
 const GRAIN: f32 = 0.22;
 
-/// Camera height and how far south of its target it sits. This fixes its downward tilt.
-const CAMERA_HEIGHT: f32 = 30.0;
-const CAMERA_BACK: f32 = 22.0;
+/// The camera moves between two fixed positions. Zooming changes where it is and where it
+/// looks, never its field of view. Top: high and looking almost straight down.
+const TOP_HEIGHT: f32 = 30.0;
+const TOP_PITCH_DEGREES: f32 = 75.0;
+/// Bottom: low and looking almost forward, 30 degrees down from the ground.
+const BOTTOM_HEIGHT: f32 = 8.0;
+const BOTTOM_PITCH_DEGREES: f32 = 30.0;
+/// Share of the way between the positions per wheel notch.
+const ZOOM_PER_NOTCH: f32 = 0.1;
+/// How quickly the camera catches up with the wheel; higher is snappier.
+const ZOOM_EASING: f32 = 10.0;
 /// Vertical field of view, as the tangent of half its angle (about 40 degrees in total).
 const HALF_FOV_TAN: f32 = 0.364;
 const NEAR: f32 = 1.0;
@@ -85,19 +93,41 @@ fn world_to_grid(x: f32, z: f32) -> (f32, f32) {
     ((z + x) / (2.0 * CELL), (z - x) / (2.0 * CELL))
 }
 
-/// The ground point the camera looks at. Its tilt and height are fixed.
+/// The ground point the camera looks at, and how far it has descended towards the bottom
+/// position: 0 is the top, 1 the bottom.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pub x: f32,
     pub z: f32,
+    pub zoom: f32,
+    zoom_target: f32,
 }
 
 impl Camera {
-    /// Looking at the middle of the map.
+    /// Looking at the middle of the map from the top position.
     pub fn centered() -> Self {
         let middle = MAP_CELLS as f32 / 2.0;
         let (x, z) = grid_to_world(middle, middle);
-        Camera { x, z }
+        Camera { x, z, zoom: 0.0, zoom_target: 0.0 }
+    }
+
+    /// Positive notches go down towards the bottom position.
+    pub fn zoom_by(&mut self, notches: f32) {
+        self.zoom_target = (self.zoom_target + notches * ZOOM_PER_NOTCH).clamp(0.0, 1.0);
+    }
+
+    /// One frame of the camera gliding towards where the wheel left it.
+    pub fn ease_zoom(&mut self, dt: f32) {
+        self.zoom += (self.zoom_target - self.zoom) * (1.0 - (-ZOOM_EASING * dt).exp());
+        if (self.zoom_target - self.zoom).abs() < 0.001 {
+            self.zoom = self.zoom_target;
+        }
+    }
+
+    /// Centers the view on a world point, kept on the map.
+    pub fn look_at(&mut self, x: f32, z: f32) {
+        (self.x, self.z) = (x, z);
+        self.move_by(0.0, 0.0);
     }
 
     /// Moves the target, sliding along the map's edges rather than leaving the diamond.
@@ -107,23 +137,172 @@ impl Camera {
         (self.x, self.z) = grid_to_world(u.clamp(0.0, limit), v.clamp(0.0, limit));
     }
 
-    /// One frame of edge scrolling.
+    /// One frame of edge scrolling. Slower when low, so the ground crosses the screen at
+    /// about the same pace from either position.
     pub fn scroll(&mut self, direction: (f32, f32), scroll_rate: i32, dt: f32) {
-        let distance = SCROLL_PER_RATE * scroll_rate as f32 * dt;
-        self.move_by(direction.0 * distance, direction.1 * distance);
+        let pace = self.altitude() / TOP_HEIGHT;
+        let distance = SCROLL_PER_RATE * scroll_rate as f32 * pace * dt;
+        let (dx, dz) = (direction.0 * distance, direction.1 * distance);
+        if dx != 0.0 && dz != 0.0 {
+            self.move_diagonally(dx, dz);
+        } else {
+            self.move_by(dx, dz);
+        }
     }
 
-    fn project(self, x: f32, y: f32, z: f32, width: f32, height: f32) -> Option<(f32, f32)> {
-        let length = CAMERA_HEIGHT.hypot(CAMERA_BACK);
-        let (rel_x, rel_y, rel_z) = (x - self.x, y - CAMERA_HEIGHT, z - (self.z + CAMERA_BACK));
-        let depth = -(rel_y * CAMERA_HEIGHT + rel_z * CAMERA_BACK) / length;
+    /// A push towards a screen corner runs along one grid axis, straight at a diamond edge.
+    /// Once there it carries on along that edge to a real map corner, where it finally
+    /// stops: the nearer corner, or the east or west one from the exact middle of the edge.
+    fn move_diagonally(&mut self, dx: f32, dz: f32) {
+        let (u, v) = world_to_grid(self.x, self.z);
+        let (du, dv) = world_to_grid(dx, dz);
+        let limit = MAP_CELLS as f32;
+        let blocked = |position: f32, step: f32| {
+            (position >= limit && step > 0.0) || (position <= 0.0 && step < 0.0)
+        };
+        let slide = |other: f32, step: f32| {
+            let middle = limit / 2.0;
+            let end = if other < middle {
+                0.0
+            } else if other > middle {
+                limit
+            } else if step > 0.0 {
+                0.0
+            } else {
+                limit
+            };
+            let distance = step.abs();
+            if end > other { (other + distance).min(end) } else { (other - distance).max(end) }
+        };
+        let (u, v) = if du.abs() >= dv.abs() && blocked(u, du) {
+            (u, slide(v, du))
+        } else if dv.abs() > du.abs() && blocked(v, dv) {
+            (slide(u, dv), v)
+        } else {
+            (u + du, v + dv)
+        };
+        (self.x, self.z) = grid_to_world(u.clamp(0.0, limit), v.clamp(0.0, limit));
+    }
+
+    fn altitude(self) -> f32 {
+        TOP_HEIGHT + (BOTTOM_HEIGHT - TOP_HEIGHT) * self.zoom
+    }
+}
+
+/// A camera pose ready for projecting, for one frame on one screen.
+pub struct View {
+    position: [f32; 3],
+    /// Unit vectors, with no x part: the camera never turns sideways.
+    forward: [f32; 2],
+    up: [f32; 2],
+    focal: f32,
+    center: (f32, f32),
+}
+
+impl View {
+    pub fn new(camera: Camera, width: f32, height: f32) -> Self {
+        let degrees = TOP_PITCH_DEGREES + (BOTTOM_PITCH_DEGREES - TOP_PITCH_DEGREES) * camera.zoom;
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let altitude = camera.altitude();
+        View {
+            position: [camera.x, altitude, camera.z + altitude * cos / sin],
+            forward: [-sin, -cos],
+            up: [cos, -sin],
+            focal: height / (2.0 * HALF_FOV_TAN),
+            center: (width / 2.0, height / 2.0),
+        }
+    }
+
+    fn project(&self, x: f32, y: f32, z: f32) -> Option<(f32, f32)> {
+        let [px, py, pz] = self.position;
+        let (rel_x, rel_y, rel_z) = (x - px, y - py, z - pz);
+        let depth = rel_y * self.forward[0] + rel_z * self.forward[1];
         if depth < NEAR {
             return None;
         }
-        let up = (rel_y * CAMERA_BACK - rel_z * CAMERA_HEIGHT) / length;
-        let focal = height / (2.0 * HALF_FOV_TAN);
-        Some((width / 2.0 + focal * rel_x / depth, height / 2.0 - focal * up / depth))
+        let up = rel_y * self.up[0] + rel_z * self.up[1];
+        Some((self.center.0 + self.focal * rel_x / depth, self.center.1 - self.focal * up / depth))
     }
+
+    /// The world (x, z) on the sand plane under a screen point; `None` above the horizon.
+    fn ground_at(&self, screen_x: f32, screen_y: f32) -> Option<(f32, f32)> {
+        let side = (screen_x - self.center.0) / self.focal;
+        let lift = (self.center.1 - screen_y) / self.focal;
+        let ray_y = self.forward[0] + lift * self.up[0];
+        let ray_z = self.forward[1] + lift * self.up[1];
+        if ray_y >= 0.0 {
+            return None;
+        }
+        let [px, py, pz] = self.position;
+        let t = -py / ray_y;
+        Some((px + side * t, pz + ray_z * t))
+    }
+
+    /// Where the screen's corners fall on the ground, clockwise from the top left. The far
+    /// edge is the wider one, so this is the view's true trapezium rather than a rectangle.
+    pub fn ground_corners(&self) -> Option<[(f32, f32); 4]> {
+        let (right, bottom) = (self.center.0 * 2.0, self.center.1 * 2.0);
+        Some([
+            self.ground_at(0.0, 0.0)?,
+            self.ground_at(right, 0.0)?,
+            self.ground_at(right, bottom)?,
+            self.ground_at(0.0, bottom)?,
+        ])
+    }
+}
+
+/// The battlefield minimap, top right, as (x, y, size).
+pub fn overlay_minimap_rect(width: f32, height: f32) -> (f32, f32, f32) {
+    let s = crate::game::ui_scale(height);
+    let (margin, size) = (24.0 * s, 300.0 * s);
+    (width - margin - size, margin, size)
+}
+
+/// A world point's place on a minimap square whose inscribed diamond is the whole map.
+pub fn world_to_minimap((x, y, size): (f32, f32, f32), world_x: f32, world_z: f32) -> (f32, f32) {
+    let half_map = MAP_CELLS as f32 * CELL;
+    (x + size / 2.0 + world_x / half_map * size / 2.0, y + world_z / half_map * size / 2.0)
+}
+
+/// The world point under a minimap position, or `None` outside the minimap's square.
+pub fn minimap_to_world((x, y, size): (f32, f32, f32), px: f32, py: f32) -> Option<(f32, f32)> {
+    if px < x || px >= x + size || py < y || py >= y + size {
+        return None;
+    }
+    let half_map = MAP_CELLS as f32 * CELL;
+    Some(((px - (x + size / 2.0)) / (size / 2.0) * half_map, (py - y) / (size / 2.0) * half_map))
+}
+
+/// The part of a segment inside a square, if any (Liang-Barsky).
+pub fn clip_to_square(
+    a: (f32, f32),
+    b: (f32, f32),
+    (x, y, size): (f32, f32, f32),
+) -> Option<((f32, f32), (f32, f32))> {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let (mut from, mut to) = (0.0_f32, 1.0_f32);
+    for (delta, distance) in [
+        (-dx, a.0 - x),
+        (dx, x + size - a.0),
+        (-dy, a.1 - y),
+        (dy, y + size - a.1),
+    ] {
+        if delta == 0.0 {
+            if distance < 0.0 {
+                return None;
+            }
+        } else if delta < 0.0 {
+            from = from.max(distance / delta);
+        } else {
+            to = to.min(distance / delta);
+        }
+    }
+    (from <= to).then(|| {
+        (
+            (a.0 + dx * from, a.1 + dy * from),
+            (a.0 + dx * to, a.1 + dy * to),
+        )
+    })
 }
 
 /// Which way the cursor pushes the camera, with length 1 or 0. Corners push diagonally.
@@ -150,14 +329,13 @@ pub fn edge_direction(mouse: (f32, f32), width: f32, height: f32) -> (f32, f32) 
 /// Appends the visible terrain, farthest first. Both grid axes point towards the camera,
 /// so plain nested loops give that order.
 pub fn draw(out: &mut Vec<Vertex>, terrain: &Terrain, camera: Camera, width: f32, height: f32) {
+    let view = View::new(camera, width, height);
     let point = |u: usize, v: usize| {
         let index = grid_index(u, v);
         let (x, z) = grid_to_world(u as f32, v as f32);
         let y = if terrain.is_ground[index] { GROUND_HEIGHT } else { 0.0 };
         let [r, g, b] = terrain.colors[index];
-        camera
-            .project(x, y, z, width, height)
-            .map(|(x, y)| Vertex { x, y, r, g, b, a: 1.0 })
+        view.project(x, y, z).map(|(x, y)| Vertex { x, y, r, g, b, a: 1.0 })
     };
     for u in 0..MAP_CELLS {
         for v in 0..MAP_CELLS {
@@ -185,7 +363,213 @@ mod tests {
 
     fn screen(camera: Camera, u: f32, v: f32, y: f32) -> (f32, f32) {
         let (x, z) = grid_to_world(u, v);
-        camera.project(x, y, z, W, H).unwrap()
+        View::new(camera, W, H).project(x, y, z).unwrap()
+    }
+
+    fn at_zoom(zoom: f32) -> Camera {
+        let mut camera = Camera::centered();
+        camera.zoom = zoom;
+        camera.zoom_target = zoom;
+        camera
+    }
+
+    /// The camera's pitch below the horizon, in degrees.
+    fn pitch(camera: Camera) -> f32 {
+        let view = View::new(camera, W, H);
+        (-view.forward[0]).atan2(-view.forward[1]).to_degrees()
+    }
+
+    #[test]
+    fn zoom_has_two_fixed_ends_with_the_requested_tilt() {
+        assert!((pitch(at_zoom(0.0)) - 75.0).abs() < 0.01, "top looks almost straight down");
+        assert!((pitch(at_zoom(1.0)) - 30.0).abs() < 0.01, "bottom is 30 degrees from the ground");
+        assert!(View::new(at_zoom(1.0), W, H).position[1] < View::new(at_zoom(0.0), W, H).position[1]);
+    }
+
+    #[test]
+    fn zooming_keeps_the_same_ground_point_at_screen_center_and_the_same_lens() {
+        for zoom in [0.0, 0.3, 0.7, 1.0] {
+            let camera = at_zoom(zoom);
+            let view = View::new(camera, W, H);
+            let (x, y) = view.project(camera.x, 0.0, camera.z).unwrap();
+            assert!((x - W / 2.0).abs() < 0.01 && (y - H / 2.0).abs() < 0.01, "at {zoom}");
+            assert_eq!(view.focal, View::new(at_zoom(0.0), W, H).focal, "field of view is fixed");
+        }
+    }
+
+    #[test]
+    fn the_wheel_moves_gradually_and_stops_at_both_positions() {
+        let mut camera = Camera::centered();
+        camera.zoom_by(1.0);
+        assert_eq!(camera.zoom, 0.0, "nothing moves until time passes");
+        camera.ease_zoom(0.016);
+        assert!(camera.zoom > 0.0 && camera.zoom < 0.1, "glides: {}", camera.zoom);
+        for _ in 0..200 {
+            camera.ease_zoom(0.016);
+        }
+        assert_eq!(camera.zoom, 0.1, "arrives exactly");
+
+        camera.zoom_by(100.0);
+        for _ in 0..200 {
+            camera.ease_zoom(0.016);
+        }
+        assert_eq!(camera.zoom, 1.0, "stops at the bottom");
+
+        camera.zoom_by(-100.0);
+        for _ in 0..200 {
+            camera.ease_zoom(0.016);
+        }
+        assert_eq!(camera.zoom, 0.0, "stops at the top");
+    }
+
+    fn at_grid(u: f32, v: f32) -> Camera {
+        let mut camera = Camera::centered();
+        (camera.x, camera.z) = grid_to_world(u, v);
+        camera
+    }
+
+    fn push_until_stopped(mut camera: Camera, direction: (f32, f32)) -> (f32, f32) {
+        for _ in 0..4000 {
+            camera.scroll(direction, 10, 0.05);
+        }
+        world_to_grid(camera.x, camera.z)
+    }
+
+    #[test]
+    fn corner_pushes_slide_along_the_edge_to_a_true_corner() {
+        let d = std::f32::consts::FRAC_1_SQRT_2;
+        let (north, east, south, west) = ((0.0, 0.0), (LAST, 0.0), (LAST, LAST), (0.0, LAST));
+        let middle = LAST / 2.0;
+        let cases = [
+            // From the center each push hits the middle of an edge and goes east or west.
+            ("bottom right from center", at_grid(middle, middle), (d, d), east),
+            ("top right from center", at_grid(middle, middle), (d, -d), east),
+            ("bottom left from center", at_grid(middle, middle), (-d, d), west),
+            ("top left from center", at_grid(middle, middle), (-d, -d), west),
+            // Off the middle of an edge, the nearer corner wins.
+            ("bottom right near south", at_grid(middle, LAST - 10.0), (d, d), south),
+            ("bottom right near east", at_grid(middle, 10.0), (d, d), east),
+            ("top right near north", at_grid(10.0, middle), (d, -d), north),
+            ("top right near east", at_grid(LAST - 10.0, middle), (d, -d), east),
+            ("bottom left near south", at_grid(LAST - 10.0, middle), (-d, d), south),
+            ("bottom left near west", at_grid(10.0, middle), (-d, d), west),
+            ("top left near north", at_grid(middle, 10.0), (-d, -d), north),
+            ("top left near west", at_grid(middle, LAST - 10.0), (-d, -d), west),
+        ];
+        for (name, camera, direction, corner) in cases {
+            let (u, v) = push_until_stopped(camera, direction);
+            assert!((u - corner.0).abs() < 0.01 && (v - corner.1).abs() < 0.01, "{name}: ended at {u}, {v}");
+        }
+    }
+
+    #[test]
+    fn sliding_keeps_moving_at_full_speed_along_the_edge() {
+        let d = std::f32::consts::FRAC_1_SQRT_2;
+        let mut on_edge = at_grid(LAST, 40.0);
+        let before = on_edge;
+        on_edge.scroll((d, d), 5, 0.1);
+        let slid = (on_edge.x - before.x).hypot(on_edge.z - before.z);
+
+        let mut open = Camera::centered();
+        let start = open;
+        open.scroll((d, d), 5, 0.1);
+        let free = (open.x - start.x).hypot(open.z - start.z);
+        assert!(slid > 0.0, "does not stop at the edge");
+        assert!((slid - free).abs() < 0.01, "{slid} vs {free}");
+    }
+
+    #[test]
+    fn a_true_corner_stops_the_push_that_points_into_it() {
+        let d = std::f32::consts::FRAC_1_SQRT_2;
+        for (corner, direction) in [
+            ((LAST, 0.0), (d, d)),
+            ((LAST, 0.0), (d, -d)),
+            ((0.0, LAST), (-d, d)),
+            ((0.0, LAST), (-d, -d)),
+            ((0.0, 0.0), (d, -d)),
+            ((0.0, 0.0), (-d, -d)),
+            ((LAST, LAST), (d, d)),
+            ((LAST, LAST), (-d, d)),
+        ] {
+            let start = at_grid(corner.0, corner.1);
+            let mut camera = start;
+            camera.scroll(direction, 10, 0.1);
+            assert_eq!(camera, start, "{corner:?} pushed by {direction:?}");
+        }
+    }
+
+    #[test]
+    fn scrolling_is_gentler_from_the_bottom_position() {
+        let moved = |zoom| {
+            let mut camera = at_zoom(zoom);
+            camera.scroll((1.0, 0.0), 5, 0.1);
+            camera.x - at_zoom(zoom).x
+        };
+        assert!(moved(1.0) < moved(0.0));
+    }
+
+    #[test]
+    fn ground_corners_are_a_trapezium_wider_at_the_far_edge() {
+        for zoom in [0.0, 0.5, 1.0] {
+            let camera = at_zoom(zoom);
+            let [top_left, top_right, bottom_right, bottom_left] =
+                View::new(camera, W, H).ground_corners().expect("the view always hits the ground");
+            let far_width = top_right.0 - top_left.0;
+            let near_width = bottom_right.0 - bottom_left.0;
+            assert!(far_width > near_width * 1.01, "at {zoom}: {far_width} vs {near_width}");
+            assert!(top_left.1 < bottom_left.1, "far edge is north of the near edge");
+            assert!((top_left.1 - top_right.1).abs() < 0.001, "edges stay level");
+            assert!(top_left.1 < camera.z && camera.z < bottom_left.1, "contains the target");
+        }
+    }
+
+    #[test]
+    fn ground_at_reverses_projection() {
+        for zoom in [0.0, 0.5, 1.0] {
+            let view = View::new(at_zoom(zoom), W, H);
+            let (x, z) = (5.0, at_zoom(zoom).z - 3.0);
+            let (sx, sy) = view.project(x, 0.0, z).unwrap();
+            let (gx, gz) = view.ground_at(sx, sy).unwrap();
+            assert!((gx - x).abs() < 0.01 && (gz - z).abs() < 0.01, "at {zoom}");
+        }
+    }
+
+    #[test]
+    fn minimap_positions_match_the_map_corners_and_round_trip() {
+        let rect = (1000.0, 100.0, 400.0);
+        let corner = |u, v| {
+            let (x, z) = grid_to_world(u, v);
+            world_to_minimap(rect, x, z)
+        };
+        assert_eq!(corner(0.0, 0.0), (1200.0, 100.0), "north is top middle");
+        assert_eq!(corner(LAST, LAST), (1200.0, 500.0), "south is bottom middle");
+        assert_eq!(corner(LAST, 0.0), (1400.0, 300.0), "east is right middle");
+        assert_eq!(corner(0.0, LAST), (1000.0, 300.0), "west is left middle");
+
+        let (x, z) = minimap_to_world(rect, 1250.0, 260.0).unwrap();
+        let back = world_to_minimap(rect, x, z);
+        assert!((back.0 - 1250.0).abs() < 0.01 && (back.1 - 260.0).abs() < 0.01);
+        assert_eq!(minimap_to_world(rect, 999.0, 300.0), None);
+        assert_eq!(minimap_to_world(rect, 1200.0, 500.0), None, "past the bottom edge");
+    }
+
+    #[test]
+    fn segments_clip_to_the_square() {
+        let square = (0.0, 0.0, 10.0);
+        let inside = ((1.0, 1.0), (9.0, 2.0));
+        assert_eq!(clip_to_square(inside.0, inside.1, square), Some(inside));
+        assert_eq!(clip_to_square((-5.0, 5.0), (15.0, 5.0), square), Some(((0.0, 5.0), (10.0, 5.0))));
+        assert_eq!(clip_to_square((-5.0, 20.0), (15.0, 20.0), square), None);
+        assert_eq!(clip_to_square((5.0, -5.0), (5.0, 5.0), square), Some(((5.0, 0.0), (5.0, 5.0))));
+    }
+
+    #[test]
+    fn the_bottom_position_draws_without_gaps_at_the_screen_edges() {
+        let mut out = Vec::new();
+        draw(&mut out, terrain(0), at_zoom(1.0), W, H);
+        assert!(!out.is_empty());
+        let lowest = out.iter().map(|v| v.y).fold(f32::MIN, f32::max);
+        assert!(lowest >= H, "terrain reaches the bottom of the screen: {lowest}");
     }
 
     #[test]
@@ -206,7 +590,7 @@ mod tests {
     #[test]
     fn the_camera_target_lands_at_screen_center() {
         let camera = Camera::centered();
-        let (x, y) = camera.project(camera.x, 0.0, camera.z, W, H).unwrap();
+        let (x, y) = View::new(camera, W, H).project(camera.x, 0.0, camera.z).unwrap();
         assert!((x - W / 2.0).abs() < 0.01 && (y - H / 2.0).abs() < 0.01);
     }
 

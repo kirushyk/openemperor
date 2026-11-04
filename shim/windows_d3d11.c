@@ -74,6 +74,11 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             e.y = (float)GET_Y_LPARAM(lp);
             push_event(e);
             return 0;
+        case WM_MOUSEWHEEL:
+            e.kind = OE_EVENT_WHEEL;
+            e.y = (float)GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
+            push_event(e);
+            return 0;
         case WM_LBUTTONDOWN:
             SetCapture(hwnd);
             e.kind = OE_EVENT_MOUSE_DOWN;

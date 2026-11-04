@@ -967,6 +967,16 @@ impl Game {
         }
     }
 
+    fn click_battle_minimap(&mut self) {
+        if self.screen != Screen::InGame {
+            return;
+        }
+        let rect = battlefield::overlay_minimap_rect(self.width, self.height);
+        if let Some((x, z)) = battlefield::minimap_to_world(rect, self.mouse.0, self.mouse.1) {
+            self.camera.look_at(x, z);
+        }
+    }
+
     fn start_battle(&mut self, map: usize, faction: Option<Faction>) {
         self.battle_map = map;
         self.faction = faction;
@@ -1167,9 +1177,12 @@ impl Game {
             Screen::Intro if self.screen_elapsed >= INTRO_SECONDS => self.set_screen(Screen::MainMenu),
             Screen::Loading if self.screen_elapsed >= LOADING_SECONDS => self.set_screen(Screen::InGame),
             Screen::Movie(faction) if self.screen_elapsed >= MOVIE_SECONDS => self.finish_movie(faction),
-            Screen::InGame if self.focused => {
-                let direction = battlefield::edge_direction(self.mouse, self.width, self.height);
-                self.camera.scroll(direction, self.settings.scroll_rate, dt);
+            Screen::InGame => {
+                self.camera.ease_zoom(dt);
+                if self.focused {
+                    let direction = battlefield::edge_direction(self.mouse, self.width, self.height);
+                    self.camera.scroll(direction, self.settings.scroll_rate, dt);
+                }
             }
             _ => {}
         }
@@ -1179,6 +1192,11 @@ impl Game {
         match event {
             Event::Quit => self.quit = true,
             Event::Focus(focused) => self.focused = focused,
+            Event::Wheel(notches) => {
+                if self.screen == Screen::InGame {
+                    self.camera.zoom_by(notches);
+                }
+            }
             Event::Resize(w, h) => {
                 self.width = w as f32;
                 self.height = h as f32;
@@ -1194,6 +1212,7 @@ impl Game {
                 if self.pressed.is_none() {
                     self.dragging = self.hovered_slider();
                     self.drag_to(self.mouse.0);
+                    self.click_battle_minimap();
                 }
             }
             // A button fires only if the press and the release both landed on it.
@@ -2226,6 +2245,104 @@ mod tests {
         game.handle(Event::Focus(true));
         game.update(0.5);
         assert!(game.camera.x > start.x);
+    }
+
+    fn settle_zoom(game: &mut Game) {
+        // Parked mid-screen so that edge scrolling stays out of the way.
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        for _ in 0..200 {
+            game.update(0.016);
+        }
+    }
+
+    #[test]
+    fn the_wheel_zooms_only_on_the_battlefield() {
+        let mut game = in_battle();
+        game.handle(Event::Wheel(100.0));
+        settle_zoom(&mut game);
+        assert_eq!(game.camera.zoom, 1.0, "wheel away from the player descends");
+        game.handle(Event::Wheel(-100.0));
+        settle_zoom(&mut game);
+        assert_eq!(game.camera.zoom, 0.0);
+
+        let mut game = in_setup();
+        game.handle(Event::Wheel(100.0));
+        for _ in 0..50 {
+            game.update(0.016);
+        }
+        assert_eq!(game.camera.zoom, 0.0, "menus ignore it");
+    }
+
+    #[test]
+    fn a_new_battle_starts_at_the_top_position() {
+        let mut game = in_battle();
+        game.handle(Event::Wheel(5.0));
+        settle_zoom(&mut game);
+        assert!(game.camera.zoom > 0.0);
+        click(&mut game, Action::Back);
+        click(&mut game, Action::Tutorial);
+        game.update(LOADING_SECONDS);
+        settle_zoom(&mut game);
+        assert_eq!(game.camera.zoom, 0.0);
+    }
+
+    fn click_at(game: &mut Game, x: f32, y: f32) {
+        game.handle(Event::MouseMove(x, y));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+    }
+
+    #[test]
+    fn clicking_the_minimap_sends_the_camera_there() {
+        let mut game = in_battle();
+        let rect = battlefield::overlay_minimap_rect(W, H);
+        let (x, y, size) = rect;
+        assert!(x + size <= W && x > W / 2.0 && y < H / 2.0, "top right");
+
+        // The east corner of the diamond.
+        click_at(&mut game, x + size - 1.0, y + size / 2.0);
+        let expected = battlefield::minimap_to_world(rect, x + size - 1.0, y + size / 2.0).unwrap();
+        assert!((game.camera.x - expected.0).abs() < 1.0, "went east: {}", game.camera.x);
+        assert!(game.camera.x > Camera::centered().x);
+
+        click_at(&mut game, x + size / 2.0, y + size / 2.0);
+        assert!((game.camera.x - Camera::centered().x).abs() < 0.01);
+        assert!((game.camera.z - Camera::centered().z).abs() < 0.01, "the middle is the map's middle");
+    }
+
+    #[test]
+    fn a_minimap_click_outside_the_diamond_stays_on_the_map() {
+        let mut game = in_battle();
+        let (x, y, _) = battlefield::overlay_minimap_rect(W, H);
+        click_at(&mut game, x + 1.0, y + 1.0);
+        let before = game.camera;
+        let mut landed = game.camera;
+        landed.look_at(before.x, before.z);
+        assert!((landed.x - before.x).abs() < 0.01 && (landed.z - before.z).abs() < 0.01, "already on the map");
+    }
+
+    #[test]
+    fn clicks_elsewhere_and_on_other_screens_leave_the_camera_alone() {
+        let mut game = in_battle();
+        let start = game.camera;
+        click_at(&mut game, W / 2.0, H / 2.0);
+        assert_eq!(game.camera, start);
+
+        let (x, y, size) = battlefield::overlay_minimap_rect(W, H);
+        let mut game = in_setup();
+        let start = game.camera;
+        click_at(&mut game, x + size - 1.0, y + size / 2.0);
+        assert_eq!(game.camera, start);
+    }
+
+    #[test]
+    fn the_battle_minimap_does_not_touch_the_scroll_edges_or_back() {
+        for (w, h) in [(1280.0, 720.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+            let (x, y, size) = battlefield::overlay_minimap_rect(w, h);
+            assert_eq!(battlefield::edge_direction((x + size - 1.0, y), w, h), (0.0, 0.0), "at {w}x{h}");
+            let back = buttons(Screen::InGame, w, h)[0];
+            assert!(back.x + back.w < x && y + size < back.y);
+        }
     }
 
     #[test]

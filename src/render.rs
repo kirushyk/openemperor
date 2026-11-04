@@ -27,6 +27,7 @@ const BUTTON_PRESSED: Color = [0.32, 0.27, 0.18, 1.0];
 const BORDER: Color = [0.38, 0.35, 0.28, 1.0];
 const DIM: Color = [0.0, 0.0, 0.0, 0.6];
 const INK: Color = [0.05, 0.05, 0.08, 1.0];
+const VIEW_OUTLINE: Color = [1.0, 1.0, 1.0, 1.0];
 const CURSOR_FILL: Color = [0.98, 0.98, 0.95, 1.0];
 const CURSOR_EDGE: Color = [0.0, 0.0, 0.0, 1.0];
 
@@ -71,6 +72,19 @@ impl Canvas {
         for i in 0..points * 2 {
             self.triangle([(cx, cy), vertex(i), vertex(i + 1)], c);
         }
+    }
+
+    fn line(&mut self, a: (f32, f32), b: (f32, f32), thickness: f32, c: Color) {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let length = dx.hypot(dy);
+        if length == 0.0 {
+            return;
+        }
+        let (nx, ny) = (-dy / length * thickness / 2.0, dx / length * thickness / 2.0);
+        let (p, q) = ((a.0 + nx, a.1 + ny), (b.0 + nx, b.1 + ny));
+        let (r, t) = ((b.0 - nx, b.1 - ny), (a.0 - nx, a.1 - ny));
+        self.triangle([p, q, r], c);
+        self.triangle([p, r, t], c);
     }
 
     fn polygon(&mut self, cx: f32, cy: f32, r: f32, sides: usize, rotation: f32, c: Color) {
@@ -169,6 +183,7 @@ pub fn build(game: &Game) -> Vec<Vertex> {
                 if let Some(faction) = game.faction {
                     canvas.text_centered(faction.label(), cx, 40.0 * s, 4.0 * s, TEXT);
                 }
+                draw_battle_minimap(&mut canvas, game);
             }
             if game.screen == Screen::SkirmishSetup {
                 draw_skirmish_setup(&mut canvas, game);
@@ -433,16 +448,76 @@ fn draw_ally(canvas: &mut Canvas, ally: Ally, cx: f32, cy: f32, r: f32, px: f32)
 
 /// The selected map's real terrain as a diamond, with its four corners named.
 fn draw_minimap(canvas: &mut Canvas, game: &Game) {
-    /// Grid steps per minimap cell.
-    const STEP: usize = 4;
     let s = ui_scale(game.height);
     let px = small_text_px(game.height);
     let (x, y, size) = minimap_rect(game.width, game.height);
-    let border = (2.0 * s).round().max(1.0);
+    draw_map_diamond(canvas, game, game.skirmish.map, (x, y, size));
+
+    let (mid_x, mid_y) = (x + size / 2.0, y + size / 2.0);
+    let inset = 16.0 * s;
+    canvas.text_centered("N", mid_x + inset * 1.5, y + inset, px, TEXT);
+    canvas.text_centered("S", mid_x + inset * 1.5, y + size - inset, px, TEXT);
+    canvas.text_centered("E", x + size - inset, mid_y - inset * 1.5, px, TEXT);
+    canvas.text_centered("W", x + inset, mid_y - inset * 1.5, px, TEXT);
+}
+
+/// The battlefield's minimap: terrain, a radar sweep, then the outline of the view.
+fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
+    let rect = battlefield::overlay_minimap_rect(game.width, game.height);
+    draw_map_diamond(canvas, game, game.battle_map, rect);
+    draw_radar_sweep(canvas, rect, game.screen_elapsed());
+
+    let view = battlefield::View::new(game.camera, game.width, game.height);
+    let Some(corners) = view.ground_corners() else { return };
+    let on_map = corners.map(|(x, z)| battlefield::world_to_minimap(rect, x, z));
+    let thickness = (2.0 * ui_scale(game.height)).max(1.0);
+    for i in 0..on_map.len() {
+        let (a, b) = (on_map[i], on_map[(i + 1) % on_map.len()]);
+        if let Some((a, b)) = battlefield::clip_to_square(a, b, rect) {
+            canvas.line(a, b, thickness, VIEW_OUTLINE);
+        }
+    }
+}
+
+/// A line turning around the minimap's center, fading out over the area it just crossed.
+fn draw_radar_sweep(canvas: &mut Canvas, (x, y, size): (f32, f32, f32), seconds: f32) {
+    const SECONDS_PER_TURN: f32 = 4.0;
+    const TRAIL: f32 = 1.2;
+    const WEDGES: usize = 40;
+    const STRONGEST_ALPHA: f32 = 0.45;
+    const SWEEP: [f32; 3] = [0.35, 1.0, 0.45];
+    let [r, g, b] = SWEEP;
+
+    let half = size / 2.0;
+    let center = (x + half, y + half);
+    let leading = seconds / SECONDS_PER_TURN * TAU;
+    // Reaches the square's edge in every direction, so the sweep fills the whole minimap.
+    let on_edge = |angle: f32| {
+        let (sin, cos) = angle.sin_cos();
+        let reach = half / sin.abs().max(cos.abs());
+        (center.0 + cos * reach, center.1 + sin * reach)
+    };
+    let vertex = |(px, py): (f32, f32), a: f32| Vertex { x: px, y: py, r, g, b, a };
+    for wedge in 0..WEDGES {
+        let (near, far) = (wedge as f32 / WEDGES as f32, (wedge + 1) as f32 / WEDGES as f32);
+        let (a_near, a_far) = (STRONGEST_ALPHA * (1.0 - near), STRONGEST_ALPHA * (1.0 - far));
+        canvas.vertices.extend([
+            vertex(center, a_near),
+            vertex(on_edge(leading - near * TRAIL), a_near),
+            vertex(on_edge(leading - far * TRAIL), a_far),
+        ]);
+    }
+    canvas.line(center, on_edge(leading), (size / 150.0).max(1.0), [r, g, b, 0.9]);
+}
+
+fn draw_map_diamond(canvas: &mut Canvas, game: &Game, map: usize, (x, y, size): (f32, f32, f32)) {
+    /// Grid steps per minimap cell.
+    const STEP: usize = 4;
+    let border = (2.0 * ui_scale(game.height)).round().max(1.0);
     canvas.rect(x - border, y - border, size + border * 2.0, size + border * 2.0, BORDER);
     canvas.rect(x, y, size, size, CLEAR_RGBA);
 
-    let terrain = battlefield::terrain(game.skirmish.map);
+    let terrain = battlefield::terrain(map);
     let cells = MAP_CELLS as f32;
     let to_screen = |u: usize, v: usize| {
         let (u, v) = (u as f32 / cells, v as f32 / cells);
@@ -462,13 +537,6 @@ fn draw_minimap(canvas: &mut Canvas, game: &Game) {
             canvas.triangle([a, c, d], color);
         }
     }
-
-    let (mid_x, mid_y) = (x + size / 2.0, y + size / 2.0);
-    let inset = 16.0 * s;
-    canvas.text_centered("N", mid_x + inset * 1.5, y + inset, px, TEXT);
-    canvas.text_centered("S", mid_x + inset * 1.5, y + size - inset, px, TEXT);
-    canvas.text_centered("E", x + size - inset, mid_y - inset * 1.5, px, TEXT);
-    canvas.text_centered("W", x + inset, mid_y - inset * 1.5, px, TEXT);
 }
 
 fn draw_sliders(canvas: &mut Canvas, game: &Game) {

@@ -38,6 +38,7 @@ static float g_mouse_x, g_mouse_y;
 static float g_scale;
 static int32_t g_width, g_height;
 static BOOL g_captured;
+static NSCursor *g_invisible_cursor;
 
 /* Detaching the OS cursor gives raw deltas, so the game cursor stops exactly at the
  * screen edge even when another monitor sits beyond it. */
@@ -46,6 +47,7 @@ static void set_captured(BOOL captured) {
     g_captured = captured;
     CGAssociateMouseAndMouseCursorPosition(!captured);
     if (captured) {
+        CGDisplayHideCursor(kCGDirectMainDisplay);
         [NSCursor hide];
         /* Presentation options only apply to the active app, so they follow activation.
          * The raised level must not persist while inactive: it would cover system dialogs. */
@@ -53,7 +55,9 @@ static void set_captured(BOOL captured) {
             NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
         g_window.level = NSMainMenuWindowLevel + 1;
     } else {
+        CGDisplayShowCursor(kCGDirectMainDisplay);
         [NSCursor unhide];
+        [[NSCursor arrowCursor] set];
         g_window.level = NSNormalWindowLevel;
         NSApp.presentationOptions = NSApplicationPresentationDefault;
     }
@@ -96,6 +100,10 @@ int32_t oe_init(const char *title, int32_t *width, int32_t *height) {
             return 0;
         }
         g_inflight = dispatch_semaphore_create(FRAMES_IN_FLIGHT);
+
+        g_invisible_cursor = [[NSCursor alloc]
+            initWithImage:[[NSImage alloc] initWithSize:NSMakeSize(16, 16)]
+                  hotSpot:NSZeroPoint];
 
         [NSApplication sharedApplication];
         NSApp.activationPolicy = NSApplicationActivationPolicyRegular;
@@ -144,6 +152,15 @@ static int32_t translate(NSEvent *e, OeEvent *out) {
             out->x = g_mouse_x;
             out->y = g_mouse_y;
             return 1;
+        case NSEventTypeScrollWheel: {
+            /* Trackpads report fine pixel deltas; about 40 of them feel like one notch. */
+            float notches = (float)e.scrollingDeltaY;
+            if (e.hasPreciseScrollingDeltas) notches /= 40.0f;
+            if (notches == 0.0f) return 0;
+            out->kind = OE_EVENT_WHEEL;
+            out->y = notches;
+            return 1;
+        }
         case NSEventTypeLeftMouseDown:
             out->kind = OE_EVENT_MOUSE_DOWN;
             return 1;
@@ -197,6 +214,9 @@ int32_t oe_poll_event(OeEvent *event) {
             event->a = active ? 1 : 0;
             return 1;
         }
+        /* AppKit can restore the arrow on its own, for example when the Dock or menu bar
+         * hides, and hiding alone does not undo that. Reasserting each frame does. */
+        if (g_captured) [g_invisible_cursor set];
 
         int32_t old_w = g_width, old_h = g_height;
         update_size();

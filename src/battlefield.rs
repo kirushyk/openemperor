@@ -45,7 +45,7 @@ const NEAR: f32 = 1.0;
 /// Pixels from the screen edge that start scrolling, on a 1080-pixel-tall screen.
 const EDGE_MARGIN: f32 = 4.0;
 /// World units per second, per point of the Scroll Rate option.
-const SCROLL_PER_RATE: f32 = 3.0;
+const SCROLL_PER_RATE: f32 = 15.0;
 
 pub struct Terrain {
     is_ground: Vec<bool>,
@@ -262,13 +262,6 @@ impl View {
             self.ground_at(0.0, bottom)?,
         ])
     }
-}
-
-/// The battlefield minimap, top right, as (x, y, size).
-pub fn overlay_minimap_rect(width: f32, height: f32) -> (f32, f32, f32) {
-    let s = crate::game::ui_scale(height);
-    let (margin, size) = (24.0 * s, 300.0 * s);
-    (width - margin - size, margin, size)
 }
 
 /// A world point's place on a minimap square whose inscribed diamond is the whole map.

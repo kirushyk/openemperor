@@ -2,9 +2,10 @@
 
 use crate::battlefield::{self, MAP_CELLS};
 use crate::font;
+use crate::hud;
 use crate::planet;
 use crate::game::{
-    Action, Ally, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, STATS_ROW_STEP,
+    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, STATS_ROW_STEP,
     STATS_ROW_TOP, Screen, TeamColor, buttons, checkbox_size, color_slots, map_items, minimap_rect,
     modal_rect, opponent_row, opponent_widgets, options_panel, setup_checkboxes, setup_widgets,
     small_text_px, stats_rect, ui_scale,
@@ -29,6 +30,10 @@ const BORDER: Color = [0.38, 0.35, 0.28, 1.0];
 const DIM: Color = [0.0, 0.0, 0.0, 0.6];
 const INK: Color = [0.05, 0.05, 0.08, 1.0];
 const WINDOW: Color = [0.07, 0.07, 0.10, 0.78];
+const CHAT_BACKING: Color = [0.0, 0.0, 0.0, 0.45];
+const ENERGY_LOW: [f32; 3] = [0.90, 0.15, 0.12];
+const ENERGY_HIGH: [f32; 3] = [0.20, 0.85, 0.25];
+const GAUGE_EMPTY: Color = [0.10, 0.10, 0.13, 1.0];
 const VIEW_OUTLINE: Color = [1.0, 1.0, 1.0, 1.0];
 const CURSOR_FILL: Color = [0.98, 0.98, 0.95, 1.0];
 const CURSOR_EDGE: Color = [0.0, 0.0, 0.0, 1.0];
@@ -240,7 +245,7 @@ fn draw_button(canvas: &mut Canvas, game: &Game, b: Button) {
     canvas.rect(b.x, b.y, b.w, b.h, edge);
     canvas.rect(b.x + border, b.y + border, b.w - border * 2.0, b.h - border * 2.0, fill);
     let px = match b.action {
-        Action::Tab(_) => small_text_px(game.height),
+        Action::Tab(_) | Action::HudSmall(_) | Action::HudWide(_) => small_text_px(game.height),
         _ => 4.0 * s,
     };
     canvas.text_centered(b.label, cx, cy, px, TEXT);
@@ -299,7 +304,136 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
     if let Some(faction) = game.faction {
         canvas.text_centered(faction.label(), game.width / 2.0, 40.0 * s, 4.0 * s, TEXT);
     }
+    draw_energy_gauge(canvas, game);
     draw_battle_minimap(canvas, game);
+    draw_money(canvas, game);
+    draw_sidebar(canvas, game);
+    draw_chat(canvas, game);
+}
+
+fn draw_money(canvas: &mut Canvas, game: &Game) {
+    let px = small_text_px(game.height);
+    let text = format!("${}", game.player_money());
+    let (right, cy) = hud::money_anchor(game.width, game.height);
+    canvas.text_left(&text, right - font::text_width(&text) * px, cy, px, GOLD);
+}
+
+/// An arc from 7 o'clock to 12 o'clock around the minimap. The filled part shows the energy,
+/// shading from red at its start towards green at the far end of the scale.
+fn draw_energy_gauge(canvas: &mut Canvas, game: &Game) {
+    const SEGMENTS: usize = 48;
+    let (cx, cy, inner, outer) = hud::gauge(game.width, game.height);
+    let span = hud::GAUGE_END_DEGREES - hud::GAUGE_START_DEGREES;
+    let filled = game.energy as f32 / hud::MAX_ENERGY as f32;
+    let shade = |t: f32| -> Color {
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        [
+            mix(ENERGY_LOW[0], ENERGY_HIGH[0]),
+            mix(ENERGY_LOW[1], ENERGY_HIGH[1]),
+            mix(ENERGY_LOW[2], ENERGY_HIGH[2]),
+            1.0,
+        ]
+    };
+    for i in 0..SEGMENTS {
+        let (from, to) = (i as f32 / SEGMENTS as f32, (i + 1) as f32 / SEGMENTS as f32);
+        let at = |t: f32, r: f32| hud::clock_point(cx, cy, r, hud::GAUGE_START_DEGREES + t * span);
+        let (a, b) = (at(from, inner), at(to, inner));
+        let (c, d) = (at(to, outer), at(from, outer));
+        let lit = from < filled;
+        let (color_from, color_to) = if lit { (shade(from), shade(to)) } else { (GAUGE_EMPTY, GAUGE_EMPTY) };
+        let vertex = |(x, y): (f32, f32), [r, g, b, a]: Color| Vertex { x, y, r, g, b, a };
+        canvas.vertices.extend([
+            vertex(a, color_from),
+            vertex(b, color_to),
+            vertex(c, color_to),
+            vertex(a, color_from),
+            vertex(c, color_to),
+            vertex(d, color_from),
+        ]);
+    }
+    let (x, y) = hud::energy_label_center(game.width, game.height);
+    canvas.text_centered(&game.energy.to_string(), x, y, small_text_px(game.height), TEXT);
+}
+
+/// The fake buttons, the tabs with their symbols, and the active tab's grid.
+fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
+    let s = ui_scale(game.height);
+    for b in hud::command_buttons(game.width, game.height) {
+        draw_button(canvas, game, b);
+    }
+    let letter = match game.build_tab {
+        BuildTab::Infantry => 'I',
+        BuildTab::Vehicles => 'V',
+        BuildTab::Buildings => 'B',
+    };
+    for (i, cell) in hud::grid_cells(game.width, game.height).into_iter().enumerate() {
+        draw_button(canvas, game, cell);
+        let (cx, cy) = (cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
+        draw_tab_symbol(canvas, game.build_tab, cx, cy, cell.w * 0.5, GOLD_DIM);
+        let label = format!("{letter}{}", i + 1);
+        canvas.text_left(&label, cell.x + 6.0 * s, cell.y + 14.0 * s, chat_px(game), TEXT);
+    }
+    for tab in hud::build_tabs(game.width, game.height) {
+        let Action::BuildTab(kind) = tab.action else { continue };
+        let selected = kind == game.build_tab;
+        let hovered = game.hovered() == Some(tab.action);
+        let border = (2.0 * s).round().max(1.0);
+        canvas.rect(tab.x, tab.y, tab.w, tab.h, if selected || hovered { GOLD } else { BORDER });
+        let fill = if selected { PANEL } else { button_fill(tab.action, game.hovered(), game.pressed) };
+        canvas.rect(tab.x + border, tab.y + border, tab.w - border * 2.0, tab.h - border * 2.0, fill);
+        let color = if selected { GOLD } else { TEXT };
+        draw_tab_symbol(canvas, kind, tab.x + tab.w / 2.0, tab.y + tab.h / 2.0, tab.w * 0.7, color);
+    }
+}
+
+fn chat_px(game: &Game) -> f32 {
+    hud::chat_text_px(game.height)
+}
+
+/// Small vector pictures built from the same triangles as everything else.
+fn draw_tab_symbol(canvas: &mut Canvas, tab: BuildTab, cx: f32, cy: f32, size: f32, c: Color) {
+    let u = size / 10.0;
+    match tab {
+        BuildTab::Infantry => {
+            // A soldier: head, body, legs, and a rifle held across.
+            canvas.circle(cx, cy - 3.6 * u, 1.2 * u, c);
+            canvas.line((cx, cy - 2.4 * u), (cx, cy + 1.0 * u), 1.6 * u, c);
+            canvas.line((cx, cy + 0.8 * u), (cx - 1.6 * u, cy + 4.6 * u), 1.1 * u, c);
+            canvas.line((cx, cy + 0.8 * u), (cx + 1.6 * u, cy + 4.6 * u), 1.1 * u, c);
+            canvas.line((cx - 2.8 * u, cy + 0.2 * u), (cx + 3.6 * u, cy - 2.6 * u), 0.8 * u, c);
+        }
+        BuildTab::Vehicles => {
+            // A tank: tracks, hull, turret and barrel.
+            canvas.rect(cx - 4.6 * u, cy + 1.2 * u, 9.2 * u, 2.2 * u, c);
+            canvas.rect(cx - 3.8 * u, cy - 0.6 * u, 7.6 * u, 1.4 * u, c);
+            canvas.rect(cx - 2.0 * u, cy - 2.6 * u, 3.8 * u, 1.7 * u, c);
+            canvas.line((cx + 1.6 * u, cy - 1.8 * u), (cx + 5.0 * u, cy - 2.6 * u), 0.7 * u, c);
+        }
+        BuildTab::Buildings => {
+            // A factory: walls under a sawtooth roof, with a chimney.
+            let (left, right, top, bottom) = (cx - 4.4 * u, cx + 4.4 * u, cy - 0.4 * u, cy + 4.0 * u);
+            canvas.rect(left, top, right - left, bottom - top, c);
+            let tooth = (right - left) / 3.0;
+            for i in 0..3 {
+                let x = left + i as f32 * tooth;
+                canvas.triangle([(x, top), (x + tooth, top), (x + tooth, top - 2.2 * u)], c);
+            }
+            canvas.rect(left + 0.6 * u, top - 4.0 * u, 1.3 * u, 4.0 * u, c);
+        }
+    }
+}
+
+/// The last few messages, on small dark strips so they read over any terrain.
+fn draw_chat(canvas: &mut Canvas, game: &Game) {
+    let s = ui_scale(game.height);
+    let px = chat_px(game);
+    for (i, line) in game.chat.iter().enumerate() {
+        let (x, cy) = hud::chat_line(i, game.height);
+        let (w, h) = (font::text_width(line) * px, font::CAP_HEIGHT * px);
+        let pad = 4.0 * s;
+        canvas.rect(x - pad, cy - h / 2.0 - pad, w + pad * 2.0, h + pad * 2.0, CHAT_BACKING);
+        canvas.text_left(line, x, cy, px, TEXT);
+    }
 }
 
 /// Everyone in this battle, in a window the battlefield shows through.
@@ -315,10 +449,11 @@ fn draw_diplomacy(canvas: &mut Canvas, game: &Game) {
     canvas.rect(x + border, y + border, w - border * 2.0, h - border * 2.0, WINDOW);
 
     canvas.text_centered("Diplomacy", x + w / 2.0, y + 40.0 * s, 5.0 * s, GOLD);
-    let (swatch_x, name_x, planet_x, faction_x, ally_x) =
-        (x + 30.0 * s, x + 90.0 * s, x + 520.0 * s, x + 570.0 * s, x + 800.0 * s);
+    let (swatch_x, name_x, money_x, planet_x, faction_x, ally_x) =
+        (x + 30.0 * s, x + 90.0 * s, x + 390.0 * s, x + 520.0 * s, x + 570.0 * s, x + 800.0 * s);
     let header_y = y + 88.0 * s;
     canvas.text_left("Player", name_x, header_y, px, QUIET);
+    canvas.text_left("Money", money_x, header_y, px, QUIET);
     canvas.text_left("Faction", faction_x, header_y, px, QUIET);
     canvas.text_left("Allies", ally_x - 22.0 * s, header_y, px, QUIET);
 
@@ -326,6 +461,7 @@ fn draw_diplomacy(canvas: &mut Canvas, game: &Game) {
         let cy = y + (STATS_ROW_TOP + (i as f32 + 0.5) * STATS_ROW_STEP) * s;
         canvas.rect(swatch_x, cy - 18.0 * s, 36.0 * s, 36.0 * s, team_color(row.color));
         canvas.text_left(&row.name, name_x, cy, px, TEXT);
+        canvas.text_left(&format!("${}", row.money), money_x, cy, px, GOLD);
         match row.faction {
             Some(faction) => {
                 draw_planet(canvas, game, faction, (planet_x, cy, 26.0 * s), BORDER);
@@ -527,7 +663,7 @@ fn draw_minimap(canvas: &mut Canvas, game: &Game) {
 
 /// The battlefield's minimap: terrain, a radar sweep, then the outline of the view.
 fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
-    let rect = battlefield::overlay_minimap_rect(game.width, game.height);
+    let rect = hud::minimap_rect(game.width, game.height);
     draw_map_diamond(canvas, game, game.battle_map, rect);
     draw_radar_sweep(canvas, rect, game.battle_time());
 

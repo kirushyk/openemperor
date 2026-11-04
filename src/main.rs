@@ -3,6 +3,7 @@
 mod battlefield;
 mod font;
 mod game;
+mod hud;
 mod planet;
 mod platform;
 mod render;

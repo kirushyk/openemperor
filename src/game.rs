@@ -1,11 +1,24 @@
 //! Game flow and menu logic. No OS or GPU code, so it runs under `cargo test`.
 
 use crate::battlefield::{self, Camera};
+use crate::hud;
 use crate::platform::{Event, Key};
 
 pub const INTRO_SECONDS: f32 = 3.0;
 pub const LOADING_SECONDS: f32 = 2.0;
 pub const MOVIE_SECONDS: f32 = 3.0;
+/// What the player and any opponents start with outside a skirmish, which sets its own.
+const DEFAULT_BATTLE_MONEY: i32 = 10000;
+/// A placeholder reading until buildings produce and consume energy.
+const STARTING_ENERGY: i32 = 65;
+
+/// The sidebar's three build menus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildTab {
+    Infantry,
+    Vehicles,
+    Buildings,
+}
 
 /// The three playable factions: A is blue, H red, O cyan. Each is shown as its planet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +70,7 @@ pub struct StatsRow {
     pub faction: Option<Faction>,
     pub color: TeamColor,
     pub allies: [Ally; 2],
+    pub money: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -354,6 +368,11 @@ pub enum Action {
     SaveGame,
     ExitGame,
     ReturnToGame,
+    /// The sidebar's fake buttons, which do nothing yet.
+    HudSmall(usize),
+    HudWide(usize),
+    BuildCell(usize),
+    BuildTab(BuildTab),
     NameField,
     MapDropdown,
     SelectMap(usize),
@@ -978,6 +997,14 @@ pub struct Game {
     pub stats_open: bool,
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
+    pub build_tab: BuildTab,
+    pub energy: i32,
+    /// The player's money first, then each opponent's.
+    money: Vec<i32>,
+    /// Newest last, at most `hud::CHAT_LINES`.
+    pub chat: Vec<&'static str>,
+    next_chat_at: f32,
+    chat_random: u32,
     skirmish_battle: bool,
     /// Seconds of battle played, which stand still while paused.
     battle_time: f32,
@@ -1011,6 +1038,12 @@ impl Game {
             key_paused: false,
             stats_open: false,
             minimap_dragging: false,
+            build_tab: BuildTab::Infantry,
+            energy: STARTING_ENERGY,
+            money: vec![DEFAULT_BATTLE_MONEY],
+            chat: Vec::new(),
+            next_chat_at: 0.0,
+            chat_random: 0x9E37_79B9,
             skirmish_battle: false,
             battle_time: 0.0,
             screen_elapsed: 0.0,
@@ -1024,6 +1057,30 @@ impl Game {
     /// A battle stands still with the Pause key on, or with a menu over it if it can.
     pub fn is_paused(&self) -> bool {
         self.in_battle && self.pausable && (self.key_paused || self.screen != Screen::InGame)
+    }
+
+    pub fn player_money(&self) -> i32 {
+        self.money[0]
+    }
+
+    fn next_random(&mut self) -> u32 {
+        // Xorshift: plenty for fake messages, and it needs no dependency.
+        self.chat_random ^= self.chat_random << 13;
+        self.chat_random ^= self.chat_random >> 17;
+        self.chat_random ^= self.chat_random << 5;
+        self.chat_random
+    }
+
+    /// Posts a random message every few seconds of battle, scrolling out the oldest.
+    fn update_chat(&mut self) {
+        while self.battle_time >= self.next_chat_at {
+            let index = self.next_random() as usize % hud::CHAT_MESSAGES.len();
+            self.chat.push(hud::CHAT_MESSAGES[index]);
+            if self.chat.len() > hud::CHAT_LINES {
+                self.chat.remove(0);
+            }
+            self.next_chat_at += 3.0 + (self.next_random() % 5) as f32;
+        }
     }
 
     /// The player, then each opponent in this battle.
@@ -1040,6 +1097,7 @@ impl Game {
                 faction: self.faction,
                 color,
                 allies: [Ally::None; 2],
+                money: self.player_money(),
             }];
         }
         let mut rows = vec![StatsRow {
@@ -1047,6 +1105,7 @@ impl Game {
             faction: Some(setup.faction),
             color: setup.color,
             allies: setup.allies,
+            money: self.player_money(),
         }];
         for (i, opponent) in setup.opponents[..setup.ai_players as usize].iter().enumerate() {
             rows.push(StatsRow {
@@ -1054,6 +1113,7 @@ impl Game {
                 faction: Some(opponent.faction),
                 color: opponent.color,
                 allies: opponent.allies,
+                money: self.money[i + 1],
             });
         }
         rows
@@ -1070,7 +1130,7 @@ impl Game {
         if self.screen != Screen::InGame || self.key_paused || self.stats_open {
             return;
         }
-        let rect = battlefield::overlay_minimap_rect(self.width, self.height);
+        let rect = hud::minimap_rect(self.width, self.height);
         if let Some((x, z)) = battlefield::minimap_to_world(rect, self.mouse.0, self.mouse.1) {
             self.camera.look_at(x, z);
             self.minimap_dragging = true;
@@ -1082,7 +1142,7 @@ impl Game {
         if !self.minimap_dragging || self.key_paused {
             return;
         }
-        let rect = battlefield::overlay_minimap_rect(self.width, self.height);
+        let rect = hud::minimap_rect(self.width, self.height);
         let (x, y, size) = rect;
         let px = self.mouse.0.clamp(x, x + size - 0.01);
         let py = self.mouse.1.clamp(y, y + size - 0.01);
@@ -1101,6 +1161,15 @@ impl Game {
         self.key_paused = false;
         self.stats_open = false;
         self.battle_time = 0.0;
+        self.build_tab = BuildTab::Infantry;
+        self.energy = STARTING_ENERGY;
+        self.money = if skirmish {
+            vec![self.skirmish.money; 1 + self.skirmish.ai_players as usize]
+        } else {
+            vec![DEFAULT_BATTLE_MONEY]
+        };
+        self.chat.clear();
+        self.next_chat_at = 1.0;
         self.set_screen(Screen::Loading);
     }
 
@@ -1234,6 +1303,9 @@ impl Game {
             return buttons.into_iter().find(|b| b.contains(x, y)).map(|b| b.action);
         }
         let mut widgets = Vec::new();
+        if self.screen == Screen::InGame && !self.key_paused {
+            widgets = hud::all_buttons(self.width, self.height);
+        }
         if self.screen == Screen::SkirmishSetup {
             widgets = setup_widgets(self.width, self.height);
             widgets.extend(opponent_widgets(
@@ -1301,6 +1373,7 @@ impl Game {
         self.screen_elapsed += dt;
         if self.in_battle && !self.is_paused() {
             self.battle_time += dt;
+            self.update_chat();
         }
         match self.screen {
             Screen::Intro if self.screen_elapsed >= INTRO_SECONDS => self.set_screen(Screen::MainMenu),
@@ -1418,7 +1491,13 @@ impl Game {
                 cycle_ally(&mut self.skirmish.opponents[slot].allies, ally);
             }
             // Not designed yet: these buttons respond to hover but do nothing.
-            Action::Multiplayer | Action::LoadGame | Action::SaveGame => {}
+            Action::BuildTab(tab) => self.build_tab = tab,
+            Action::Multiplayer
+            | Action::LoadGame
+            | Action::SaveGame
+            | Action::HudSmall(_)
+            | Action::HudWide(_)
+            | Action::BuildCell(_) => {}
         }
     }
 
@@ -1826,7 +1905,7 @@ mod tests {
         game.handle(Event::MouseMove(W - 1.0, H / 2.0));
         game.handle(Event::Wheel(5.0));
         game.update(0.5);
-        let (x, y, size) = battlefield::overlay_minimap_rect(W, H);
+        let (x, y, size) = hud::minimap_rect(W, H);
         click_at(&mut game, x + size - 1.0, y + size / 2.0);
         game.update(0.5);
         assert_eq!(game.camera, start);
@@ -1942,6 +2021,138 @@ mod tests {
             assert!(text_width("AI 7 (Defensive)") * small_text_px(h) < 380.0 * s);
             assert!(STATS_ROW_TOP + 8.0 * STATS_ROW_STEP <= 760.0, "eight rows fit");
         }
+    }
+
+    fn click_hud(game: &mut Game, action: Action) {
+        let b = hud::all_buttons(W, H).into_iter().find(|b| b.action == action).unwrap();
+        click_at(game, b.x + b.w / 2.0, b.y + b.h / 2.0);
+    }
+
+    #[test]
+    fn build_tabs_switch_and_a_new_battle_starts_on_infantry() {
+        let mut game = in_battle();
+        assert_eq!(game.build_tab, BuildTab::Infantry);
+        for tab in [BuildTab::Vehicles, BuildTab::Buildings, BuildTab::Infantry, BuildTab::Buildings] {
+            click_hud(&mut game, Action::BuildTab(tab));
+            assert_eq!(game.build_tab, tab);
+        }
+        leave_battle(&mut game);
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::Tutorial);
+        assert_eq!(game.build_tab, BuildTab::Infantry);
+    }
+
+    #[test]
+    fn fake_sidebar_buttons_light_up_and_change_nothing() {
+        let mut game = in_battle();
+        for b in hud::command_buttons(W, H).into_iter().chain(hud::grid_cells(W, H)) {
+            game.handle(Event::MouseMove(b.x + 1.0, b.y + 1.0));
+            assert_eq!(game.hovered(), Some(b.action));
+            game.handle(Event::MouseDown);
+            game.handle(Event::MouseUp);
+            assert_eq!(game.screen, Screen::InGame);
+        }
+        assert_eq!(game.build_tab, BuildTab::Infantry);
+    }
+
+    #[test]
+    fn the_sidebar_is_inactive_behind_the_menu_and_while_key_paused() {
+        let tab = hud::build_tabs(W, H)[1];
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Pause));
+        click_at(&mut game, tab.x + 1.0, tab.y + 1.0);
+        assert_eq!(game.build_tab, BuildTab::Infantry);
+
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Escape));
+        click_at(&mut game, tab.x + 1.0, tab.y + 1.0);
+        assert_eq!(game.build_tab, BuildTab::Infantry);
+    }
+
+    #[test]
+    fn the_sidebar_and_minimap_keep_their_clicks_apart() {
+        let mut game = in_battle();
+        let start = game.camera;
+        click_hud(&mut game, Action::HudSmall(2));
+        click_hud(&mut game, Action::BuildCell(14));
+        assert_eq!(game.camera, start);
+    }
+
+    #[test]
+    fn skirmish_players_all_start_with_the_chosen_money() {
+        let mut game = in_setup();
+        let money = slider(&game, SliderId::Money);
+        drag(&mut game, SliderId::Money, money.x_of(7500));
+        let ai = slider(&game, SliderId::AiPlayers);
+        drag(&mut game, SliderId::AiPlayers, ai.x_of(4));
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.player_money(), 7500);
+        let rows = game.stats_rows();
+        assert_eq!(rows.len(), 5);
+        for row in rows {
+            assert_eq!(row.money, 7500, "{}", row.name);
+        }
+    }
+
+    #[test]
+    fn tutorial_money_does_not_come_from_the_skirmish_setup() {
+        let mut game = in_setup();
+        let money = slider(&game, SliderId::Money);
+        drag(&mut game, SliderId::Money, money.x_of(500));
+        click(&mut game, Action::Back);
+        click(&mut game, Action::Tutorial);
+        assert_eq!(game.player_money(), DEFAULT_BATTLE_MONEY);
+        assert_eq!(game.stats_rows()[0].money, DEFAULT_BATTLE_MONEY);
+    }
+
+    #[test]
+    fn chat_posts_during_battle_and_keeps_only_the_last_few_lines() {
+        let mut game = in_battle();
+        assert!(game.chat.is_empty());
+        for _ in 0..10 {
+            game.update(1.0);
+        }
+        let posted = game.chat.len();
+        assert!(posted >= 2, "only {posted} after 10 seconds");
+        for _ in 0..200 {
+            game.update(1.0);
+            assert!(game.chat.len() <= hud::CHAT_LINES);
+        }
+        assert_eq!(game.chat.len(), hud::CHAT_LINES);
+    }
+
+    #[test]
+    fn chat_varies_and_uses_every_message_given_time() {
+        let mut game = in_battle();
+        let mut seen: Vec<&str> = Vec::new();
+        for _ in 0..3000 {
+            game.update(1.0);
+            for line in &game.chat {
+                if !seen.contains(line) {
+                    seen.push(line);
+                }
+            }
+        }
+        assert_eq!(seen.len(), hud::CHAT_MESSAGES.len());
+    }
+
+    #[test]
+    fn chat_stops_while_paused_and_clears_for_a_new_battle() {
+        let mut game = in_battle();
+        for _ in 0..20 {
+            game.update(1.0);
+        }
+        let before = game.chat.clone();
+        game.handle(Event::KeyDown(Key::Pause));
+        for _ in 0..20 {
+            game.update(1.0);
+        }
+        assert_eq!(game.chat, before);
+        leave_battle(&mut game);
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::Tutorial);
+        assert!(game.chat.is_empty());
     }
 
     #[test]
@@ -2635,7 +2846,7 @@ mod tests {
     #[test]
     fn clicking_the_minimap_sends_the_camera_there() {
         let mut game = in_battle();
-        let rect = battlefield::overlay_minimap_rect(W, H);
+        let rect = hud::minimap_rect(W, H);
         let (x, y, size) = rect;
         assert!(x + size <= W && x > W / 2.0 && y < H / 2.0, "top right");
 
@@ -2653,7 +2864,7 @@ mod tests {
     #[test]
     fn dragging_on_the_minimap_moves_the_camera_until_release() {
         let mut game = in_battle();
-        let rect = battlefield::overlay_minimap_rect(W, H);
+        let rect = hud::minimap_rect(W, H);
         let (x, y, size) = rect;
         let at = |fx: f32, fy: f32| (x + size * fx, y + size * fy);
         let world = |p: (f32, f32)| battlefield::minimap_to_world(rect, p.0, p.1).unwrap();
@@ -2678,7 +2889,7 @@ mod tests {
     #[test]
     fn a_minimap_drag_can_leave_the_minimap_without_scrolling_the_screen() {
         let mut game = in_battle();
-        let rect = battlefield::overlay_minimap_rect(W, H);
+        let rect = hud::minimap_rect(W, H);
         let (x, y, size) = rect;
         game.handle(Event::MouseMove(x + size / 2.0, y + size / 2.0));
         game.handle(Event::MouseDown);
@@ -2699,7 +2910,7 @@ mod tests {
     #[test]
     fn a_press_outside_the_minimap_does_not_start_a_drag() {
         let mut game = in_battle();
-        let (x, y, size) = battlefield::overlay_minimap_rect(W, H);
+        let (x, y, size) = hud::minimap_rect(W, H);
         let start = game.camera;
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         game.handle(Event::MouseDown);
@@ -2710,7 +2921,7 @@ mod tests {
     #[test]
     fn opening_the_menu_ends_a_minimap_drag() {
         let mut game = in_battle();
-        let (x, y, size) = battlefield::overlay_minimap_rect(W, H);
+        let (x, y, size) = hud::minimap_rect(W, H);
         game.handle(Event::MouseMove(x + size / 2.0, y + size / 2.0));
         game.handle(Event::MouseDown);
         game.handle(Event::KeyDown(Key::Escape));
@@ -2722,7 +2933,7 @@ mod tests {
     #[test]
     fn a_minimap_click_outside_the_diamond_stays_on_the_map() {
         let mut game = in_battle();
-        let (x, y, _) = battlefield::overlay_minimap_rect(W, H);
+        let (x, y, _) = hud::minimap_rect(W, H);
         click_at(&mut game, x + 1.0, y + 1.0);
         let before = game.camera;
         let mut landed = game.camera;
@@ -2737,7 +2948,7 @@ mod tests {
         click_at(&mut game, W / 2.0, H / 2.0);
         assert_eq!(game.camera, start);
 
-        let (x, y, size) = battlefield::overlay_minimap_rect(W, H);
+        let (x, y, size) = hud::minimap_rect(W, H);
         let mut game = in_setup();
         let start = game.camera;
         click_at(&mut game, x + size - 1.0, y + size / 2.0);
@@ -2747,7 +2958,7 @@ mod tests {
     #[test]
     fn the_battle_minimap_does_not_touch_the_scroll_edges() {
         for (w, h) in [(1280.0, 720.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
-            let (x, y, size) = battlefield::overlay_minimap_rect(w, h);
+            let (x, y, size) = hud::minimap_rect(w, h);
             assert_eq!(battlefield::edge_direction((x + size - 1.0, y), w, h), (0.0, 0.0), "at {w}x{h}");
         }
     }

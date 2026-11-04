@@ -30,6 +30,11 @@ const TOWER_IDLE_TURN: f32 = 0.5;
 /// A tower must point this close to its target, in radians, before it fires.
 const TOWER_ALIGNMENT: f32 = 0.1;
 
+/// Fire and gas stay low: anything higher than this above the ground is out of their reach.
+const SPRAY_CEILING: f32 = 2.0;
+/// How long one puff of fire or gas shows, a little longer than the time between puffs.
+const SPRAY_SECONDS: f32 = 0.3;
+
 /// Health a repair vehicle gives back with each pulse.
 const REPAIR_HEALTH: f32 = 12.0;
 
@@ -63,6 +68,14 @@ pub enum WeaponKind {
     Pistol,
     /// Like a bullet, but much stronger, even against armor.
     Cannon,
+    /// Like a bullet, but rapid, weak and able to reach the air.
+    AutoGun,
+    /// A missile that only goes for aircraft.
+    AirMissile,
+    /// Burns everything low enough in a short cone in front of it, once turned that way.
+    Flame,
+    /// Like flame, in green: reaches farther and wider, but hurts less.
+    Gas,
     /// Fixes friendly vehicles nearby instead of harming anyone.
     Repair,
     /// Carries nothing.
@@ -79,16 +92,22 @@ impl WeaponKind {
             WeaponKind::Sniper => 14.0,
             WeaponKind::Pistol => 5.0,
             WeaponKind::Cannon => 10.0,
+            WeaponKind::AutoGun => 8.0,
+            WeaponKind::AirMissile => 12.0,
+            WeaponKind::Flame => 4.5,
+            WeaponKind::Gas => 5.5,
             WeaponKind::Repair => 3.0,
             WeaponKind::Unarmed => 0.0,
         }
     }
 
     /// Mortar shells only come down on the ground. Everything else can aim up.
-    pub fn can_target(self, kind: UnitKind) -> bool {
+    pub fn can_target(self, kind: UnitKind, altitude: f32) -> bool {
         match self {
             WeaponKind::Unarmed | WeaponKind::Repair => false,
             WeaponKind::Mortar => !kind.flies(),
+            WeaponKind::Flame | WeaponKind::Gas => altitude <= SPRAY_CEILING,
+            WeaponKind::AirMissile => kind.flies(),
             _ => true,
         }
     }
@@ -101,6 +120,16 @@ impl WeaponKind {
             WeaponKind::Bullet => Some(7.0),
             WeaponKind::Sniper => Some(9.0),
             WeaponKind::Cannon => Some(16.0),
+            WeaponKind::AutoGun => Some(6.0),
+            _ => None,
+        }
+    }
+
+    /// How wide its cone is to each side, in radians, if it sprays one.
+    fn spray_angle(self) -> Option<f32> {
+        match self {
+            WeaponKind::Flame => Some(0.3),
+            WeaponKind::Gas => Some(0.45),
             _ => None,
         }
     }
@@ -114,6 +143,9 @@ impl WeaponKind {
             WeaponKind::Sniper => 3.5,
             WeaponKind::Pistol => 1.5,
             WeaponKind::Cannon => 3.0,
+            WeaponKind::AutoGun => 0.2,
+            WeaponKind::AirMissile => 3.0,
+            WeaponKind::Flame | WeaponKind::Gas => 0.15,
             WeaponKind::Repair => 0.4,
             WeaponKind::Unarmed => RETARGET_SECONDS,
         }
@@ -128,6 +160,10 @@ impl WeaponKind {
             WeaponKind::Sniper => 90.0,
             WeaponKind::Pistol => 8.0,
             WeaponKind::Cannon => 80.0,
+            WeaponKind::AutoGun => 6.0,
+            WeaponKind::AirMissile => 60.0,
+            WeaponKind::Flame => 10.0,
+            WeaponKind::Gas => 6.0,
             WeaponKind::Repair | WeaponKind::Unarmed => 0.0,
         }
     }
@@ -135,9 +171,11 @@ impl WeaponKind {
     /// Small arms barely scratch armor or walls.
     fn damage_to(self, kind: UnitKind) -> f32 {
         match (self, kind) {
-            (WeaponKind::Bullet | WeaponKind::Pistol | WeaponKind::Sniper, UnitKind::Vehicle | UnitKind::Tower) => {
-                self.damage() * 0.25
-            }
+            (
+                WeaponKind::Bullet | WeaponKind::Pistol | WeaponKind::Sniper | WeaponKind::AutoGun | WeaponKind::Gas,
+                UnitKind::Vehicle | UnitKind::Tower,
+            ) => self.damage() * 0.25,
+            (WeaponKind::Flame, UnitKind::Vehicle | UnitKind::Tower) => self.damage() * 0.5,
             _ => self.damage(),
         }
     }
@@ -195,6 +233,18 @@ pub struct Beam {
     pub repair: bool,
 }
 
+/// A puff of fire or gas, spreading from where it was sprayed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spray {
+    pub from: Point,
+    pub heading: f32,
+    pub reach: f32,
+    pub half_angle: f32,
+    pub gas: bool,
+    /// From 1 when it is sprayed down to 0.
+    pub life: f32,
+}
+
 /// The burst of light where a gun is fired.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Flare {
@@ -241,6 +291,7 @@ pub struct Combat {
     pub shells: Vec<Shell>,
     pub beams: Vec<Beam>,
     pub flares: Vec<Flare>,
+    pub sprays: Vec<Spray>,
     pub blasts: Vec<Blast>,
     pub strikes: Vec<Strike>,
     pub poison: Vec<PoisonZone>,
@@ -274,6 +325,10 @@ impl Combat {
             flare.life -= dt / FLARE_SECONDS;
         }
         self.flares.retain(|f| f.life > 0.0);
+        for spray in &mut self.sprays {
+            spray.life -= dt / SPRAY_SECONDS;
+        }
+        self.sprays.retain(|s| s.life > 0.0);
         for blast in &mut self.blasts {
             blast.life -= dt / BLAST_SECONDS;
         }
@@ -286,7 +341,8 @@ impl Combat {
                 continue;
             }
             units[i].cooldown -= dt;
-            let aimed = !units[i].kind.is_building() || turn_tubes(units, i, teams, dt);
+            let must_aim = units[i].kind.is_building() || units[i].weapon.spray_angle().is_some();
+            let aimed = !must_aim || turn_tubes(units, i, teams, dt);
             if units[i].cooldown > 0.0 {
                 continue;
             }
@@ -304,9 +360,14 @@ impl Combat {
                 self.flares.push(Flare { at: from, size, life: 1.0 });
             }
             match weapon {
-                WeaponKind::Bullet | WeaponKind::Sniper | WeaponKind::Pistol | WeaponKind::Cannon => {
+                WeaponKind::Bullet
+                | WeaponKind::Sniper
+                | WeaponKind::Pistol
+                | WeaponKind::Cannon
+                | WeaponKind::AutoGun => {
                     hit(&mut units[target], weapon);
                 }
+                WeaponKind::Flame | WeaponKind::Gas => self.spray(units, i, teams),
                 WeaponKind::Laser => {
                     hit(&mut units[target], weapon);
                     self.beams.push(Beam { from, to, life: 1.0, repair: false });
@@ -317,7 +378,7 @@ impl Combat {
                     self.beams.push(Beam { from, to, life: 1.0, repair: true });
                 }
                 WeaponKind::Unarmed => {}
-                WeaponKind::Missile => {
+                WeaponKind::Missile | WeaponKind::AirMissile => {
                     // From the ground it is launched upward, so that it visibly rises and turns
                     // towards its target. From the air it has a clear shot.
                     let (dx, dz) = (to.0 - from.0, to.2 - from.2);
@@ -348,6 +409,35 @@ impl Combat {
                 }
             }
         }
+    }
+
+    /// Everyone low enough in the cone in front of a unit gets hurt, if they are enemies of
+    /// whoever sprayed it.
+    fn spray(&mut self, units: &mut [Unit], sprayer: usize, teams: &[usize]) {
+        let unit = units[sprayer];
+        let Some(half_angle) = unit.weapon.spray_angle() else { return };
+        let reach = unit.weapon.range();
+        for other in units.iter_mut().filter(|u| u.alive && are_enemies(teams, unit.owner, u.owner)) {
+            if !unit.weapon.can_target(other.kind, other.altitude) {
+                continue;
+            }
+            let (dx, dz) = (other.x - unit.x, other.z - unit.z);
+            let away = dx.hypot(dz);
+            // A big target counts from as far around as its side reaches.
+            let off_center = turn_between(unit.heading, dz.atan2(dx)).abs();
+            let widened = half_angle + (other.kind.radius() / away.max(0.0001)).min(1.0).asin();
+            if away <= reach + other.kind.radius() && off_center <= widened {
+                hit(other, unit.weapon);
+            }
+        }
+        self.sprays.push(Spray {
+            from: unit.muzzle(),
+            heading: unit.heading,
+            reach,
+            half_angle,
+            gas: unit.weapon == WeaponKind::Gas,
+            life: 1.0,
+        });
     }
 
     fn fly_missiles(&mut self, units: &mut [Unit], terrain: &Terrain, dt: f32) {
@@ -455,11 +545,13 @@ fn hurt(unit: &mut Unit, damage: f32) {
     }
 }
 
-/// Turns a tower towards whoever it would fire at, or slowly around while nobody is in
-/// range. Returns whether it now points at a target.
+/// Turns a tower or a sprayer towards whoever it would fire at. A tower with nobody in range
+/// keeps looking slowly around. Returns whether it now points at a target.
 fn turn_tubes(units: &mut [Unit], tower: usize, teams: &[usize], dt: f32) -> bool {
     let Some(target) = choose_target(units, tower, teams) else {
-        units[tower].heading += TOWER_IDLE_TURN * dt;
+        if units[tower].kind.is_building() {
+            units[tower].heading += TOWER_IDLE_TURN * dt;
+        }
         return false;
     };
     let (dx, dz) = (units[target].x - units[tower].x, units[target].z - units[tower].z);
@@ -510,7 +602,7 @@ fn nearest_enemy(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usiz
     let weapon = units[shooter].weapon;
     let mut best_distance = weapon.range();
     for (i, unit) in units.iter().enumerate() {
-        if unit.alive && are_enemies(teams, owner, unit.owner) && weapon.can_target(unit.kind) {
+        if unit.alive && are_enemies(teams, owner, unit.owner) && weapon.can_target(unit.kind, unit.altitude) {
             let away = distance(from, unit.center());
             if away <= best_distance {
                 best = Some(i);
@@ -1111,6 +1203,141 @@ mod tests {
         let mut far = repair_scene(0, 9.0, UnitKind::Vehicle);
         run_scene(&mut far, &TEAMS);
         assert_eq!(far[1].health, 50.0, "out of reach");
+    }
+
+    #[test]
+    fn the_air_defense_gun_is_rapid_and_hits_the_air_and_the_ground_with_only_a_flare() {
+        for enemy in [plane_at(4.0, 60.0), target_at(4.0, 60.0)] {
+            let mut units = [shooter(WeaponKind::AutoGun), enemy];
+            let start = units[1].health;
+            let mut combat = Combat::default();
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            assert!(units[1].health < start, "{enemy:?}");
+            assert_eq!(combat.flares.len(), 1);
+            assert!(combat.beams.is_empty() && combat.missiles.is_empty());
+        }
+        assert!(WeaponKind::AutoGun.cooldown() < WeaponKind::Bullet.cooldown());
+    }
+
+    #[test]
+    fn the_drone_fires_missiles_at_aircraft_and_ignores_the_ground() {
+        let mut drone = Unit::for_test(0.0, 60.0, UnitKind::Aircraft);
+        drone.id = 1;
+        drone.weapon = WeaponKind::AirMissile;
+        let mut units = [drone, target_at(3.0, 60.0)];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 2.0);
+        assert!(combat.missiles.is_empty(), "held fire at the ground");
+        assert_eq!(units[1].health, 100.0);
+
+        let mut units = [drone, plane_at(4.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert_eq!(combat.missiles.len(), 1);
+        units[0].cooldown = 1000.0;
+        run(&mut combat, &mut units, 3.0);
+        assert!(units[1].health < UnitKind::Aircraft.max_health(), "and it hit");
+    }
+
+    fn sprayer(weapon: WeaponKind) -> Unit {
+        let mut unit = shooter(weapon);
+        unit.heading = 0.0;
+        unit
+    }
+
+    #[test]
+    fn a_sprayer_turns_to_its_target_first_and_then_burns_it() {
+        for weapon in [WeaponKind::Flame, WeaponKind::Gas] {
+            // Due west, behind it.
+            let mut units = [sprayer(weapon), target_at(-3.0, 60.0)];
+            units[1].health = 100_000.0;
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 0.5);
+            assert_eq!(units[1].health, 100_000.0, "{weapon:?} still turning");
+            assert!(combat.sprays.is_empty());
+            assert_ne!(units[0].heading, 0.0);
+            run(&mut combat, &mut units, 2.0);
+            assert!(units[1].health < 100_000.0, "{weapon:?}");
+            assert!(units[0].heading.cos() < -0.9, "{weapon:?} faces west");
+            assert_eq!(combat.sprays[0].gas, weapon == WeaponKind::Gas);
+        }
+    }
+
+    #[test]
+    fn a_spray_burns_everyone_in_its_cone_and_nobody_outside_it() {
+        let mut in_cone = target_at(3.0, 60.3);
+        in_cone.id = 3;
+        let mut behind = target_at(-1.0, 60.0);
+        behind.id = 4;
+        let mut far = target_at(10.0, 60.0);
+        far.id = 5;
+        let mut friend = Unit::for_test(2.5, 59.8, UnitKind::Infantry);
+        friend.id = 6;
+        friend.cooldown = 1000.0;
+        let mut units = [sprayer(WeaponKind::Flame), target_at(3.0, 60.0), in_cone, behind, far, friend];
+        units[0].target = Some(2);
+        let mut combat = Combat::default();
+        for _ in 0..4 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert!(units[1].health < 100.0, "the target");
+        assert!(units[2].health < 100.0, "the one beside it");
+        assert_eq!(units[3].health, 100.0, "behind it");
+        assert_eq!(units[4].health, 100.0, "too far");
+        assert_eq!(units[5].health, 100.0, "a friend");
+    }
+
+    #[test]
+    fn fire_and_gas_do_not_hurt_aircraft_or_get_aimed_at_them() {
+        for weapon in [WeaponKind::Flame, WeaponKind::Gas] {
+            let mut units = [sprayer(weapon), plane_at(1.0, 60.0)];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 2.0);
+            assert_eq!(units[1].health, UnitKind::Aircraft.max_health(), "{weapon:?}");
+            assert!(combat.sprays.is_empty(), "{weapon:?} held fire");
+
+            // Sprayed at the ground below one, it passes under.
+            let mut units = [sprayer(weapon), target_at(3.0, 60.0), plane_at(3.0, 60.0)];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 1.0);
+            assert!(units[1].health < 100.0);
+            assert_eq!(units[2].health, UnitKind::Aircraft.max_health(), "{weapon:?}");
+        }
+    }
+
+    #[test]
+    fn what_keeps_fire_and_gas_off_is_height_and_not_being_an_aircraft() {
+        for weapon in [WeaponKind::Flame, WeaponKind::Gas] {
+            let mut low = plane_at(2.0, 60.0);
+            low.altitude = SPRAY_CEILING;
+            let mut units = [sprayer(weapon), low];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 0.5);
+            assert!(units[1].health < UnitKind::Aircraft.max_health(), "{weapon:?} reaches low flyers");
+
+            let mut high = target_at(2.0, 60.0);
+            high.altitude = SPRAY_CEILING + 0.5;
+            let mut units = [sprayer(weapon), high];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 0.5);
+            assert_eq!(units[1].health, 100.0, "{weapon:?} misses whatever is above it");
+        }
+    }
+
+    #[test]
+    fn a_flame_tower_turns_and_throws_fire_from_its_one_nozzle() {
+        let mut flame = Unit::for_test(0.0, 60.0, UnitKind::Tower);
+        flame.role = crate::units::Role::FlameTower;
+        flame.id = 1;
+        flame.weapon = WeaponKind::Flame;
+        flame.heading = 0.0;
+        let mut units = [flame, target_at(0.0, 63.0)];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 2.0);
+        assert!(units[1].health < 100.0);
+        assert!(units[0].heading.sin() > 0.9, "it faces south: {}", units[0].heading);
+        let (nozzle, center) = (combat.sprays[0].from, units[0].heading);
+        assert!((nozzle.0 - center.cos() * 0.7).abs() < 0.01, "straight ahead of it");
     }
 
     #[test]

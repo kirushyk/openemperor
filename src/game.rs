@@ -22,9 +22,19 @@ const STARTING_ENERGY: i32 = 65;
 /// The Vehicles menu's cell holding the superweapon.
 pub const SUPERWEAPON_CELL: usize = 3;
 /// What each tab's first cells produce, in order.
-const INFANTRY_BUILDS: [Role; 5] =
-    [Role::Scout, Role::LightInfantry, Role::Sniper, Role::Engineer, Role::KInfantry];
+const INFANTRY_BUILDS: [Role; 7] = [
+    Role::Scout,
+    Role::LightInfantry,
+    Role::Sniper,
+    Role::Engineer,
+    Role::KInfantry,
+    Role::FlameInfantry,
+    Role::GasInfantry,
+];
 const VEHICLE_BUILDS: [Role; 3] = [Role::Tank, Role::RepairVehicle, Role::Catapult];
+/// What the Vehicles menu's bottom row makes, from its left end.
+const BOTTOM_VEHICLE_BUILDS: [Role; 2] = [Role::AirDefensePlatform, Role::AirDrone];
+const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
 /// Seconds of battle before the superweapon can fire again.
 pub const SUPERWEAPON_RECHARGE: f32 = 60.0;
 
@@ -1262,7 +1272,10 @@ impl Game {
     pub fn build_role(tab: BuildTab, cell: usize) -> Option<Role> {
         match tab {
             BuildTab::Infantry => INFANTRY_BUILDS.get(cell).copied(),
-            BuildTab::Vehicles => VEHICLE_BUILDS.get(cell).copied(),
+            BuildTab::Vehicles => VEHICLE_BUILDS
+                .get(cell)
+                .or_else(|| BOTTOM_VEHICLE_BUILDS.get(cell.checked_sub(BOTTOM_ROW_START)?))
+                .copied(),
             BuildTab::Buildings => None,
         }
     }
@@ -2576,8 +2589,7 @@ mod tests {
         game.update(LOADING_SECONDS);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         // A tower cannot be run over, so this enemy has none.
-        let tower = tower_of(&game, 1);
-        game.units[tower].alive = false;
+        game.units.retain(|u| u.owner != 1 || !u.kind.is_building());
         let count = game.units.iter().filter(|u| u.owner == 1 && u.kind == UnitKind::Infantry).count() as i32;
         for _ in 0..4000 {
             let Some(target) = game.units.iter().find(|u| u.owner == 1) else { break };
@@ -2854,7 +2866,7 @@ mod tests {
         }
         assert_eq!(game.outcome, Some(Outcome::Victory));
         assert_eq!(game.killed.infantry, enemies);
-        assert_eq!(game.killed.buildings, 1, "its tower fell too");
+        assert_eq!(game.killed.buildings, 2, "its towers fell too");
     }
 
     #[test]
@@ -3308,7 +3320,7 @@ mod tests {
     }
 
     fn tower_of(game: &Game, owner: usize) -> usize {
-        game.units.iter().position(|u| u.owner == owner && u.kind == UnitKind::Tower).unwrap()
+        game.units.iter().position(|u| u.owner == owner && u.role == Role::Tower).unwrap()
     }
 
     #[test]
@@ -3409,7 +3421,7 @@ mod tests {
     fn other_build_cells_still_make_nothing_nor_does_a_finished_battle() {
         let mut game = in_battle();
         let before = game.units.len();
-        click_hud(&mut game, Action::BuildCell(5));
+        click_hud(&mut game, Action::BuildCell(7));
         click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
         click_hud(&mut game, Action::BuildCell(0));
         assert_eq!(game.units.len(), before);
@@ -3476,6 +3488,7 @@ mod tests {
         for unit in game.units.iter_mut().filter(|u| u.owner == 1 && !u.kind.is_building()) {
             unit.alive = false;
         }
+        game.units.retain(|u| u.owner != 1 || u.role != Role::FlameTower);
         let tower = tower_of(&game, 1);
         // Disarmed, tough enough to outlast the player's own fire, and moved into view.
         game.units[tower].cooldown = 1e9;
@@ -3487,6 +3500,9 @@ mod tests {
         let engineer = select_new(&mut game, 3);
         let engineer_id = game.units[engineer].id;
         let enemy = game.units.iter().position(|u| u.id == id).unwrap();
+        // On the far side from the player's group, so that nobody stands in the way.
+        let (x, z) = (game.units[engineer].x - 5.0, game.units[engineer].z);
+        (game.units[enemy].x, game.units[enemy].z, game.units[enemy].destination) = (x, z, (x, z));
         let unit = game.units[enemy];
         let (px, py) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
         click_at(&mut game, px, py);
@@ -3501,6 +3517,49 @@ mod tests {
         let engineer = game.units.iter().find(|u| u.id == engineer_id).unwrap();
         assert_eq!((captured.owner, captured.color), (0, engineer.color));
         assert_eq!(game.killed.buildings, 0, "taken, not destroyed");
+    }
+
+    #[test]
+    fn the_bottom_of_the_vehicles_menu_makes_the_air_defense_platform_and_the_drone() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        for (cell, name) in [(12, "Air Defense Platform"), (13, "Air Drone")] {
+            let before = game.units.len();
+            click_hud(&mut game, Action::BuildCell(cell));
+            assert_eq!(game.units[before].name(), name);
+            assert_eq!(game.units[before].kind, UnitKind::Aircraft);
+        }
+        let before = game.units.len();
+        click_hud(&mut game, Action::BuildCell(14));
+        assert_eq!(game.units.len(), before, "nothing else down there");
+        assert!(!crate::render::build(&game).is_empty());
+    }
+
+    #[test]
+    fn the_infantry_menu_also_makes_flame_and_gas_infantry() {
+        let mut game = in_battle();
+        for (cell, name) in [(5, "Flame Infantry"), (6, "Gas Infantry")] {
+            let before = game.units.len();
+            click_hud(&mut game, Action::BuildCell(cell));
+            assert_eq!(game.units[before].name(), name);
+        }
+    }
+
+    #[test]
+    fn fire_and_gas_draw_without_trouble() {
+        let mut game = in_battle();
+        let (x, z) = (game.camera.x, game.camera.z);
+        for gas in [false, true] {
+            game.combat.sprays.push(crate::weapons::Spray {
+                from: (x, 1.0, z),
+                heading: 0.5,
+                reach: 4.5,
+                half_angle: 0.3,
+                gas,
+                life: 0.5,
+            });
+        }
+        assert!(!crate::render::build(&game).is_empty());
     }
 
     #[test]

@@ -98,7 +98,7 @@ impl UnitKind {
 }
 
 /// How high aircraft fly, in world units.
-const CRUISE_ALTITUDE: f32 = 3.0;
+const CRUISE_ALTITUDE: f32 = 4.0;
 /// What a unit is, beyond how it moves: this names it and decides what it starts with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -117,16 +117,32 @@ pub enum Role {
     /// Lobs shells in a ballistic arc.
     Catapult,
     Aircraft,
+    /// Hangs in the air and fires an automatic gun at the air and the ground alike.
+    AirDefensePlatform,
+    /// Flies, and fires its missiles at enemy aircraft only.
+    AirDrone,
+    /// Sprays fire at the ground in front of it.
+    FlameInfantry,
+    /// Sprays green gas at the ground in front of it.
+    GasInfantry,
     Tower,
+    /// A tower that throws fire.
+    FlameTower,
 }
 
 impl Role {
     pub fn kind(self) -> UnitKind {
         match self {
-            Role::LightInfantry | Role::Scout | Role::Sniper | Role::Engineer | Role::KInfantry => UnitKind::Infantry,
+            Role::LightInfantry
+            | Role::Scout
+            | Role::Sniper
+            | Role::Engineer
+            | Role::KInfantry
+            | Role::FlameInfantry
+            | Role::GasInfantry => UnitKind::Infantry,
             Role::Tank | Role::RepairVehicle | Role::Catapult => UnitKind::Vehicle,
-            Role::Aircraft => UnitKind::Aircraft,
-            Role::Tower => UnitKind::Tower,
+            Role::Aircraft | Role::AirDefensePlatform | Role::AirDrone => UnitKind::Aircraft,
+            Role::Tower | Role::FlameTower => UnitKind::Tower,
         }
     }
 
@@ -141,7 +157,12 @@ impl Role {
             Role::RepairVehicle => "Repair Vehicle",
             Role::Catapult => "Catapult",
             Role::Aircraft => "Aircraft",
+            Role::AirDefensePlatform => "Air Defense Platform",
+            Role::AirDrone => "Air Drone",
+            Role::FlameInfantry => "Flame Infantry",
+            Role::GasInfantry => "Gas Infantry",
             Role::Tower => "Tower",
+            Role::FlameTower => "Flame Tower",
         }
     }
 
@@ -155,6 +176,10 @@ impl Role {
             Role::RepairVehicle => WeaponKind::Repair,
             Role::Catapult => WeaponKind::Mortar,
             Role::Aircraft | Role::Tower => WeaponKind::Missile,
+            Role::AirDefensePlatform => WeaponKind::AutoGun,
+            Role::AirDrone => WeaponKind::AirMissile,
+            Role::FlameInfantry | Role::FlameTower => WeaponKind::Flame,
+            Role::GasInfantry => WeaponKind::Gas,
         }
     }
 
@@ -166,6 +191,9 @@ impl Role {
             Role::KInfantry => 120.0,
             Role::RepairVehicle => 200.0,
             Role::Catapult => 180.0,
+            Role::AirDefensePlatform => 200.0,
+            Role::AirDrone => 80.0,
+            Role::FlameTower => 500.0,
             _ => self.kind().max_health(),
         }
     }
@@ -174,6 +202,8 @@ impl Role {
         match self {
             Role::Scout => 4.0,
             Role::Catapult => 3.5,
+            Role::AirDefensePlatform => 3.0,
+            Role::AirDrone => 8.0,
             _ => self.kind().speed(),
         }
     }
@@ -285,7 +315,7 @@ impl Unit {
         self.alive
             && other.alive
             && are_enemies(teams, self.owner, other.owner)
-            && self.weapon.can_target(other.kind)
+            && self.weapon.can_target(other.kind, other.altitude)
     }
 
     /// Whether it could be at this spot. Aircraft only have to stay on the map.
@@ -307,7 +337,11 @@ impl Unit {
     pub fn muzzle(&self) -> (f32, f32, f32) {
         if self.kind.is_building() {
             let (sin, cos) = self.heading.sin_cos();
-            let side = if self.second_tube { TUBE_SPREAD } else { -TUBE_SPREAD };
+            let side = match (self.role, self.second_tube) {
+                (Role::FlameTower, _) => 0.0,
+                (_, true) => TUBE_SPREAD,
+                (_, false) => -TUBE_SPREAD,
+            };
             return (
                 self.x + cos * TUBE_REACH - sin * side,
                 self.y + TUBE_HEIGHT,
@@ -456,6 +490,11 @@ fn place_tower(units: &mut Vec<Unit>, terrain: &Terrain, at: (f32, f32), side: (
     place_unit(units, terrain, at, Role::Tower, Role::Tower.weapon(), side, id);
 }
 
+fn place_flame_tower(units: &mut Vec<Unit>, terrain: &Terrain, at: (f32, f32), side: (usize, TeamColor)) {
+    let id = units.len() as u32;
+    place_unit(units, terrain, at, Role::FlameTower, Role::FlameTower.weapon(), side, id);
+}
+
 /// Adds a new unit at the free spot nearest to a point, if there is one. Returns whether
 /// it did. Nobody stands or is headed where it appears.
 pub fn produce(
@@ -485,14 +524,15 @@ pub fn toggle_deploy(units: &mut [Unit]) {
     }
 }
 
-/// The player gets a block and a tower at the map's middle and another block a long scroll
-/// away. Each opponent gets one block and a tower, evenly around a ring. `colors` holds the
-/// player's, then the opponents'.
+/// The player gets a block between two towers at the map's middle and another block a long
+/// scroll away. Each opponent gets one block between two towers, evenly around a ring.
+/// `colors` holds the player's, then the opponents'.
 pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
     let mut units = Vec::new();
     let player = (0, colors[0]);
     spawn_group(&mut units, terrain, (0.0, MAP_MIDDLE_Z), (4, ROWS_WITH_AIRCRAFT), player);
     place_tower(&mut units, terrain, (PLAYER_TOWER_OFFSET, MAP_MIDDLE_Z), player);
+    place_flame_tower(&mut units, terrain, (-PLAYER_TOWER_OFFSET, MAP_MIDDLE_Z), player);
     spawn_group(&mut units, terrain, (SECOND_GROUP_X, MAP_MIDDLE_Z), (4, 2), player);
     let opponents = colors.len() - 1;
     for (i, &color) in colors[1..].iter().enumerate() {
@@ -503,6 +543,8 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
         spawn_group(&mut units, terrain, center, (3, 2), (i + 1, color));
         let tower = (center.0 + OPPONENT_TOWER_OFFSET * cos, center.1 + OPPONENT_TOWER_OFFSET * sin);
         place_tower(&mut units, terrain, tower, (i + 1, color));
+        let flame = (center.0 - OPPONENT_TOWER_OFFSET * cos, center.1 - OPPONENT_TOWER_OFFSET * sin);
+        place_flame_tower(&mut units, terrain, flame, (i + 1, color));
     }
     units
 }
@@ -1295,10 +1337,22 @@ mod tests {
     }
 
     #[test]
+    fn everyone_starts_with_a_flame_tower_as_well_in_their_color() {
+        let units = spawn(terrain(0), &COLORS);
+        for owner in 0..COLORS.len() {
+            let flame: Vec<_> = units.iter().filter(|u| u.owner == owner && u.role == Role::FlameTower).collect();
+            assert_eq!(flame.len(), 1);
+            assert_eq!(flame[0].color, COLORS[owner]);
+            assert_eq!(flame[0].weapon, WeaponKind::Flame);
+            assert!(!flame[0].is_selectable());
+        }
+    }
+
+    #[test]
     fn everyone_starts_with_one_tower_of_their_color_with_missiles() {
         let units = spawn(terrain(0), &COLORS);
         for owner in 0..COLORS.len() {
-            let towers: Vec<_> = units.iter().filter(|u| u.owner == owner && u.kind == UnitKind::Tower).collect();
+            let towers: Vec<_> = units.iter().filter(|u| u.owner == owner && u.role == Role::Tower).collect();
             assert_eq!(towers.len(), 1);
             assert_eq!(towers[0].color, COLORS[owner]);
             assert_eq!(towers[0].weapon, WeaponKind::Missile);
@@ -1379,6 +1433,10 @@ mod tests {
             (Role::Tank, WeaponKind::Cannon, "Tank"),
             (Role::RepairVehicle, WeaponKind::Repair, "Repair Vehicle"),
             (Role::Catapult, WeaponKind::Mortar, "Catapult"),
+            (Role::AirDefensePlatform, WeaponKind::AutoGun, "Air Defense Platform"),
+            (Role::AirDrone, WeaponKind::AirMissile, "Air Drone"),
+            (Role::FlameInfantry, WeaponKind::Flame, "Flame Infantry"),
+            (Role::GasInfantry, WeaponKind::Gas, "Gas Infantry"),
         ];
         for (role, weapon, name) in expected {
             let unit = produced(role);
@@ -1395,6 +1453,34 @@ mod tests {
             assert!(produce(&mut units, open_ground(), Role::Tank, (0.0, 60.0), (0, TeamColor::Blue), id));
         }
         assert!(largest_overlap(&units) <= 0.0, "{}", largest_overlap(&units));
+    }
+
+    #[test]
+    fn the_platform_and_the_drone_stay_in_the_air() {
+        for role in [Role::AirDefensePlatform, Role::AirDrone] {
+            assert_eq!(role.kind(), UnitKind::Aircraft);
+            assert_eq!(produced(role).altitude, CRUISE_ALTITUDE);
+        }
+    }
+
+    #[test]
+    fn the_drone_can_be_told_to_attack_only_aircraft_and_the_platform_anything() {
+        let (plane, tank) = (enemy_at(1.0, 60.0, UnitKind::Aircraft), enemy_at(1.0, 60.0, UnitKind::Vehicle));
+        let (drone, platform) = (produced(Role::AirDrone), produced(Role::AirDefensePlatform));
+        assert!(drone.can_attack(&plane, &TWO_SIDES));
+        assert!(!drone.can_attack(&tank, &TWO_SIDES));
+        assert!(platform.can_attack(&plane, &TWO_SIDES));
+        assert!(platform.can_attack(&tank, &TWO_SIDES));
+    }
+
+    #[test]
+    fn flame_and_gas_infantry_can_be_told_to_attack_the_ground_but_not_aircraft() {
+        let (plane, tank) = (enemy_at(1.0, 60.0, UnitKind::Aircraft), enemy_at(1.0, 60.0, UnitKind::Vehicle));
+        for role in [Role::FlameInfantry, Role::GasInfantry] {
+            let unit = produced(role);
+            assert!(unit.can_attack(&tank, &TWO_SIDES), "{role:?}");
+            assert!(!unit.can_attack(&plane, &TWO_SIDES), "{role:?}");
+        }
     }
 
     #[test]

@@ -43,6 +43,8 @@ const LASER_GLOW: Color = [1.0, 0.25, 0.2, 0.35];
 const LASER_CORE: Color = [1.0, 0.9, 0.85, 1.0];
 const REPAIR_GLOW: Color = [0.3, 1.0, 0.5, 0.35];
 const REPAIR_CORE: Color = [0.85, 1.0, 0.9, 1.0];
+const FIRE_COLOR: [f32; 3] = [1.0, 0.5, 0.1];
+const GAS_COLOR: [f32; 3] = [0.35, 0.9, 0.25];
 const FLARE_GLOW: [f32; 3] = [1.0, 0.7, 0.2];
 const FLARE_CORE: [f32; 3] = [1.0, 0.97, 0.8];
 const BLAST_COLOR: [f32; 3] = [1.0, 0.62, 0.15];
@@ -563,6 +565,9 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
             canvas.line(a, b, (2.5 * s).max(1.0), [r, g, bl, alpha * beam.life]);
         }
     }
+    for spray in &game.combat.sprays {
+        draw_spray(canvas, view, spray);
+    }
     for flare in &game.combat.flares {
         let (x, y, z) = flare.at;
         if let Some((px, py)) = view.project(x, y, z) {
@@ -604,6 +609,29 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
         let (x, y, z) = blast.at;
         let reach = blast.radius * (1.2 - blast.life * 0.6);
         draw_ground_disc(canvas, view, (x, y, z), reach, BLAST_COLOR, (0.9 * blast.life, 0.1 * blast.life));
+    }
+}
+
+/// A cone of fire or gas, solid where it leaves the nozzle and fading towards its far edge,
+/// where it comes down to about the height of whoever it reaches.
+fn draw_spray(canvas: &mut Canvas, view: &battlefield::View, spray: &crate::weapons::Spray) {
+    const WEDGES: usize = 10;
+    const NEAR_ALPHA: f32 = 0.8;
+    const FAR_ALPHA: f32 = 0.1;
+    const FAR_HEIGHT: f32 = 0.4;
+    let (x, y, z) = spray.from;
+    let Some(nozzle) = view.project(x, y, z) else { return };
+    let [r, g, b] = if spray.gas { GAS_COLOR } else { FIRE_COLOR };
+    let far = |i: usize| {
+        let angle = spray.heading - spray.half_angle + i as f32 / WEDGES as f32 * spray.half_angle * 2.0;
+        let (sin, cos) = angle.sin_cos();
+        view.project(x + cos * spray.reach, FAR_HEIGHT.min(y), z + sin * spray.reach)
+    };
+    let vertex = |(px, py): (f32, f32), alpha: f32| Vertex { x: px, y: py, r, g, b, a: alpha * spray.life };
+    for i in 0..WEDGES {
+        if let (Some(a), Some(c)) = (far(i), far(i + 1)) {
+            canvas.vertices.extend([vertex(nozzle, NEAR_ALPHA), vertex(a, FAR_ALPHA), vertex(c, FAR_ALPHA)]);
+        }
     }
 }
 
@@ -741,6 +769,14 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
                     draw_turned_box(canvas, game, view, body, (y, y + 0.6), color);
                     draw_turned_box(canvas, game, view, barrel(0.3, 0.26, 0.02), (y + 0.4, y + 0.44), dark);
                 }
+                (Role::FlameInfantry | Role::GasInfantry, _) => {
+                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
+                    draw_turned_box(canvas, game, view, body, (y, y + 0.6), color);
+                    // A tank on the back and a nozzle out front, in the color of what it sprays.
+                    let spray_color = if unit.role == Role::GasInfantry { GAS_COLOR } else { FIRE_COLOR };
+                    draw_turned_box(canvas, game, view, barrel(-0.17, 0.05, 0.09), (y + 0.2, y + 0.5), spray_color);
+                    draw_turned_box(canvas, game, view, barrel(0.22, 0.12, 0.03), (y + 0.32, y + 0.38), dark);
+                }
                 (Role::Engineer, _) => {
                     let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
                     draw_turned_box(canvas, game, view, body, (y, y + 0.5), color);
@@ -784,6 +820,26 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
             let barrel = (barrel_x, barrel_z, 0.25, 0.04, unit.heading);
             draw_turned_box(canvas, game, view, barrel, (hull_top + 0.06, hull_top + 0.13), color.map(|c| c * 0.6));
         }
+        UnitKind::Aircraft if unit.role == Role::AirDefensePlatform => {
+            let base = unit.y + unit.altitude;
+            let deck = (unit.x, unit.z, 0.38, 0.38, unit.heading);
+            draw_turned_box(canvas, game, view, deck, (base, base + 0.1), color.map(|c| c * 0.75));
+            let mount = (unit.x, unit.z, 0.14, 0.14, unit.heading);
+            draw_turned_box(canvas, game, view, mount, (base + 0.1, base + 0.26), color);
+            let (gun_x, gun_z) = ahead(0.3);
+            let gun = (gun_x, gun_z, 0.2, 0.03, unit.heading);
+            draw_turned_box(canvas, game, view, gun, (base + 0.15, base + 0.2), color.map(|c| c * 0.5));
+        }
+        UnitKind::Aircraft if unit.role == Role::AirDrone => {
+            // Two crossed arms and a small body.
+            let base = unit.y + unit.altitude;
+            for turn in [FRAC_PI_4, -FRAC_PI_4] {
+                let arm = (unit.x, unit.z, 0.32, 0.03, unit.heading + turn);
+                draw_turned_box(canvas, game, view, arm, (base + 0.04, base + 0.07), color.map(|c| c * 0.6));
+            }
+            let body = (unit.x, unit.z, 0.12, 0.09, unit.heading);
+            draw_turned_box(canvas, game, view, body, (base, base + 0.12), color);
+        }
         UnitKind::Aircraft => {
             let base = unit.y + unit.altitude;
             let (tail_x, tail_z) = ahead(-0.36);
@@ -804,9 +860,15 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
             let head = (unit.x, unit.z, 0.3, 0.3, unit.heading);
             draw_turned_box(canvas, game, view, head, (unit.y + head_base, unit.y + head_base + 0.34), color);
             let (ahead_x, ahead_z) = ahead(0.4);
+            let height = (unit.y + units::TUBE_HEIGHT - 0.06, unit.y + units::TUBE_HEIGHT + 0.06);
+            if unit.role == Role::FlameTower {
+                // One fat nozzle, with the color of fire on its way out.
+                let nozzle = (ahead_x, ahead_z, 0.3, 0.1, unit.heading);
+                draw_turned_box(canvas, game, view, nozzle, height, FIRE_COLOR);
+                return;
+            }
             for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
                 let tube = (ahead_x + right_x * side, ahead_z + right_z * side, 0.3, 0.06, unit.heading);
-                let height = (unit.y + units::TUBE_HEIGHT - 0.06, unit.y + units::TUBE_HEIGHT + 0.06);
                 draw_turned_box(canvas, game, view, tube, height, color.map(|c| c * 0.5));
             }
         }
@@ -1049,6 +1111,10 @@ fn short_name(role: Role) -> &'static str {
         Role::KInfantry => "K Inf",
         Role::RepairVehicle => "Repair",
         Role::Catapult => "Catap",
+        Role::AirDefensePlatform => "AirDef",
+        Role::AirDrone => "Drone",
+        Role::FlameInfantry => "Flame",
+        Role::GasInfantry => "Gas",
         _ => role.name(),
     }
 }

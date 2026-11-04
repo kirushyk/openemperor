@@ -38,7 +38,8 @@ const VEHICLE_BUILDS: [Role; 4] = [
     Role::RocketLauncher,
 ];
 /// What the Vehicles menu's bottom row makes, from its left end.
-const BOTTOM_VEHICLE_BUILDS: [Role; 2] = [Role::AirDefensePlatform, Role::AirDrone];
+const BOTTOM_VEHICLE_BUILDS: [Role; 3] =
+    [Role::AirDefensePlatform, Role::AirDrone, Role::Ornithopter];
 const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
 /// Seconds of battle before the superweapon can fire again.
 pub const SUPERWEAPON_RECHARGE: f32 = 60.0;
@@ -2987,8 +2988,9 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
-        // A tower cannot be run over, so this enemy has none.
-        game.units.retain(|u| u.owner != 1 || !u.kind.is_building());
+        // Towers and aircraft cannot be run over, so this enemy has none.
+        game.units
+            .retain(|u| u.owner != 1 || !(u.kind.is_building() || u.kind.flies()));
         let count = game
             .units
             .iter()
@@ -3177,7 +3179,10 @@ mod tests {
         );
         assert_eq!(selected_count(&game), FIRST_GROUP, "the selection stands");
         assert!(
-            game.units.iter().all(|u| !u.is_moving()),
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0)
+                .all(|u| !u.is_moving()),
             "and gets no order"
         );
     }
@@ -3705,12 +3710,12 @@ mod tests {
         let planes = game
             .units
             .iter()
-            .filter(|u| u.kind == UnitKind::Aircraft)
+            .filter(|u| u.owner == 0 && u.kind == UnitKind::Aircraft)
             .count() as i32;
         for unit in game
             .units
             .iter_mut()
-            .filter(|u| u.kind == UnitKind::Aircraft)
+            .filter(|u| u.owner == 0 && u.kind == UnitKind::Aircraft)
         {
             unit.alive = false;
         }
@@ -4082,6 +4087,8 @@ mod tests {
                 .count()
         };
         let mut game = in_battle();
+        // Rocket engines are lit too, in orange.
+        game.units.retain(|u| !u.kind.flies());
         let vehicles = |game: &Game| {
             let is_vehicle = |u: &&Unit| u.alive && u.kind == UnitKind::Vehicle;
             game.units.iter().filter(is_vehicle).count()
@@ -4090,6 +4097,33 @@ mod tests {
         assert_eq!(lights(&game), vehicles(&game), "one bright corner each");
         game.units.retain(|u| u.kind != UnitKind::Vehicle);
         assert_eq!(lights(&game), 0);
+    }
+
+    #[test]
+    fn an_air_defense_platform_has_two_lamps_of_two_triangles_each_and_the_drone_a_flame() {
+        let lit = |game: &Game| {
+            crate::render::build(game)
+                .iter()
+                .filter(|v| v.a == 0.0 && v.r > 0.0)
+                .count()
+        };
+        let mut game = in_battle();
+        game.units.retain(|u| u.kind == UnitKind::Infantry);
+        assert_eq!(lit(&game), 0);
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START));
+        assert_eq!(game.units.last().unwrap().name(), "Air Defense Platform");
+        assert_eq!(
+            lit(&game),
+            2 * 3,
+            "two near corners, shared, in each of two"
+        );
+        click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START + 1));
+        assert_eq!(game.units.last().unwrap().name(), "Air Drone");
+        assert_eq!(lit(&game), 2 * 3 + 2);
+        click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START + 2));
+        assert_eq!(game.units.last().unwrap().name(), "Ornithopter");
+        assert_eq!(game.units.last().unwrap().altitude, 0.0);
     }
 
     #[test]
@@ -4217,18 +4251,20 @@ mod tests {
     }
 
     #[test]
-    fn the_bottom_of_the_vehicles_menu_makes_the_air_defense_platform_and_the_drone() {
+    fn the_bottom_of_the_vehicles_menu_makes_the_air_defense_platform_the_drone_and_the_ornithopter()
+     {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        for (cell, name) in [(12, "Air Defense Platform"), (13, "Air Drone")] {
+        for (cell, name) in [
+            (12, "Air Defense Platform"),
+            (13, "Air Drone"),
+            (14, "Ornithopter"),
+        ] {
             let before = game.units.len();
             click_hud(&mut game, Action::BuildCell(cell));
             assert_eq!(game.units[before].name(), name);
             assert_eq!(game.units[before].kind, UnitKind::Aircraft);
         }
-        let before = game.units.len();
-        click_hud(&mut game, Action::BuildCell(14));
-        assert_eq!(game.units.len(), before, "nothing else down there");
         assert!(!crate::render::build(&game).is_empty());
     }
 
@@ -4940,7 +4976,10 @@ mod tests {
             assert_eq!(selected_count(&game), 2);
         }
         assert!(
-            game.units.iter().all(|u| !u.is_moving()),
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0)
+                .all(|u| !u.is_moving()),
             "nobody was sent anywhere"
         );
     }
@@ -4963,7 +5002,12 @@ mod tests {
         game.handle(Event::MouseDown);
         game.handle(Event::ShiftMouseUp);
         assert_eq!(selected_count(&game), FIRST_GROUP);
-        assert!(game.units.iter().all(|u| !u.is_moving()));
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0)
+                .all(|u| !u.is_moving())
+        );
     }
 
     #[test]
@@ -5073,7 +5117,7 @@ mod tests {
         assert!(
             game.units
                 .iter()
-                .filter(|u| !u.selected)
+                .filter(|u| u.owner == 0 && !u.selected)
                 .all(|u| !u.is_moving()),
             "others stay"
         );
@@ -5098,7 +5142,11 @@ mod tests {
         let after: Vec<(f32, f32)> = game.units.iter().map(|u| u.destination).collect();
         assert_eq!(after, sent, "they still go where they were sent");
 
-        let moving = game.units.iter().filter(|u| u.is_moving()).count();
+        let moving = game
+            .units
+            .iter()
+            .filter(|u| u.owner == 0 && u.is_moving())
+            .count();
         assert!(moving > 0);
         click_at(&mut game, W / 2.0 + 800.0, H / 2.0 + 300.0);
         let later: Vec<(f32, f32)> = game.units.iter().map(|u| u.destination).collect();
@@ -5135,7 +5183,12 @@ mod tests {
     fn a_click_with_nothing_selected_sends_nobody() {
         let mut game = in_battle();
         click_at(&mut game, W / 2.0 - 800.0, H / 2.0 + 300.0);
-        assert!(game.units.iter().all(|u| !u.is_moving()));
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0)
+                .all(|u| !u.is_moving())
+        );
     }
 
     #[test]
@@ -5153,7 +5206,12 @@ mod tests {
             .unwrap();
         click_at(&mut game, x, y);
         assert_eq!(selected_count(&game), 1);
-        assert!(game.units.iter().all(|u| !u.is_moving()));
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0)
+                .all(|u| !u.is_moving())
+        );
     }
 
     #[test]
@@ -5162,7 +5220,12 @@ mod tests {
         select_first_group(&mut game);
         let (from, to) = around_first_group();
         drag_select(&mut game, from, to);
-        assert!(game.units.iter().all(|u| !u.is_moving()));
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0)
+                .all(|u| !u.is_moving())
+        );
     }
 
     #[test]
@@ -5184,13 +5247,20 @@ mod tests {
         click_at(&mut game, W / 2.0 - 800.0, H / 2.0 + 300.0);
         drag_select(&mut game, (200.0, H - 400.0), (500.0, H - 200.0));
         assert_eq!(selected_count(&game), 0);
-        let walking = game.units.iter().filter(|u| u.is_moving()).count();
+        let walking = game
+            .units
+            .iter()
+            .filter(|u| u.owner == 0 && u.is_moving())
+            .count();
         assert!(walking > 0);
         for _ in 0..400 {
             game.update(0.05);
         }
         assert!(
-            game.units.iter().all(|u| !u.is_moving()),
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0)
+                .all(|u| !u.is_moving()),
             "they still arrive"
         );
     }

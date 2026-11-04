@@ -25,6 +25,12 @@ const CLEAR_RGBA: Color = [CLEAR[0], CLEAR[1], CLEAR[2], 1.0];
 const TEXT: Color = [0.93, 0.89, 0.78, 1.0];
 /// How bright a headlight is where it leaves the vehicle.
 const HEADLIGHT: f32 = 0.35;
+/// How bright the flame of a rocket engine is at its nozzle.
+const ROCKET_FLAME: [f32; 3] = [1.0, 0.6, 0.15];
+/// How fast an ornithopter's wings beat, in radians per second.
+const WING_BEATS: f32 = 30.0;
+/// How far to each side of a platform's middle its two blocks lie.
+const PLATFORM_BLOCK_SIDE: f32 = 0.27;
 const QUIET: Color = [0.55, 0.53, 0.48, 1.0];
 const GOLD: Color = [0.95, 0.76, 0.32, 1.0];
 const GOLD_DIM: Color = [0.62, 0.50, 0.24, 1.0];
@@ -695,7 +701,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     let mut flying: Vec<&Unit> = game
         .units
         .iter()
-        .filter(|u| u.kind.flies() && game.shows(u))
+        .filter(|u| u.altitude > 0.0 && game.shows(u))
         .collect();
     flying.sort_by(|a, b| a.z.total_cmp(&b.z));
     for unit in &flying {
@@ -707,7 +713,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     let mut order: Vec<Object> = game
         .units
         .iter()
-        .filter(|u| !u.kind.flies() && game.shows(u))
+        .filter(|u| u.altitude <= 0.0 && game.shows(u))
         .map(Object::Unit)
         .collect();
     order.extend(
@@ -1078,6 +1084,164 @@ fn draw_dashed_line(
 /// A unit from simple boxes turned to its heading. Infantry is one tall thin block, a vehicle
 /// is a hull with a turret and a barrel, and an aircraft is a body with wings and a tail, so
 /// that their turning can be seen.
+/// Where a point of a flying unit shows on screen, given along its nose, across to its right
+/// and up from its underside, leaning with it.
+fn body_point(
+    view: &battlefield::View,
+    unit: &Unit,
+    (along, across, up): (f32, f32, f32),
+) -> Option<(f32, f32)> {
+    let (sin, cos) = unit.heading.sin_cos();
+    let (lean_sin, lean_cos) = unit.bank.sin_cos();
+    let side = across * lean_cos + up * lean_sin;
+    let rise = up * lean_cos - across * lean_sin;
+    view.project(
+        unit.x + cos * along - sin * side,
+        unit.y + unit.altitude + rise,
+        unit.z + sin * along + cos * side,
+    )
+}
+
+fn body_triangle(
+    canvas: &mut Canvas,
+    view: &battlefield::View,
+    unit: &Unit,
+    points: [(f32, f32, f32); 3],
+    color: [f32; 3],
+) {
+    if let [Some(a), Some(b), Some(c)] = points.map(|point| body_point(view, unit, point)) {
+        canvas.triangle([a, b, c], with_alpha(color, 1.0));
+    }
+}
+
+/// A delta wing with a rocket engine burning at its tail.
+fn draw_air_drone(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    unit: &Unit,
+    color: [f32; 3],
+) {
+    let nose = (0.5, 0.0, 0.05);
+    let tail = (-0.28, 0.0, 0.05);
+    let left_tip = (-0.42, -0.5, 0.05);
+    let right_tip = (-0.42, 0.5, 0.05);
+    // The wing leaning towards the light shows a little brighter.
+    let shade = |side: f32| color.map(|c| c * (0.85 + 0.4 * side * unit.bank));
+    body_triangle(canvas, view, unit, [nose, left_tip, tail], shade(1.0));
+    body_triangle(canvas, view, unit, [nose, right_tip, tail], shade(-1.0));
+    let dark = color.map(|c| c * 0.5);
+    let ridge = (0.1, 0.0, 0.16);
+    body_triangle(canvas, view, unit, [nose, ridge, tail], dark);
+    let fin_top = (-0.38, 0.0, 0.3);
+    body_triangle(canvas, view, unit, [ridge, tail, fin_top], dark);
+    // The flame flickers as it burns.
+    let reach = 0.45 + 0.12 * (game.battle_time() * 40.0).sin();
+    let flame = [
+        body_point(view, unit, (-0.28, -0.05, 0.05)),
+        body_point(view, unit, (-0.28, 0.05, 0.05)),
+        body_point(view, unit, (-0.28 - reach, 0.0, 0.05)),
+    ];
+    if let [Some(a), Some(b), Some(c)] = flame {
+        canvas.vertices.extend([
+            Vertex::light(a, ROCKET_FLAME),
+            Vertex::light(b, ROCKET_FLAME),
+            Vertex::light(c, [0.0; 3]),
+        ]);
+    }
+}
+
+/// A body with two pairs of wings that beat in turn while it is up, and lie still once it sits.
+fn draw_ornithopter(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    unit: &Unit,
+    color: [f32; 3],
+) {
+    const WING_ROOT: f32 = 0.1;
+    let wing_color = color.map(|c| c * 0.7 + 0.25);
+    let beat = |phase: f32| {
+        if unit.altitude > 0.0 {
+            0.14 + 0.22 * (game.battle_time() * WING_BEATS + phase).sin()
+        } else {
+            0.1
+        }
+    };
+    for (along, reach, phase) in [(0.16, 0.5, 0.0), (-0.12, 0.42, PI)] {
+        for side in [-1.0, 1.0] {
+            let tip_height = beat(phase);
+            let root_near = (along - 0.06, side * WING_ROOT, 0.2);
+            let root_far = (along + 0.06, side * WING_ROOT, 0.2);
+            let tip_near = (along - 0.07, side * reach, tip_height);
+            let tip_far = (along + 0.07, side * reach, tip_height);
+            body_triangle(
+                canvas,
+                view,
+                unit,
+                [root_near, root_far, tip_far],
+                wing_color,
+            );
+            body_triangle(
+                canvas,
+                view,
+                unit,
+                [root_near, tip_far, tip_near],
+                wing_color,
+            );
+        }
+    }
+    let base = unit.y + unit.altitude;
+    let (sin, cos) = unit.heading.sin_cos();
+    let at = |by: f32| (unit.x + cos * by, unit.z + sin * by);
+    let (tail_x, tail_z) = at(-0.34);
+    let tail = (tail_x, tail_z, 0.2, 0.03, unit.heading);
+    draw_turned_box(
+        canvas,
+        game,
+        view,
+        tail,
+        (base + 0.12, base + 0.17),
+        color.map(|c| c * 0.6),
+    );
+    let body = (unit.x, unit.z, 0.2, 0.09, unit.heading);
+    draw_turned_box(canvas, game, view, body, (base + 0.04, base + 0.2), color);
+}
+
+/// Two beams going down to the ground ahead of a platform hanging in the air, fading with
+/// distance. They are lit from the front ends of its two blocks.
+fn draw_platform_lamps(game: &Game, canvas: &mut Canvas, view: &battlefield::View, unit: &Unit) {
+    let terrain = battlefield::terrain(game.battle_map);
+    let (sin, cos) = unit.heading.sin_cos();
+    let at = |along: f32, across: f32| {
+        (
+            unit.x + cos * along - sin * across,
+            unit.z + sin * along + cos * across,
+        )
+    };
+    for lamp in [-PLATFORM_BLOCK_SIDE, PLATFORM_BLOCK_SIDE] {
+        let lit = |across: f32| {
+            let (x, z) = at(0.38, lamp + across);
+            view.project(x, unit.y + unit.altitude, z)
+        };
+        let far = |across: f32| {
+            let (x, z) = at(4.5, lamp * 2.5 + across);
+            view.project(x, terrain.height_at(x, z), z)
+        };
+        if let [Some(a), Some(b), Some(c), Some(d)] = [lit(-0.08), lit(0.08), far(0.8), far(-0.8)] {
+            let bright = Vertex::light;
+            canvas.vertices.extend([
+                bright(a, [HEADLIGHT; 3]),
+                bright(b, [HEADLIGHT; 3]),
+                bright(c, [0.0; 3]),
+                bright(a, [HEADLIGHT; 3]),
+                bright(c, [0.0; 3]),
+                bright(d, [0.0; 3]),
+            ]);
+        }
+    }
+}
+
 /// White light on the ground in front of a vehicle, fading with distance.
 fn draw_headlight(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
     let terrain = battlefield::terrain(game.battle_map);
@@ -1105,6 +1269,8 @@ fn draw_headlight(canvas: &mut Canvas, game: &Game, view: &battlefield::View, un
 fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
     if unit.kind == UnitKind::Vehicle {
         draw_headlight(canvas, game, view, unit);
+    } else if unit.role == Role::AirDefensePlatform {
+        draw_platform_lamps(game, canvas, view, unit);
     }
     let [r, g, b, _] = team_color(unit.color);
     let color = [r, g, b];
@@ -1221,23 +1387,25 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
         }
         UnitKind::Aircraft if unit.role == Role::AirDefensePlatform => {
             let base = unit.y + unit.altitude;
-            let deck = (unit.x, unit.z, 0.38, 0.38, unit.heading);
-            part(deck, (base, base + 0.1), color.map(|c| c * 0.75));
-            let mount = (unit.x, unit.z, 0.14, 0.14, unit.heading);
-            part(mount, (base + 0.1, base + 0.26), color);
+            let beside = |side: f32| (unit.x - forward_z * side, unit.z + forward_x * side);
+            for side in [-PLATFORM_BLOCK_SIDE, PLATFORM_BLOCK_SIDE] {
+                let (x, z) = beside(side);
+                let block = (x, z, 0.38, 0.1, unit.heading);
+                part(block, (base, base + 0.1), color.map(|c| c * 0.75));
+            }
+            let bridge = (unit.x, unit.z, 0.09, PLATFORM_BLOCK_SIDE, unit.heading);
+            part(bridge, (base + 0.02, base + 0.08), color.map(|c| c * 0.55));
+            let mount = (unit.x, unit.z, 0.11, 0.11, unit.heading);
+            part(mount, (base + 0.08, base + 0.26), color);
             let (gun_x, gun_z) = ahead(0.3);
             let gun = (gun_x, gun_z, 0.2, 0.03, unit.heading);
             part(gun, (base + 0.15, base + 0.2), color.map(|c| c * 0.5));
         }
         UnitKind::Aircraft if unit.role == Role::AirDrone => {
-            // Two crossed arms and a small body.
-            let base = unit.y + unit.altitude;
-            for turn in [FRAC_PI_4, -FRAC_PI_4] {
-                let arm = (unit.x, unit.z, 0.32, 0.03, unit.heading + turn);
-                part(arm, (base + 0.04, base + 0.07), color.map(|c| c * 0.6));
-            }
-            let body = (unit.x, unit.z, 0.12, 0.09, unit.heading);
-            part(body, (base, base + 0.12), color);
+            draw_air_drone(canvas, game, view, unit, color);
+        }
+        UnitKind::Aircraft if unit.role == Role::Ornithopter => {
+            draw_ornithopter(canvas, game, view, unit, color);
         }
         UnitKind::Aircraft => {
             let base = unit.y + unit.altitude;
@@ -1611,6 +1779,7 @@ fn short_name(role: Role) -> &'static str {
         Role::RocketLauncher => "Rocket",
         Role::AirDefensePlatform => "AirDef",
         Role::AirDrone => "Drone",
+        Role::Ornithopter => "Ornith",
         Role::FlameInfantry => "Flame",
         Role::GasInfantry => "Gas",
         _ => role.name(),

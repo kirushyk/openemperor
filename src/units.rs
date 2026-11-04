@@ -121,6 +121,13 @@ impl UnitKind {
 
 /// How high aircraft fly, in world units.
 const CRUISE_ALTITUDE: f32 = 4.0;
+/// World units per second that whatever lands goes up and comes down.
+const CLIMB_SPEED: f32 = 2.5;
+/// How far from where it was sent something that never stops circles.
+const CIRCLE_RADIUS: f32 = 3.5;
+/// Radians it leans into the sharpest turn, and how quickly it gets there, per second.
+const MOST_BANK: f32 = 0.6;
+const BANK_RATE: f32 = 4.0;
 /// Experience needed for each rank above the first.
 const RANK_EXPERIENCE: [u32; 3] = [2, 5, 10];
 /// What each rank adds, as a share of the unit's usual health, attack and speed.
@@ -157,8 +164,11 @@ pub enum Role {
     Aircraft,
     /// Hangs in the air and fires an automatic gun at the air and the ground alike.
     AirDefensePlatform,
-    /// Flies, and fires its missiles at enemy aircraft only.
+    /// A delta wing that can never stop: it circles where it was sent, and fires its missiles
+    /// at enemy aircraft only.
     AirDrone,
+    /// Sits on the ground until sent somewhere: it goes up, turns, flies there and sits again.
+    Ornithopter,
     /// Sprays fire at the ground in front of it.
     FlameInfantry,
     /// Sprays green gas at the ground in front of it.
@@ -181,7 +191,9 @@ impl Role {
             Role::Tank | Role::RepairVehicle | Role::Catapult | Role::RocketLauncher => {
                 UnitKind::Vehicle
             }
-            Role::Aircraft | Role::AirDefensePlatform | Role::AirDrone => UnitKind::Aircraft,
+            Role::Aircraft | Role::AirDefensePlatform | Role::AirDrone | Role::Ornithopter => {
+                UnitKind::Aircraft
+            }
             Role::Tower | Role::FlameTower => UnitKind::Tower,
         }
     }
@@ -200,6 +212,7 @@ impl Role {
             Role::Aircraft => "Aircraft",
             Role::AirDefensePlatform => "Air Defense Platform",
             Role::AirDrone => "Air Drone",
+            Role::Ornithopter => "Ornithopter",
             Role::FlameInfantry => "Flame Infantry",
             Role::GasInfantry => "Gas Infantry",
             Role::Tower => "Tower",
@@ -216,7 +229,7 @@ impl Role {
             Role::Tank => WeaponKind::Cannon,
             Role::RepairVehicle => WeaponKind::Repair,
             Role::Catapult => WeaponKind::Mortar,
-            Role::RocketLauncher => WeaponKind::Rockets,
+            Role::RocketLauncher | Role::Ornithopter => WeaponKind::Rockets,
             Role::Aircraft | Role::Tower => WeaponKind::Missile,
             Role::AirDefensePlatform => WeaponKind::AutoGun,
             Role::AirDrone => WeaponKind::AirMissile,
@@ -246,7 +259,27 @@ impl Role {
             Role::Catapult | Role::RocketLauncher => 3.5,
             Role::AirDefensePlatform => 3.0,
             Role::AirDrone => 8.0,
+            Role::Ornithopter => 5.5,
             _ => self.kind().speed(),
+        }
+    }
+
+    /// Whether it sits on the ground when it has nowhere to go.
+    pub fn lands(self) -> bool {
+        self == Role::Ornithopter
+    }
+
+    /// Whether it must keep flying forward, unable to hang in the air.
+    fn never_stops(self) -> bool {
+        self == Role::AirDrone
+    }
+
+    /// Its height above the ground when it first appears.
+    fn starting_altitude(self) -> f32 {
+        if self.lands() {
+            0.0
+        } else {
+            self.kind().altitude()
         }
     }
 
@@ -337,15 +370,27 @@ pub struct Unit {
     pub second_tube: bool,
     /// How many rockets of its salvo have gone: they stay gone until it has reloaded.
     pub rockets_fired: usize,
+    /// How far it leans into a turn along its length, in radians: positive to its right.
+    pub bank: f32,
     blocked_for: f32,
     /// Its nearest approach to the destination since it set off.
     best_remaining: f32,
 }
 
 impl Unit {
-    /// Whether it still has somewhere to go.
+    /// Whether it still has somewhere to go, or can never stop anyway.
     pub fn is_moving(&self) -> bool {
-        self.alive && self.remaining() > ARRIVED
+        self.alive && (self.remaining() > ARRIVED || self.role.never_stops())
+    }
+
+    /// Whether it is up in the air but would rather sit.
+    fn is_settling(&self) -> bool {
+        self.alive && self.role.lands() && self.altitude > 0.0 && !self.is_moving()
+    }
+
+    /// Whether it counts as being on the ground where others are concerned.
+    fn keeps_to_the_air(&self) -> bool {
+        self.kind.flies() && !self.role.lands()
     }
 
     fn remaining(&self) -> f32 {
@@ -544,6 +589,7 @@ impl Unit {
             alive: true,
             second_tube: false,
             rockets_fired: 0,
+            bank: 0.0,
             blocked_for: 0.0,
             best_remaining: f32::INFINITY,
         }
@@ -641,7 +687,7 @@ fn place_unit(
         health: role.max_health(),
         weapon,
         cooldown: 0.0,
-        altitude: kind.altitude(),
+        altitude: role.starting_altitude(),
         x,
         y: terrain.height_at(x, z),
         z,
@@ -656,6 +702,7 @@ fn place_unit(
         alive: true,
         second_tube: false,
         rockets_fired: 0,
+        bank: 0.0,
         blocked_for: 0.0,
         best_remaining: f32::INFINITY,
     });
@@ -684,7 +731,7 @@ pub fn produce(
 ) -> bool {
     let taken: Vec<(f32, f32)> = units
         .iter()
-        .filter(|u| u.alive && !u.kind.flies())
+        .filter(|u| u.alive && !u.keeps_to_the_air())
         .flat_map(|u| [(u.x, u.z), u.destination])
         .collect();
     let Some(&spot) = find_slots(terrain, near, 1, &taken, false).first() else {
@@ -761,6 +808,20 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
             center.1 - OPPONENT_TOWER_OFFSET * sin,
         );
         place_building(&mut units, terrain, flame, Role::FlameTower, (i + 1, color));
+        // Above the block: something for the player's anti-air to go after.
+        for (role, side) in [(Role::Aircraft, -SPACING), (Role::AirDrone, SPACING)] {
+            let at = (center.0 + side * cos, center.1 + side * sin);
+            let id = units.len() as u32;
+            place_unit(
+                &mut units,
+                terrain,
+                at,
+                role,
+                role.weapon(),
+                (i + 1, color),
+                id,
+            );
+        }
     }
     units
 }
@@ -814,17 +875,21 @@ fn find_slots(
         let usable = if flying {
             terrain.on_map(spot.0, spot.1)
         } else {
-            let clear_of_ruins = terrain.ruins().iter().all(|piece| {
-                let (near_x, near_z) = nearest_on_footprint(piece, spot.0, spot.1);
-                (near_x - spot.0).hypot(near_z - spot.1) > UnitKind::Vehicle.radius()
-            });
-            clear_of_ruins && terrain.can_walk(spot.0, spot.1)
+            clear_of_ruins(terrain, spot) && terrain.can_walk(spot.0, spot.1)
         };
         if usable && is_free(spot, taken) && is_free(spot, &slots) {
             slots.push(spot);
         }
     }
     slots
+}
+
+/// Whether a spot on the ground leaves room for a vehicle beside every ruin.
+fn clear_of_ruins(terrain: &Terrain, spot: (f32, f32)) -> bool {
+    terrain.ruins().iter().all(|piece| {
+        let (near_x, near_z) = nearest_on_footprint(piece, spot.0, spot.1);
+        (near_x - spot.0).hypot(near_z - spot.1) > UnitKind::Vehicle.radius()
+    })
 }
 
 /// The point of a ruin piece's footprint nearest to a spot on the ground.
@@ -838,7 +903,7 @@ fn nearest_on_footprint(piece: &RuinPiece, x: f32, z: f32) -> (f32, f32) {
 /// Sends every selected unit to its own reserved spot near a point. Friendly destinations stay
 /// reserved. Enemies' only do if nobody heavy was sent: heavy units may aim right at them.
 /// The air and the ground reserve their spots separately, since they cannot get in each
-/// other's way.
+/// other's way. What lands needs a spot on the ground.
 pub fn order_move(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, teams: &[usize]) {
     for flying in [false, true] {
         order_layer(units, target, terrain, teams, flying);
@@ -852,7 +917,7 @@ fn order_layer(
     teams: &[usize],
     flying: bool,
 ) {
-    let in_layer = |u: &Unit| u.kind.flies() == flying;
+    let in_layer = |u: &Unit| u.keeps_to_the_air() == flying;
     let any_heavy = units.iter().any(|u| in_layer(u) && u.selected && u.heavy);
     let taken: Vec<(f32, f32)> = units
         .iter()
@@ -966,7 +1031,12 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
         }
         let away = distance(goal, units[i].center());
         let in_reach = away <= units[i].weapon.range() * ATTACK_REACH;
-        units[i].destination = if in_reach { (x, z) } else { (goal.0, goal.2) };
+        // What never stops circles its target, firing as it goes.
+        units[i].destination = if in_reach && !units[i].role.never_stops() {
+            (x, z)
+        } else {
+            (goal.0, goal.2)
+        };
     }
 }
 
@@ -1017,7 +1087,7 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
     let (right_x, right_z) = (-want_z, want_x);
     let mut sideways = 0.0;
     for (other_index, other) in units.iter().enumerate() {
-        let other_layer = other.kind.flies() != unit.kind.flies();
+        let other_layer = (other.altitude > 0.0) != (unit.altitude > 0.0);
         let building_to_capture =
             unit.target == Some(Target::Unit(other.id)) && unit.can_capture(other, teams);
         if other_index == index
@@ -1164,8 +1234,14 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 };
                 let overlap = touching - flat.hypot(dy);
                 // Infantry cannot shove something heavy: it takes the whole push itself. Nothing
-                // shoves a building.
-                let solid = |unit: &Unit| (unit.kind.is_building() || unit.deployed, unit.heavy);
+                // shoves a building, or what is sitting or coming down.
+                let solid = |unit: &Unit| {
+                    let going_up_or_down = unit.role.lands() && unit.altitude < CRUISE_ALTITUDE;
+                    (
+                        unit.kind.is_building() || unit.deployed || going_up_or_down,
+                        unit.heavy,
+                    )
+                };
                 let (share_a, share_b) = match solid(&units[a]).cmp(&solid(&units[b])) {
                     Ordering::Greater => (0.0, 1.0),
                     Ordering::Less => (1.0, 0.0),
@@ -1188,7 +1264,14 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
     let mut held_back = vec![false; units.len()];
     let started_at: Vec<(f32, f32)> = units.iter().map(|u| (u.x, u.z)).collect();
     for i in 0..units.len() {
+        if units[i].is_settling() {
+            settle(&mut units[i], terrain, dt);
+        }
         if !units[i].is_moving() {
+            continue;
+        }
+        if units[i].role.never_stops() {
+            fly_on(&mut units[i], terrain, dt);
             continue;
         }
         let (dir_x, dir_z) = steering(units, i, terrain, teams);
@@ -1204,6 +1287,19 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
             UnitKind::Vehicle => {
                 unit.heading += turn.clamp(-most, most);
                 if turn.abs() <= DRIVE_ALIGNMENT {
+                    held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
+                }
+            }
+            // It goes straight up, then turns on the spot, then sets off.
+            UnitKind::Aircraft if unit.role.lands() => {
+                if unit.altitude < CRUISE_ALTITUDE {
+                    unit.altitude = (unit.altitude + CLIMB_SPEED * dt).min(CRUISE_ALTITUDE);
+                    unit.blocked_for = 0.0;
+                } else if turn.abs() > DRIVE_ALIGNMENT {
+                    unit.heading += turn.clamp(-most, most);
+                    unit.blocked_for = 0.0;
+                } else {
+                    unit.heading += turn;
                     held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
                 }
             }
@@ -1227,6 +1323,41 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
         held_back[i] |= unit.target.is_some() && moved < unit.speed() * dt * WEDGED_SHARE;
         unit.y = terrain.height_at(unit.x, unit.z);
         give_up_if_stuck(unit, held_back[i], dt);
+    }
+}
+
+/// Comes down to sit, if the ground right below it can take it. Otherwise it stays up.
+fn settle(unit: &mut Unit, terrain: &Terrain, dt: f32) {
+    let spot = (unit.x, unit.z);
+    if terrain.can_walk(spot.0, spot.1) && clear_of_ruins(terrain, spot) {
+        unit.altitude = (unit.altitude - CLIMB_SPEED * dt).max(0.0);
+    }
+}
+
+/// Flies on along its nose, turning to come to where it was sent and then to circle it, and
+/// leaning into the turn.
+fn fly_on(unit: &mut Unit, terrain: &Terrain, dt: f32) {
+    let (to_x, to_z) = (unit.destination.0 - unit.x, unit.destination.1 - unit.z);
+    let away = to_x.hypot(to_z);
+    // Straight at it from far away, along the circle on it, and outward from inside it.
+    let off_its_way = if away >= CIRCLE_RADIUS {
+        FRAC_PI_2 * CIRCLE_RADIUS / away
+    } else {
+        FRAC_PI_2 * (2.0 - away / CIRCLE_RADIUS)
+    };
+    let most = TURN_SPEED * dt;
+    let turned = turn_between(unit.heading, to_z.atan2(to_x) + off_its_way).clamp(-most, most);
+    unit.heading += turned;
+    let lean = MOST_BANK * turned / most;
+    unit.bank += (lean - unit.bank) * (BANK_RATE * dt).min(1.0);
+    let step = unit.speed() * dt;
+    let (dx, dz) = (unit.heading.cos() * step, unit.heading.sin() * step);
+    if let Some(&(tx, tz)) = [(dx, dz), (dx, 0.0), (0.0, dz)]
+        .iter()
+        .find(|(tx, tz)| unit.can_enter(terrain, unit.x + tx, unit.z + tz))
+    {
+        unit.x += tx;
+        unit.z += tz;
     }
 }
 
@@ -1254,7 +1385,7 @@ fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
     chase_targets(units, terrain, teams);
     // Spheres only start to overlap when something moves.
-    if !units.iter().any(Unit::is_moving) {
+    if !units.iter().any(|u| u.is_moving() || u.is_settling()) {
         return;
     }
     let (steps, step_seconds) = substeps(dt);
@@ -1616,7 +1747,7 @@ mod tests {
     }
 
     #[test]
-    fn the_player_starts_with_aircraft_in_the_air_and_the_others_do_not() {
+    fn everyone_starts_with_aircraft_in_the_air() {
         let units = spawn(terrain(0), &COLORS);
         let planes: Vec<_> = units
             .iter()
@@ -1626,9 +1757,14 @@ mod tests {
         assert!(
             planes
                 .iter()
-                .all(|u| u.owner == 0 && u.altitude == CRUISE_ALTITUDE && !u.heavy)
+                .all(|u| u.altitude == CRUISE_ALTITUDE && !u.heavy)
         );
-        assert!(planes.iter().all(|u| u.weapon == WeaponKind::Missile));
+        assert!(
+            planes
+                .iter()
+                .filter(|u| u.owner == 0)
+                .all(|u| u.weapon == WeaponKind::Missile)
+        );
         assert!(
             units
                 .iter()
@@ -1889,6 +2025,7 @@ mod tests {
                 "Air Defense Platform",
             ),
             (Role::AirDrone, WeaponKind::AirMissile, "Air Drone"),
+            (Role::Ornithopter, WeaponKind::Rockets, "Ornithopter"),
             (Role::FlameInfantry, WeaponKind::Flame, "Flame Infantry"),
             (Role::GasInfantry, WeaponKind::Gas, "Gas Infantry"),
         ];
@@ -2309,6 +2446,140 @@ mod tests {
         assert!(produced(Role::Scout).sight() > produced(Role::LightInfantry).sight());
     }
 
+    fn drone_at(x: f32, z: f32) -> Unit {
+        let mut drone = Unit::for_test(x, z, UnitKind::Aircraft);
+        drone.role = Role::AirDrone;
+        drone.weapon = WeaponKind::AirMissile;
+        drone
+    }
+
+    #[test]
+    fn a_drone_never_stops_it_comes_to_where_it_was_sent_and_circles_there_leaning_in() {
+        let terrain = crate::battlefield::terrain(0);
+        let start = (0.0, MAP_MIDDLE_Z);
+        let mut units = [drone_at(start.0 + 15.0, start.1)];
+        units[0].destination = start;
+        for _ in 0..200 {
+            advance(&mut units, terrain, &[0], 0.05);
+        }
+        let drone = units[0];
+        assert_eq!(drone.altitude, CRUISE_ALTITUDE, "it cannot land");
+        let mut least = f32::MAX;
+        let mut most = 0.0_f32;
+        let mut headings = 0.0;
+        for _ in 0..200 {
+            let before = (units[0].x, units[0].z, units[0].heading);
+            advance(&mut units, terrain, &[0], 0.05);
+            let moved = (units[0].x - before.0).hypot(units[0].z - before.1);
+            assert!(moved > 0.3, "always on the move: {moved}");
+            headings += turn_between(before.2, units[0].heading);
+            let away = (units[0].x - start.0).hypot(units[0].z - start.1);
+            least = least.min(away);
+            most = most.max(away);
+        }
+        assert!(
+            least > CIRCLE_RADIUS * 0.5 && most < CIRCLE_RADIUS * 1.5,
+            "{least}..{most}"
+        );
+        assert!(headings.abs() > TAU, "round and round: {headings}");
+        assert_eq!(units[0].bank.signum(), headings.signum(), "into the turn");
+        assert!(units[0].bank.abs() > 0.2, "{}", units[0].bank);
+    }
+
+    #[test]
+    fn a_drone_ordered_to_attack_circles_its_target_and_does_not_stand_still_at_range() {
+        let terrain = crate::battlefield::terrain(0);
+        let mut enemy = Unit::for_test(0.0, MAP_MIDDLE_Z, UnitKind::Aircraft);
+        enemy.owner = 1;
+        enemy.id = 7;
+        let mut drone = drone_at(9.0, MAP_MIDDLE_Z);
+        drone.id = 1;
+        drone.target = Some(Target::Unit(7));
+        let mut units = [drone, enemy];
+        for _ in 0..200 {
+            advance(&mut units, terrain, &[0, 1], 0.05);
+        }
+        assert_eq!(units[0].destination, (0.0, MAP_MIDDLE_Z));
+        assert!(units[0].x.hypot(units[0].z - MAP_MIDDLE_Z) < CIRCLE_RADIUS * 1.6);
+    }
+
+    fn ornithopter_at(x: f32, z: f32) -> Unit {
+        let mut unit = Unit::for_test(x, z, UnitKind::Aircraft);
+        unit.role = Role::Ornithopter;
+        unit.weapon = WeaponKind::Rockets;
+        unit.altitude = 0.0;
+        unit.selected = true;
+        unit
+    }
+
+    #[test]
+    fn an_ornithopter_starts_on_the_ground_goes_up_turns_flies_and_then_sits() {
+        assert_eq!(produced(Role::Ornithopter).altitude, 0.0);
+        let terrain = crate::battlefield::terrain(0);
+        let goal = (8.0, MAP_MIDDLE_Z);
+        let mut units = [ornithopter_at(0.0, MAP_MIDDLE_Z)];
+        assert!(units[0].can_be_repaired(), "while it sits");
+        order_move(&mut units, goal, terrain, &[0]);
+        let heading = units[0].heading;
+        let at_goal = units[0].destination;
+        // First only up.
+        advance(&mut units, terrain, &[0], 0.5);
+        assert!(units[0].altitude > 0.0);
+        assert!(!units[0].can_be_repaired());
+        assert_eq!((units[0].x, units[0].heading), (0.0, heading));
+        while units[0].altitude < CRUISE_ALTITUDE {
+            assert_eq!(units[0].x, 0.0, "not off yet");
+            advance(&mut units, terrain, &[0], 0.05);
+        }
+        // Then it turns on the spot.
+        let (mut turned, mut ticks) = (false, 0);
+        while units[0].x == 0.0 && ticks < 100 {
+            turned |= units[0].heading != heading;
+            advance(&mut units, terrain, &[0], 0.05);
+            ticks += 1;
+        }
+        assert!(turned, "before it sets off");
+        assert_eq!(units[0].altitude, CRUISE_ALTITUDE);
+        // Then there, and down.
+        for _ in 0..200 {
+            advance(&mut units, terrain, &[0], 0.05);
+        }
+        assert!((units[0].x - at_goal.0).hypot(units[0].z - at_goal.1) <= ARRIVED);
+        assert_eq!(units[0].altitude, 0.0, "it sits");
+        assert!(!units[0].is_moving());
+    }
+
+    #[test]
+    fn an_ornithopter_that_can_only_stop_over_water_or_ruins_stays_up() {
+        let terrain = crate::battlefield::terrain(0);
+        let piece = terrain.ruins()[0];
+        let mut units = [ornithopter_at(piece.x, piece.z)];
+        units[0].altitude = CRUISE_ALTITUDE;
+        advance(&mut units, terrain, &[0], 1.0);
+        assert_eq!(units[0].altitude, CRUISE_ALTITUDE);
+    }
+
+    #[test]
+    fn nobody_shoves_a_sitting_ornithopter() {
+        let terrain = crate::battlefield::terrain(0);
+        let tank_at = 0.4;
+        let mut tank = Unit::for_test(tank_at, MAP_MIDDLE_Z, UnitKind::Vehicle);
+        tank.destination = (5.0, MAP_MIDDLE_Z);
+        let mut units = [ornithopter_at(0.0, MAP_MIDDLE_Z), tank];
+        units[0].selected = false;
+        advance(&mut units, terrain, &[0], 0.05);
+        assert_eq!(units[0].x, 0.0);
+    }
+
+    #[test]
+    fn every_opponent_has_aircraft_at_the_start_and_they_stay_up() {
+        let terrain = crate::battlefield::terrain(0);
+        let colors = [TeamColor::Blue, TeamColor::Red];
+        let units = spawn(terrain, &colors);
+        let of_opponent = |role| units.iter().any(|u| u.owner == 1 && u.role == role);
+        assert!(of_opponent(Role::Aircraft) && of_opponent(Role::AirDrone));
+    }
+
     #[test]
     fn enemies_are_told_apart_by_team() {
         assert!(are_enemies(&[0, 1, 2], 0, 1));
@@ -2318,14 +2589,12 @@ mod tests {
     }
 
     #[test]
-    fn opponents_have_only_infantry_and_towers_and_the_player_has_vehicles_that_are_heavy() {
+    fn opponents_have_no_vehicles_and_the_player_has_vehicles_that_are_heavy() {
         let units = spawn(terrain(0), &COLORS);
-        assert!(
-            units
-                .iter()
-                .filter(|u| u.owner != 0)
-                .all(|u| matches!(u.kind, UnitKind::Infantry | UnitKind::Tower))
-        );
+        assert!(units.iter().filter(|u| u.owner != 0).all(|u| matches!(
+            u.kind,
+            UnitKind::Infantry | UnitKind::Tower | UnitKind::Aircraft
+        )));
         assert!(
             units
                 .iter()
@@ -2789,7 +3058,7 @@ mod tests {
         ]);
         let units = spawn(terrain(1), &colors);
         for (i, a) in units.iter().enumerate() {
-            for b in &units[i + 1..] {
+            for b in units[i + 1..].iter().filter(|b| b.altitude == a.altitude) {
                 assert!(
                     (a.x - b.x).hypot(a.z - b.z) > a.kind.radius() + b.kind.radius(),
                     "{a:?} and {b:?}"

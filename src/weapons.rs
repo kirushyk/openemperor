@@ -116,13 +116,14 @@ impl WeaponKind {
         }
     }
 
-    /// Mortar shells only come down on the ground. Everything else can aim up.
+    /// Mortar shells only come down on the ground, where aircraft that have landed are too.
+    /// Anti-air missiles only go for what is up in the air. Everything else can aim up.
     pub fn can_target(self, kind: UnitKind, altitude: f32) -> bool {
         match self {
             WeaponKind::Unarmed | WeaponKind::Repair => false,
-            WeaponKind::Mortar => !kind.flies(),
+            WeaponKind::Mortar => altitude <= 0.0,
             WeaponKind::Flame | WeaponKind::Gas => altitude <= SPRAY_CEILING,
-            WeaponKind::AirMissile => kind.flies(),
+            WeaponKind::AirMissile => kind.flies() && altitude > 0.0,
             _ => true,
         }
     }
@@ -455,7 +456,7 @@ impl Combat {
                 // towards its target. From the air it has a clear shot.
                 let (dx, dz) = (to.0 - from.0, to.2 - from.2);
                 let flat = dx.hypot(dz).max(0.0001);
-                let direction = if units[i].kind.flies() {
+                let direction = if units[i].altitude > 0.0 {
                     direction_to(from, to)
                 } else {
                     direction_to((0.0, 0.0, 0.0), (dx / flat, 0.8, dz / flat))
@@ -659,7 +660,7 @@ impl Combat {
     fn poison_land(&mut self, units: &mut [Unit], dt: f32) {
         for zone in &mut self.poison {
             zone.life -= dt;
-            for unit in units.iter_mut().filter(|u| u.alive && !u.kind.flies()) {
+            for unit in units.iter_mut().filter(|u| u.alive && u.altitude <= 0.0) {
                 if (unit.x - zone.x).hypot(unit.z - zone.z) < STRIKE_RADIUS {
                     hurt(unit, POISON_DAMAGE * dt);
                 }
@@ -735,14 +736,15 @@ fn hurt(unit: &mut Unit, damage: f32) {
     }
 }
 
-/// Towers, sprayers, tanks, catapults and rocket launchers can only fire the way they face.
+/// Towers, sprayers, tanks, catapults and whatever carries rockets can only fire the way they
+/// face.
 fn must_turn_to_fire(unit: &Unit) -> bool {
     unit.kind.is_building()
         || unit.weapon.spray_angle().is_some()
         || (unit.weapon != WeaponKind::Repair
             && matches!(
                 unit.role,
-                Role::Tank | Role::Catapult | Role::RocketLauncher
+                Role::Tank | Role::Catapult | Role::RocketLauncher | Role::Ornithopter
             ))
 }
 
@@ -2040,6 +2042,18 @@ mod tests {
         units[1].altitude = 0.0;
         run(&mut combat, &mut units, 1.0);
         assert!(units[1].health > 50.0, "on the ground");
+    }
+
+    #[test]
+    fn what_has_landed_is_on_the_ground_for_every_weapon_and_rockets_reach_both() {
+        let landed = (UnitKind::Aircraft, 0.0);
+        let flying = (UnitKind::Aircraft, 4.0);
+        let can = |weapon: WeaponKind, (kind, altitude)| weapon.can_target(kind, altitude);
+        assert!(can(WeaponKind::Mortar, landed) && !can(WeaponKind::Mortar, flying));
+        assert!(can(WeaponKind::Flame, landed) && !can(WeaponKind::Flame, flying));
+        assert!(!can(WeaponKind::AirMissile, landed) && can(WeaponKind::AirMissile, flying));
+        assert!(can(WeaponKind::Rockets, flying));
+        assert!(WeaponKind::Rockets.can_target(UnitKind::Vehicle, 0.0));
     }
 
     fn rocket_launcher_facing_east() -> Unit {

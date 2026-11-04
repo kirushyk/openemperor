@@ -6,7 +6,8 @@ use crate::hud;
 use crate::planet;
 use crate::units::{self, Unit, UnitKind};
 use crate::game::{
-    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, Outcome, STATS_ROW_STEP,
+    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, Faction, Game, MAPS, OPPONENT_SLOTS, Outcome,
+    SUPERWEAPON_CELL, STATS_ROW_STEP,
     STATS_ROW_TOP, Screen, TeamColor, buttons, checkbox_size, color_slots, map_items, minimap_rect,
     modal_rect, opponent_row, opponent_widgets, options_panel, setup_checkboxes, setup_widgets,
     small_text_px, stats_rect, ui_scale,
@@ -34,6 +35,17 @@ const WINDOW: Color = [0.07, 0.07, 0.10, 0.78];
 const CHAT_BACKING: Color = [0.0, 0.0, 0.0, 0.45];
 const SELECTED_RING: Color = [0.35, 1.0, 0.45, 1.0];
 const ORDER_LINE: Color = [0.35, 1.0, 0.45, 0.85];
+const POISON_FILL: [f32; 3] = [0.25, 0.95, 0.25];
+const POISON_ALPHA: f32 = 0.32;
+const LASER_GLOW: Color = [1.0, 0.25, 0.2, 0.35];
+const LASER_CORE: Color = [1.0, 0.9, 0.85, 1.0];
+const BLAST_COLOR: [f32; 3] = [1.0, 0.62, 0.15];
+const MISSILE_BODY: Color = [0.95, 0.95, 0.9, 1.0];
+const MISSILE_FLAME: Color = [1.0, 0.6, 0.15, 0.8];
+const SHELL_BODY: Color = [0.12, 0.12, 0.12, 1.0];
+const SHADOW: Color = [0.0, 0.0, 0.0, 0.3];
+const HEALTH_GOOD: Color = [0.3, 0.9, 0.3, 1.0];
+const HEALTH_BAD: Color = [0.9, 0.2, 0.15, 1.0];
 const DEFEAT_RED: Color = [0.92, 0.22, 0.18, 1.0];
 const RUIN_CONCRETE: [f32; 3] = [0.56, 0.54, 0.50];
 const RUIN_ON_MINIMAP: Color = [0.16, 0.15, 0.14, 1.0];
@@ -355,7 +367,12 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
         game.height,
     );
     draw_map_objects(canvas, game);
-    draw_selection_box(canvas, game);
+    let view = battlefield::View::new(game.camera, game.width, game.height);
+    draw_combat(canvas, game, &view);
+    draw_strike_aim(canvas, game, &view);
+    if !game.aiming_strike {
+        draw_selection_box(canvas, game);
+    }
     if let Some(faction) = game.faction {
         let label = format!("{} - Mission {}", faction.label(), game.campaign_mission + 1);
         canvas.text_centered(&label, game.width / 2.0, 40.0 * s, 4.0 * s, TEXT);
@@ -378,6 +395,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         Object::Ruin(piece) => piece.z,
     };
     let view = battlefield::View::new(game.camera, game.width, game.height);
+    draw_poison(canvas, game, &view);
     draw_order_lines(canvas, game, &view);
     let mut order: Vec<Object> = game.units.iter().map(Object::Unit).collect();
     order.extend(battlefield::terrain(game.battle_map).ruins().iter().map(Object::Ruin));
@@ -389,6 +407,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
                     draw_selected_ring(canvas, game, &view, unit);
                 }
                 draw_unit(canvas, game, &view, unit);
+                draw_health_bar(canvas, game, &view, unit);
             }
             Object::Ruin(piece) => {
                 let color = RUIN_CONCRETE.map(|c| c * piece.shade);
@@ -397,6 +416,152 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             }
         }
     }
+}
+
+/// A flat disc on the ground, seen in perspective, fading out towards its rim if asked.
+fn draw_ground_disc(
+    canvas: &mut Canvas,
+    view: &battlefield::View,
+    (x, y, z): (f32, f32, f32),
+    radius: f32,
+    [r, g, b]: [f32; 3],
+    (center_alpha, rim_alpha): (f32, f32),
+) {
+    const WEDGES: usize = 40;
+    let Some(middle) = view.project(x, y, z) else { return };
+    let rim = |i: usize| {
+        let (sin, cos) = (i as f32 / WEDGES as f32 * TAU).sin_cos();
+        view.project(x + radius * cos, y, z + radius * sin)
+    };
+    for i in 0..WEDGES {
+        if let (Some(a), Some(b_point)) = (rim(i), rim(i + 1)) {
+            let vertex = |(px, py): (f32, f32), alpha: f32| Vertex { x: px, y: py, r, g, b, a: alpha };
+            canvas.vertices.extend([
+                vertex(middle, center_alpha),
+                vertex(a, rim_alpha),
+                vertex(b_point, rim_alpha),
+            ]);
+        }
+    }
+}
+
+/// Poisoned land glows green, breathing gently, and fades during its last seconds.
+fn draw_poison(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
+    for zone in &game.combat.poison {
+        let fade = (zone.life / 5.0).min(1.0);
+        let breath = 0.85 + 0.15 * (game.battle_time() * 2.0).sin();
+        let alpha = POISON_ALPHA * fade * breath;
+        draw_ground_disc(
+            canvas,
+            view,
+            (zone.x, 0.02, zone.z),
+            game.strike_radius(),
+            POISON_FILL,
+            (alpha, alpha * 1.4),
+        );
+    }
+}
+
+/// Shots in the air and explosions, drawn over everything standing on the map.
+fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
+    let s = ui_scale(game.height);
+    for beam in &game.combat.beams {
+        let from = view.project(beam.from.0, beam.from.1, beam.from.2);
+        let to = view.project(beam.to.0, beam.to.1, beam.to.2);
+        if let (Some(a), Some(b)) = (from, to) {
+            let [r, g, bl, alpha] = LASER_GLOW;
+            canvas.line(a, b, 9.0 * s, [r, g, bl, alpha * beam.life]);
+            let [r, g, bl, alpha] = LASER_CORE;
+            canvas.line(a, b, (2.5 * s).max(1.0), [r, g, bl, alpha * beam.life]);
+        }
+    }
+    for missile in &game.combat.missiles {
+        let (x, y, z) = missile.position;
+        let (dx, dy, dz) = missile.direction;
+        let back = |by: f32| view.project(x - dx * by, y - dy * by, z - dz * by);
+        if let (Some(nose), Some(tail), Some(flame)) = (back(0.0), back(0.35), back(0.8)) {
+            canvas.line(tail, flame, (4.0 * s).max(1.0), MISSILE_FLAME);
+            canvas.line(nose, tail, (4.0 * s).max(1.0), MISSILE_BODY);
+        }
+    }
+    for shell in &game.combat.shells {
+        let (_, ground, _) = shell.landing();
+        let (x, y, z) = shell.position();
+        draw_ground_disc(canvas, view, (x, ground, z), 0.16, [0.0, 0.0, 0.0], (SHADOW[3], SHADOW[3]));
+        if let Some((px, py)) = view.project(x, y, z) {
+            canvas.circle(px, py, (5.0 * s).max(2.0), SHELL_BODY);
+        }
+    }
+    for strike in &game.combat.strikes {
+        let height = strike.height();
+        let (top, bottom) = (view.project(strike.x, height + 3.0, strike.z), view.project(strike.x, height, strike.z));
+        if let (Some(a), Some(b)) = (top, bottom) {
+            let [r, g, bl] = POISON_FILL;
+            canvas.line(a, b, 14.0 * s, [r, g, bl, 0.35]);
+            canvas.line(a, b, 6.0 * s, MISSILE_BODY);
+        }
+        draw_ground_disc(canvas, view, (strike.x, 0.02, strike.z), game.strike_radius(), POISON_FILL, (0.0, 0.25));
+    }
+    for blast in &game.combat.blasts {
+        let (x, y, z) = blast.at;
+        let reach = blast.radius * (1.2 - blast.life * 0.6);
+        draw_ground_disc(canvas, view, (x, y, z), reach, BLAST_COLOR, (0.9 * blast.life, 0.1 * blast.life));
+    }
+}
+
+/// While the superweapon waits for a click, a ring on the ground shows what it would hit.
+fn draw_strike_aim(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
+    const SIDES: usize = 48;
+    if !game.aiming_strike {
+        return;
+    }
+    let Some((x, z)) = view.ground_at(game.mouse.0, game.mouse.1) else { return };
+    let radius = game.strike_radius();
+    draw_ground_disc(canvas, view, (x, 0.02, z), radius, POISON_FILL, (0.05, 0.2));
+    let thickness = (3.0 * ui_scale(game.height)).max(1.0);
+    let point = |i: usize| {
+        let (sin, cos) = (i as f32 / SIDES as f32 * TAU).sin_cos();
+        view.project(x + radius * cos, 0.02, z + radius * sin)
+    };
+    let [r, g, b] = POISON_FILL;
+    for i in (0..SIDES).step_by(2) {
+        if let (Some(a), Some(c)) = (point(i), point(i + 1)) {
+            canvas.line(a, c, thickness, [r, g, b, 1.0]);
+        }
+    }
+}
+
+/// A small bar over anyone who has been hurt.
+fn draw_health_bar(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    if unit.health >= unit.kind.max_health() {
+        return;
+    }
+    let Some((x, y)) = view.project(unit.x, unit.y + 1.0, unit.z) else { return };
+    let s = ui_scale(game.height);
+    let (width, height) = (30.0 * s, (4.0 * s).max(2.0));
+    let share = (unit.health / unit.kind.max_health()).clamp(0.0, 1.0);
+    canvas.rect(x - width / 2.0, y, width, height, HEALTH_BAD);
+    canvas.rect(x - width / 2.0, y, width * share, height, HEALTH_GOOD);
+}
+
+/// The superweapon's symbol: three blades around a dot.
+fn draw_radiation_symbol(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, c: Color) {
+    const POINTS: usize = 8;
+    let (inner, outer) = (size * 0.14, size * 0.45);
+    for blade in 0..3 {
+        let middle = blade as f32 / 3.0 * TAU - FRAC_PI_2;
+        let spread = 0.5;
+        for i in 0..POINTS {
+            let at = |t: f32, r: f32| {
+                let angle = middle - spread + t * spread * 2.0;
+                (cx + r * angle.cos(), cy + r * angle.sin())
+            };
+            let (t0, t1) = (i as f32 / POINTS as f32, (i + 1) as f32 / POINTS as f32);
+            canvas.triangle([at(t0, inner), at(t0, outer), at(t1, outer)], c);
+            canvas.triangle([at(t0, inner), at(t1, outer), at(t1, inner)], c);
+        }
+    }
+    canvas.circle(cx, cy, size * 0.08, c);
 }
 
 /// For each selected unit on its way, a dashed line along the ground to where it was sent.
@@ -642,6 +807,22 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
     for (i, cell) in hud::grid_cells(game.width, game.height).into_iter().enumerate() {
         draw_button(canvas, game, cell);
         let (cx, cy) = (cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
+        if game.build_tab == BuildTab::Vehicles && i == SUPERWEAPON_CELL {
+            let ready = game.superweapon_allowed() && game.strike_recharge <= 0.0;
+            let color = if !ready {
+                QUIET
+            } else if game.aiming_strike {
+                SELECTED_RING
+            } else {
+                GOLD
+            };
+            draw_radiation_symbol(canvas, cx, cy, cell.w * 0.7, color);
+            if game.superweapon_allowed() && game.strike_recharge > 0.0 {
+                let seconds = (game.strike_recharge.ceil() as i32).to_string();
+                canvas.text_centered(&seconds, cx, cy, small_text_px(game.height), TEXT);
+            }
+            continue;
+        }
         draw_tab_symbol(canvas, game.build_tab, cx, cy, cell.w * 0.5, GOLD_DIM);
         let label = format!("{letter}{}", i + 1);
         canvas.text_left(&label, cell.x + 6.0 * s, cell.y + 14.0 * s, chat_px(game), TEXT);
@@ -938,6 +1119,12 @@ fn draw_minimap(canvas: &mut Canvas, game: &Game) {
 fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
     let rect = hud::minimap_rect(game.width, game.height);
     draw_map_diamond(canvas, game, game.battle_map, rect);
+    for zone in &game.combat.poison {
+        let (x, y) = battlefield::world_to_minimap(rect, zone.x, zone.z);
+        let radius = game.strike_radius() / battlefield::MAP_MIDDLE_Z * rect.2 / 2.0;
+        let [r, g, b] = POISON_FILL;
+        canvas.circle(x, y, radius, [r, g, b, 0.45]);
+    }
     let dot = (3.0 * ui_scale(game.height)).round().max(2.0);
     for unit in &game.units {
         let (x, y) = battlefield::world_to_minimap(rect, unit.x, unit.z);

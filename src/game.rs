@@ -3,6 +3,7 @@
 use crate::battlefield::{self, Camera};
 use crate::hud;
 use crate::units::{self, Unit, UnitKind};
+use crate::weapons::{Combat, STRIKE_RADIUS};
 use crate::platform::{Event, Key};
 
 pub const INTRO_SECONDS: f32 = 3.0;
@@ -16,6 +17,11 @@ const CLICK_SLOP: f32 = 6.0;
 const PICK_RADIUS: f32 = 25.0;
 /// A placeholder reading until buildings produce and consume energy.
 const STARTING_ENERGY: i32 = 65;
+
+/// The Vehicles menu's cell holding the superweapon.
+pub const SUPERWEAPON_CELL: usize = 0;
+/// Seconds of battle before the superweapon can fire again.
+pub const SUPERWEAPON_RECHARGE: f32 = 60.0;
 
 /// How long the Victory or Defeat message stays up, in seconds.
 pub const OUTCOME_SECONDS: f32 = 10.0;
@@ -1066,6 +1072,11 @@ pub struct Game {
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
     pub units: Vec<Unit>,
+    pub combat: Combat,
+    /// The superweapon is chosen and waiting for a click on the map.
+    pub aiming_strike: bool,
+    /// Seconds until the superweapon can fire again.
+    pub strike_recharge: f32,
     /// Where a selection drag started, as a point on the map (x, z), so that it stays put
     /// on the ground while the camera moves.
     selection_anchor: Option<(f32, f32)>,
@@ -1117,6 +1128,9 @@ impl Game {
             campaign_mission: 0,
             minimap_dragging: false,
             units: Vec::new(),
+            combat: Combat::default(),
+            aiming_strike: false,
+            strike_recharge: 0.0,
             selection_anchor: None,
             build_tab: BuildTab::Infantry,
             energy: STARTING_ENERGY,
@@ -1136,6 +1150,16 @@ impl Game {
     /// A battle stands still with the Pause key on, or with a menu over it if it can.
     pub fn is_paused(&self) -> bool {
         self.in_battle && self.pausable && (self.key_paused || self.screen != Screen::InGame)
+    }
+
+    /// The superweapon can be turned off in a skirmish's setup; elsewhere it is always there.
+    pub fn superweapon_allowed(&self) -> bool {
+        self.battle_kind != BattleKind::Skirmish || self.skirmish.superweapons
+    }
+
+    /// The radius of the superweapon's blast and of the land it poisons.
+    pub fn strike_radius(&self) -> f32 {
+        STRIKE_RADIUS
     }
 
     fn view(&self) -> battlefield::View {
@@ -1190,6 +1214,15 @@ impl Game {
     /// player's units it selects that unit, and elsewhere it sends the selected units there.
     fn finish_selection(&mut self) {
         let Some((x, z)) = self.selection_anchor else { return };
+        if self.aiming_strike {
+            if let Some((target_x, target_z)) = self.view().ground_at(self.mouse.0, self.mouse.1) {
+                self.combat.launch_strike(target_x, target_z);
+                self.strike_recharge = SUPERWEAPON_RECHARGE;
+                self.aiming_strike = false;
+            }
+            self.selection_anchor = None;
+            return;
+        }
         let start = self.view().project_clamped(x, 0.0, z);
         let slop = CLICK_SLOP * ui_scale(self.height);
         let is_click = (start.0 - self.mouse.0).abs() < slop && (start.1 - self.mouse.1).abs() < slop;
@@ -1320,6 +1353,7 @@ impl Game {
         };
         if self.outcome.is_some() {
             self.key_paused = false;
+            self.aiming_strike = false;
             self.outcome_elapsed = 0.0;
         }
     }
@@ -1404,6 +1438,9 @@ impl Game {
         let colors: Vec<TeamColor> = self.stats_rows().iter().map(|row| row.color).collect();
         self.teams = (0..colors.len()).collect();
         self.units = units::spawn(battlefield::terrain(map), &colors);
+        self.combat = Combat::default();
+        self.aiming_strike = false;
+        self.strike_recharge = 0.0;
         self.set_screen(Screen::Loading);
     }
 
@@ -1598,6 +1635,11 @@ impl Game {
         if self.confirming.take().is_some() {
             return;
         }
+        if self.aiming_strike {
+            self.aiming_strike = false;
+            self.selection_anchor = None;
+            return;
+        }
         if self.stats_open {
             self.stats_open = false;
             return;
@@ -1622,7 +1664,10 @@ impl Game {
         if self.in_battle && !self.is_paused() {
             self.battle_time += dt;
             self.update_chat();
-            units::advance(&mut self.units, battlefield::terrain(self.battle_map), &self.teams, dt);
+            let terrain = battlefield::terrain(self.battle_map);
+            units::advance(&mut self.units, terrain, &self.teams, dt);
+            self.combat.advance(&mut self.units, &self.teams, terrain, dt);
+            self.strike_recharge = (self.strike_recharge - dt).max(0.0);
             if self.screen == Screen::InGame {
                 self.settle_casualties();
             }
@@ -1659,7 +1704,11 @@ impl Game {
                 }
             }
             Event::RightDown => {
-                if self.screen == Screen::InGame && !self.key_paused {
+                if self.aiming_strike {
+                    // Only calls off the superweapon; the selection stands.
+                    self.aiming_strike = false;
+                    self.selection_anchor = None;
+                } else if self.screen == Screen::InGame && !self.key_paused {
                     self.selection_anchor = None;
                     for unit in &mut self.units {
                         unit.selected = false;
@@ -1775,6 +1824,13 @@ impl Game {
             }
             // Not designed yet: these buttons respond to hover but do nothing.
             Action::BuildTab(tab) => self.build_tab = tab,
+            Action::BuildCell(SUPERWEAPON_CELL)
+                if self.build_tab == BuildTab::Vehicles
+                    && self.superweapon_allowed()
+                    && self.strike_recharge <= 0.0 =>
+            {
+                self.aiming_strike = true;
+            }
             Action::Multiplayer
             | Action::LoadGame
             | Action::SaveGame
@@ -2410,10 +2466,10 @@ mod tests {
         game.update(LOADING_SECONDS);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         let count = game.units.iter().filter(|u| u.owner == 1).count() as i32;
-        let vehicle = game.units.iter().position(|u| u.heavy).unwrap();
         for _ in 0..4000 {
             let Some(target) = game.units.iter().find(|u| u.owner == 1) else { break };
             let target = (target.x, target.z);
+            let Some(vehicle) = game.units.iter().position(|u| u.heavy) else { break };
             game.units[vehicle].destination = target;
             game.update(0.05);
             if game.outcome.is_some() {
@@ -2551,6 +2607,168 @@ mod tests {
             game.update(LOADING_SECONDS);
             assert_eq!(game.screen, Screen::InGame);
         }
+    }
+
+    fn pick_superweapon(game: &mut Game) {
+        click_hud(game, Action::BuildTab(BuildTab::Vehicles));
+        click_hud(game, Action::BuildCell(SUPERWEAPON_CELL));
+    }
+
+    #[test]
+    fn the_superweapon_lives_in_the_vehicles_menu_only() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
+        assert!(!game.aiming_strike, "not on the infantry tab");
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
+        assert!(!game.aiming_strike, "nor on the buildings tab");
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL + 1));
+        assert!(!game.aiming_strike, "nor in another cell");
+        click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
+        assert!(game.aiming_strike);
+    }
+
+    #[test]
+    fn once_chosen_the_next_click_launches_it_there_and_selects_nobody() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        pick_superweapon(&mut game);
+        let point = (W / 2.0 - 500.0, H / 2.0 + 300.0);
+        let expected = game.view().ground_at(point.0, point.1).unwrap();
+        click_at(&mut game, point.0, point.1);
+        assert!(!game.aiming_strike);
+        assert_eq!(game.combat.strikes.len(), 1);
+        assert_eq!((game.combat.strikes[0].x, game.combat.strikes[0].z), expected);
+        assert_eq!(selected_count(&game), 12, "the selection stands");
+        assert!(game.units.iter().all(|u| !u.is_moving()), "and gets no order");
+    }
+
+    #[test]
+    fn aiming_can_be_called_off_with_the_right_button_or_escape() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        pick_superweapon(&mut game);
+        game.handle(Event::RightDown);
+        assert!(!game.aiming_strike);
+        assert_eq!(selected_count(&game), 12, "without deselecting");
+        assert!(game.combat.strikes.is_empty());
+
+        pick_superweapon(&mut game);
+        game.handle(Event::KeyDown(Key::Escape));
+        assert!(!game.aiming_strike);
+        assert_eq!(game.screen, Screen::InGame, "without opening the menu");
+    }
+
+    #[test]
+    fn the_superweapon_recharges_and_starts_ready_each_battle() {
+        let mut game = in_battle();
+        pick_superweapon(&mut game);
+        click_at(&mut game, 400.0, H - 300.0);
+        assert!(game.strike_recharge > 0.0);
+        click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
+        assert!(!game.aiming_strike, "still recharging");
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        for _ in 0..(SUPERWEAPON_RECHARGE as usize + 1) {
+            game.update(1.0);
+        }
+        if game.outcome.is_none() {
+            click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
+            assert!(game.aiming_strike, "ready again");
+        }
+
+        let mut game = in_battle();
+        pick_superweapon(&mut game);
+        click_at(&mut game, 400.0, H - 300.0);
+        leave_battle(&mut game);
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::Tutorial);
+        assert_eq!(game.strike_recharge, 0.0);
+        assert!(game.combat.strikes.is_empty());
+    }
+
+    #[test]
+    fn the_setup_checkbox_turns_the_superweapon_off_in_a_skirmish() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::Toggle(Toggle::Superweapons));
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        pick_superweapon(&mut game);
+        assert!(!game.aiming_strike);
+    }
+
+    #[test]
+    fn enemy_fire_can_now_defeat_the_player() {
+        let mut game = in_battle();
+        // Everyone of the player's stands in the open beside armed enemies, unarmed.
+        let enemy = game.units.iter().find(|u| u.owner == 1).copied().unwrap();
+        for unit in game.units.iter_mut().filter(|u| u.owner == 0) {
+            unit.x = enemy.x + 1.0;
+            unit.z = enemy.z + 1.0;
+            unit.destination = (unit.x, unit.z);
+            unit.cooldown = 100_000.0;
+            unit.health = 1.0;
+        }
+        for _ in 0..200 {
+            game.update(0.1);
+            if game.outcome.is_some() {
+                break;
+            }
+        }
+        assert_eq!(game.outcome, Some(Outcome::Defeat));
+        assert!(game.lost.infantry > 0);
+    }
+
+    #[test]
+    fn a_battle_can_be_won_by_gunfire_with_kills_counted() {
+        let mut game = in_setup();
+        let ai = slider(&game, SliderId::AiPlayers);
+        drag(&mut game, SliderId::AiPlayers, ai.x_of(1));
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        let enemies = game.units.iter().filter(|u| u.owner == 1).count() as i32;
+        let target = game.units.iter().find(|u| u.owner == 1).map(|u| (u.x, u.z)).unwrap();
+        // Everyone of the player's walks into range and fires by themselves.
+        select_first_group(&mut game);
+        units::order_move(&mut game.units, target, battlefield::terrain(game.battle_map), &game.teams);
+        for _ in 0..3000 {
+            game.update(0.05);
+            if game.outcome.is_some() {
+                break;
+            }
+        }
+        assert_eq!(game.outcome, Some(Outcome::Victory));
+        assert_eq!(game.killed.infantry, enemies);
+    }
+
+    #[test]
+    fn nothing_fires_while_the_game_is_paused() {
+        let mut game = in_battle();
+        let enemy = game.units.iter().find(|u| u.owner == 1).copied().unwrap();
+        game.units[0].x = enemy.x + 1.0;
+        game.units[0].z = enemy.z + 1.0;
+        game.units[0].destination = (game.units[0].x, game.units[0].z);
+        let health = game.units[0].health;
+        game.handle(Event::KeyDown(Key::Escape));
+        game.update(2.0);
+        assert_eq!(game.units[0].health, health);
+    }
+
+    #[test]
+    fn combat_effects_and_poison_all_draw_without_trouble() {
+        let mut game = in_battle();
+        let (x, z) = (game.camera.x, game.camera.z);
+        game.combat.launch_strike(x, z);
+        game.combat.poison.push(crate::weapons::PoisonZone { x, z, life: 30.0 });
+        game.combat.blasts.push(crate::weapons::Blast { at: (x, 0.0, z), radius: 2.0, life: 0.5 });
+        game.combat.beams.push(crate::weapons::Beam { from: (x, 1.0, z), to: (x + 3.0, 1.0, z), life: 0.5 });
+        game.units[0].health = 10.0;
+        assert!(!crate::render::build(&game).is_empty());
+        pick_superweapon(&mut game);
+        assert!(game.aiming_strike);
+        assert!(!crate::render::build(&game).is_empty());
     }
 
     #[test]

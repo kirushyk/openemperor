@@ -1,6 +1,7 @@
 //! Placeholder units and the geometry of selecting them.
 
 use crate::battlefield::{MAP_MIDDLE_Z, RuinPiece, Terrain};
+use crate::weapons::WeaponKind;
 use crate::game::TeamColor;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -24,6 +25,11 @@ const AVOID_MARGIN: f32 = 0.9;
 const BLOCKED_PATIENCE: f32 = 3.0;
 /// Getting this much nearer counts as progress.
 const PROGRESS: f32 = 0.05;
+/// How far a heavy unit will swerve to run down enemy infantry.
+const SQUASH_LURE: f32 = 4.0;
+/// How nearly ahead that infantry must be, as the cosine of the angle off its way: it will
+/// not turn back for anyone behind it.
+const SQUASH_LURE_AHEAD: f32 = 0.3;
 /// Rounds of separating overlapping units per step.
 const SEPARATION_ROUNDS: usize = 4;
 
@@ -41,6 +47,13 @@ impl UnitKind {
         match self {
             UnitKind::Infantry => 0.25,
             UnitKind::Vehicle => 0.45,
+        }
+    }
+
+    pub fn max_health(self) -> f32 {
+        match self {
+            UnitKind::Infantry => 100.0,
+            UnitKind::Vehicle => 300.0,
         }
     }
 
@@ -64,6 +77,14 @@ const CLEARANCE: f32 = 9.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Unit {
+    /// Stays the same for life, so that a missile can keep chasing the same unit.
+    pub id: u32,
+    pub health: f32,
+    pub weapon: WeaponKind,
+    /// Seconds until it can fire again.
+    pub cooldown: f32,
+    /// Height above the ground. Always 0 until something flies, but missiles already chase it.
+    pub altitude: f32,
     pub x: f32,
     /// Height of the ground it stands on.
     pub y: f32,
@@ -98,7 +119,54 @@ impl Unit {
 
     /// Its collision sphere's center height.
     fn sphere_y(&self) -> f32 {
-        self.y + self.kind.radius()
+        self.y + self.altitude + self.kind.radius()
+    }
+
+    /// Its collision sphere's center, where shots aim.
+    pub fn center(&self) -> (f32, f32, f32) {
+        (self.x, self.sphere_y(), self.z)
+    }
+
+    /// Where its shots come from.
+    pub fn muzzle(&self) -> (f32, f32, f32) {
+        (self.x, self.y + self.altitude + HEIGHT * 0.8, self.z)
+    }
+
+    /// A lone player's unit standing at a point, ready to fire with bullets.
+    #[cfg(test)]
+    pub fn for_test(x: f32, z: f32, kind: UnitKind) -> Self {
+        Unit {
+            id: 0,
+            health: kind.max_health(),
+            weapon: WeaponKind::Bullet,
+            cooldown: 0.0,
+            altitude: 0.0,
+            x,
+            y: 0.0,
+            z,
+            owner: 0,
+            color: TeamColor::Blue,
+            selected: false,
+            kind,
+            heading: -FRAC_PI_2,
+            destination: (x, z),
+            heavy: kind == UnitKind::Vehicle,
+            alive: true,
+            blocked_for: 0.0,
+            best_remaining: f32::INFINITY,
+        }
+    }
+}
+
+/// What a block of units carries: vehicles have mortars. The player's infantry mixes the
+/// three small arms by column, so that all of them are on the field, and opponents' have
+/// bullets.
+fn weapon_for(kind: UnitKind, owner: usize, column: usize) -> WeaponKind {
+    match (kind, owner, column % 3) {
+        (UnitKind::Vehicle, _, _) => WeaponKind::Mortar,
+        (UnitKind::Infantry, 0, 1) => WeaponKind::Missile,
+        (UnitKind::Infantry, 0, 2) => WeaponKind::Laser,
+        (UnitKind::Infantry, _, _) => WeaponKind::Bullet,
     }
 }
 
@@ -126,6 +194,11 @@ fn spawn_group(
             let z = cz + (row as f32 - (rows - 1) as f32 / 2.0) * SPACING;
             let kind = if owner == 0 && row + 1 == rows { UnitKind::Vehicle } else { UnitKind::Infantry };
             units.push(Unit {
+                id: units.len() as u32,
+                health: kind.max_health(),
+                weapon: weapon_for(kind, owner, col),
+                cooldown: 0.0,
+                altitude: 0.0,
                 x,
                 y: terrain.height_at(x, z),
                 z,
@@ -251,14 +324,33 @@ fn can_squash(squasher: &Unit, victim: &Unit, teams: &[usize]) -> bool {
         && are_enemies(teams, squasher.owner, victim.owner)
 }
 
+/// The nearest infantry a heavy unit could run down close ahead of it, as a unit vector.
+fn prey_direction(units: &[Unit], index: usize, teams: &[usize], ahead: (f32, f32)) -> Option<(f32, f32)> {
+    let unit = &units[index];
+    let mut best = None;
+    let mut best_distance = SQUASH_LURE;
+    for other in units.iter().filter(|o| o.alive && can_squash(unit, o, teams)) {
+        let (dx, dz) = (other.x - unit.x, other.z - unit.z);
+        let distance = dx.hypot(dz).max(0.0001);
+        let (dir_x, dir_z) = (dx / distance, dz / distance);
+        if distance < best_distance && dir_x * ahead.0 + dir_z * ahead.1 > SQUASH_LURE_AHEAD {
+            best = Some((dir_x, dir_z));
+            best_distance = distance;
+        }
+    }
+    best
+}
+
 /// Which way to head: straight for the destination, bending right around whatever stands
 /// close ahead. Everyone keeps right, so two units meeting head-on pass each other. Heavy
-/// units do not bend around infantry they can squash.
+/// units go out of their way for infantry they can squash, then carry on.
 fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) -> (f32, f32) {
     let unit = &units[index];
     let (to_x, to_z) = (unit.destination.0 - unit.x, unit.destination.1 - unit.z);
     let length = to_x.hypot(to_z).max(0.0001);
-    let (want_x, want_z) = (to_x / length, to_z / length);
+    let toward_destination = (to_x / length, to_z / length);
+    let (want_x, want_z) =
+        prey_direction(units, index, teams, toward_destination).unwrap_or(toward_destination);
     let (right_x, right_z) = (-want_z, want_x);
     let mut sideways = 0.0;
     for (other_index, other) in units.iter().enumerate() {
@@ -510,20 +602,26 @@ mod tests {
     const COLORS: [TeamColor; 4] = [TeamColor::Blue, TeamColor::Red, TeamColor::Cyan, TeamColor::Green];
 
     fn unit_at(x: f32, z: f32, kind: UnitKind) -> Unit {
-        Unit {
-            x,
-            y: 0.0,
-            z,
-            owner: 0,
-            color: TeamColor::Blue,
-            selected: false,
-            kind,
-            heading: -FRAC_PI_2,
-            destination: (x, z),
-            heavy: kind == UnitKind::Vehicle,
-            alive: true,
-            blocked_for: 0.0,
-            best_remaining: f32::INFINITY,
+        Unit::for_test(x, z, kind)
+    }
+
+    #[test]
+    fn every_unit_has_a_weapon_and_all_of_them_are_on_the_players_side() {
+        let units = spawn(terrain(0), &COLORS);
+        let own: Vec<_> = units.iter().filter(|u| u.owner == 0).collect();
+        for weapon in [WeaponKind::Bullet, WeaponKind::Missile, WeaponKind::Laser, WeaponKind::Mortar] {
+            assert!(own.iter().any(|u| u.weapon == weapon), "{weapon:?}");
+        }
+        assert!(own.iter().filter(|u| u.kind == UnitKind::Vehicle).all(|u| u.weapon == WeaponKind::Mortar));
+        assert!(units.iter().filter(|u| u.owner != 0).all(|u| u.weapon == WeaponKind::Bullet));
+    }
+
+    #[test]
+    fn every_unit_has_its_own_id_and_full_health() {
+        let units = spawn(terrain(0), &COLORS);
+        for (i, a) in units.iter().enumerate() {
+            assert_eq!(a.health, a.kind.max_health());
+            assert!(units[i + 1..].iter().all(|b| b.id != a.id));
         }
     }
 
@@ -572,6 +670,36 @@ mod tests {
         assert!(run_into(vehicle, enemy_at(0.0, 60.0, UnitKind::Vehicle), &TWO_SIDES), "nor crush vehicles");
         assert!(run_into(vehicle, unit_at(0.0, 60.0, UnitKind::Infantry), &TWO_SIDES), "own infantry lives");
         assert!(run_into(vehicle, target, &[0, 0]), "and so do allies");
+    }
+
+    #[test]
+    fn a_vehicle_goes_out_of_its_way_to_squash_enemy_infantry_then_carries_on() {
+        let mut units = [unit_at(-6.0, 60.0, UnitKind::Vehicle), enemy_at(0.0, 62.5, UnitKind::Infantry)];
+        units[0].heading = 0.0;
+        units[0].destination = (8.0, 60.0);
+        for _ in 0..400 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert!(!units[1].alive, "it swerved and got them, though they stood off its way");
+        assert_eq!(units[0].destination, (8.0, 60.0), "its order stands");
+        assert!(!units[0].is_moving(), "and it finished the trip: {:?}", units[0]);
+    }
+
+    #[test]
+    fn a_vehicle_does_not_swerve_for_anyone_behind_it_or_too_far_or_friendly() {
+        for (target, teams) in [
+            (enemy_at(-9.0, 60.0, UnitKind::Infantry), TWO_SIDES),
+            (enemy_at(0.0, 66.0, UnitKind::Infantry), TWO_SIDES),
+            (enemy_at(0.0, 62.5, UnitKind::Infantry), [0, 0]),
+        ] {
+            let mut units = [unit_at(-6.0, 60.0, UnitKind::Vehicle), target];
+            units[0].heading = 0.0;
+            units[0].destination = (8.0, 60.0);
+            for _ in 0..400 {
+                advance(&mut units, open_ground(), &teams, 0.05);
+            }
+            assert!(units[1].alive, "{target:?}");
+        }
     }
 
     #[test]

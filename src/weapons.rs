@@ -650,9 +650,11 @@ fn hurt(unit: &mut Unit, damage: f32) {
     }
 }
 
-/// Towers, sprayers and catapults can only fire the way they face.
+/// Towers, sprayers, tanks and catapults can only fire the way they face.
 fn must_turn_to_fire(unit: &Unit) -> bool {
-    unit.kind.is_building() || unit.weapon.spray_angle().is_some() || unit.role == Role::Catapult
+    unit.kind.is_building()
+        || unit.weapon.spray_angle().is_some()
+        || (unit.weapon != WeaponKind::Repair && matches!(unit.role, Role::Tank | Role::Catapult))
 }
 
 /// What a unit fires at this moment.
@@ -1803,6 +1805,23 @@ mod tests {
             let length = dx.hypot(dz);
             assert!(cos * dx / length + sin * dz / length > 0.98, "it faces {x},{z}");
         }
+    }
+
+    #[test]
+    fn a_tank_turns_to_face_its_target_before_it_fires_its_cannon() {
+        let mut tank = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        assert_eq!(tank.role, Role::Tank);
+        tank.id = 1;
+        tank.weapon = WeaponKind::Cannon;
+        tank.heading = 0.0;
+        let mut units = [tank, target_at(-5.0, 60.0)];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.3);
+        assert_eq!(units[1].health, 100.0, "still turning");
+        assert_ne!(units[0].heading, 0.0);
+        run(&mut combat, &mut units, 2.0);
+        assert!(units[1].health < 100.0, "now it fires");
+        assert!(units[0].heading.cos() < -0.9, "facing west");
     }
 
     #[test]

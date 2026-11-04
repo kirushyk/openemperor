@@ -83,7 +83,13 @@ impl Platform {
     }
 
     pub fn poll_event(&mut self) -> Option<Event> {
-        let mut raw = RawEvent { kind: 0, a: 0, b: 0, x: 0.0, y: 0.0 };
+        let mut raw = RawEvent {
+            kind: 0,
+            a: 0,
+            b: 0,
+            x: 0.0,
+            y: 0.0,
+        };
         loop {
             // SAFETY: `raw` is a valid, correctly laid out OeEvent.
             if unsafe { oe_poll_event(&raw mut raw) } == 0 {
@@ -118,7 +124,13 @@ impl Platform {
     pub fn draw(&mut self, vertices: &[Vertex], clear: [f32; 3]) {
         // SAFETY: the shim copies the slice before returning.
         unsafe {
-            oe_draw(vertices.as_ptr(), vertices.len() as u32, clear[0], clear[1], clear[2]);
+            oe_draw(
+                vertices.as_ptr(),
+                vertices.len() as u32,
+                clear[0],
+                clear[1],
+                clear[2],
+            );
         }
     }
 }

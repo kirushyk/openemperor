@@ -36,11 +36,18 @@ const GLYPHS: [[u8; 5]; 95] = [
 /// Column bitmap for `c`; anything outside the table renders as `?`.
 pub fn glyph(c: char) -> [u8; 5] {
     let index = (c as u32).wrapping_sub(0x20) as usize;
-    GLYPHS.get(index).copied().unwrap_or(GLYPHS[(b'?' - 0x20) as usize])
+    GLYPHS
+        .get(index)
+        .copied()
+        .unwrap_or(GLYPHS[(b'?' - 0x20) as usize])
 }
 
 /// Width of `text` in font pixels, without trailing letter spacing.
 pub fn text_width(text: &str) -> f32 {
     let n = text.chars().count() as f32;
-    if n == 0.0 { 0.0 } else { n * ADVANCE - (ADVANCE - GLYPH_WIDTH) }
+    if n == 0.0 {
+        0.0
+    } else {
+        n * ADVANCE - (ADVANCE - GLYPH_WIDTH)
+    }
 }

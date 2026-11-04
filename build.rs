@@ -38,10 +38,20 @@ fn build_macos(out: &Path) {
         _ => "x86_64",
     };
     run(Command::new("clang")
-        .args(["-c", "shim/macos_metal.m", "-fobjc-arc", "-O2", "-Wall", "-Wextra"])
+        .args([
+            "-c",
+            "shim/macos_metal.m",
+            "-fobjc-arc",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+        ])
         .args(["-arch", arch, "-mmacosx-version-min=11.0", "-Ishim", "-o"])
         .arg(&obj));
-    run(Command::new("ar").arg("crs").arg(out.join("liboeshim.a")).arg(&obj));
+    run(Command::new("ar")
+        .arg("crs")
+        .arg(out.join("liboeshim.a"))
+        .arg(&obj));
     for framework in ["Cocoa", "Metal", "QuartzCore", "CoreGraphics"] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
@@ -63,17 +73,34 @@ fn build_linux(out: &Path) {
             .iter()
             .map(|&word| format!("0x{:08x}", u32::from_le_bytes(word)))
             .collect();
-        writeln!(header, "static const uint32_t {name}[] = {{{}}};", words.join(",")).unwrap();
+        writeln!(
+            header,
+            "static const uint32_t {name}[] = {{{}}};",
+            words.join(",")
+        )
+        .unwrap();
     }
     fs::write(out.join("quad_spv.h"), header).unwrap();
 
     let obj = out.join("linux_vulkan.o");
     run(Command::new("cc")
-        .args(["-c", "shim/linux_vulkan.c", "-std=c11", "-O2", "-Wall", "-Wextra", "-Ishim", "-I"])
+        .args([
+            "-c",
+            "shim/linux_vulkan.c",
+            "-std=c11",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Ishim",
+            "-I",
+        ])
         .arg(out)
         .arg("-o")
         .arg(&obj));
-    run(Command::new("ar").arg("crs").arg(out.join("liboeshim.a")).arg(&obj));
+    run(Command::new("ar")
+        .arg("crs")
+        .arg(out.join("liboeshim.a"))
+        .arg(&obj));
     println!("cargo:rustc-link-lib=vulkan");
     println!("cargo:rustc-link-lib=X11");
 }
@@ -82,7 +109,14 @@ fn build_linux(out: &Path) {
 fn build_windows(out: &Path) {
     let obj = out.join("windows_d3d11.obj");
     run(Command::new("cl")
-        .args(["/nologo", "/c", "/O2", "/W4", "/Ishim", "shim/windows_d3d11.c"])
+        .args([
+            "/nologo",
+            "/c",
+            "/O2",
+            "/W4",
+            "/Ishim",
+            "shim/windows_d3d11.c",
+        ])
         .arg(format!("/Fo{}", obj.display())));
     run(Command::new("lib")
         .arg("/nologo")

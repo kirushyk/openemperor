@@ -206,7 +206,11 @@ impl Terrain {
         let mut colors = Vec::with_capacity(GRID_POINTS);
         let seed = 101 + map as u32 * 13;
         let planet = MAP_PLANETS[map];
-        let threshold = if planet.lower_is_solid() { GROUND_THRESHOLD } else { LAND_THRESHOLD };
+        let threshold = if planet.lower_is_solid() {
+            GROUND_THRESHOLD
+        } else {
+            LAND_THRESHOLD
+        };
         for v in 0..=MAP_CELLS {
             for u in 0..=MAP_CELLS {
                 let (fu, fv) = (u as f32 / MAP_CELLS as f32, v as f32 / MAP_CELLS as f32);
@@ -215,24 +219,38 @@ impl Terrain {
                 let ground = height > threshold
                     || (!planet.lower_is_solid() && crate::units::needs_land(x, z));
                 let grain = fractal_noise([fu * 30.0, fv * 30.0, 2.5], seed + 500) - 0.5;
-                let base = if ground { planet.upper_color() } else { planet.lower_color() };
+                let base = if ground {
+                    planet.upper_color()
+                } else {
+                    planet.lower_color()
+                };
                 is_ground.push(ground);
                 colors.push(base.map(|c| c * (1.0 + grain * 2.0 * GRAIN)));
             }
         }
-        let mut terrain = Terrain { planet, is_ground, colors, ruins: Vec::new() };
+        let mut terrain = Terrain {
+            planet,
+            is_ground,
+            colors,
+            ruins: Vec::new(),
+        };
         let mut random = (seed + 1).wrapping_mul(0x9E37_79B1) | 1;
         let mut pieces = Vec::new();
         // Inset from the map's edges, so that no ruin hangs over them.
         let (inset, span) = (8.0, MAP_CELLS as f32 - 16.0);
         // Land is scarcer where the lower terrain cannot hold anything, so look harder there.
-        let tries = if planet.lower_is_solid() { RUIN_COUNT } else { RUIN_COUNT * 8 };
+        let tries = if planet.lower_is_solid() {
+            RUIN_COUNT
+        } else {
+            RUIN_COUNT * 8
+        };
         let mut placed = 0;
         for _ in 0..tries {
             let u = inset + next_random(&mut random) * span;
             let v = inset + next_random(&mut random) * span;
             let (x, z) = grid_to_world(u, v);
-            if placed < RUIN_COUNT && crate::units::keeps_clear(x, z) && terrain.can_hold_ruin(x, z) {
+            if placed < RUIN_COUNT && crate::units::keeps_clear(x, z) && terrain.can_hold_ruin(x, z)
+            {
                 add_ruin(&mut pieces, &terrain, x, z, &mut random);
                 placed += 1;
             }
@@ -245,9 +263,15 @@ impl Terrain {
     fn can_hold_ruin(&self, x: f32, z: f32) -> bool {
         const SITE: f32 = 2.4;
         self.planet.lower_is_solid()
-            || [(-SITE, -SITE), (SITE, -SITE), (SITE, SITE), (-SITE, SITE), (0.0, 0.0)]
-                .iter()
-                .all(|(dx, dz)| self.height_at(x + dx, z + dz) >= GROUND_HEIGHT - 0.001)
+            || [
+                (-SITE, -SITE),
+                (SITE, -SITE),
+                (SITE, SITE),
+                (-SITE, SITE),
+                (0.0, 0.0),
+            ]
+            .iter()
+            .all(|(dx, dz)| self.height_at(x + dx, z + dz) >= GROUND_HEIGHT - 0.001)
     }
 
     pub fn lower_color(&self) -> [f32; 3] {
@@ -293,7 +317,10 @@ impl Terrain {
     pub fn height_at(&self, x: f32, z: f32) -> f32 {
         let (u, v) = world_to_grid(x, z);
         let (u, v) = (u.clamp(0.0, GRID_LAST), v.clamp(0.0, GRID_LAST));
-        let (u0, v0) = (u.floor().min(GRID_LAST - 1.0), v.floor().min(GRID_LAST - 1.0));
+        let (u0, v0) = (
+            u.floor().min(GRID_LAST - 1.0),
+            v.floor().min(GRID_LAST - 1.0),
+        );
         let (tu, tv) = (u - u0, v - v0);
         let at = |du: usize, dv: usize| {
             let raised = self.is_ground(u0 as usize + du, v0 as usize + dv);
@@ -335,7 +362,12 @@ impl Camera {
     pub fn centered() -> Self {
         let middle = MAP_CELLS as f32 / 2.0;
         let (x, z) = grid_to_world(middle, middle);
-        Camera { x, z, zoom: 0.0, zoom_target: 0.0 }
+        Camera {
+            x,
+            z,
+            zoom: 0.0,
+            zoom_target: 0.0,
+        }
     }
 
     /// Positive notches go down towards the bottom position.
@@ -397,7 +429,11 @@ impl Camera {
                 GRID_LAST
             };
             let distance = step.abs();
-            if end > other { (other + distance).min(end) } else { (other - distance).max(end) }
+            if end > other {
+                (other + distance).min(end)
+            } else {
+                (other - distance).max(end)
+            }
         };
         let (u, v) = if du.abs() >= dv.abs() && blocked(u, du) {
             (u, slide(v, du))
@@ -436,7 +472,8 @@ pub struct View {
 
 impl View {
     pub fn new(camera: Camera, width: f32, height: f32) -> Self {
-        let degrees = TOP_PITCH_DEGREES + (BOTTOM_PITCH_DEGREES - TOP_PITCH_DEGREES) * camera.descent();
+        let degrees =
+            TOP_PITCH_DEGREES + (BOTTOM_PITCH_DEGREES - TOP_PITCH_DEGREES) * camera.descent();
         let (sin, cos) = degrees.to_radians().sin_cos();
         let altitude = camera.altitude();
         View {
@@ -462,7 +499,10 @@ impl View {
     }
 
     fn to_screen(&self, side: f32, up: f32, depth: f32) -> (f32, f32) {
-        (self.center.0 + self.focal * side / depth, self.center.1 - self.focal * up / depth)
+        (
+            self.center.0 + self.focal * side / depth,
+            self.center.1 - self.focal * up / depth,
+        )
     }
 
     /// A world point's place on screen; `None` if it is behind the camera.
@@ -487,11 +527,25 @@ impl View {
         }
         let cut = |behind: (f32, f32), ahead: (f32, f32), d_behind: f32, d_ahead: f32| {
             let t = (limit - d_behind) / (d_ahead - d_behind);
-            (behind.0 + (ahead.0 - behind.0) * t, behind.1 + (ahead.1 - behind.1) * t)
+            (
+                behind.0 + (ahead.0 - behind.0) * t,
+                behind.1 + (ahead.1 - behind.1) * t,
+            )
         };
-        let from = if depth_a < limit { cut(a, b, depth_a, depth_b) } else { a };
-        let to = if depth_b < limit { cut(b, a, depth_b, depth_a) } else { b };
-        Some((self.project(from.0, 0.0, from.1)?, self.project(to.0, 0.0, to.1)?))
+        let from = if depth_a < limit {
+            cut(a, b, depth_a, depth_b)
+        } else {
+            a
+        };
+        let to = if depth_b < limit {
+            cut(b, a, depth_b, depth_a)
+        } else {
+            b
+        };
+        Some((
+            self.project(from.0, 0.0, from.1)?,
+            self.project(to.0, 0.0, to.1)?,
+        ))
     }
 
     /// Like `project`, but a point behind the camera lands far off the screen's bottom edge
@@ -530,7 +584,10 @@ impl View {
 
 /// A world point's place on a minimap square whose inscribed diamond is the whole map.
 pub fn world_to_minimap((x, y, size): (f32, f32, f32), world_x: f32, world_z: f32) -> (f32, f32) {
-    (x + size / 2.0 + world_x / MAP_MIDDLE_Z * size / 2.0, y + world_z / MAP_MIDDLE_Z * size / 2.0)
+    (
+        x + size / 2.0 + world_x / MAP_MIDDLE_Z * size / 2.0,
+        y + world_z / MAP_MIDDLE_Z * size / 2.0,
+    )
 }
 
 /// The world point under a minimap position, or `None` outside the minimap's square.
@@ -538,7 +595,10 @@ pub fn minimap_to_world((x, y, size): (f32, f32, f32), px: f32, py: f32) -> Opti
     if px < x || px >= x + size || py < y || py >= y + size {
         return None;
     }
-    Some(((px - (x + size / 2.0)) / (size / 2.0) * MAP_MIDDLE_Z, (py - y) / (size / 2.0) * MAP_MIDDLE_Z))
+    Some((
+        (px - (x + size / 2.0)) / (size / 2.0) * MAP_MIDDLE_Z,
+        (py - y) / (size / 2.0) * MAP_MIDDLE_Z,
+    ))
 }
 
 /// The part of a segment inside a square, if any.
@@ -574,7 +634,10 @@ pub fn clip_to_rect(
             to = to.min(distance / delta);
         }
     }
-    (from <= to).then_some(((a.0 + dx * from, a.1 + dy * from), (a.0 + dx * to, a.1 + dy * to)))
+    (from <= to).then_some((
+        (a.0 + dx * from, a.1 + dy * from),
+        (a.0 + dx * to, a.1 + dy * to),
+    ))
 }
 
 /// Whether all these screen points lie beyond one side of a screen, so that nothing between
@@ -600,7 +663,11 @@ pub fn edge_direction(mouse: (f32, f32), width: f32, height: f32) -> (f32, f32) 
     };
     let (dx, dz) = (push(mouse.0, width), push(mouse.1, height));
     let length = f32::hypot(dx, dz);
-    if length > 0.0 { (dx / length, dz / length) } else { (0.0, 0.0) }
+    if length > 0.0 {
+        (dx / length, dz / length)
+    } else {
+        (0.0, 0.0)
+    }
 }
 
 /// Appends the visible terrain, farthest first. Both grid axes point towards the camera,
@@ -610,14 +677,26 @@ pub fn draw(out: &mut Vec<Vertex>, terrain: &Terrain, camera: Camera, width: f32
     let point = |u: usize, v: usize| {
         let index = grid_index(u, v);
         let (x, z) = grid_to_world(u as f32, v as f32);
-        let y = if terrain.is_ground[index] { GROUND_HEIGHT } else { 0.0 };
+        let y = if terrain.is_ground[index] {
+            GROUND_HEIGHT
+        } else {
+            0.0
+        };
         let [r, g, b] = terrain.colors[index];
-        view.project(x, y, z).map(|point| Vertex::new(point, [r, g, b, 1.0]))
+        view.project(x, y, z)
+            .map(|point| Vertex::new(point, [r, g, b, 1.0]))
     };
     for u in 0..MAP_CELLS {
         for v in 0..MAP_CELLS {
-            let corners = [point(u, v), point(u + 1, v), point(u + 1, v + 1), point(u, v + 1)];
-            let [Some(a), Some(b), Some(c), Some(d)] = corners else { continue };
+            let corners = [
+                point(u, v),
+                point(u + 1, v),
+                point(u + 1, v + 1),
+                point(u, v + 1),
+            ];
+            let [Some(a), Some(b), Some(c), Some(d)] = corners else {
+                continue;
+            };
             if !all_off_screen(&[a, b, c, d].map(|p| (p.x, p.y)), width, height) {
                 out.extend([a, b, c, a, c, d]);
             }
@@ -653,9 +732,17 @@ mod tests {
 
     #[test]
     fn zoom_has_two_fixed_positions_with_the_requested_tilt() {
-        assert!((pitch(at_zoom(0.0)) - 75.0).abs() < 0.01, "top looks almost straight down");
-        assert!((pitch(at_zoom(0.5)) - 30.0).abs() < 0.01, "bottom is 30 degrees from the ground");
-        assert!(View::new(at_zoom(0.5), W, H).position[1] < View::new(at_zoom(0.0), W, H).position[1]);
+        assert!(
+            (pitch(at_zoom(0.0)) - 75.0).abs() < 0.01,
+            "top looks almost straight down"
+        );
+        assert!(
+            (pitch(at_zoom(0.5)) - 30.0).abs() < 0.01,
+            "bottom is 30 degrees from the ground"
+        );
+        assert!(
+            View::new(at_zoom(0.5), W, H).position[1] < View::new(at_zoom(0.0), W, H).position[1]
+        );
     }
 
     #[test]
@@ -664,7 +751,10 @@ mod tests {
         for zoom in [0.0, 0.2, 0.4, 0.5] {
             assert_eq!(View::new(at_zoom(zoom), W, H).focal, wide, "at {zoom}");
         }
-        assert!(pitch(at_zoom(0.25)) > pitch(at_zoom(0.5)), "still moving at 0.25");
+        assert!(
+            pitch(at_zoom(0.25)) > pitch(at_zoom(0.5)),
+            "still moving at 0.25"
+        );
     }
 
     #[test]
@@ -672,7 +762,10 @@ mod tests {
         let (bottom, end) = (View::new(at_zoom(0.5), W, H), View::new(at_zoom(1.0), W, H));
         assert_eq!(end.position, bottom.position, "the camera does not move");
         assert_eq!(end.forward, bottom.forward, "or turn");
-        assert!((end.focal / bottom.focal - 2.0).abs() < 1e-4, "2x at the end");
+        assert!(
+            (end.focal / bottom.focal - 2.0).abs() < 1e-4,
+            "2x at the end"
+        );
         let middle = View::new(at_zoom(0.75), W, H).focal / bottom.focal;
         assert!(middle > 1.0 && middle < 2.0, "gradual: {middle}");
     }
@@ -681,8 +774,13 @@ mod tests {
     fn zooming_keeps_the_same_ground_point_at_screen_center() {
         for zoom in [0.0, 0.3, 0.5, 0.7, 1.0] {
             let camera = at_zoom(zoom);
-            let (x, y) = View::new(camera, W, H).project(camera.x, 0.0, camera.z).unwrap();
-            assert!((x - W / 2.0).abs() < 0.01 && (y - H / 2.0).abs() < 0.01, "at {zoom}");
+            let (x, y) = View::new(camera, W, H)
+                .project(camera.x, 0.0, camera.z)
+                .unwrap();
+            assert!(
+                (x - W / 2.0).abs() < 0.01 && (y - H / 2.0).abs() < 0.01,
+                "at {zoom}"
+            );
         }
     }
 
@@ -711,7 +809,11 @@ mod tests {
         camera.zoom_by(1.0);
         assert_eq!(camera.zoom, 0.0, "nothing moves until time passes");
         camera.ease_zoom(0.016);
-        assert!(camera.zoom > 0.0 && camera.zoom < ZOOM_PER_NOTCH, "glides: {}", camera.zoom);
+        assert!(
+            camera.zoom > 0.0 && camera.zoom < ZOOM_PER_NOTCH,
+            "glides: {}",
+            camera.zoom
+        );
         for _ in 0..200 {
             camera.ease_zoom(0.016);
         }
@@ -750,23 +852,86 @@ mod tests {
         let middle = LAST / 2.0;
         let cases = [
             // From the center each push hits the middle of an edge and goes east or west.
-            ("bottom right from center", at_grid(middle, middle), (d, d), east),
-            ("top right from center", at_grid(middle, middle), (d, -d), east),
-            ("bottom left from center", at_grid(middle, middle), (-d, d), west),
-            ("top left from center", at_grid(middle, middle), (-d, -d), west),
+            (
+                "bottom right from center",
+                at_grid(middle, middle),
+                (d, d),
+                east,
+            ),
+            (
+                "top right from center",
+                at_grid(middle, middle),
+                (d, -d),
+                east,
+            ),
+            (
+                "bottom left from center",
+                at_grid(middle, middle),
+                (-d, d),
+                west,
+            ),
+            (
+                "top left from center",
+                at_grid(middle, middle),
+                (-d, -d),
+                west,
+            ),
             // Off the middle of an edge, the nearer corner wins.
-            ("bottom right near south", at_grid(middle, LAST - 10.0), (d, d), south),
-            ("bottom right near east", at_grid(middle, 10.0), (d, d), east),
-            ("top right near north", at_grid(10.0, middle), (d, -d), north),
-            ("top right near east", at_grid(LAST - 10.0, middle), (d, -d), east),
-            ("bottom left near south", at_grid(LAST - 10.0, middle), (-d, d), south),
-            ("bottom left near west", at_grid(10.0, middle), (-d, d), west),
-            ("top left near north", at_grid(middle, 10.0), (-d, -d), north),
-            ("top left near west", at_grid(middle, LAST - 10.0), (-d, -d), west),
+            (
+                "bottom right near south",
+                at_grid(middle, LAST - 10.0),
+                (d, d),
+                south,
+            ),
+            (
+                "bottom right near east",
+                at_grid(middle, 10.0),
+                (d, d),
+                east,
+            ),
+            (
+                "top right near north",
+                at_grid(10.0, middle),
+                (d, -d),
+                north,
+            ),
+            (
+                "top right near east",
+                at_grid(LAST - 10.0, middle),
+                (d, -d),
+                east,
+            ),
+            (
+                "bottom left near south",
+                at_grid(LAST - 10.0, middle),
+                (-d, d),
+                south,
+            ),
+            (
+                "bottom left near west",
+                at_grid(10.0, middle),
+                (-d, d),
+                west,
+            ),
+            (
+                "top left near north",
+                at_grid(middle, 10.0),
+                (-d, -d),
+                north,
+            ),
+            (
+                "top left near west",
+                at_grid(middle, LAST - 10.0),
+                (-d, -d),
+                west,
+            ),
         ];
         for (name, camera, direction, corner) in cases {
             let (u, v) = push_until_stopped(camera, direction);
-            assert!((u - corner.0).abs() < 0.01 && (v - corner.1).abs() < 0.01, "{name}: ended at {u}, {v}");
+            assert!(
+                (u - corner.0).abs() < 0.01 && (v - corner.1).abs() < 0.01,
+                "{name}: ended at {u}, {v}"
+            );
         }
     }
 
@@ -820,14 +985,24 @@ mod tests {
     fn ground_corners_are_a_trapezium_wider_at_the_far_edge() {
         for zoom in [0.0, 0.5, 1.0] {
             let camera = at_zoom(zoom);
-            let [top_left, top_right, bottom_right, bottom_left] =
-                View::new(camera, W, H).ground_corners().expect("the view always hits the ground");
+            let [top_left, top_right, bottom_right, bottom_left] = View::new(camera, W, H)
+                .ground_corners()
+                .expect("the view always hits the ground");
             let far_width = top_right.0 - top_left.0;
             let near_width = bottom_right.0 - bottom_left.0;
-            assert!(far_width > near_width * 1.01, "at {zoom}: {far_width} vs {near_width}");
-            assert!(top_left.1 < bottom_left.1, "far edge is north of the near edge");
+            assert!(
+                far_width > near_width * 1.01,
+                "at {zoom}: {far_width} vs {near_width}"
+            );
+            assert!(
+                top_left.1 < bottom_left.1,
+                "far edge is north of the near edge"
+            );
             assert!((top_left.1 - top_right.1).abs() < 0.001, "edges stay level");
-            assert!(top_left.1 < camera.z && camera.z < bottom_left.1, "contains the target");
+            assert!(
+                top_left.1 < camera.z && camera.z < bottom_left.1,
+                "contains the target"
+            );
         }
     }
 
@@ -850,7 +1025,11 @@ mod tests {
             world_to_minimap(rect, x, z)
         };
         assert_eq!(corner(0.0, 0.0), (1200.0, 100.0), "north is top middle");
-        assert_eq!(corner(LAST, LAST), (1200.0, 500.0), "south is bottom middle");
+        assert_eq!(
+            corner(LAST, LAST),
+            (1200.0, 500.0),
+            "south is bottom middle"
+        );
         assert_eq!(corner(LAST, 0.0), (1400.0, 300.0), "east is right middle");
         assert_eq!(corner(0.0, LAST), (1000.0, 300.0), "west is left middle");
 
@@ -858,7 +1037,11 @@ mod tests {
         let back = world_to_minimap(rect, x, z);
         assert!((back.0 - 1250.0).abs() < 0.01 && (back.1 - 260.0).abs() < 0.01);
         assert_eq!(minimap_to_world(rect, 999.0, 300.0), None);
-        assert_eq!(minimap_to_world(rect, 1200.0, 500.0), None, "past the bottom edge");
+        assert_eq!(
+            minimap_to_world(rect, 1200.0, 500.0),
+            None,
+            "past the bottom edge"
+        );
     }
 
     #[test]
@@ -867,12 +1050,24 @@ mod tests {
         camera.z = 30.0;
         let view = View::new(camera, W, H);
         let (ahead, behind) = ((2.0, 25.0), (2.0, 80.0));
-        assert!(view.project(behind.0, 0.0, behind.1).is_none(), "really behind");
+        assert!(
+            view.project(behind.0, 0.0, behind.1).is_none(),
+            "really behind"
+        );
 
-        let (a, b) = view.project_ground_line(ahead, behind).expect("part of it is visible");
-        assert_eq!(a, view.project(ahead.0, 0.0, ahead.1).unwrap(), "the visible end stays put");
+        let (a, b) = view
+            .project_ground_line(ahead, behind)
+            .expect("part of it is visible");
+        assert_eq!(
+            a,
+            view.project(ahead.0, 0.0, ahead.1).unwrap(),
+            "the visible end stays put"
+        );
         assert!(b.1 > a.1, "it runs towards the viewer");
-        assert!(view.project_ground_line((0.0, 80.0), (5.0, 90.0)).is_none(), "all behind");
+        assert!(
+            view.project_ground_line((0.0, 80.0), (5.0, 90.0)).is_none(),
+            "all behind"
+        );
 
         let whole = view.project_ground_line((0.0, 20.0), (5.0, 22.0)).unwrap();
         assert_eq!(whole.0, view.project(0.0, 0.0, 20.0).unwrap());
@@ -881,7 +1076,10 @@ mod tests {
     #[test]
     fn segments_clip_to_a_rectangle() {
         let area = (0.0, 0.0, 20.0, 10.0);
-        assert_eq!(clip_to_rect((-5.0, 5.0), (25.0, 5.0), area), Some(((0.0, 5.0), (20.0, 5.0))));
+        assert_eq!(
+            clip_to_rect((-5.0, 5.0), (25.0, 5.0), area),
+            Some(((0.0, 5.0), (20.0, 5.0)))
+        );
         assert_eq!(clip_to_rect((5.0, 12.0), (15.0, 12.0), area), None);
     }
 
@@ -890,9 +1088,15 @@ mod tests {
         let square = (0.0, 0.0, 10.0);
         let inside = ((1.0, 1.0), (9.0, 2.0));
         assert_eq!(clip_to_square(inside.0, inside.1, square), Some(inside));
-        assert_eq!(clip_to_square((-5.0, 5.0), (15.0, 5.0), square), Some(((0.0, 5.0), (10.0, 5.0))));
+        assert_eq!(
+            clip_to_square((-5.0, 5.0), (15.0, 5.0), square),
+            Some(((0.0, 5.0), (10.0, 5.0)))
+        );
         assert_eq!(clip_to_square((-5.0, 20.0), (15.0, 20.0), square), None);
-        assert_eq!(clip_to_square((5.0, -5.0), (5.0, 5.0), square), Some(((5.0, 0.0), (5.0, 5.0))));
+        assert_eq!(
+            clip_to_square((5.0, -5.0), (5.0, 5.0), square),
+            Some(((5.0, 0.0), (5.0, 5.0)))
+        );
     }
 
     #[test]
@@ -902,7 +1106,10 @@ mod tests {
             draw(&mut out, terrain(0), at_zoom(zoom), W, H);
             assert!(!out.is_empty());
             let lowest = out.iter().map(|v| v.y).fold(f32::MIN, f32::max);
-            assert!(lowest >= H, "terrain reaches the bottom of the screen at {zoom}: {lowest}");
+            assert!(
+                lowest >= H,
+                "terrain reaches the bottom of the screen at {zoom}: {lowest}"
+            );
         }
     }
 
@@ -915,16 +1122,24 @@ mod tests {
         let south = screen(camera, middle + reach, middle + reach, 0.0);
         let east = screen(camera, middle + reach, middle - reach, 0.0);
         let west = screen(camera, middle - reach, middle + reach, 0.0);
-        assert!(north.1 < east.1 && east.1 < south.1, "north above, south below");
+        assert!(
+            north.1 < east.1 && east.1 < south.1,
+            "north above, south below"
+        );
         assert!((north.0 - W / 2.0).abs() < 0.5 && (south.0 - W / 2.0).abs() < 0.5);
-        assert!(west.0 < W / 2.0 && W / 2.0 < east.0, "west left, east right");
+        assert!(
+            west.0 < W / 2.0 && W / 2.0 < east.0,
+            "west left, east right"
+        );
         assert!((east.1 - west.1).abs() < 0.5, "east and west are level");
     }
 
     #[test]
     fn the_camera_target_lands_at_screen_center() {
         let camera = Camera::centered();
-        let (x, y) = View::new(camera, W, H).project(camera.x, 0.0, camera.z).unwrap();
+        let (x, y) = View::new(camera, W, H)
+            .project(camera.x, 0.0, camera.z)
+            .unwrap();
         assert!((x - W / 2.0).abs() < 0.01 && (y - H / 2.0).abs() < 0.01);
     }
 
@@ -944,7 +1159,9 @@ mod tests {
     fn ground_stands_above_sand_and_is_darker() {
         let camera = Camera::centered();
         let middle = LAST / 2.0;
-        assert!(screen(camera, middle, middle, GROUND_HEIGHT).1 < screen(camera, middle, middle, 0.0).1);
+        assert!(
+            screen(camera, middle, middle, GROUND_HEIGHT).1 < screen(camera, middle, middle, 0.0).1
+        );
         assert!(GROUND.iter().sum::<f32>() < SAND.iter().sum::<f32>());
     }
 
@@ -955,7 +1172,10 @@ mod tests {
                 let terrain = terrain(map);
                 let ground = terrain.is_ground.iter().filter(|g| **g).count();
                 let total = terrain.is_ground.len();
-                assert!(ground > total / 8 && ground < total * 2 / 3, "map {map}: {ground} of {total}");
+                assert!(
+                    ground > total / 8 && ground < total * 2 / 3,
+                    "map {map}: {ground} of {total}"
+                );
                 terrain.is_ground.clone()
             })
             .collect();
@@ -973,16 +1193,30 @@ mod tests {
     #[test]
     fn map_names_start_with_their_planets_letter() {
         for (name, planet) in crate::game::MAPS.iter().zip(MAP_PLANETS) {
-            assert!(name.starts_with(&format!("{planet:?} ")), "{name} on {planet:?}");
+            assert!(
+                name.starts_with(&format!("{planet:?} ")),
+                "{name} on {planet:?}"
+            );
         }
     }
 
     #[test]
     fn every_planet_has_a_map_and_looks_different() {
-        let planets = [Planet::A, Planet::C, Planet::D, Planet::G, Planet::S, Planet::T];
+        let planets = [
+            Planet::A,
+            Planet::C,
+            Planet::D,
+            Planet::G,
+            Planet::S,
+            Planet::T,
+        ];
         for (i, a) in planets.iter().enumerate() {
             assert!(MAP_PLANETS.contains(a));
-            assert_ne!(a.lower_color(), a.upper_color(), "{a:?} needs two visible heights");
+            assert_ne!(
+                a.lower_color(),
+                a.upper_color(),
+                "{a:?} needs two visible heights"
+            );
             for b in &planets[i + 1..] {
                 assert_ne!(a.lower_color(), b.lower_color(), "{a:?} and {b:?}");
             }
@@ -998,10 +1232,17 @@ mod tests {
         assert_eq!(Planet::A.lower_color(), SAND);
         assert!(blue_ish(Planet::C.lower_color()), "water");
         assert!(green_ish(Planet::C.upper_color()), "grass");
-        assert!(blue_ish(Planet::D.lower_color()) && bright(Planet::D.lower_color()), "ice");
+        assert!(
+            blue_ish(Planet::D.lower_color()) && bright(Planet::D.lower_color()),
+            "ice"
+        );
         assert!(bright(Planet::D.upper_color()), "snow");
         assert!(red_ish(Planet::G.lower_color()), "lava");
-        assert_eq!(Planet::G.upper_color(), Planet::A.upper_color(), "the same upper terrain");
+        assert_eq!(
+            Planet::G.upper_color(),
+            Planet::A.upper_color(),
+            "the same upper terrain"
+        );
     }
 
     #[test]
@@ -1018,21 +1259,33 @@ mod tests {
             let colors = [crate::game::TeamColor::Blue; 8];
             for count in 2..=colors.len() {
                 for unit in crate::units::spawn(terrain, &colors[..count]) {
-                    assert!((unit.y - GROUND_HEIGHT).abs() < 0.001, "{planet:?} with {count}: {unit:?}");
+                    assert!(
+                        (unit.y - GROUND_HEIGHT).abs() < 0.001,
+                        "{planet:?} with {count}: {unit:?}"
+                    );
                 }
             }
             for piece in terrain.ruins() {
                 let height = terrain.height_at(piece.x, piece.z);
-                assert!((height - GROUND_HEIGHT).abs() < 0.001, "{planet:?}: {piece:?}");
+                assert!(
+                    (height - GROUND_HEIGHT).abs() < 0.001,
+                    "{planet:?}: {piece:?}"
+                );
             }
         }
     }
 
     #[test]
     fn every_map_has_destroyed_buildings_and_each_map_has_its_own() {
-        let all: Vec<&[RuinPiece]> = (0..crate::game::MAPS.len()).map(|map| terrain(map).ruins()).collect();
+        let all: Vec<&[RuinPiece]> = (0..crate::game::MAPS.len())
+            .map(|map| terrain(map).ruins())
+            .collect();
         for (map, ruins) in all.iter().enumerate() {
-            assert!(ruins.len() >= 15, "map {map} has only {} pieces", ruins.len());
+            assert!(
+                ruins.len() >= 15,
+                "map {map} has only {} pieces",
+                ruins.len()
+            );
         }
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {
@@ -1047,7 +1300,10 @@ mod tests {
             let terrain = terrain(map);
             for piece in terrain.ruins() {
                 let (u, v) = world_to_grid(piece.x, piece.z);
-                assert!((0.0..=LAST).contains(&u) && (0.0..=LAST).contains(&v), "{piece:?}");
+                assert!(
+                    (0.0..=LAST).contains(&u) && (0.0..=LAST).contains(&v),
+                    "{piece:?}"
+                );
                 assert!(piece.y == 0.0 || piece.y <= GROUND_HEIGHT, "{piece:?}");
                 assert!(piece.height > 0.0 && piece.half_x > 0.0 && piece.half_z > 0.0);
             }
@@ -1066,7 +1322,11 @@ mod tests {
         let terrain = terrain(0);
         for (u, v) in [(10, 10), (64, 64), (100, 30)] {
             let (x, z) = grid_to_world(u as f32, v as f32);
-            let expected = if terrain.is_ground(u, v) { GROUND_HEIGHT } else { 0.0 };
+            let expected = if terrain.is_ground(u, v) {
+                GROUND_HEIGHT
+            } else {
+                0.0
+            };
             assert!((terrain.height_at(x, z) - expected).abs() < 1e-4);
         }
     }
@@ -1088,9 +1348,16 @@ mod tests {
         ];
         for (mouse, expected) in cases {
             let got = edge_direction(mouse, W, H);
-            assert!((got.0 - expected.0).abs() < 1e-5 && (got.1 - expected.1).abs() < 1e-5, "{mouse:?} gave {got:?}");
+            assert!(
+                (got.0 - expected.0).abs() < 1e-5 && (got.1 - expected.1).abs() < 1e-5,
+                "{mouse:?} gave {got:?}"
+            );
         }
-        assert_eq!(edge_direction((30.0, 30.0), W, H), (0.0, 0.0), "near is not at the edge");
+        assert_eq!(
+            edge_direction((30.0, 30.0), W, H),
+            (0.0, 0.0),
+            "near is not at the edge"
+        );
     }
 
     #[test]
@@ -1106,7 +1373,16 @@ mod tests {
     #[test]
     fn the_camera_stays_on_the_diamond_and_slides_along_its_edges() {
         let d = std::f32::consts::FRAC_1_SQRT_2;
-        for direction in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (d, d), (-d, -d), (d, -d), (-d, d)] {
+        for direction in [
+            (1.0, 0.0),
+            (-1.0, 0.0),
+            (0.0, 1.0),
+            (0.0, -1.0),
+            (d, d),
+            (-d, -d),
+            (d, -d),
+            (-d, d),
+        ] {
             let mut camera = Camera::centered();
             for _ in 0..2000 {
                 camera.scroll(direction, 10, 0.05);
@@ -1120,7 +1396,10 @@ mod tests {
             camera.scroll((1.0, 0.0), 10, 0.05);
         }
         let (u, v) = world_to_grid(camera.x, camera.z);
-        assert!((u - LAST).abs() < 0.01 && v.abs() < 0.01, "ended at {u}, {v}");
+        assert!(
+            (u - LAST).abs() < 0.01 && v.abs() < 0.01,
+            "ended at {u}, {v}"
+        );
     }
 
     #[test]
@@ -1131,7 +1410,10 @@ mod tests {
         assert!(!centered.is_empty());
         assert_eq!(centered.len() % 6, 0);
         let all_quads = MAP_CELLS * MAP_CELLS * 6;
-        assert!(centered.len() < all_quads, "culling keeps it below the whole map");
+        assert!(
+            centered.len() < all_quads,
+            "culling keeps it below the whole map"
+        );
 
         let mut moved = Vec::new();
         let mut camera = Camera::centered();

@@ -2,18 +2,18 @@
 
 use crate::battlefield::{self, MAP_CELLS};
 use crate::font;
+use crate::game::{
+    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Faction, Game, MAPS,
+    OPPONENT_SLOTS, Outcome, STATS_ROW_STEP, STATS_ROW_TOP, SUPERWEAPON_CELL, Screen, TeamColor,
+    buttons, checkbox_size, color_slots, map_items, minimap_rect, modal_rect, opponent_row,
+    opponent_widgets, options_panel, setup_checkboxes, setup_widgets, small_text_px, stats_rect,
+    ui_scale,
+};
 use crate::hud;
 use crate::planet;
 use crate::platform::Vertex;
 use crate::units::{self, Role, Target, Unit, UnitKind};
 use crate::weapons::STRIKE_RADIUS;
-use crate::game::{
-    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Faction, Game, MAPS, OPPONENT_SLOTS, Outcome,
-    SUPERWEAPON_CELL, STATS_ROW_STEP,
-    STATS_ROW_TOP, Screen, TeamColor, buttons, checkbox_size, color_slots, map_items, minimap_rect,
-    modal_rect, opponent_row, opponent_widgets, options_panel, setup_checkboxes, setup_widgets,
-    small_text_px, stats_rect, ui_scale,
-};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 type Color = [f32; 4];
@@ -102,7 +102,8 @@ struct Canvas {
 
 impl Canvas {
     fn triangle(&mut self, points: [(f32, f32); 3], c: Color) {
-        self.vertices.extend(points.map(|point| Vertex::new(point, c)));
+        self.vertices
+            .extend(points.map(|point| Vertex::new(point, c)));
     }
 
     fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Color) {
@@ -111,13 +112,32 @@ impl Canvas {
     }
 
     /// A rectangle with a border of another color inside its edges.
-    fn bordered_rect(&mut self, (x, y, w, h): (f32, f32, f32, f32), border: f32, edge: Color, fill: Color) {
+    fn bordered_rect(
+        &mut self,
+        (x, y, w, h): (f32, f32, f32, f32),
+        border: f32,
+        edge: Color,
+        fill: Color,
+    ) {
         self.rect(x, y, w, h, edge);
-        self.rect(x + border, y + border, w - border * 2.0, h - border * 2.0, fill);
+        self.rect(
+            x + border,
+            y + border,
+            w - border * 2.0,
+            h - border * 2.0,
+            fill,
+        );
     }
 
     /// A circle with a border of another color inside its edge.
-    fn bordered_circle(&mut self, (cx, cy): (f32, f32), r: f32, border: f32, edge: Color, fill: Color) {
+    fn bordered_circle(
+        &mut self,
+        (cx, cy): (f32, f32),
+        r: f32,
+        border: f32,
+        edge: Color,
+        fill: Color,
+    ) {
         self.circle(cx, cy, r, edge);
         self.circle(cx, cy, r - border, fill);
     }
@@ -142,7 +162,14 @@ impl Canvas {
     fn banner(&mut self, x: f32, y: f32, w: f32, h: f32, thickness: f32, fill: [f32; 3]) {
         self.fading_rect(x, y, w, h, fill, 0.0);
         self.fading_rect(x, y, w, thickness, BANNER_LINE, BANNER_LINE_END_ALPHA);
-        self.fading_rect(x, y + h - thickness, w, thickness, BANNER_LINE, BANNER_LINE_END_ALPHA);
+        self.fading_rect(
+            x,
+            y + h - thickness,
+            w,
+            thickness,
+            BANNER_LINE,
+            BANNER_LINE_END_ALPHA,
+        );
     }
 
     fn circle(&mut self, cx: f32, cy: f32, r: f32, c: Color) {
@@ -158,7 +185,14 @@ impl Canvas {
 
     /// A fan around the center alternating between two radii: a star, or with
     /// `inner = outer * cos(PI / points)` a regular polygon.
-    fn star(&mut self, (cx, cy): (f32, f32), (outer, inner): (f32, f32), points: usize, rotation: f32, c: Color) {
+    fn star(
+        &mut self,
+        (cx, cy): (f32, f32),
+        (outer, inner): (f32, f32),
+        points: usize,
+        rotation: f32,
+        c: Color,
+    ) {
         let vertex = |i: usize| {
             let r = if i.is_multiple_of(2) { outer } else { inner };
             let angle = rotation + i as f32 * PI / points as f32;
@@ -175,7 +209,10 @@ impl Canvas {
         if length == 0.0 {
             return;
         }
-        let (nx, ny) = (-dy / length * thickness / 2.0, dx / length * thickness / 2.0);
+        let (nx, ny) = (
+            -dy / length * thickness / 2.0,
+            dx / length * thickness / 2.0,
+        );
         let (p, q) = ((a.0 + nx, a.1 + ny), (b.0 + nx, b.1 + ny));
         let (r, t) = ((b.0 - nx, b.1 - ny), (a.0 - nx, a.1 - ny));
         self.triangle([p, q, r], c);
@@ -183,7 +220,13 @@ impl Canvas {
     }
 
     fn polygon(&mut self, cx: f32, cy: f32, r: f32, sides: usize, rotation: f32, c: Color) {
-        self.star((cx, cy), (r, r * (PI / sides as f32).cos()), sides, rotation, c);
+        self.star(
+            (cx, cy),
+            (r, r * (PI / sides as f32).cos()),
+            sides,
+            rotation,
+            c,
+        );
     }
 
     /// Draws `text` with its cap height centered on `cy`, one font pixel = `px` screen pixels.
@@ -214,11 +257,22 @@ impl Canvas {
         let fill = 20.0 * s;
         let inset = 2.5 * s;
         self.triangle(
-            [(x, y), (x, y + outline), (x + outline * 0.72, y + outline * 0.72)],
+            [
+                (x, y),
+                (x, y + outline),
+                (x + outline * 0.72, y + outline * 0.72),
+            ],
             CURSOR_EDGE,
         );
         let (fx, fy) = (x + inset * 0.6, y + inset * 1.6);
-        self.triangle([(fx, fy), (fx, fy + fill), (fx + fill * 0.72, fy + fill * 0.72)], CURSOR_FILL);
+        self.triangle(
+            [
+                (fx, fy),
+                (fx, fy + fill),
+                (fx + fill * 0.72, fy + fill * 0.72),
+            ],
+            CURSOR_FILL,
+        );
     }
 
     /// A blue ring around a blue cross, centered on the cursor.
@@ -228,7 +282,10 @@ impl Canvas {
         let thickness = (4.0 * s).max(1.0);
         self.ring((x, y), radius, thickness + edge * 2.0, CURSOR_EDGE);
         self.ring((x, y), radius, thickness, HEAL_CURSOR);
-        for (half_w, half_h, grow, color) in [(arm, wide / 2.0, edge, CURSOR_EDGE), (arm, wide / 2.0, 0.0, HEAL_CURSOR)] {
+        for (half_w, half_h, grow, color) in [
+            (arm, wide / 2.0, edge, CURSOR_EDGE),
+            (arm, wide / 2.0, 0.0, HEAL_CURSOR),
+        ] {
             let (w, h) = (half_w + grow, half_h + grow);
             self.rect(x - w, y - h, w * 2.0, h * 2.0, color);
             self.rect(x - h, y - w, h * 2.0, w * 2.0, color);
@@ -268,10 +325,17 @@ impl Canvas {
             let at = |out: f32, side: f32| (x + cos * out - sin * side, y + sin * out + cos * side);
             let (tip, base, half) = (outer + 5.0 * s, outer + 19.0 * s, 8.0 * s);
             self.triangle(
-                [at(tip - edge * 2.0, 0.0), at(base + edge, -half - edge * 1.6), at(base + edge, half + edge * 1.6)],
+                [
+                    at(tip - edge * 2.0, 0.0),
+                    at(base + edge, -half - edge * 1.6),
+                    at(base + edge, half + edge * 1.6),
+                ],
                 CURSOR_EDGE,
             );
-            self.triangle([at(tip, 0.0), at(base, -half), at(base, half)], ATTACK_CURSOR);
+            self.triangle(
+                [at(tip, 0.0), at(base, -half), at(base, half)],
+                ATTACK_CURSOR,
+            );
         }
     }
 }
@@ -319,17 +383,27 @@ pub fn build(game: &Game) -> Vec<Vertex> {
                     canvas.rect(0.0, 0.0, game.width, game.height, DIM);
                 }
             }
-            if matches!(game.screen, Screen::MainMenu | Screen::SinglePlayerMenu) && !game.in_battle {
+            if matches!(game.screen, Screen::MainMenu | Screen::SinglePlayerMenu) && !game.in_battle
+            {
                 // Rising from the bottom of the screen, leaving the title on clear sky.
                 let (y, radius) = (game.height * 0.66, game.height * 0.48);
                 planet::draw_sandy(&mut canvas.vertices, cx, y, radius, game.menu_seconds());
-                canvas.text_left(VERSION, 24.0 * s, 30.0 * s, small_text_px(game.height), TEXT);
+                canvas.text_left(
+                    VERSION,
+                    24.0 * s,
+                    30.0 * s,
+                    small_text_px(game.height),
+                    TEXT,
+                );
             }
             let title = match game.screen {
                 Screen::Options => Some("Main Options"),
                 Screen::Credits => Some("Credits"),
                 Screen::FactionSelect => Some("Choose Faction"),
-                Screen::InGame | Screen::SkirmishSetup | Screen::EscapeMenu | Screen::BattleStats => None,
+                Screen::InGame
+                | Screen::SkirmishSetup
+                | Screen::EscapeMenu
+                | Screen::BattleStats => None,
                 _ => Some(TITLE),
             };
             if let Some(title) = title {
@@ -347,7 +421,13 @@ pub fn build(game: &Game) -> Vec<Vertex> {
                     let (text, color) = outcome_look(outcome);
                     canvas.text_centered(text, cx, game.height * 0.4, 16.0 * s, color);
                     let hint_y = game.height * 0.4 + 110.0 * s;
-                    canvas.text_centered("Esc to continue", cx, hint_y, small_text_px(game.height), TEXT);
+                    canvas.text_centered(
+                        "Esc to continue",
+                        cx,
+                        hint_y,
+                        small_text_px(game.height),
+                        TEXT,
+                    );
                 }
             }
             if game.screen == Screen::BattleStats {
@@ -373,9 +453,19 @@ pub fn build(game: &Game) -> Vec<Vertex> {
                 let current = map_items(game.width, game.height)[game.skirmish.map];
                 for item in map_items(game.width, game.height) {
                     draw_field(&mut canvas, game, item);
-                    let color = if item.action == current.action { GOLD } else { TEXT };
+                    let color = if item.action == current.action {
+                        GOLD
+                    } else {
+                        TEXT
+                    };
                     let px = small_text_px(game.height);
-                    canvas.text_left(item.label, item.x + 16.0 * s, item.y + item.h / 2.0, px, color);
+                    canvas.text_left(
+                        item.label,
+                        item.x + 16.0 * s,
+                        item.y + item.h / 2.0,
+                        px,
+                        color,
+                    );
                 }
             }
         }
@@ -398,10 +488,19 @@ fn draw_tip(canvas: &mut Canvas, game: &Game, text: &str) {
     let px = small_text_px(game.height);
     let pad = 6.0 * s;
     let border = border_px(game.height);
-    let (w, h) = (font::text_width(text) * px + pad * 2.0, font::CAP_HEIGHT * px + pad * 2.0);
+    let (w, h) = (
+        font::text_width(text) * px + pad * 2.0,
+        font::CAP_HEIGHT * px + pad * 2.0,
+    );
     let x = (game.mouse.0 + 26.0 * s).min(game.width - w);
     let y = (game.mouse.1 + 34.0 * s).min(game.height - h);
-    canvas.rect(x - border, y - border, w + border * 2.0, h + border * 2.0, BORDER);
+    canvas.rect(
+        x - border,
+        y - border,
+        w + border * 2.0,
+        h + border * 2.0,
+        BORDER,
+    );
     canvas.rect(x, y, w, h, PANEL);
     canvas.text_left(text, x + pad, y + h / 2.0, px, TEXT);
 }
@@ -411,11 +510,19 @@ fn draw_button(canvas: &mut Canvas, game: &Game, b: Button) {
     let border = border_px(game.height);
     let hovered = game.hovered();
     let selected = b.action == Action::Tab(game.tab);
-    let fill = if selected { PANEL } else { button_fill(b.action, hovered, game.pressed) };
+    let fill = if selected {
+        PANEL
+    } else {
+        button_fill(b.action, hovered, game.pressed)
+    };
     let edge = if selected { GOLD } else { BORDER };
     let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
     if let Action::Faction(faction) = b.action {
-        let ring = if hovered == Some(b.action) { GOLD } else { BORDER };
+        let ring = if hovered == Some(b.action) {
+            GOLD
+        } else {
+            BORDER
+        };
         draw_planet(canvas, game, faction, button_circle(b), ring);
         // The name goes below: the moving surface would make it hard to read on top.
         canvas.text_centered(b.label, cx, b.y + b.h + 28.0 * s, 4.0 * s, TEXT);
@@ -426,7 +533,10 @@ fn draw_button(canvas: &mut Canvas, game: &Game, b: Button) {
     if matches!(b.action, Action::BuildCell(_) | Action::HudSmall(_)) {
         canvas.bordered_rect((b.x, b.y, b.w, b.h), border, edge, fill);
     } else {
-        let banner = match (hovered == Some(b.action) || selected, game.pressed == Some(b.action)) {
+        let banner = match (
+            hovered == Some(b.action) || selected,
+            game.pressed == Some(b.action),
+        ) {
             (true, true) => BANNER_PRESSED,
             (true, false) => BANNER_HOVER,
             _ => BANNER_BLUE,
@@ -446,7 +556,13 @@ fn draw_message_box(canvas: &mut Canvas, game: &Game) {
     let (x, y, w, h) = modal_rect(game.width, game.height);
     canvas.rect(0.0, 0.0, game.width, game.height, DIM);
     canvas.bordered_rect((x, y, w, h), border, GOLD, PANEL);
-    canvas.text_centered(CONFIRM_MESSAGE, x + w / 2.0, y + 90.0 * s, small_text_px(game.height), TEXT);
+    canvas.text_centered(
+        CONFIRM_MESSAGE,
+        x + w / 2.0,
+        y + 90.0 * s,
+        small_text_px(game.height),
+        TEXT,
+    );
     for b in game.buttons() {
         draw_button(canvas, game, b);
     }
@@ -467,10 +583,23 @@ fn draw_options_panel(canvas: &mut Canvas, game: &Game) {
 }
 
 /// A faction's planet inside a thin ring filling the given circle.
-fn draw_planet(canvas: &mut Canvas, game: &Game, faction: Faction, (cx, cy, r): (f32, f32, f32), ring: Color) {
+fn draw_planet(
+    canvas: &mut Canvas,
+    game: &Game,
+    faction: Faction,
+    (cx, cy, r): (f32, f32, f32),
+    ring: Color,
+) {
     let border = border_px(game.height);
     canvas.circle(cx, cy, r, ring);
-    planet::draw(&mut canvas.vertices, faction, cx, cy, r - border, game.screen_elapsed());
+    planet::draw(
+        &mut canvas.vertices,
+        faction,
+        cx,
+        cy,
+        r - border,
+        game.screen_elapsed(),
+    );
 }
 
 fn outcome_look(outcome: Outcome) -> (&'static str, Color) {
@@ -530,7 +659,11 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
         draw_selection_box(canvas, game);
     }
     if let Some(faction) = game.faction {
-        let label = format!("{} - Mission {}", faction.label(), game.campaign_mission + 1);
+        let label = format!(
+            "{} - Mission {}",
+            faction.label(),
+            game.campaign_mission + 1
+        );
         canvas.text_centered(&label, game.width / 2.0, 40.0 * s, 4.0 * s, TEXT);
     }
     draw_energy_gauge(canvas, game);
@@ -563,8 +696,18 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             draw_selected_ring(canvas, game, &view, unit);
         }
     }
-    let mut order: Vec<Object> = game.units.iter().filter(|u| !u.kind.flies()).map(Object::Unit).collect();
-    order.extend(battlefield::terrain(game.battle_map).ruins().iter().map(Object::Ruin));
+    let mut order: Vec<Object> = game
+        .units
+        .iter()
+        .filter(|u| !u.kind.flies())
+        .map(Object::Unit)
+        .collect();
+    order.extend(
+        battlefield::terrain(game.battle_map)
+            .ruins()
+            .iter()
+            .map(Object::Ruin),
+    );
     order.sort_by(|a, b| z_of(a).total_cmp(&z_of(b)));
     for object in order {
         match object {
@@ -579,7 +722,14 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             Object::Ruin(piece) => {
                 let color = RUIN_CONCRETE.map(|c| c * piece.shade);
                 let footprint = (piece.x, piece.z, piece.half_x, piece.half_z);
-                draw_box(canvas, game, &view, footprint, (piece.y, piece.y + piece.height), color);
+                draw_box(
+                    canvas,
+                    game,
+                    &view,
+                    footprint,
+                    (piece.y, piece.y + piece.height),
+                    color,
+                );
             }
         }
     }
@@ -592,7 +742,14 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
 
 /// The shadow of something in the air, on the ground straight below it.
 fn draw_shadow(canvas: &mut Canvas, view: &battlefield::View, below: (f32, f32, f32), radius: f32) {
-    draw_ground_disc(canvas, view, below, radius, [0.0, 0.0, 0.0], (SHADOW[3], SHADOW[3]));
+    draw_ground_disc(
+        canvas,
+        view,
+        below,
+        radius,
+        [0.0, 0.0, 0.0],
+        (SHADOW[3], SHADOW[3]),
+    );
 }
 
 /// A flat disc on the ground, seen in perspective, fading out towards its rim if asked.
@@ -605,14 +762,17 @@ fn draw_ground_disc(
     (center_alpha, rim_alpha): (f32, f32),
 ) {
     const WEDGES: usize = 40;
-    let Some(middle) = view.project(x, y, z) else { return };
+    let Some(middle) = view.project(x, y, z) else {
+        return;
+    };
     let rim = |i: usize| {
         let (sin, cos) = (i as f32 / WEDGES as f32 * TAU).sin_cos();
         view.project(x + radius * cos, y, z + radius * sin)
     };
     for i in 0..WEDGES {
         if let (Some(a), Some(b_point)) = (rim(i), rim(i + 1)) {
-            let vertex = |point: (f32, f32), alpha: f32| Vertex::new(point, with_alpha(color, alpha));
+            let vertex =
+                |point: (f32, f32), alpha: f32| Vertex::new(point, with_alpha(color, alpha));
             canvas.vertices.extend([
                 vertex(middle, center_alpha),
                 vertex(a, rim_alpha),
@@ -646,7 +806,11 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
         let from = view.project(beam.from.0, beam.from.1, beam.from.2);
         let to = view.project(beam.to.0, beam.to.1, beam.to.2);
         if let (Some(a), Some(b)) = (from, to) {
-            let (glow, core) = if beam.repair { (REPAIR_GLOW, REPAIR_CORE) } else { (LASER_GLOW, LASER_CORE) };
+            let (glow, core) = if beam.repair {
+                (REPAIR_GLOW, REPAIR_CORE)
+            } else {
+                (LASER_GLOW, LASER_CORE)
+            };
             canvas.line(a, b, 9.0 * s, faded(glow, beam.life));
             canvas.line(a, b, (2.5 * s).max(1.0), faded(core, beam.life));
         }
@@ -658,7 +822,13 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
         let (x, y, z) = flare.at;
         if let Some((px, py)) = view.project(x, y, z) {
             let size = flare.size * s;
-            canvas.star((px, py), (size, size * 0.35), 6, flare.life, with_alpha(FLARE_GLOW, 0.8 * flare.life));
+            canvas.star(
+                (px, py),
+                (size, size * 0.35),
+                6,
+                flare.life,
+                with_alpha(FLARE_GLOW, 0.8 * flare.life),
+            );
             canvas.circle(px, py, size * 0.35, with_alpha(FLARE_CORE, flare.life));
         }
     }
@@ -681,17 +851,34 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     }
     for strike in &game.combat.strikes {
         let height = strike.height();
-        let (top, bottom) = (view.project(strike.x, height + 3.0, strike.z), view.project(strike.x, height, strike.z));
+        let (top, bottom) = (
+            view.project(strike.x, height + 3.0, strike.z),
+            view.project(strike.x, height, strike.z),
+        );
         if let (Some(a), Some(b)) = (top, bottom) {
             canvas.line(a, b, 14.0 * s, with_alpha(POISON_FILL, 0.35));
             canvas.line(a, b, 6.0 * s, MISSILE_BODY);
         }
-        draw_ground_disc(canvas, view, (strike.x, 0.02, strike.z), STRIKE_RADIUS, POISON_FILL, (0.0, 0.25));
+        draw_ground_disc(
+            canvas,
+            view,
+            (strike.x, 0.02, strike.z),
+            STRIKE_RADIUS,
+            POISON_FILL,
+            (0.0, 0.25),
+        );
     }
     for blast in &game.combat.blasts {
         let (x, y, z) = blast.at;
         let reach = blast.radius * (1.2 - blast.life * 0.6);
-        draw_ground_disc(canvas, view, (x, y, z), reach, BLAST_COLOR, (0.9 * blast.life, 0.1 * blast.life));
+        draw_ground_disc(
+            canvas,
+            view,
+            (x, y, z),
+            reach,
+            BLAST_COLOR,
+            (0.9 * blast.life, 0.1 * blast.life),
+        );
     }
 }
 
@@ -703,17 +890,29 @@ fn draw_spray(canvas: &mut Canvas, view: &battlefield::View, spray: &crate::weap
     const FAR_ALPHA: f32 = 0.1;
     const FAR_HEIGHT: f32 = 0.4;
     let (x, y, z) = spray.from;
-    let Some(nozzle) = view.project(x, y, z) else { return };
+    let Some(nozzle) = view.project(x, y, z) else {
+        return;
+    };
     let color = if spray.gas { GAS_COLOR } else { FIRE_COLOR };
     let far = |i: usize| {
-        let angle = spray.heading - spray.half_angle + i as f32 / WEDGES as f32 * spray.half_angle * 2.0;
+        let angle =
+            spray.heading - spray.half_angle + i as f32 / WEDGES as f32 * spray.half_angle * 2.0;
         let (sin, cos) = angle.sin_cos();
-        view.project(x + cos * spray.reach, FAR_HEIGHT.min(y), z + sin * spray.reach)
+        view.project(
+            x + cos * spray.reach,
+            FAR_HEIGHT.min(y),
+            z + sin * spray.reach,
+        )
     };
-    let vertex = |point: (f32, f32), alpha: f32| Vertex::new(point, with_alpha(color, alpha * spray.life));
+    let vertex =
+        |point: (f32, f32), alpha: f32| Vertex::new(point, with_alpha(color, alpha * spray.life));
     for i in 0..WEDGES {
         if let (Some(a), Some(c)) = (far(i), far(i + 1)) {
-            canvas.vertices.extend([vertex(nozzle, NEAR_ALPHA), vertex(a, FAR_ALPHA), vertex(c, FAR_ALPHA)]);
+            canvas.vertices.extend([
+                vertex(nozzle, NEAR_ALPHA),
+                vertex(a, FAR_ALPHA),
+                vertex(c, FAR_ALPHA),
+            ]);
         }
     }
 }
@@ -724,7 +923,9 @@ fn draw_strike_aim(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     if !game.aiming_strike {
         return;
     }
-    let Some((x, z)) = view.ground_at(game.mouse.0, game.mouse.1) else { return };
+    let Some((x, z)) = view.ground_at(game.mouse.0, game.mouse.1) else {
+        return;
+    };
     let radius = STRIKE_RADIUS;
     draw_ground_disc(canvas, view, (x, 0.02, z), radius, POISON_FILL, (0.05, 0.2));
     let thickness = (3.0 * ui_scale(game.height)).max(1.0);
@@ -744,7 +945,9 @@ fn draw_health_bar(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
     if unit.health >= unit.max_health() {
         return;
     }
-    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else { return };
+    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else {
+        return;
+    };
     let s = ui_scale(game.height);
     let (width, height) = (30.0 * s, (4.0 * s).max(2.0));
     let share = (unit.health / unit.max_health()).clamp(0.0, 1.0);
@@ -758,7 +961,9 @@ fn draw_medals(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit:
     if rank == 0 {
         return;
     }
-    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else { return };
+    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else {
+        return;
+    };
     let s = ui_scale(game.height);
     let (half_w, tall, step) = (7.0 * s, 6.0 * s, 8.0 * s);
     let thickness = (2.5 * s).max(1.0);
@@ -797,16 +1002,22 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
     for unit in game.units.iter().filter(|u| u.selected) {
         let after = match unit.target {
             Some(Target::Place(x, z)) => Some((x, z)),
-            Some(Target::Unit(id) | Target::Forced(id)) => {
-                game.units.iter().find(|u| u.alive && u.id == id).map(|u| (u.x, u.z))
-            }
+            Some(Target::Unit(id) | Target::Forced(id)) => game
+                .units
+                .iter()
+                .find(|u| u.alive && u.id == id)
+                .map(|u| (u.x, u.z)),
             None => None,
         };
         let from = (unit.x, unit.z);
         match after {
-            Some(to) if unit.role == Role::RepairVehicle => draw_dashed_line(canvas, game, view, from, to, HEAL_LINE),
+            Some(to) if unit.role == Role::RepairVehicle => {
+                draw_dashed_line(canvas, game, view, from, to, HEAL_LINE)
+            }
             Some(to) => draw_dashed_line(canvas, game, view, from, to, ATTACK_LINE),
-            None if unit.is_moving() => draw_dashed_line(canvas, game, view, from, unit.destination, ORDER_LINE),
+            None if unit.is_moving() => {
+                draw_dashed_line(canvas, game, view, from, unit.destination, ORDER_LINE)
+            }
             None => {}
         }
     }
@@ -850,7 +1061,8 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
     let color = [r, g, b];
     let (forward_x, forward_z) = (unit.heading.cos(), unit.heading.sin());
     let ahead = |by: f32| (unit.x + forward_x * by, unit.z + forward_z * by);
-    let mut part = |footprint, heights, color| draw_turned_box(canvas, game, view, footprint, heights, color);
+    let mut part =
+        |footprint, heights, color| draw_turned_box(canvas, game, view, footprint, heights, color);
     match unit.kind {
         UnitKind::Infantry => {
             let barrel = |by: f32, half: f32, thick: f32| {
@@ -882,7 +1094,11 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
                     let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
                     part(body, (y, y + 0.6), color);
                     // A tank on the back and a nozzle out front, in the color of what it sprays.
-                    let spray_color = if unit.role == Role::GasInfantry { GAS_COLOR } else { FIRE_COLOR };
+                    let spray_color = if unit.role == Role::GasInfantry {
+                        GAS_COLOR
+                    } else {
+                        FIRE_COLOR
+                    };
                     part(barrel(-0.17, 0.05, 0.09), (y + 0.2, y + 0.5), spray_color);
                     part(barrel(0.22, 0.12, 0.03), (y + 0.32, y + 0.38), dark);
                 }
@@ -927,7 +1143,11 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
             part(turret, (hull_top, turret_top), color.map(|c| c * 0.85));
             let (barrel_x, barrel_z) = ahead(0.4);
             let barrel = (barrel_x, barrel_z, 0.25, 0.04, unit.heading);
-            part(barrel, (hull_top + 0.06, hull_top + 0.13), color.map(|c| c * 0.6));
+            part(
+                barrel,
+                (hull_top + 0.06, hull_top + 0.13),
+                color.map(|c| c * 0.6),
+            );
         }
         UnitKind::Aircraft if unit.role == Role::AirDefensePlatform => {
             let base = unit.y + unit.altitude;
@@ -969,7 +1189,10 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
             let head = (unit.x, unit.z, 0.3, 0.3, unit.heading);
             part(head, (unit.y + head_base, unit.y + head_base + 0.34), color);
             let (ahead_x, ahead_z) = ahead(0.4);
-            let height = (unit.y + units::TUBE_HEIGHT - 0.06, unit.y + units::TUBE_HEIGHT + 0.06);
+            let height = (
+                unit.y + units::TUBE_HEIGHT - 0.06,
+                unit.y + units::TUBE_HEIGHT + 0.06,
+            );
             if unit.role == Role::FlameTower {
                 // One fat nozzle, with the color of fire on its way out.
                 let nozzle = (ahead_x, ahead_z, 0.3, 0.1, unit.heading);
@@ -977,7 +1200,13 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
                 return;
             }
             for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
-                let tube = (ahead_x + right_x * side, ahead_z + right_z * side, 0.3, 0.06, unit.heading);
+                let tube = (
+                    ahead_x + right_x * side,
+                    ahead_z + right_z * side,
+                    0.3,
+                    0.06,
+                    unit.heading,
+                );
                 part(tube, height, color.map(|c| c * 0.5));
             }
         }
@@ -1002,13 +1231,25 @@ fn draw_turned_box(
             z + forward_z * along * half_length + right_z * across * half_width,
         )
     };
-    let corners = [corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0), corner(-1.0, -1.0)];
+    let corners = [
+        corner(1.0, -1.0),
+        corner(1.0, 1.0),
+        corner(-1.0, 1.0),
+        corner(-1.0, -1.0),
+    ];
     let (camera_x, camera_z) = view.position_on_ground();
     let mut face = |points: [(f32, f32, f32); 4], shade: f32| {
-        let [Some(a), Some(b), Some(c), Some(d)] = points.map(|(px, py, pz)| view.project(px, py, pz)) else {
+        let [Some(a), Some(b), Some(c), Some(d)] =
+            points.map(|(px, py, pz)| view.project(px, py, pz))
+        else {
             return;
         };
-        fill_quad(canvas, game, [a, b, c, d], color.map(|channel| channel * shade));
+        fill_quad(
+            canvas,
+            game,
+            [a, b, c, d],
+            color.map(|channel| channel * shade),
+        );
     };
     for i in 0..corners.len() {
         let (a, b) = (corners[i], corners[(i + 1) % corners.len()]);
@@ -1018,7 +1259,15 @@ fn draw_turned_box(
         if faces_camera {
             // Sides turned south catch a little more of the top's brightness.
             let southward = normal_z / normal_x.hypot(normal_z);
-            face([(a.0, base, a.1), (b.0, base, b.1), (b.0, top, b.1), (a.0, top, a.1)], 0.68 + 0.14 * southward);
+            face(
+                [
+                    (a.0, base, a.1),
+                    (b.0, base, b.1),
+                    (b.0, top, b.1),
+                    (a.0, top, a.1),
+                ],
+                0.68 + 0.14 * southward,
+            );
         }
     }
     face(corners.map(|(px, pz)| (px, top, pz)), 1.0);
@@ -1060,13 +1309,45 @@ fn draw_box(
     let corner = |dx: f32, y: f32, dz: f32| view.project(x + dx, y, z + dz);
     let side = if x > game.camera.x { -half_x } else { half_x };
     let faces = [
-        ([(side, base, -half_z), (side, base, half_z), (side, top, half_z), (side, top, -half_z)], 0.6),
-        ([(-half_x, base, half_z), (half_x, base, half_z), (half_x, top, half_z), (-half_x, top, half_z)], 0.78),
-        ([(-half_x, top, -half_z), (half_x, top, -half_z), (half_x, top, half_z), (-half_x, top, half_z)], 1.0),
+        (
+            [
+                (side, base, -half_z),
+                (side, base, half_z),
+                (side, top, half_z),
+                (side, top, -half_z),
+            ],
+            0.6,
+        ),
+        (
+            [
+                (-half_x, base, half_z),
+                (half_x, base, half_z),
+                (half_x, top, half_z),
+                (-half_x, top, half_z),
+            ],
+            0.78,
+        ),
+        (
+            [
+                (-half_x, top, -half_z),
+                (half_x, top, -half_z),
+                (half_x, top, half_z),
+                (-half_x, top, half_z),
+            ],
+            1.0,
+        ),
     ];
     for (points, shade) in faces {
-        let [Some(a), Some(b), Some(c), Some(d)] = points.map(|(dx, y, dz)| corner(dx, y, dz)) else { return };
-        fill_quad(canvas, game, [a, b, c, d], color.map(|channel| channel * shade));
+        let [Some(a), Some(b), Some(c), Some(d)] = points.map(|(dx, y, dz)| corner(dx, y, dz))
+        else {
+            return;
+        };
+        fill_quad(
+            canvas,
+            game,
+            [a, b, c, d],
+            color.map(|channel| channel * shade),
+        );
     }
 }
 
@@ -1086,7 +1367,11 @@ fn draw_selection_box(canvas: &mut Canvas, game: &Game) {
         }
         // Thin forks spitting off every few points.
         for (j, &start) in bolt.iter().enumerate().skip(2).step_by(4) {
-            let side = if (frame + j as u32).is_multiple_of(2) { 1.0 } else { -1.0 };
+            let side = if (frame + j as u32).is_multiple_of(2) {
+                1.0
+            } else {
+                -1.0
+            };
             let (dx, dy) = (b.0 - a.0, b.1 - a.1);
             let length = dx.hypot(dy).max(1.0);
             let reach = 22.0 * s;
@@ -1094,7 +1379,8 @@ fn draw_selection_box(canvas: &mut Canvas, game: &Game) {
                 start.0 + dx / length * reach * 0.6 - dy / length * reach * side,
                 start.1 + dy / length * reach * 0.6 + dx / length * reach * side,
             );
-            let fork = units::lightning_points(start, end, seed.wrapping_add(j as u32), 9.0 * s, 4.0 * s);
+            let fork =
+                units::lightning_points(start, end, seed.wrapping_add(j as u32), 9.0 * s, 4.0 * s);
             for pair in fork.windows(2) {
                 canvas.line(pair[0], pair[1], (1.2 * s).max(1.0), BOLT_HALO);
             }
@@ -1131,14 +1417,31 @@ fn draw_energy_gauge(canvas: &mut Canvas, game: &Game) {
         let (a, b) = (at(from, inner), at(to, inner));
         let (c, d) = (at(to, outer), at(from, outer));
         let lit = from < filled;
-        let (color_from, color_to) = if lit { (shade(from), shade(to)) } else { (GAUGE_EMPTY, GAUGE_EMPTY) };
+        let (color_from, color_to) = if lit {
+            (shade(from), shade(to))
+        } else {
+            (GAUGE_EMPTY, GAUGE_EMPTY)
+        };
         canvas.vertices.extend(
-            [(a, color_from), (b, color_to), (c, color_to), (a, color_from), (c, color_to), (d, color_from)]
-                .map(|(point, color)| Vertex::new(point, color)),
+            [
+                (a, color_from),
+                (b, color_to),
+                (c, color_to),
+                (a, color_from),
+                (c, color_to),
+                (d, color_from),
+            ]
+            .map(|(point, color)| Vertex::new(point, color)),
         );
     }
     let (x, y) = hud::energy_label_center(game.width, game.height);
-    canvas.text_centered(&game.energy.to_string(), x, y, small_text_px(game.height), TEXT);
+    canvas.text_centered(
+        &game.energy.to_string(),
+        x,
+        y,
+        small_text_px(game.height),
+        TEXT,
+    );
 }
 
 /// The fake buttons, the tabs with their symbols, and the active tab's grid.
@@ -1152,7 +1455,10 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
         BuildTab::Vehicles => 'V',
         BuildTab::Buildings => 'B',
     };
-    for (i, cell) in hud::grid_cells(game.width, game.height).into_iter().enumerate() {
+    for (i, cell) in hud::grid_cells(game.width, game.height)
+        .into_iter()
+        .enumerate()
+    {
         draw_button(canvas, game, cell);
         let (cx, cy) = (cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
         if game.build_tab == BuildTab::Vehicles && i == SUPERWEAPON_CELL {
@@ -1175,19 +1481,52 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
         let makes = Game::build_role(game.build_tab, i);
         let symbol = if makes.is_some() { GOLD } else { GOLD_DIM };
         draw_tab_symbol(canvas, game.build_tab, cx, cy, cell.w * 0.5, symbol);
-        let label = makes.map_or(format!("{letter}{}", i + 1), |role| short_name(role).to_string());
-        canvas.text_left(&label, cell.x + 6.0 * s, cell.y + 14.0 * s, chat_px(game), TEXT);
+        let label = makes.map_or(format!("{letter}{}", i + 1), |role| {
+            short_name(role).to_string()
+        });
+        canvas.text_left(
+            &label,
+            cell.x + 6.0 * s,
+            cell.y + 14.0 * s,
+            chat_px(game),
+            TEXT,
+        );
     }
     for tab in hud::build_tabs(game.width, game.height) {
-        let Action::BuildTab(kind) = tab.action else { continue };
+        let Action::BuildTab(kind) = tab.action else {
+            continue;
+        };
         let selected = kind == game.build_tab;
         let hovered = game.hovered() == Some(tab.action);
         let border = border_px(game.height);
-        canvas.rect(tab.x, tab.y, tab.w, tab.h, if selected || hovered { GOLD } else { BORDER });
-        let fill = if selected { PANEL } else { button_fill(tab.action, game.hovered(), game.pressed) };
-        canvas.rect(tab.x + border, tab.y + border, tab.w - border * 2.0, tab.h - border * 2.0, fill);
+        canvas.rect(
+            tab.x,
+            tab.y,
+            tab.w,
+            tab.h,
+            if selected || hovered { GOLD } else { BORDER },
+        );
+        let fill = if selected {
+            PANEL
+        } else {
+            button_fill(tab.action, game.hovered(), game.pressed)
+        };
+        canvas.rect(
+            tab.x + border,
+            tab.y + border,
+            tab.w - border * 2.0,
+            tab.h - border * 2.0,
+            fill,
+        );
         let color = if selected { GOLD } else { TEXT };
-        draw_tab_symbol(canvas, kind, tab.x + tab.w / 2.0, tab.y + tab.h / 2.0, tab.w * 0.7, color);
+        draw_tab_symbol(
+            canvas,
+            kind,
+            tab.x + tab.w / 2.0,
+            tab.y + tab.h / 2.0,
+            tab.w * 0.7,
+            color,
+        );
     }
 }
 
@@ -1221,18 +1560,29 @@ fn draw_tab_symbol(canvas: &mut Canvas, tab: BuildTab, cx: f32, cy: f32, size: f
             canvas.line((cx, cy - 2.4 * u), (cx, cy + 1.0 * u), 1.6 * u, c);
             canvas.line((cx, cy + 0.8 * u), (cx - 1.6 * u, cy + 4.6 * u), 1.1 * u, c);
             canvas.line((cx, cy + 0.8 * u), (cx + 1.6 * u, cy + 4.6 * u), 1.1 * u, c);
-            canvas.line((cx - 2.8 * u, cy + 0.2 * u), (cx + 3.6 * u, cy - 2.6 * u), 0.8 * u, c);
+            canvas.line(
+                (cx - 2.8 * u, cy + 0.2 * u),
+                (cx + 3.6 * u, cy - 2.6 * u),
+                0.8 * u,
+                c,
+            );
         }
         BuildTab::Vehicles => {
             // A tank: tracks, hull, turret and barrel.
             canvas.rect(cx - 4.6 * u, cy + 1.2 * u, 9.2 * u, 2.2 * u, c);
             canvas.rect(cx - 3.8 * u, cy - 0.6 * u, 7.6 * u, 1.4 * u, c);
             canvas.rect(cx - 2.0 * u, cy - 2.6 * u, 3.8 * u, 1.7 * u, c);
-            canvas.line((cx + 1.6 * u, cy - 1.8 * u), (cx + 5.0 * u, cy - 2.6 * u), 0.7 * u, c);
+            canvas.line(
+                (cx + 1.6 * u, cy - 1.8 * u),
+                (cx + 5.0 * u, cy - 2.6 * u),
+                0.7 * u,
+                c,
+            );
         }
         BuildTab::Buildings => {
             // A factory: walls under a sawtooth roof, with a chimney.
-            let (left, right, top, bottom) = (cx - 4.4 * u, cx + 4.4 * u, cy - 0.4 * u, cy + 4.0 * u);
+            let (left, right, top, bottom) =
+                (cx - 4.4 * u, cx + 4.4 * u, cy - 0.4 * u, cy + 4.0 * u);
             canvas.rect(left, top, right - left, bottom - top, c);
             let tooth = (right - left) / 3.0;
             for i in 0..3 {
@@ -1252,7 +1602,13 @@ fn draw_chat(canvas: &mut Canvas, game: &Game) {
         let (x, cy) = hud::chat_line(i, game.height);
         let (w, h) = (font::text_width(line) * px, font::CAP_HEIGHT * px);
         let pad = 4.0 * s;
-        canvas.rect(x - pad, cy - h / 2.0 - pad, w + pad * 2.0, h + pad * 2.0, CHAT_BACKING);
+        canvas.rect(
+            x - pad,
+            cy - h / 2.0 - pad,
+            w + pad * 2.0,
+            h + pad * 2.0,
+            CHAT_BACKING,
+        );
         canvas.text_left(line, x, cy, px, TEXT);
     }
 }
@@ -1267,11 +1623,23 @@ fn draw_diplomacy(canvas: &mut Canvas, game: &Game) {
     canvas.rect(x, y + h - border, w, border, BORDER);
     canvas.rect(x, y + border, border, h - border * 2.0, BORDER);
     canvas.rect(x + w - border, y + border, border, h - border * 2.0, BORDER);
-    canvas.rect(x + border, y + border, w - border * 2.0, h - border * 2.0, WINDOW);
+    canvas.rect(
+        x + border,
+        y + border,
+        w - border * 2.0,
+        h - border * 2.0,
+        WINDOW,
+    );
 
     canvas.text_centered("Diplomacy", x + w / 2.0, y + 40.0 * s, 5.0 * s, GOLD);
-    let (swatch_x, name_x, money_x, planet_x, faction_x, ally_x) =
-        (x + 30.0 * s, x + 90.0 * s, x + 390.0 * s, x + 520.0 * s, x + 570.0 * s, x + 800.0 * s);
+    let (swatch_x, name_x, money_x, planet_x, faction_x, ally_x) = (
+        x + 30.0 * s,
+        x + 90.0 * s,
+        x + 390.0 * s,
+        x + 520.0 * s,
+        x + 570.0 * s,
+        x + 800.0 * s,
+    );
     let header_y = y + 88.0 * s;
     canvas.text_left("Player", name_x, header_y, px, QUIET);
     canvas.text_left("Money", money_x, header_y, px, QUIET);
@@ -1280,7 +1648,13 @@ fn draw_diplomacy(canvas: &mut Canvas, game: &Game) {
 
     for (i, row) in game.stats_rows().iter().enumerate() {
         let cy = y + (STATS_ROW_TOP + (i as f32 + 0.5) * STATS_ROW_STEP) * s;
-        canvas.rect(swatch_x, cy - 18.0 * s, 36.0 * s, 36.0 * s, team_color(row.color));
+        canvas.rect(
+            swatch_x,
+            cy - 18.0 * s,
+            36.0 * s,
+            36.0 * s,
+            team_color(row.color),
+        );
         canvas.text_left(&row.name, name_x, cy, px, TEXT);
         canvas.text_left(&format!("${}", row.money), money_x, cy, px, GOLD);
         match row.faction {
@@ -1315,7 +1689,11 @@ fn team_color(color: TeamColor) -> Color {
 fn text_on(color: TeamColor) -> Color {
     match color {
         TeamColor::Blue | TeamColor::Red | TeamColor::Violet => TEXT,
-        TeamColor::Cyan | TeamColor::Orange | TeamColor::Green | TeamColor::Yellow | TeamColor::LightPink => INK,
+        TeamColor::Cyan
+        | TeamColor::Orange
+        | TeamColor::Green
+        | TeamColor::Yellow
+        | TeamColor::LightPink => INK,
     }
 }
 
@@ -1328,7 +1706,13 @@ fn draw_opponents(canvas: &mut Canvas, game: &Game) {
     let hovered = game.hovered();
 
     let (first_x, first_y, row_w, _) = opponent_row(0, game.width, game.height);
-    canvas.text_centered("Opponents", first_x + row_w / 2.0, first_y - 24.0 * s, px, TEXT);
+    canvas.text_centered(
+        "Opponents",
+        first_x + row_w / 2.0,
+        first_y - 24.0 * s,
+        px,
+        TEXT,
+    );
 
     for slot in count..OPPONENT_SLOTS {
         let (x, y, w, h) = opponent_row(slot, game.width, game.height);
@@ -1345,16 +1729,35 @@ fn draw_opponents(canvas: &mut Canvas, game: &Game) {
                 let opponent = setup.opponents[slot];
                 canvas.rect(b.x, b.y, b.w, b.h, edge);
                 let fill = team_color(opponent.color);
-                canvas.rect(b.x + border, b.y + border, b.w - border * 2.0, b.h - border * 2.0, fill);
+                canvas.rect(
+                    b.x + border,
+                    b.y + border,
+                    b.w - border * 2.0,
+                    b.h - border * 2.0,
+                    fill,
+                );
                 canvas.text_centered(opponent.kind.label(), cx, cy, px, text_on(opponent.color));
             }
             Action::CycleOpponentFaction(slot) => {
-                draw_planet(canvas, game, setup.opponents[slot].faction, button_circle(b), edge);
+                draw_planet(
+                    canvas,
+                    game,
+                    setup.opponents[slot].faction,
+                    button_circle(b),
+                    edge,
+                );
             }
             Action::CycleOpponentAlly(slot, ally) => {
                 canvas.bordered_circle((cx, cy), b.w / 2.0, border, edge, BUTTON);
                 let label_px = (px - 1.0).max(1.0);
-                draw_ally(canvas, setup.opponents[slot].allies[ally], cx, cy, b.w * 0.32, label_px);
+                draw_ally(
+                    canvas,
+                    setup.opponents[slot].allies[ally],
+                    cx,
+                    cy,
+                    b.w * 0.32,
+                    label_px,
+                );
             }
             _ => {}
         }
@@ -1365,7 +1768,12 @@ fn draw_opponents(canvas: &mut Canvas, game: &Game) {
 fn draw_field(canvas: &mut Canvas, game: &Game, b: Button) {
     let border = border_px(game.height);
     let lit = game.hovered() == Some(b.action);
-    canvas.bordered_rect((b.x, b.y, b.w, b.h), border, if lit { GOLD } else { BORDER }, BUTTON);
+    canvas.bordered_rect(
+        (b.x, b.y, b.w, b.h),
+        border,
+        if lit { GOLD } else { BORDER },
+        BUTTON,
+    );
 }
 
 fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
@@ -1390,7 +1798,8 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
                 canvas.text_left(&setup.commander, text_x, cy, px, TEXT);
                 let blink_on = game.screen_elapsed().fract() < 0.5;
                 if game.name_focused && blink_on {
-                    let caret_x = text_x + (setup.commander.len() as f32 * crate::font::ADVANCE) * px;
+                    let caret_x =
+                        text_x + (setup.commander.len() as f32 * crate::font::ADVANCE) * px;
                     canvas.rect(caret_x, cy - 4.0 * px, px, 8.0 * px, GOLD);
                 }
             }
@@ -1398,8 +1807,16 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
                 draw_field(canvas, game, b);
                 canvas.text_left(MAPS[setup.map], b.x + 16.0 * s, cy, px, TEXT);
                 let (ax, half) = (b.x + b.w - 28.0 * s, 10.0 * s);
-                let tip = if game.dropdown_open { cy - half * 0.6 } else { cy + half * 0.6 };
-                let base = if game.dropdown_open { cy + half * 0.6 } else { cy - half * 0.6 };
+                let tip = if game.dropdown_open {
+                    cy - half * 0.6
+                } else {
+                    cy + half * 0.6
+                };
+                let base = if game.dropdown_open {
+                    cy + half * 0.6
+                } else {
+                    cy - half * 0.6
+                };
                 canvas.triangle([(ax - half, base), (ax + half, base), (ax, tip)], TEXT);
             }
             Action::SetDifficulty(difficulty) => {
@@ -1413,16 +1830,29 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
             }
             Action::ColorBar if game.color_open => {
                 for slot in color_slots(&setup.available_colors(), game.width, game.height) {
-                    let Action::PickColor(color) = slot.action else { continue };
+                    let Action::PickColor(color) = slot.action else {
+                        continue;
+                    };
                     let lit = game.hovered() == Some(slot.action);
                     let current = color == setup.color;
-                    canvas.bordered_rect((slot.x, slot.y, slot.w, slot.h), border, if lit || current { GOLD } else { INK }, team_color(color));
+                    canvas.bordered_rect(
+                        (slot.x, slot.y, slot.w, slot.h),
+                        border,
+                        if lit || current { GOLD } else { INK },
+                        team_color(color),
+                    );
                 }
             }
             Action::ColorBar => {
                 canvas.rect(b.x, b.y, b.w, b.h, edge);
                 let fill = team_color(setup.color);
-                canvas.rect(b.x + border, b.y + border, b.w - border * 2.0, b.h - border * 2.0, fill);
+                canvas.rect(
+                    b.x + border,
+                    b.y + border,
+                    b.w - border * 2.0,
+                    b.h - border * 2.0,
+                    fill,
+                );
             }
             Action::StartBattle => draw_button(canvas, game, b),
             Action::CycleFaction => {
@@ -1481,14 +1911,24 @@ fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
     let dot = (3.0 * ui_scale(game.height)).round().max(2.0);
     for unit in &game.units {
         let (x, y) = battlefield::world_to_minimap(rect, unit.x, unit.z);
-        let color = if unit.selected { VIEW_OUTLINE } else { team_color(unit.color) };
-        let size = if unit.kind.is_building() { dot * 2.0 } else { dot };
+        let color = if unit.selected {
+            VIEW_OUTLINE
+        } else {
+            team_color(unit.color)
+        };
+        let size = if unit.kind.is_building() {
+            dot * 2.0
+        } else {
+            dot
+        };
         canvas.rect(x - size / 2.0, y - size / 2.0, size, size, color);
     }
     draw_radar_sweep(canvas, rect, game.battle_time());
 
     let view = battlefield::View::new(game.camera, game.width, game.height);
-    let Some(corners) = view.ground_corners() else { return };
+    let Some(corners) = view.ground_corners() else {
+        return;
+    };
     let on_map = corners.map(|(x, z)| battlefield::world_to_minimap(rect, x, z));
     let thickness = (2.0 * ui_scale(game.height)).max(1.0);
     for i in 0..on_map.len() {
@@ -1518,29 +1958,49 @@ fn draw_radar_sweep(canvas: &mut Canvas, (x, y, size): (f32, f32, f32), seconds:
     };
     let vertex = |point: (f32, f32), a: f32| Vertex::new(point, with_alpha(SWEEP, a));
     for wedge in 0..WEDGES {
-        let (near, far) = (wedge as f32 / WEDGES as f32, (wedge + 1) as f32 / WEDGES as f32);
-        let (a_near, a_far) = (STRONGEST_ALPHA * (1.0 - near), STRONGEST_ALPHA * (1.0 - far));
+        let (near, far) = (
+            wedge as f32 / WEDGES as f32,
+            (wedge + 1) as f32 / WEDGES as f32,
+        );
+        let (a_near, a_far) = (
+            STRONGEST_ALPHA * (1.0 - near),
+            STRONGEST_ALPHA * (1.0 - far),
+        );
         canvas.vertices.extend([
             vertex(center, a_near),
             vertex(on_edge(leading - near * TRAIL), a_near),
             vertex(on_edge(leading - far * TRAIL), a_far),
         ]);
     }
-    canvas.line(center, on_edge(leading), (size / 150.0).max(1.0), with_alpha(SWEEP, 0.9));
+    canvas.line(
+        center,
+        on_edge(leading),
+        (size / 150.0).max(1.0),
+        with_alpha(SWEEP, 0.9),
+    );
 }
 
 fn draw_map_diamond(canvas: &mut Canvas, game: &Game, map: usize, (x, y, size): (f32, f32, f32)) {
     /// Grid steps per minimap cell.
     const STEP: usize = 4;
     let border = border_px(game.height);
-    canvas.rect(x - border, y - border, size + border * 2.0, size + border * 2.0, BORDER);
+    canvas.rect(
+        x - border,
+        y - border,
+        size + border * 2.0,
+        size + border * 2.0,
+        BORDER,
+    );
     canvas.rect(x, y, size, size, CLEAR_RGBA);
 
     let terrain = battlefield::terrain(map);
     let cells = MAP_CELLS as f32;
     let to_screen = |u: usize, v: usize| {
         let (u, v) = (u as f32 / cells, v as f32 / cells);
-        (x + size / 2.0 + (u - v) * size / 2.0, y + (u + v) * size / 2.0)
+        (
+            x + size / 2.0 + (u - v) * size / 2.0,
+            y + (u + v) * size / 2.0,
+        )
     };
     for v in (0..MAP_CELLS).step_by(STEP) {
         for u in (0..MAP_CELLS).step_by(STEP) {
@@ -1566,7 +2026,11 @@ fn draw_map_diamond(canvas: &mut Canvas, game: &Game, map: usize, (x, y, size): 
 fn draw_sliders(canvas: &mut Canvas, game: &Game) {
     let s = ui_scale(game.height);
     let px = small_text_px(game.height);
-    let hovered_slider = if game.pressed.is_none() { game.hovered_slider() } else { None };
+    let hovered_slider = if game.pressed.is_none() {
+        game.hovered_slider()
+    } else {
+        None
+    };
     for slider in game.sliders() {
         let value = game.slider_value(slider.id);
         let active = game.dragging == Some(slider.id)
@@ -1578,7 +2042,13 @@ fn draw_sliders(canvas: &mut Canvas, game: &Game) {
 
         canvas.text_left(slider.label, slider.label_x, slider.label_cy, px, TEXT);
         canvas.rect(slider.track_x, track_y, slider.track_w, track_h, BORDER);
-        canvas.rect(slider.track_x, track_y, handle_x - slider.track_x, track_h, GOLD_DIM);
+        canvas.rect(
+            slider.track_x,
+            track_y,
+            handle_x - slider.track_x,
+            track_h,
+            GOLD_DIM,
+        );
         canvas.rect(
             handle_x - handle_w / 2.0,
             slider.cy - slider.handle_h / 2.0,
@@ -1599,7 +2069,6 @@ fn draw_sliders(canvas: &mut Canvas, game: &Game) {
             }
         }
     }
-
 }
 
 fn draw_checkboxes(canvas: &mut Canvas, game: &Game, rows: Vec<Button>) {
@@ -1608,15 +2077,32 @@ fn draw_checkboxes(canvas: &mut Canvas, game: &Game, rows: Vec<Button>) {
     let hovered = game.hovered();
     let size = checkbox_size(game.height);
     for row in rows {
-        let Action::Toggle(toggle) = row.action else { continue };
+        let Action::Toggle(toggle) = row.action else {
+            continue;
+        };
         let cy = row.y + row.h / 2.0;
         canvas.text_left(row.label, row.x, cy, px, TEXT);
         let box_x = row.x + row.w - size;
         let box_y = cy - size / 2.0;
-        canvas.bordered_rect((box_x, box_y, size, size), border, if hovered == Some(row.action) { GOLD } else { BORDER }, BUTTON);
+        canvas.bordered_rect(
+            (box_x, box_y, size, size),
+            border,
+            if hovered == Some(row.action) {
+                GOLD
+            } else {
+                BORDER
+            },
+            BUTTON,
+        );
         if game.toggle_value(toggle) {
             let inset = size * 0.25;
-            canvas.rect(box_x + inset, box_y + inset, size - inset * 2.0, size - inset * 2.0, GOLD);
+            canvas.rect(
+                box_x + inset,
+                box_y + inset,
+                size - inset * 2.0,
+                size - inset * 2.0,
+                GOLD,
+            );
         }
     }
 }

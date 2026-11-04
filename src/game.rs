@@ -319,8 +319,7 @@ impl SkirmishConfig {
 
 impl Default for SkirmishConfig {
     fn default() -> Self {
-        const FACTIONS: [Faction; 3] =
-            [Faction::H, Faction::A, Faction::O];
+        const FACTIONS: [Faction; 3] = [Faction::H, Faction::A, Faction::O];
         let mut opponents = [Opponent {
             kind: OpponentKind::Competent,
             faction: Faction::H,
@@ -541,7 +540,11 @@ const MAIN_MENU: &[(Action, &str, Anchor)] = &[
 const SINGLE_PLAYER_MENU: &[(Action, &str, Anchor)] = &[
     (Action::StartCampaign, "Start Campaign", Anchor::Center),
     (Action::Tutorial, "Tutorial", Anchor::Center),
-    (Action::SkirmishBattle, "Single Skirmish Battle", Anchor::Center),
+    (
+        Action::SkirmishBattle,
+        "Single Skirmish Battle",
+        Anchor::Center,
+    ),
     (Action::LoadGame, "Load Game", Anchor::Center),
     (Action::Back, "Back", Anchor::BottomLeft),
 ];
@@ -641,15 +644,22 @@ const GAME_SLIDERS: &[SliderRow] = &[
     (SliderId::ScrollRate, "Scroll Rate", 1, 10, &[]),
     (SliderId::MouseSpeed, "Mouse Speed", 1, 10, &[]),
 ];
-const GRAPHICS_SLIDERS: &[SliderRow] =
-    &[(SliderId::GraphicsQuality, "Graphics Quality", 0, 2, QUALITY_STOPS)];
+const GRAPHICS_SLIDERS: &[SliderRow] = &[(
+    SliderId::GraphicsQuality,
+    "Graphics Quality",
+    0,
+    2,
+    QUALITY_STOPS,
+)];
 const SOUND_SLIDERS: &[SliderRow] = &[
     (SliderId::MusicVolume, "Music Volume", 0, 100, &[]),
     (SliderId::SoundVolume, "Sound Volume", 0, 100, &[]),
     (SliderId::VoiceVolume, "Voice Volume", 0, 100, &[]),
 ];
-const GAME_TOGGLES: &[(Toggle, &str)] =
-    &[(Toggle::ToolTips, "Tool Tips"), (Toggle::TargetLines, "Target Lines")];
+const GAME_TOGGLES: &[(Toggle, &str)] = &[
+    (Toggle::ToolTips, "Tool Tips"),
+    (Toggle::TargetLines, "Target Lines"),
+];
 
 pub fn sliders(tab: Tab, width: f32, height: f32) -> Vec<Slider> {
     let rows = match tab {
@@ -736,7 +746,11 @@ fn faction_buttons(width: f32, height: f32) -> Vec<Button> {
 fn setup_column(left: bool, width: f32, height: f32) -> (f32, f32) {
     let s = ui_scale(height);
     let w = (width / 3.0 - 48.0 * s).min(640.0 * s);
-    let x = if left { 24.0 * s } else { width * 2.0 / 3.0 + 24.0 * s };
+    let x = if left {
+        24.0 * s
+    } else {
+        width * 2.0 / 3.0 + 24.0 * s
+    };
     (x, w)
 }
 
@@ -817,8 +831,18 @@ pub fn opponent_widgets(count: usize, width: f32, height: f32) -> Vec<Button> {
             w: KIND_W * s,
             h: KIND_H * s,
         });
-        all.push(circle(Action::CycleOpponentFaction(slot), "Faction", faction_left, FACTION_R));
-        all.push(circle(Action::CycleOpponentAlly(slot, 0), "Ally", ally_left, ALLY_R));
+        all.push(circle(
+            Action::CycleOpponentFaction(slot),
+            "Faction",
+            faction_left,
+            FACTION_R,
+        ));
+        all.push(circle(
+            Action::CycleOpponentAlly(slot, 0),
+            "Ally",
+            ally_left,
+            ALLY_R,
+        ));
         all.push(circle(
             Action::CycleOpponentAlly(slot, 1),
             "Ally",
@@ -857,11 +881,25 @@ pub fn setup_widgets(width: f32, height: f32) -> Vec<Button> {
     };
     let (bar_x, bar_y, bar_w, bar_h) = color_bar_rect(width, height);
     vec![
-        Button { action: Action::NameField, label: "Commander Name", x: lx, y: 84.0 * s, w: lw, h: 56.0 * s },
+        Button {
+            action: Action::NameField,
+            label: "Commander Name",
+            x: lx,
+            y: 84.0 * s,
+            w: lw,
+            h: 56.0 * s,
+        },
         circle(Action::CycleFaction, "Faction", 0.0, FACTION_R),
         circle(Action::CycleAlly(0), "Ally", -ALLY_OFFSET, ALLY_R),
         circle(Action::CycleAlly(1), "Ally", ALLY_OFFSET, ALLY_R),
-        Button { action: Action::ColorBar, label: "Color", x: bar_x, y: bar_y, w: bar_w, h: bar_h },
+        Button {
+            action: Action::ColorBar,
+            label: "Color",
+            x: bar_x,
+            y: bar_y,
+            w: bar_w,
+            h: bar_h,
+        },
         Button {
             action: Action::StartBattle,
             label: "Play",
@@ -870,7 +908,14 @@ pub fn setup_widgets(width: f32, height: f32) -> Vec<Button> {
             w: 240.0 * s,
             h: 72.0 * s,
         },
-        Button { action: Action::MapDropdown, label: "Map", x: rx, y: 352.0 * s, w: rw, h: 52.0 * s },
+        Button {
+            action: Action::MapDropdown,
+            label: "Map",
+            x: rx,
+            y: 352.0 * s,
+            w: rw,
+            h: 52.0 * s,
+        },
         radio(0.0, Action::SetDifficulty(Difficulty::Easy), "Easy"),
         radio(1.0, Action::SetDifficulty(Difficulty::Normal), "Normal"),
         radio(2.0, Action::SetDifficulty(Difficulty::Hard), "Hard"),
@@ -1028,7 +1073,9 @@ pub fn buttons(screen: Screen, width: f32, height: f32) -> Vec<Button> {
         Screen::SinglePlayerMenu => SINGLE_PLAYER_MENU,
         Screen::EscapeMenu => ESCAPE_MENU,
         Screen::BattleStats => BATTLE_STATS,
-        Screen::Options | Screen::Credits | Screen::FactionSelect | Screen::SkirmishSetup => BACK_ONLY,
+        Screen::Options | Screen::Credits | Screen::FactionSelect | Screen::SkirmishSetup => {
+            BACK_ONLY
+        }
     };
     let s = ui_scale(height);
     let centered = items.iter().filter(|i| i.2 == Anchor::Center).count() as f32;
@@ -1044,16 +1091,21 @@ pub fn buttons(screen: Screen, width: f32, height: f32) -> Vec<Button> {
                     y += BUTTON_H + GAP;
                     ((width - CENTER_W * s) / 2.0, top * s, CENTER_W)
                 }
-                Anchor::BottomLeft => {
-                    (MARGIN * s, (1080.0 - MARGIN - BUTTON_H) * s, CORNER_W)
-                }
+                Anchor::BottomLeft => (MARGIN * s, (1080.0 - MARGIN - BUTTON_H) * s, CORNER_W),
                 Anchor::BottomRight => (
                     width - (MARGIN + CORNER_W) * s,
                     (1080.0 - MARGIN - BUTTON_H) * s,
                     CORNER_W,
                 ),
             };
-            Button { action, label, x: px, y: py, w: w * s, h: BUTTON_H * s }
+            Button {
+                action,
+                label,
+                x: px,
+                y: py,
+                w: w * s,
+                h: BUTTON_H * s,
+            }
         })
         .collect();
     if screen == Screen::Options {
@@ -1211,19 +1263,27 @@ impl Game {
     pub fn selection_ground(&self) -> Option<(f32, f32, f32, f32)> {
         let (x, z) = self.selection_anchor?;
         let (cursor_x, cursor_z) = self.view().ground_at(self.mouse.0, self.mouse.1)?;
-        Some((x.min(cursor_x), z.min(cursor_z), x.max(cursor_x), z.max(cursor_z)))
+        Some((
+            x.min(cursor_x),
+            z.min(cursor_z),
+            x.max(cursor_x),
+            z.max(cursor_z),
+        ))
     }
 
     /// The selection's four edges as they appear on screen, with perspective, each cut down
     /// to the part that is visible.
     pub fn selection_edges(&self) -> Vec<((f32, f32), (f32, f32))> {
-        let Some((west, north, east, south)) = self.selection_ground() else { return Vec::new() };
+        let Some((west, north, east, south)) = self.selection_ground() else {
+            return Vec::new();
+        };
         let view = self.view();
         let screen = (0.0, 0.0, self.width, self.height);
         let corners = [(west, north), (east, north), (east, south), (west, south)];
         (0..corners.len())
             .filter_map(|i| {
-                let (a, b) = view.project_ground_line(corners[i], corners[(i + 1) % corners.len()])?;
+                let (a, b) =
+                    view.project_ground_line(corners[i], corners[(i + 1) % corners.len()])?;
                 battlefield::clip_to_rect(a, b, screen)
             })
             .collect()
@@ -1233,7 +1293,9 @@ impl Game {
     /// spot below it and by the spot it appears over on screen, since a box drawn around
     /// what the player sees should catch it.
     pub fn in_selection_drag(&self, unit: &Unit) -> bool {
-        let Some(rectangle) = self.selection_ground().filter(|_| unit.is_selectable()) else { return false };
+        let Some(rectangle) = self.selection_ground().filter(|_| unit.is_selectable()) else {
+            return false;
+        };
         units::in_selection(rectangle, unit) || self.appears_in_selection(rectangle, unit)
     }
 
@@ -1243,7 +1305,9 @@ impl Game {
         }
         let view = self.view();
         let (x, y, z) = unit.center();
-        let appears_over = view.project(x, y, z).and_then(|(px, py)| view.ground_at(px, py));
+        let appears_over = view
+            .project(x, y, z)
+            .and_then(|(px, py)| view.ground_at(px, py));
         appears_over.is_some_and(|(x, z)| units::in_rectangle(rectangle, x, z))
     }
 
@@ -1265,7 +1329,9 @@ impl Game {
     /// Whether the left button, if down on the battlefield, has stayed near where it went
     /// down on screen, which makes this a click and not a box.
     fn is_click_so_far(&self) -> bool {
-        let Some((x, z)) = self.selection_anchor else { return true };
+        let Some((x, z)) = self.selection_anchor else {
+            return true;
+        };
         let start = self.view().project_clamped(x, 0.0, z);
         let slop = CLICK_SLOP * ui_scale(self.height);
         (start.0 - self.mouse.0).abs() < slop && (start.1 - self.mouse.1).abs() < slop
@@ -1276,7 +1342,10 @@ impl Game {
     }
 
     fn can_order_attack_here(&self) -> bool {
-        self.cursor_on_battlefield() && !self.aiming_strike && !self.minimap_dragging && self.is_click_so_far()
+        self.cursor_on_battlefield()
+            && !self.aiming_strike
+            && !self.minimap_dragging
+            && self.is_click_so_far()
     }
 
     /// Who a click would send the selected units after: an enemy they can fight, or a friendly
@@ -1287,10 +1356,15 @@ impl Game {
             return None;
         }
         let selected = self.selected_units();
-        let able = |u: &Unit| selected.iter().any(|s| s.can_attack(u, &self.teams) || s.can_fix(u, &self.teams));
+        let able = |u: &Unit| {
+            selected
+                .iter()
+                .any(|s| s.can_attack(u, &self.teams) || s.can_fix(u, &self.teams))
+        };
         let (chosen, distance) = self.unit_near_cursor(able)?;
         let own = self.unit_near_cursor(Unit::is_selectable);
-        own.is_none_or(|(own_unit, own_distance)| own_unit == chosen || distance < own_distance).then_some(chosen)
+        own.is_none_or(|(own_unit, own_distance)| own_unit == chosen || distance < own_distance)
+            .then_some(chosen)
     }
 
     /// What a cell of the build menu makes.
@@ -1308,11 +1382,23 @@ impl Game {
     /// Adds a unit of the player's next to their tower, or their first unit if it is gone.
     /// There is no cost or waiting yet.
     fn produce(&mut self, role: Role) {
-        let tower = self.units.iter().find(|u| u.owner == 0 && u.kind.is_building());
-        let Some(beside) = tower.or_else(|| self.units.iter().find(|u| u.owner == 0)) else { return };
+        let tower = self
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.kind.is_building());
+        let Some(beside) = tower.or_else(|| self.units.iter().find(|u| u.owner == 0)) else {
+            return;
+        };
         let (near, color) = ((beside.x, beside.z), beside.color);
         let terrain = battlefield::terrain(self.battle_map);
-        if units::produce(&mut self.units, terrain, role, near, (0, color), self.next_unit_id) {
+        if units::produce(
+            &mut self.units,
+            terrain,
+            role,
+            near,
+            (0, color),
+            self.next_unit_id,
+        ) {
             self.next_unit_id += 1;
         }
     }
@@ -1331,7 +1417,8 @@ impl Game {
         if !self.cursor_on_battlefield() || self.selection_anchor.is_some() {
             return None;
         }
-        self.unit_near_cursor(|_| true).map(|(i, _)| self.units[i].name())
+        self.unit_near_cursor(|_| true)
+            .map(|(i, _)| self.units[i].name())
     }
 
     /// With Control held, what a click would make the selected units fire on: anyone they
@@ -1342,7 +1429,9 @@ impl Game {
         }
         let selected = self.selected_units();
         let able = |u: &Unit| {
-            selected.iter().any(|s| s.can_fire_on(u) || s.can_attack(u, &self.teams) || s.can_fix(u, &self.teams))
+            selected.iter().any(|s| {
+                s.can_fire_on(u) || s.can_attack(u, &self.teams) || s.can_fix(u, &self.teams)
+            })
         };
         if let Some((unit, _)) = self.unit_near_cursor(able) {
             return Some(AttackOrder::Unit(unit));
@@ -1350,20 +1439,29 @@ impl Game {
         if !selected.iter().any(|s| s.can_fire_at_ground()) {
             return None;
         }
-        self.view().ground_at(self.mouse.0, self.mouse.1).map(AttackOrder::Place)
+        self.view()
+            .ground_at(self.mouse.0, self.mouse.1)
+            .map(AttackOrder::Place)
     }
 
     /// What the cursor should look like: what a click here would make the selected units do.
     pub fn cursor_look(&self) -> CursorLook {
         let selected = self.selected_units();
         let look_at = |u: &Unit| {
-            let armed = |s: &&Unit| s.can_attack(u, &self.teams) || (self.control_held && s.can_fire_on(u));
-            if selected.iter().any(armed) { CursorLook::Attack } else { CursorLook::Heal }
+            let armed =
+                |s: &&Unit| s.can_attack(u, &self.teams) || (self.control_held && s.can_fire_on(u));
+            if selected.iter().any(armed) {
+                CursorLook::Attack
+            } else {
+                CursorLook::Heal
+            }
         };
         match self.forced_order_under_cursor() {
             Some(AttackOrder::Place(_)) => CursorLook::Attack,
             Some(AttackOrder::Unit(unit)) => look_at(&self.units[unit]),
-            None => self.attackable_under_cursor().map_or(CursorLook::Arrow, |unit| look_at(&self.units[unit])),
+            None => self
+                .attackable_under_cursor()
+                .map_or(CursorLook::Arrow, |unit| look_at(&self.units[unit])),
         }
     }
 
@@ -1393,13 +1491,19 @@ impl Game {
             return;
         }
         if !self.is_click_so_far() {
-            let chosen: Vec<bool> = self.units.iter().map(|u| self.in_selection_drag(u)).collect();
+            let chosen: Vec<bool> = self
+                .units
+                .iter()
+                .map(|u| self.in_selection_drag(u))
+                .collect();
             for (unit, chosen) in self.units.iter_mut().zip(chosen) {
                 unit.selected = chosen || (adding && unit.selected);
             }
         } else if let Some(order) = self.forced_order_under_cursor() {
             match order {
-                AttackOrder::Unit(unit) => units::order_force_attack(&mut self.units, unit, &self.teams),
+                AttackOrder::Unit(unit) => {
+                    units::order_force_attack(&mut self.units, unit, &self.teams)
+                }
                 AttackOrder::Place(place) => units::order_attack_place(&mut self.units, place),
             }
         } else if let Some(chosen) = self.attackable_under_cursor() {
@@ -1411,7 +1515,12 @@ impl Game {
         } else if adding {
             // Nothing picked, nothing to add.
         } else if let Some(target) = self.view().ground_at(self.mouse.0, self.mouse.1) {
-            units::order_move(&mut self.units, target, battlefield::terrain(self.battle_map), &self.teams);
+            units::order_move(
+                &mut self.units,
+                target,
+                battlefield::terrain(self.battle_map),
+                &self.teams,
+            );
         }
         self.selection_anchor = None;
     }
@@ -1428,7 +1537,9 @@ impl Game {
         let mut best = None;
         let mut best_distance = reach;
         for (i, unit) in self.units.iter().enumerate().filter(|(_, u)| wanted(u)) {
-            let Some((x, y)) = view.project(unit.x, unit.pick_height(), unit.z) else { continue };
+            let Some((x, y)) = view.project(unit.x, unit.pick_height(), unit.z) else {
+                continue;
+            };
             let distance = (x - self.mouse.0).hypot(y - self.mouse.1);
             if distance <= best_distance {
                 best = Some((i, distance));
@@ -1445,7 +1556,8 @@ impl Game {
     /// Posts a random message every few seconds of battle, scrolling out the oldest.
     fn update_chat(&mut self) {
         while self.battle_time >= self.next_chat_at {
-            let index = battlefield::xorshift(&mut self.chat_random) as usize % hud::CHAT_MESSAGES.len();
+            let index =
+                battlefield::xorshift(&mut self.chat_random) as usize % hud::CHAT_MESSAGES.len();
             self.chat.push(hud::CHAT_MESSAGES[index]);
             if self.chat.len() > hud::CHAT_LINES {
                 self.chat.remove(0);
@@ -1463,7 +1575,11 @@ impl Game {
                 Some(Faction::O) => TeamColor::Cyan,
                 Some(Faction::A) | None => TeamColor::Blue,
             };
-            let enemy_color = if color == TeamColor::Red { TeamColor::Blue } else { TeamColor::Red };
+            let enemy_color = if color == TeamColor::Red {
+                TeamColor::Blue
+            } else {
+                TeamColor::Red
+            };
             return vec![
                 StatsRow {
                     name: setup.commander.clone(),
@@ -1488,7 +1604,10 @@ impl Game {
             allies: setup.allies,
             money: self.player_money(),
         }];
-        for (i, opponent) in setup.opponents[..setup.ai_players as usize].iter().enumerate() {
+        for (i, opponent) in setup.opponents[..setup.ai_players as usize]
+            .iter()
+            .enumerate()
+        {
             rows.push(StatsRow {
                 name: format!("AI {} ({})", i + 1, opponent.kind.label()),
                 faction: Some(opponent.faction),
@@ -1515,7 +1634,10 @@ impl Game {
             return;
         }
         let player_left = self.units.iter().any(|u| u.owner == 0);
-        let enemies_left = self.units.iter().any(|u| units::are_enemies(&self.teams, 0, u.owner));
+        let enemies_left = self
+            .units
+            .iter()
+            .any(|u| units::are_enemies(&self.teams, 0, u.owner));
         self.outcome = if !player_left {
             Some(Outcome::Defeat)
         } else if !enemies_left {
@@ -1546,7 +1668,11 @@ impl Game {
                 if self.outcome == Some(Outcome::Victory) {
                     self.campaign_mission += 1;
                 }
-                self.start_battle(self.campaign_mission % MAPS.len(), self.faction, BattleKind::Campaign);
+                self.start_battle(
+                    self.campaign_mission % MAPS.len(),
+                    self.faction,
+                    BattleKind::Campaign,
+                );
             }
         }
     }
@@ -1657,7 +1783,8 @@ impl Game {
         };
         *field = value;
         if id == SliderId::AiPlayers {
-            self.skirmish.assign_opponent_colors(old_ai_players, value as usize);
+            self.skirmish
+                .assign_opponent_colors(old_ai_players, value as usize);
         }
     }
 
@@ -1779,7 +1906,10 @@ impl Game {
             return None;
         }
         let (x, y) = self.mouse;
-        self.sliders().iter().find(|s| s.contains(x, y)).map(|s| s.id)
+        self.sliders()
+            .iter()
+            .find(|s| s.contains(x, y))
+            .map(|s| s.id)
     }
 
     fn drag_to(&mut self, x: f32) {
@@ -1799,7 +1929,11 @@ impl Game {
             Screen::InGame => Some(Screen::EscapeMenu),
             Screen::EscapeMenu => Some(Screen::InGame),
             Screen::FactionSelect | Screen::SkirmishSetup => Some(Screen::SinglePlayerMenu),
-            Screen::Intro | Screen::MainMenu | Screen::Loading | Screen::Movie(_) | Screen::BattleStats => None,
+            Screen::Intro
+            | Screen::MainMenu
+            | Screen::Loading
+            | Screen::Movie(_)
+            | Screen::BattleStats => None,
         }
     }
 
@@ -1843,17 +1977,26 @@ impl Game {
             self.update_chat();
             let terrain = battlefield::terrain(self.battle_map);
             units::advance(&mut self.units, terrain, &self.teams, dt);
-            self.combat.advance(&mut self.units, &self.teams, terrain, dt);
+            self.combat
+                .advance(&mut self.units, &self.teams, terrain, dt);
             self.strike_recharge = (self.strike_recharge - dt).max(0.0);
             if self.screen == Screen::InGame {
                 self.settle_casualties();
             }
         }
         match self.screen {
-            Screen::Intro if self.screen_elapsed >= INTRO_SECONDS => self.set_screen(Screen::MainMenu),
-            Screen::Loading if self.screen_elapsed >= LOADING_SECONDS => self.set_screen(Screen::InGame),
-            Screen::Movie(faction) if self.screen_elapsed >= MOVIE_SECONDS => self.finish_movie(faction),
-            Screen::InGame if self.outcome.is_some() && self.outcome_elapsed + dt >= OUTCOME_SECONDS => {
+            Screen::Intro if self.screen_elapsed >= INTRO_SECONDS => {
+                self.set_screen(Screen::MainMenu)
+            }
+            Screen::Loading if self.screen_elapsed >= LOADING_SECONDS => {
+                self.set_screen(Screen::InGame)
+            }
+            Screen::Movie(faction) if self.screen_elapsed >= MOVIE_SECONDS => {
+                self.finish_movie(faction)
+            }
+            Screen::InGame
+                if self.outcome.is_some() && self.outcome_elapsed + dt >= OUTCOME_SECONDS =>
+            {
                 self.show_battle_stats();
             }
             Screen::InGame => {
@@ -1862,7 +2005,8 @@ impl Game {
                 }
                 self.camera.ease_zoom(dt);
                 if self.focused && !self.key_paused && !self.minimap_dragging {
-                    let direction = battlefield::edge_direction(self.mouse, self.width, self.height);
+                    let direction =
+                        battlefield::edge_direction(self.mouse, self.width, self.height);
                     self.camera.scroll(direction, self.settings.scroll_rate, dt);
                 }
             }
@@ -1902,7 +2046,10 @@ impl Game {
             Event::Resize(w, h) => {
                 self.width = w as f32;
                 self.height = h as f32;
-                self.mouse = (self.mouse.0.min(self.width - 1.0), self.mouse.1.min(self.height - 1.0));
+                self.mouse = (
+                    self.mouse.0.min(self.width - 1.0),
+                    self.mouse.1.min(self.height - 1.0),
+                );
             }
             Event::MouseMove(x, y) => {
                 self.mouse = (x, y);
@@ -1947,7 +2094,9 @@ impl Game {
                     self.selection_anchor = None;
                 }
                 (Screen::InGame, Key::Tab) => self.stats_open = !self.stats_open,
-                (Screen::InGame, Key::Char('d' | 'D')) if !self.key_paused => units::toggle_deploy(&mut self.units),
+                (Screen::InGame, Key::Char('d' | 'D')) if !self.key_paused => {
+                    units::toggle_deploy(&mut self.units)
+                }
                 (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => {
                     for unit in &mut self.units {
                         unit.selected = unit.is_selectable();
@@ -2010,7 +2159,11 @@ impl Game {
             Action::BuildCell(cell) => self.activate_build_cell(cell),
             Action::HudWide(DEPLOY_BUTTON) => units::toggle_deploy(&mut self.units),
             // Not designed yet: these buttons respond to hover but do nothing.
-            Action::Multiplayer | Action::LoadGame | Action::SaveGame | Action::HudSmall(_) | Action::HudWide(_) => {}
+            Action::Multiplayer
+            | Action::LoadGame
+            | Action::SaveGame
+            | Action::HudSmall(_)
+            | Action::HudWide(_) => {}
         }
     }
 
@@ -2102,13 +2255,27 @@ mod tests {
         let game = in_menu();
         assert_eq!(
             actions(&game),
-            [Action::SinglePlayer, Action::Multiplayer, Action::Exit, Action::Options]
+            [
+                Action::SinglePlayer,
+                Action::Multiplayer,
+                Action::Exit,
+                Action::Options
+            ]
         );
         let b = game.buttons();
-        assert!((b[0].x + b[0].w / 2.0 - W / 2.0).abs() < 0.5, "centered horizontally");
-        assert!(b[0].y < H / 2.0 && b[1].y + b[1].h > H / 2.0, "centered vertically");
+        assert!(
+            (b[0].x + b[0].w / 2.0 - W / 2.0).abs() < 0.5,
+            "centered horizontally"
+        );
+        assert!(
+            b[0].y < H / 2.0 && b[1].y + b[1].h > H / 2.0,
+            "centered vertically"
+        );
         assert!(b[2].x < W / 2.0 && b[2].y > H / 2.0, "exit is bottom left");
-        assert!(b[3].x > W / 2.0 && b[3].y > H / 2.0, "options is bottom right");
+        assert!(
+            b[3].x > W / 2.0 && b[3].y > H / 2.0,
+            "options is bottom right"
+        );
     }
 
     #[test]
@@ -2128,7 +2295,11 @@ mod tests {
             ]
         );
         let back = game.buttons()[4];
-        assert_eq!((back.x, back.y), (exit.x, exit.y), "back takes exit's place");
+        assert_eq!(
+            (back.x, back.y),
+            (exit.x, exit.y),
+            "back takes exit's place"
+        );
 
         click(&mut game, Action::Back);
         assert_eq!(game.screen, Screen::MainMenu);
@@ -2190,8 +2361,16 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "Back", "Game", "Graphics", "Sound", "Multiplayer Info", "Network", "Keyboard",
-                "Sneak Peek", "Credits", "Movies"
+                "Back",
+                "Game",
+                "Graphics",
+                "Sound",
+                "Multiplayer Info",
+                "Network",
+                "Keyboard",
+                "Sneak Peek",
+                "Credits",
+                "Movies"
             ]
         );
         let back = game.buttons()[0];
@@ -2202,7 +2381,10 @@ mod tests {
     fn panel_sits_right_of_center_with_tabs_on_its_left() {
         let game = in_options();
         let (px, _, pw, _) = options_panel(W, H);
-        assert!(px + pw / 2.0 > W / 2.0, "panel center is right of screen center");
+        assert!(
+            px + pw / 2.0 > W / 2.0,
+            "panel center is right of screen center"
+        );
         for tab in &game.buttons()[1..] {
             assert!(tab.x + tab.w <= px, "{} is left of the panel", tab.label);
         }
@@ -2211,13 +2393,28 @@ mod tests {
     #[test]
     fn each_tab_shows_the_requested_controls() {
         let names = |tab| -> Vec<_> { sliders(tab, W, H).iter().map(|s| s.label).collect() };
-        assert_eq!(names(Tab::Game), ["Game Speed", "Scroll Rate", "Mouse Speed"]);
+        assert_eq!(
+            names(Tab::Game),
+            ["Game Speed", "Scroll Rate", "Mouse Speed"]
+        );
         assert_eq!(names(Tab::Graphics), ["Graphics Quality"]);
-        assert_eq!(names(Tab::Sound), ["Music Volume", "Sound Volume", "Voice Volume"]);
-        let boxes: Vec<_> = checkboxes(Tab::Game, W, H).iter().map(|b| b.label).collect();
+        assert_eq!(
+            names(Tab::Sound),
+            ["Music Volume", "Sound Volume", "Voice Volume"]
+        );
+        let boxes: Vec<_> = checkboxes(Tab::Game, W, H)
+            .iter()
+            .map(|b| b.label)
+            .collect();
         assert_eq!(boxes, ["Tool Tips", "Target Lines"]);
         assert!(checkboxes(Tab::Sound, W, H).is_empty());
-        for tab in [Tab::MultiplayerInfo, Tab::Network, Tab::Keyboard, Tab::SneakPeek, Tab::Movies] {
+        for tab in [
+            Tab::MultiplayerInfo,
+            Tab::Network,
+            Tab::Keyboard,
+            Tab::SneakPeek,
+            Tab::Movies,
+        ] {
             assert!(tab.placeholder().is_some());
             assert!(sliders(tab, W, H).is_empty());
         }
@@ -2271,7 +2468,11 @@ mod tests {
         let mut game = in_options();
         click(&mut game, Action::Tab(Tab::Graphics));
         let s = slider(&game, SliderId::GraphicsQuality);
-        drag(&mut game, SliderId::GraphicsQuality, s.track_x + s.track_w * 0.45);
+        drag(
+            &mut game,
+            SliderId::GraphicsQuality,
+            s.track_x + s.track_w * 0.45,
+        );
         assert_eq!(game.settings.graphics_quality, 1);
         drag(&mut game, SliderId::GraphicsQuality, s.track_x);
         assert_eq!(game.settings.graphics_quality, 0);
@@ -2291,7 +2492,13 @@ mod tests {
     #[test]
     fn checkboxes_flip_on_click() {
         let mut game = in_options();
-        let row = |game: &Game, t| *game.checkboxes().iter().find(|b| b.action == Action::Toggle(t)).unwrap();
+        let row = |game: &Game, t| {
+            *game
+                .checkboxes()
+                .iter()
+                .find(|b| b.action == Action::Toggle(t))
+                .unwrap()
+        };
         let b = row(&game, Toggle::TargetLines);
         for expected in [false, true] {
             game.handle(Event::MouseMove(b.x + 1.0, b.y + 1.0));
@@ -2342,7 +2549,10 @@ mod tests {
 
         game.update(LOADING_SECONDS);
         assert_eq!(game.screen, Screen::InGame);
-        assert!(game.buttons().is_empty(), "the battlefield has no Back button");
+        assert!(
+            game.buttons().is_empty(),
+            "the battlefield has no Back button"
+        );
     }
 
     fn leave_battle(game: &mut Game) {
@@ -2357,10 +2567,25 @@ mod tests {
         game.handle(Event::KeyDown(Key::Escape));
         assert_eq!(game.screen, Screen::EscapeMenu);
         let labels: Vec<_> = game.buttons().iter().map(|b| b.label).collect();
-        assert_eq!(labels, ["Load Game", "Save Game", "Options", "Exit Game", "Return to Game"]);
+        assert_eq!(
+            labels,
+            [
+                "Load Game",
+                "Save Game",
+                "Options",
+                "Exit Game",
+                "Return to Game"
+            ]
+        );
         let middle = game.buttons()[2];
-        assert!((middle.x + middle.w / 2.0 - W / 2.0).abs() < 0.5, "centered");
-        assert!(middle.y < H / 2.0 && middle.y + middle.h > H / 2.0, "centered");
+        assert!(
+            (middle.x + middle.w / 2.0 - W / 2.0).abs() < 0.5,
+            "centered"
+        );
+        assert!(
+            middle.y < H / 2.0 && middle.y + middle.h > H / 2.0,
+            "centered"
+        );
 
         click(&mut game, Action::ReturnToGame);
         assert_eq!(game.screen, Screen::InGame);
@@ -2405,10 +2630,16 @@ mod tests {
         assert_eq!(game.screen, Screen::EscapeMenu);
         game.handle(Event::KeyDown(Key::Escape));
         assert_eq!(game.screen, Screen::InGame);
-        assert!(game.key_paused && game.is_paused(), "still paused after the menu");
+        assert!(
+            game.key_paused && game.is_paused(),
+            "still paused after the menu"
+        );
 
         game.handle(Event::KeyDown(Key::Pause));
-        assert!(!game.key_paused && !game.is_paused(), "the same key unpauses");
+        assert!(
+            !game.key_paused && !game.is_paused(),
+            "the same key unpauses"
+        );
     }
 
     #[test]
@@ -2449,7 +2680,10 @@ mod tests {
         click(&mut game, Action::Options);
         assert_eq!(game.screen, Screen::Options);
         assert!(game.in_battle && game.is_paused());
-        assert!(!game.sliders().is_empty(), "the same options as the separate screen");
+        assert!(
+            !game.sliders().is_empty(),
+            "the same options as the separate screen"
+        );
 
         click(&mut game, Action::Tab(Tab::Credits));
         assert_eq!(game.screen, Screen::Credits);
@@ -2562,7 +2796,9 @@ mod tests {
     }
 
     fn all_enemies(game: &Game) -> Vec<usize> {
-        (1..game.teams.len()).filter(|&o| units::are_enemies(&game.teams, 0, o)).collect()
+        (1..game.teams.len())
+            .filter(|&o| units::are_enemies(&game.teams, 0, o))
+            .collect()
     }
 
     fn win(game: &mut Game) {
@@ -2622,14 +2858,21 @@ mod tests {
         assert!(!enemies.contains(&2));
         kill_owners(&mut game, &enemies);
         assert_eq!(game.outcome, Some(Outcome::Victory));
-        assert!(game.units.iter().any(|u| u.owner == 2), "the ally is still there");
+        assert!(
+            game.units.iter().any(|u| u.owner == 2),
+            "the ally is still there"
+        );
     }
 
     #[test]
     fn statistics_count_kills_and_losses_by_kind_but_not_allies() {
         let mut game = in_battle();
         game.teams[2] = game.teams[0];
-        let enemy_infantry = game.units.iter().filter(|u| u.owner == 1 && u.kind == UnitKind::Infantry).count() as i32;
+        let enemy_infantry = game
+            .units
+            .iter()
+            .filter(|u| u.owner == 1 && u.kind == UnitKind::Infantry)
+            .count() as i32;
         let lost_infantry = game
             .units
             .iter()
@@ -2639,12 +2882,26 @@ mod tests {
         assert_eq!(game.killed.infantry, enemy_infantry, "allies do not count");
         assert_eq!(game.killed.vehicles, 0);
 
-        let vehicles = game.units.iter().filter(|u| u.owner == 0 && u.kind == UnitKind::Vehicle).count() as i32;
-        for unit in game.units.iter_mut().filter(|u| u.owner == 0 && u.kind == UnitKind::Infantry) {
+        let vehicles = game
+            .units
+            .iter()
+            .filter(|u| u.owner == 0 && u.kind == UnitKind::Vehicle)
+            .count() as i32;
+        for unit in game
+            .units
+            .iter_mut()
+            .filter(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
+        {
             unit.alive = false;
         }
         game.update(0.01);
-        assert_eq!(game.lost, Casualties { infantry: lost_infantry, ..Casualties::default() });
+        assert_eq!(
+            game.lost,
+            Casualties {
+                infantry: lost_infantry,
+                ..Casualties::default()
+            }
+        );
         assert!(vehicles > 0);
     }
 
@@ -2658,11 +2915,19 @@ mod tests {
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         // A tower cannot be run over, so this enemy has none.
         game.units.retain(|u| u.owner != 1 || !u.kind.is_building());
-        let count = game.units.iter().filter(|u| u.owner == 1 && u.kind == UnitKind::Infantry).count() as i32;
+        let count = game
+            .units
+            .iter()
+            .filter(|u| u.owner == 1 && u.kind == UnitKind::Infantry)
+            .count() as i32;
         for _ in 0..4000 {
-            let Some(target) = game.units.iter().find(|u| u.owner == 1) else { break };
+            let Some(target) = game.units.iter().find(|u| u.owner == 1) else {
+                break;
+            };
             let target = (target.x, target.z);
-            let Some(vehicle) = game.units.iter().position(|u| u.heavy) else { break };
+            let Some(vehicle) = game.units.iter().position(|u| u.heavy) else {
+                break;
+            };
             game.units[vehicle].destination = target;
             game.update(0.05);
             if game.outcome.is_some() {
@@ -2832,9 +3097,15 @@ mod tests {
         click_at(&mut game, point.0, point.1);
         assert!(!game.aiming_strike);
         assert_eq!(game.combat.strikes.len(), 1);
-        assert_eq!((game.combat.strikes[0].x, game.combat.strikes[0].z), expected);
+        assert_eq!(
+            (game.combat.strikes[0].x, game.combat.strikes[0].z),
+            expected
+        );
         assert_eq!(selected_count(&game), FIRST_GROUP, "the selection stands");
-        assert!(game.units.iter().all(|u| !u.is_moving()), "and gets no order");
+        assert!(
+            game.units.iter().all(|u| !u.is_moving()),
+            "and gets no order"
+        );
     }
 
     #[test]
@@ -2921,11 +3192,25 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
-        let enemies = game.units.iter().filter(|u| u.owner == 1 && u.kind == UnitKind::Infantry).count() as i32;
-        let target = game.units.iter().find(|u| u.owner == 1).map(|u| (u.x, u.z)).unwrap();
+        let enemies = game
+            .units
+            .iter()
+            .filter(|u| u.owner == 1 && u.kind == UnitKind::Infantry)
+            .count() as i32;
+        let target = game
+            .units
+            .iter()
+            .find(|u| u.owner == 1)
+            .map(|u| (u.x, u.z))
+            .unwrap();
         // Everyone of the player's walks into range and fires by themselves.
         select_first_group(&mut game);
-        units::order_move(&mut game.units, target, battlefield::terrain(game.battle_map), &game.teams);
+        units::order_move(
+            &mut game.units,
+            target,
+            battlefield::terrain(game.battle_map),
+            &game.teams,
+        );
         for _ in 0..3000 {
             game.update(0.05);
             if game.outcome.is_some() {
@@ -2955,11 +3240,31 @@ mod tests {
         let mut game = in_battle();
         let (x, z) = (game.camera.x, game.camera.z);
         game.combat.launch_strike(x, z);
-        game.combat.poison.push(crate::weapons::PoisonZone { x, z, life: 30.0 });
-        game.combat.blasts.push(crate::weapons::Blast { at: (x, 0.0, z), radius: 2.0, life: 0.5 });
-        game.combat.beams.push(crate::weapons::Beam { from: (x, 1.0, z), to: (x + 3.0, 1.0, z), life: 0.5, repair: false });
-        game.combat.beams.push(crate::weapons::Beam { from: (x, 1.0, z), to: (x + 3.0, 1.0, z), life: 0.5, repair: true });
-        game.combat.flares.push(crate::weapons::Flare { at: (x, 1.0, z), size: 7.0, life: 0.5 });
+        game.combat
+            .poison
+            .push(crate::weapons::PoisonZone { x, z, life: 30.0 });
+        game.combat.blasts.push(crate::weapons::Blast {
+            at: (x, 0.0, z),
+            radius: 2.0,
+            life: 0.5,
+        });
+        game.combat.beams.push(crate::weapons::Beam {
+            from: (x, 1.0, z),
+            to: (x + 3.0, 1.0, z),
+            life: 0.5,
+            repair: false,
+        });
+        game.combat.beams.push(crate::weapons::Beam {
+            from: (x, 1.0, z),
+            to: (x + 3.0, 1.0, z),
+            life: 0.5,
+            repair: true,
+        });
+        game.combat.flares.push(crate::weapons::Flare {
+            at: (x, 1.0, z),
+            size: 7.0,
+            life: 0.5,
+        });
         game.units[0].health = 10.0;
         assert!(!crate::render::build(&game).is_empty());
         pick_superweapon(&mut game);
@@ -2969,7 +3274,8 @@ mod tests {
 
     #[test]
     fn every_screen_and_battle_state_draws_without_trouble() {
-        let check = |game: &Game| assert!(!crate::render::build(game).is_empty(), "{:?}", game.screen);
+        let check =
+            |game: &Game| assert!(!crate::render::build(game).is_empty(), "{:?}", game.screen);
         let mut game = in_menu();
         check(&game);
         click(&mut game, Action::SinglePlayer);
@@ -2995,17 +3301,34 @@ mod tests {
     #[test]
     fn the_diplomacy_window_fits_every_player() {
         use crate::font::text_width;
-        for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+        for (w, h) in [
+            (1280.0, 720.0),
+            (1920.0, 1080.0),
+            (2880.0, 1800.0),
+            (1024.0, 768.0),
+            (5120.0, 1440.0),
+        ] {
             let (x, y, ww, wh) = stats_rect(w, h);
-            assert!(x >= 0.0 && y >= 0.0 && x + ww <= w && y + wh <= h, "at {w}x{h}");
+            assert!(
+                x >= 0.0 && y >= 0.0 && x + ww <= w && y + wh <= h,
+                "at {w}x{h}"
+            );
             let s = ui_scale(h);
             assert!(text_width("AI 7 (Defensive)") * small_text_px(h) < 380.0 * s);
-            const { assert!(STATS_ROW_TOP + 8.0 * STATS_ROW_STEP <= 760.0, "eight rows fit") };
+            const {
+                assert!(
+                    STATS_ROW_TOP + 8.0 * STATS_ROW_STEP <= 760.0,
+                    "eight rows fit"
+                )
+            };
         }
     }
 
     fn click_hud(game: &mut Game, action: Action) {
-        let b = hud::all_buttons(W, H).into_iter().find(|b| b.action == action).unwrap();
+        let b = hud::all_buttons(W, H)
+            .into_iter()
+            .find(|b| b.action == action)
+            .unwrap();
         click_at(game, b.x + b.w / 2.0, b.y + b.h / 2.0);
     }
 
@@ -3013,7 +3336,12 @@ mod tests {
     fn build_tabs_switch_and_a_new_battle_starts_on_infantry() {
         let mut game = in_battle();
         assert_eq!(game.build_tab, BuildTab::Infantry);
-        for tab in [BuildTab::Vehicles, BuildTab::Buildings, BuildTab::Infantry, BuildTab::Buildings] {
+        for tab in [
+            BuildTab::Vehicles,
+            BuildTab::Buildings,
+            BuildTab::Infantry,
+            BuildTab::Buildings,
+        ] {
             click_hud(&mut game, Action::BuildTab(tab));
             assert_eq!(game.build_tab, tab);
         }
@@ -3026,7 +3354,10 @@ mod tests {
     #[test]
     fn fake_sidebar_buttons_light_up_and_change_nothing() {
         let mut game = in_battle();
-        for b in hud::command_buttons(W, H).into_iter().chain(hud::grid_cells(W, H)) {
+        for b in hud::command_buttons(W, H)
+            .into_iter()
+            .chain(hud::grid_cells(W, H))
+        {
             game.handle(Event::MouseMove(b.x + 1.0, b.y + 1.0));
             assert_eq!(game.hovered(), Some(b.action));
             game.handle(Event::MouseDown);
@@ -3152,7 +3483,10 @@ mod tests {
 
     /// A box around the player's first group, which starts at the middle of the screen.
     fn around_first_group() -> ((f32, f32), (f32, f32)) {
-        ((W / 2.0 - 400.0, H / 2.0 - 400.0), (W / 2.0 + 400.0, H / 2.0 + 400.0))
+        (
+            (W / 2.0 - 400.0, H / 2.0 - 400.0),
+            (W / 2.0 + 400.0, H / 2.0 + 400.0),
+        )
     }
 
     #[test]
@@ -3160,12 +3494,22 @@ mod tests {
         let mut game = in_battle();
         let (from, to) = around_first_group();
         drag_select(&mut game, from, to);
-        assert_eq!(selected_count(&game), FIRST_GROUP, "the first group, not the far one");
-        assert!(game.selection_ground().is_none(), "the box ends with the release");
+        assert_eq!(
+            selected_count(&game),
+            FIRST_GROUP,
+            "the first group, not the far one"
+        );
+        assert!(
+            game.selection_ground().is_none(),
+            "the box ends with the release"
+        );
     }
 
     fn first_plane(game: &Game) -> usize {
-        game.units.iter().position(|u| u.kind == UnitKind::Aircraft).unwrap()
+        game.units
+            .iter()
+            .position(|u| u.kind == UnitKind::Aircraft)
+            .unwrap()
     }
 
     #[test]
@@ -3179,7 +3523,11 @@ mod tests {
         assert!(seen.1 < shadow.1 - 40.0, "it appears well above its shadow");
         for around in [seen, shadow] {
             let mut game = in_battle();
-            drag_select(&mut game, (around.0 - 30.0, around.1 - 30.0), (around.0 + 30.0, around.1 + 30.0));
+            drag_select(
+                &mut game,
+                (around.0 - 30.0, around.1 - 30.0),
+                (around.0 + 30.0, around.1 + 30.0),
+            );
             assert!(game.units[first_plane(&game)].selected, "around {around:?}");
         }
     }
@@ -3201,7 +3549,10 @@ mod tests {
     #[test]
     fn aircraft_cast_a_shadow_on_the_ground() {
         let shadows = |game: &Game| {
-            crate::render::build(game).iter().filter(|v| v.r == 0.0 && v.g == 0.0 && v.b == 0.0 && v.a == 0.3).count()
+            crate::render::build(game)
+                .iter()
+                .filter(|v| v.r == 0.0 && v.g == 0.0 && v.b == 0.0 && v.a == 0.3)
+                .count()
         };
         let mut game = in_battle();
         let with_planes = shadows(&game);
@@ -3212,8 +3563,16 @@ mod tests {
     #[test]
     fn statistics_count_aircraft_on_their_own() {
         let mut game = in_battle();
-        let planes = game.units.iter().filter(|u| u.kind == UnitKind::Aircraft).count() as i32;
-        for unit in game.units.iter_mut().filter(|u| u.kind == UnitKind::Aircraft) {
+        let planes = game
+            .units
+            .iter()
+            .filter(|u| u.kind == UnitKind::Aircraft)
+            .count() as i32;
+        for unit in game
+            .units
+            .iter_mut()
+            .filter(|u| u.kind == UnitKind::Aircraft)
+        {
             unit.alive = false;
         }
         game.update(0.01);
@@ -3236,7 +3595,12 @@ mod tests {
             .filter(|(_, u)| u.owner == 0 && u.kind == UnitKind::Infantry)
             .nth(skip)
             .unwrap();
-        (index, game.view().project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z).unwrap())
+        (
+            index,
+            game.view()
+                .project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z)
+                .unwrap(),
+        )
     }
 
     /// Puts an enemy on screen beside the first group and says where to point at it.
@@ -3246,8 +3610,14 @@ mod tests {
         let unit = &mut game.units[index];
         (unit.x, unit.z, unit.destination) = (x, z, (x, z));
         let unit = game.units[index];
-        let at = game.view().project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z).unwrap();
-        assert!(!hud::covers(at.0, at.1, W, H) && at.0 > 0.0 && at.0 < W && at.1 > 0.0 && at.1 < H, "{at:?}");
+        let at = game
+            .view()
+            .project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z)
+            .unwrap();
+        assert!(
+            !hud::covers(at.0, at.1, W, H) && at.0 > 0.0 && at.0 < W && at.1 > 0.0 && at.1 < H,
+            "{at:?}"
+        );
         (index, at)
     }
 
@@ -3274,13 +3644,19 @@ mod tests {
         assert_eq!(bullseye(&game), 0);
 
         let own = game.units[0];
-        let (own_x, own_y) = game.view().project(own.x, own.y + own.altitude + 0.25, own.z).unwrap();
+        let (own_x, own_y) = game
+            .view()
+            .project(own.x, own.y + own.altitude + 0.25, own.z)
+            .unwrap();
         game.handle(Event::MouseMove(own_x, own_y));
         assert!(!game.cursor_means_attack(), "nor over one's own");
 
         game.handle(Event::MouseMove(x, y));
         game.handle(Event::KeyDown(Key::Tab));
-        assert!(!game.cursor_means_attack(), "nor with the diplomacy window open");
+        assert!(
+            !game.cursor_means_attack(),
+            "nor with the diplomacy window open"
+        );
         game.handle(Event::KeyDown(Key::Tab));
 
         // Everyone selected carries a mortar, and this enemy flies.
@@ -3293,7 +3669,10 @@ mod tests {
         game.units[enemy].kind = UnitKind::Aircraft;
         game.units[enemy].altitude = 3.0;
         let flier = game.units[enemy];
-        let (x, y) = game.view().project(flier.x, flier.y + 3.25, flier.z).unwrap();
+        let (x, y) = game
+            .view()
+            .project(flier.x, flier.y + 3.25, flier.z)
+            .unwrap();
         game.handle(Event::MouseMove(x, y));
         assert!(!game.cursor_means_attack(), "mortars cannot aim up");
     }
@@ -3319,7 +3698,11 @@ mod tests {
         click_at(&mut game, x, y);
         assert_eq!(selected_count(&game), FIRST_GROUP, "the selection stands");
         assert!(!game.units[enemy].selected);
-        let sent = game.units.iter().filter(|u| u.selected && u.target == Some(crate::units::Target::Unit(id))).count();
+        let sent = game
+            .units
+            .iter()
+            .filter(|u| u.selected && u.target == Some(crate::units::Target::Unit(id)))
+            .count();
         assert_eq!(sent, FIRST_GROUP);
 
         for _ in 0..600 {
@@ -3330,7 +3713,12 @@ mod tests {
         }
         assert!(!game.units.iter().any(|u| u.id == id), "it died");
         game.update(0.05);
-        assert!(game.units.iter().all(|u| u.target != Some(crate::units::Target::Unit(id))), "and everyone forgot it");
+        assert!(
+            game.units
+                .iter()
+                .all(|u| u.target != Some(crate::units::Target::Unit(id))),
+            "and everyone forgot it"
+        );
     }
 
     #[test]
@@ -3342,7 +3730,12 @@ mod tests {
         game.handle(Event::MouseDown);
         game.handle(Event::ShiftMouseUp);
         let id = game.units[enemy].id;
-        assert!(game.units.iter().filter(|u| u.selected).all(|u| u.target == Some(crate::units::Target::Unit(id))));
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.selected)
+                .all(|u| u.target == Some(crate::units::Target::Unit(id)))
+        );
     }
 
     #[test]
@@ -3351,7 +3744,11 @@ mod tests {
         let mut game = in_battle();
         let (_, (x, y)) = enemy_beside_first_group(&mut game);
         select_first_group(&mut game);
-        assert_eq!((line_vertices(&game, red), line_vertices(&game, green)), (0, 0), "no orders yet");
+        assert_eq!(
+            (line_vertices(&game, red), line_vertices(&game, green)),
+            (0, 0),
+            "no orders yet"
+        );
 
         click_at(&mut game, x, y);
         assert!(line_vertices(&game, red) > 0);
@@ -3360,16 +3757,25 @@ mod tests {
         game.handle(Event::RightDown);
         assert_eq!(line_vertices(&game, red), 0, "deselected shows nothing");
         select_first_group(&mut game);
-        assert!(line_vertices(&game, red) > 0, "selected again, the target shows again");
+        assert!(
+            line_vertices(&game, red) > 0,
+            "selected again, the target shows again"
+        );
 
         click_at(&mut game, W / 2.0 - 800.0, H / 2.0 + 300.0);
         assert_eq!(line_vertices(&game, red), 0);
-        assert!(line_vertices(&game, green) > 0, "a move order turns it green");
+        assert!(
+            line_vertices(&game, green) > 0,
+            "a move order turns it green"
+        );
 
         game.handle(Event::RightDown);
         assert_eq!(line_vertices(&game, green), 0);
         select_first_group(&mut game);
-        assert!(line_vertices(&game, green) > 0, "selected again, the destination shows again");
+        assert!(
+            line_vertices(&game, green) > 0,
+            "selected again, the destination shows again"
+        );
     }
 
     #[test]
@@ -3382,13 +3788,20 @@ mod tests {
         for _ in 0..1200 {
             game.update(0.05);
         }
-        let moving: Vec<_> = game.units.iter().filter(|u| u.selected && u.is_moving()).collect();
+        let moving: Vec<_> = game
+            .units
+            .iter()
+            .filter(|u| u.selected && u.is_moving())
+            .collect();
         assert!(moving.is_empty(), "{moving:#?}");
         assert!(line_vertices(&game, crate::render::ATTACK_LINE) > 0);
     }
 
     fn tower_of(game: &Game, owner: usize) -> usize {
-        game.units.iter().position(|u| u.owner == owner && u.role == Role::Tower).unwrap()
+        game.units
+            .iter()
+            .position(|u| u.owner == owner && u.role == Role::Tower)
+            .unwrap()
     }
 
     #[test]
@@ -3401,7 +3814,10 @@ mod tests {
 
         game.handle(Event::RightDown);
         let unit = game.units[tower];
-        let (x, y) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
+        let (x, y) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
         click_at(&mut game, x, y);
         assert_eq!(selected_count(&game), 0);
     }
@@ -3411,15 +3827,27 @@ mod tests {
         let mut game = in_battle();
         let tower = tower_of(&game, 1);
         let (x, z) = (game.camera.x + 6.0, game.camera.z);
-        (game.units[tower].x, game.units[tower].z, game.units[tower].destination) = (x, z, (x, z));
+        (
+            game.units[tower].x,
+            game.units[tower].z,
+            game.units[tower].destination,
+        ) = (x, z, (x, z));
         let id = game.units[tower].id;
         select_first_group(&mut game);
         let unit = game.units[tower];
-        let (px, py) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
+        let (px, py) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
         game.handle(Event::MouseMove(px, py));
         assert!(game.cursor_means_attack());
         click_at(&mut game, px, py);
-        assert!(game.units.iter().filter(|u| u.selected).all(|u| u.target == Some(crate::units::Target::Unit(id))));
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.selected)
+                .all(|u| u.target == Some(crate::units::Target::Unit(id)))
+        );
 
         for _ in 0..4000 {
             game.update(0.05);
@@ -3435,14 +3863,22 @@ mod tests {
     fn a_battle_is_not_won_while_an_enemy_tower_stands_nor_lost_while_ones_own_does() {
         let mut game = in_battle();
         let enemies = all_enemies(&game);
-        for unit in game.units.iter_mut().filter(|u| enemies.contains(&u.owner) && !u.kind.is_building()) {
+        for unit in game
+            .units
+            .iter_mut()
+            .filter(|u| enemies.contains(&u.owner) && !u.kind.is_building())
+        {
             unit.alive = false;
         }
         game.update(0.01);
         assert_eq!(game.outcome, None, "towers still stand");
 
         let mut game = in_battle();
-        for unit in game.units.iter_mut().filter(|u| u.owner == 0 && !u.kind.is_building()) {
+        for unit in game
+            .units
+            .iter_mut()
+            .filter(|u| u.owner == 0 && !u.kind.is_building())
+        {
             unit.alive = false;
         }
         game.update(0.01);
@@ -3451,7 +3887,13 @@ mod tests {
 
     #[test]
     fn each_infantry_button_makes_its_unit_at_once_beside_the_tower_in_the_players_color() {
-        let names = ["Scout", "Light Infantry", "Sniper", "Engineer", "K Infantry"];
+        let names = [
+            "Scout",
+            "Light Infantry",
+            "Sniper",
+            "Engineer",
+            "K Infantry",
+        ];
         let mut game = in_battle();
         for (cell, name) in names.into_iter().enumerate() {
             let before = game.units.len();
@@ -3463,7 +3905,10 @@ mod tests {
             assert_eq!(new.color, game.units[0].color);
             let tower = game.units[tower_of(&game, 0)];
             assert!((new.x - tower.x).hypot(new.z - tower.z) < 8.0, "{new:?}");
-            assert!(game.units[..before].iter().all(|u| u.id != new.id), "its id is its own");
+            assert!(
+                game.units[..before].iter().all(|u| u.id != new.id),
+                "its id is its own"
+            );
         }
     }
 
@@ -3471,7 +3916,10 @@ mod tests {
     fn each_vehicle_button_makes_its_vehicle_and_the_superweapon_comes_after_them() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        for (cell, name) in ["Tank", "Repair Vehicle", "Catapult"].into_iter().enumerate() {
+        for (cell, name) in ["Tank", "Repair Vehicle", "Catapult"]
+            .into_iter()
+            .enumerate()
+        {
             let before = game.units.len();
             click_hud(&mut game, Action::BuildCell(cell));
             assert_eq!(game.units.len(), before + 1);
@@ -3509,7 +3957,10 @@ mod tests {
         let before = game.units.len();
         click_hud(&mut game, Action::BuildCell(1));
         let new = game.units[before];
-        let (x, y) = game.view().project(new.x, new.pick_height(), new.z).unwrap();
+        let (x, y) = game
+            .view()
+            .project(new.x, new.pick_height(), new.z)
+            .unwrap();
         click_at(&mut game, x, y);
         assert!(game.units[before].selected);
         click_at(&mut game, W / 2.0 - 800.0, H / 2.0 + 300.0);
@@ -3520,7 +3971,10 @@ mod tests {
         let index = game.units.len();
         click_hud(game, Action::BuildCell(cell));
         let new = game.units[index];
-        let (x, y) = game.view().project(new.x, new.pick_height(), new.z).unwrap();
+        let (x, y) = game
+            .view()
+            .project(new.x, new.pick_height(), new.z)
+            .unwrap();
         click_at(game, x, y);
         assert!(game.units[index].selected);
         index
@@ -3553,16 +4007,25 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
-        for unit in game.units.iter_mut().filter(|u| u.owner == 1 && !u.kind.is_building()) {
+        for unit in game
+            .units
+            .iter_mut()
+            .filter(|u| u.owner == 1 && !u.kind.is_building())
+        {
             unit.alive = false;
         }
-        game.units.retain(|u| u.owner != 1 || u.role != Role::FlameTower);
+        game.units
+            .retain(|u| u.owner != 1 || u.role != Role::FlameTower);
         let tower = tower_of(&game, 1);
         // Disarmed, tough enough to outlast the player's own fire, and moved into view.
         game.units[tower].cooldown = 1e9;
         game.units[tower].health = 1e9;
         let (x, z) = (game.camera.x + 6.0, game.camera.z);
-        (game.units[tower].x, game.units[tower].z, game.units[tower].destination) = (x, z, (x, z));
+        (
+            game.units[tower].x,
+            game.units[tower].z,
+            game.units[tower].destination,
+        ) = (x, z, (x, z));
         game.update(0.01);
         let id = game.units.iter().find(|u| u.owner == 1).unwrap().id;
         let engineer = select_new(&mut game, 3);
@@ -3570,9 +4033,16 @@ mod tests {
         let enemy = game.units.iter().position(|u| u.id == id).unwrap();
         // On the far side from the player's group, so that nobody stands in the way.
         let (x, z) = (game.units[engineer].x - 5.0, game.units[engineer].z);
-        (game.units[enemy].x, game.units[enemy].z, game.units[enemy].destination) = (x, z, (x, z));
+        (
+            game.units[enemy].x,
+            game.units[enemy].z,
+            game.units[enemy].destination,
+        ) = (x, z, (x, z));
         let unit = game.units[enemy];
-        let (px, py) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
+        let (px, py) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
         click_at(&mut game, px, py);
         for _ in 0..800 {
             game.update(0.05);
@@ -3634,9 +4104,21 @@ mod tests {
     fn tip_text_names_units_under_the_cursor_and_what_buttons_make() {
         let mut game = in_battle();
         let cell = |i: usize| {
-            hud::all_buttons(W, H).into_iter().find(|b| b.action == Action::BuildCell(i)).unwrap()
+            hud::all_buttons(W, H)
+                .into_iter()
+                .find(|b| b.action == Action::BuildCell(i))
+                .unwrap()
         };
-        for (i, name) in ["Scout", "Light Infantry", "Sniper", "Engineer", "K Infantry"].into_iter().enumerate() {
+        for (i, name) in [
+            "Scout",
+            "Light Infantry",
+            "Sniper",
+            "Engineer",
+            "K Infantry",
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let b = cell(i);
             game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
             assert_eq!(game.tip(), Some(name));
@@ -3646,14 +4128,20 @@ mod tests {
         assert_eq!(game.tip(), None, "that cell makes nothing");
 
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        for (i, name) in ["Tank", "Repair Vehicle", "Catapult", "Superweapon"].into_iter().enumerate() {
+        for (i, name) in ["Tank", "Repair Vehicle", "Catapult", "Superweapon"]
+            .into_iter()
+            .enumerate()
+        {
             let b = cell(i);
             game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
             assert_eq!(game.tip(), Some(name));
         }
 
         let tower = game.units[tower_of(&game, 0)];
-        let (x, y) = game.view().project(tower.x, tower.pick_height(), tower.z).unwrap();
+        let (x, y) = game
+            .view()
+            .project(tower.x, tower.pick_height(), tower.z)
+            .unwrap();
         game.handle(Event::MouseMove(x, y));
         assert_eq!(game.tip(), Some("Tower"), "one's own");
         let (_, (x, y)) = enemy_beside_first_group(&mut game);
@@ -3669,7 +4157,10 @@ mod tests {
     fn the_tool_tips_option_turns_tip_text_off() {
         let mut game = in_battle();
         let tower = game.units[tower_of(&game, 0)];
-        let (x, y) = game.view().project(tower.x, tower.pick_height(), tower.z).unwrap();
+        let (x, y) = game
+            .view()
+            .project(tower.x, tower.pick_height(), tower.z)
+            .unwrap();
         game.handle(Event::MouseMove(x, y));
         assert!(game.tip().is_some());
         game.flip(Toggle::ToolTips);
@@ -3683,12 +4174,28 @@ mod tests {
         assert!(everyone > FIRST_GROUP, "including the group off screen");
         game.handle(Event::KeyDown(Key::Char('a')));
         assert_eq!(selected_count(&game), everyone);
-        assert!(game.units.iter().filter(|u| u.selected).all(|u| u.owner == 0), "no enemies");
-        assert!(game.units.iter().filter(|u| u.selected).all(|u| !u.kind.is_building()), "no towers");
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.selected)
+                .all(|u| u.owner == 0),
+            "no enemies"
+        );
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.selected)
+                .all(|u| !u.kind.is_building()),
+            "no towers"
+        );
 
         game.handle(Event::RightDown);
         game.handle(Event::KeyDown(Key::Char('A')));
-        assert_eq!(selected_count(&game), everyone, "with Shift or Caps Lock too");
+        assert_eq!(
+            selected_count(&game),
+            everyone,
+            "with Shift or Caps Lock too"
+        );
     }
 
     #[test]
@@ -3716,17 +4223,34 @@ mod tests {
         assert!(drawn.len() > plain_options + 10_000, "the planet shows");
         let top_left = |v: &&crate::platform::Vertex| v.x < 200.0 && v.y < 100.0;
         let text = [0.93, 0.89, 0.78, 1.0];
-        assert!(drawn.iter().filter(top_left).any(|v| [v.r, v.g, v.b, v.a] == text), "the version shows");
+        assert!(
+            drawn
+                .iter()
+                .filter(top_left)
+                .any(|v| [v.r, v.g, v.b, v.a] == text),
+            "the version shows"
+        );
 
         game.update(5.0);
         let before = game.menu_seconds();
         click(&mut game, Action::SinglePlayer);
-        assert_eq!(game.menu_seconds(), before, "no jump on the way to the submenu");
-        assert!(crate::render::build(&game).len() > plain_options + 10_000, "the planet stays");
+        assert_eq!(
+            game.menu_seconds(),
+            before,
+            "no jump on the way to the submenu"
+        );
+        assert!(
+            crate::render::build(&game).len() > plain_options + 10_000,
+            "the planet stays"
+        );
     }
 
     fn alphas_of(game: &Game, [r, g, b]: [f32; 3]) -> Vec<f32> {
-        crate::render::build(game).iter().filter(|v| [v.r, v.g, v.b] == [r, g, b]).map(|v| v.a).collect()
+        crate::render::build(game)
+            .iter()
+            .filter(|v| [v.r, v.g, v.b] == [r, g, b])
+            .map(|v| v.a)
+            .collect()
     }
 
     #[test]
@@ -3739,13 +4263,21 @@ mod tests {
         assert!(fill.contains(&0.0), "clear at the ends");
         let lines = alphas_of(&game, BANNER_LINE);
         assert!(lines.contains(&1.0), "lines are solid in the middle");
-        assert!(lines.contains(&BANNER_LINE_END_ALPHA), "and semi-opaque at the ends");
+        assert!(
+            lines.contains(&BANNER_LINE_END_ALPHA),
+            "and semi-opaque at the ends"
+        );
         assert!(!lines.contains(&0.0));
 
         let vertices = crate::render::build(&game);
         let b = buttons(game.screen, W, H)[0];
         let at = |x: f32, y: f32| {
-            vertices.iter().find(|v| [v.r, v.g, v.b] == BANNER_BLUE && (v.x - x).abs() < 0.5 && (v.y - y).abs() < 0.5).map(|v| v.a)
+            vertices
+                .iter()
+                .find(|v| {
+                    [v.r, v.g, v.b] == BANNER_BLUE && (v.x - x).abs() < 0.5 && (v.y - y).abs() < 0.5
+                })
+                .map(|v| v.a)
         };
         assert_eq!(at(b.x, b.y), Some(0.0), "the left end");
         assert_eq!(at(b.x + b.w, b.y), Some(0.0), "the right end");
@@ -3769,14 +4301,25 @@ mod tests {
         let mut game = in_battle();
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         let drawn = crate::render::build(&game);
-        let wide = hud::command_buttons(W, H).into_iter().filter(|b| matches!(b.action, Action::HudWide(_))).count();
-        let bands = drawn.iter().filter(|v| [v.r, v.g, v.b] == BANNER_BLUE).count();
+        let wide = hud::command_buttons(W, H)
+            .into_iter()
+            .filter(|b| matches!(b.action, Action::HudWide(_)))
+            .count();
+        let bands = drawn
+            .iter()
+            .filter(|v| [v.r, v.g, v.b] == BANNER_BLUE)
+            .count();
         assert_eq!(bands, wide * 12, "only the wide ones have a band");
     }
 
     #[test]
     fn the_planet_stays_off_the_escape_menu_over_a_battle() {
-        let sand = |game: &Game| crate::render::build(game).iter().filter(|v| v.a == 1.0 && v.r > v.g && v.g > v.b && v.b > 0.09 && v.r < 0.7).count();
+        let sand = |game: &Game| {
+            crate::render::build(game)
+                .iter()
+                .filter(|v| v.a == 1.0 && v.r > v.g && v.g > v.b && v.b > 0.09 && v.r < 0.7)
+                .count()
+        };
         let mut game = in_battle();
         game.handle(Event::KeyDown(Key::Escape));
         assert_eq!(game.screen, Screen::EscapeMenu);
@@ -3822,7 +4365,10 @@ mod tests {
         game.handle(Event::Control(true));
         click_at(&mut game, x, y);
         for unit in game.units.iter().filter(|u| u.selected) {
-            assert_eq!(unit.target, Some(crate::units::Target::Place(place.0, place.1)));
+            assert_eq!(
+                unit.target,
+                Some(crate::units::Target::Place(place.0, place.1))
+            );
         }
         assert_eq!(selected_count(&game), FIRST_GROUP);
         game.update(0.05);
@@ -3832,7 +4378,10 @@ mod tests {
         game.handle(Event::RightDown);
         assert_eq!(line_vertices(&game, crate::render::ATTACK_LINE), 0);
         select_first_group(&mut game);
-        assert!(line_vertices(&game, crate::render::ATTACK_LINE) > 0, "it shows again");
+        assert!(
+            line_vertices(&game, crate::render::ATTACK_LINE) > 0,
+            "it shows again"
+        );
     }
 
     #[test]
@@ -3840,7 +4389,10 @@ mod tests {
         let mut game = in_battle();
         let (friend_index, _) = infantry_on_screen(&game, 7);
         let friend = game.units[friend_index];
-        let (x, y) = game.view().project(friend.x, friend.pick_height(), friend.z).unwrap();
+        let (x, y) = game
+            .view()
+            .project(friend.x, friend.pick_height(), friend.z)
+            .unwrap();
         select_first_group(&mut game);
         game.units[friend_index].selected = false;
         game.handle(Event::Control(true));
@@ -3850,7 +4402,11 @@ mod tests {
         game.handle(Event::Control(false));
         assert!(!game.units[friend_index].selected, "not selected, targeted");
         let forced = crate::units::Target::Forced(friend.id);
-        let on_it = game.units.iter().filter(|u| u.target == Some(forced)).count();
+        let on_it = game
+            .units
+            .iter()
+            .filter(|u| u.target == Some(forced))
+            .count();
         assert!(on_it > 0, "the selected turn on it");
 
         for _ in 0..1200 {
@@ -3861,27 +4417,50 @@ mod tests {
         }
         assert!(!game.units.iter().any(|u| u.id == friend.id), "it dies");
         game.update(0.05);
-        assert!(game.units.iter().all(|u| u.target != Some(forced)), "and everyone is free");
+        assert!(
+            game.units.iter().all(|u| u.target != Some(forced)),
+            "and everyone is free"
+        );
     }
 
     #[test]
     fn a_selected_repair_vehicle_shows_the_heal_cursor_over_a_friendly_vehicle_and_goes_there() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        let tank = game.units.iter().position(|u| u.owner == 0 && u.role == Role::Tank).unwrap();
+        let tank = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .unwrap();
         let fixer = select_new(&mut game, 1);
         game.units[tank].health = 50.0;
         let unit = game.units[tank];
-        let (x, y) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
+        let (x, y) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
         game.handle(Event::MouseMove(x, y));
-        assert_eq!(game.cursor_look(), CursorLook::Heal, "not the attack cursor, and without Control");
-        assert!(line_vertices(&game, crate::render::HEAL_CURSOR) > 0, "and it shows");
+        assert_eq!(
+            game.cursor_look(),
+            CursorLook::Heal,
+            "not the attack cursor, and without Control"
+        );
+        assert!(
+            line_vertices(&game, crate::render::HEAL_CURSOR) > 0,
+            "and it shows"
+        );
         assert_eq!(line_vertices(&game, crate::render::ATTACK_CURSOR), 0);
         click_at(&mut game, x, y);
-        assert_eq!(game.units[fixer].target, Some(crate::units::Target::Unit(unit.id)));
+        assert_eq!(
+            game.units[fixer].target,
+            Some(crate::units::Target::Unit(unit.id))
+        );
         assert!(game.units[fixer].selected, "the selection stands");
         assert!(!game.units[tank].selected);
-        assert!(line_vertices(&game, crate::render::HEAL_LINE) > 0, "a blue line leads there");
+        assert!(
+            line_vertices(&game, crate::render::HEAL_LINE) > 0,
+            "a blue line leads there"
+        );
         assert_eq!(line_vertices(&game, crate::render::ATTACK_LINE), 0);
     }
 
@@ -3891,7 +4470,10 @@ mod tests {
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         let fixer = select_new(&mut game, 1);
         let own = game.units[fixer];
-        let (x, y) = game.view().project(own.x, own.pick_height(), own.z).unwrap();
+        let (x, y) = game
+            .view()
+            .project(own.x, own.pick_height(), own.z)
+            .unwrap();
         game.handle(Event::MouseMove(x, y));
         assert_eq!(game.cursor_look(), CursorLook::Arrow, "itself");
 
@@ -3908,13 +4490,24 @@ mod tests {
     fn with_armed_units_selected_too_only_control_turns_a_friendly_vehicle_red() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        let tank = game.units.iter().position(|u| u.owner == 0 && u.role == Role::Tank).unwrap();
+        let tank = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .unwrap();
         let fixer = select_new(&mut game, 1);
-        let gunner = game.units.iter().position(|u| u.owner == 0 && u.kind == UnitKind::Infantry).unwrap();
+        let gunner = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
+            .unwrap();
         game.units[gunner].selected = true;
         assert!(game.units[fixer].selected);
         let unit = game.units[tank];
-        let (x, y) = game.view().project(unit.x, unit.pick_height(), unit.z).unwrap();
+        let (x, y) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
         game.handle(Event::MouseMove(x, y));
         assert_eq!(game.cursor_look(), CursorLook::Heal);
         game.handle(Event::Control(true));
@@ -3930,7 +4523,11 @@ mod tests {
         for (experience, rank) in [(2, 1), (5, 2), (10, 3)] {
             game.units[0].experience = experience;
             assert_eq!(game.units[0].rank(), rank);
-            assert_eq!(medals(&game), 12 * rank as usize, "two strokes of two triangles each");
+            assert_eq!(
+                medals(&game),
+                12 * rank as usize,
+                "two strokes of two triangles each"
+            );
         }
         game.units[0].experience = 0;
         game.units[enemy].experience = 2;
@@ -3949,7 +4546,12 @@ mod tests {
                 break;
             }
         }
-        assert!(game.units.iter().filter(|u| u.owner == 0).any(|u| u.experience > 0));
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0)
+                .any(|u| u.experience > 0)
+        );
     }
 
     #[test]
@@ -3975,7 +4577,11 @@ mod tests {
         assert_eq!(selected_count(&game), 2);
 
         drag_select(&mut game, from, to);
-        assert_eq!(selected_count(&game), 1, "without Shift a box still replaces");
+        assert_eq!(
+            selected_count(&game),
+            1,
+            "without Shift a box still replaces"
+        );
     }
 
     #[test]
@@ -3991,7 +4597,10 @@ mod tests {
             assert!(game.units[first].selected && game.units[second].selected);
             assert_eq!(selected_count(&game), 2);
         }
-        assert!(game.units.iter().all(|u| !u.is_moving()), "nobody was sent anywhere");
+        assert!(
+            game.units.iter().all(|u| !u.is_moving()),
+            "nobody was sent anywhere"
+        );
     }
 
     #[test]
@@ -4000,7 +4609,11 @@ mod tests {
         select_first_group(&mut game);
 
         // A box around nothing.
-        shift_drag_select(&mut game, (W / 2.0 - 800.0, H / 2.0 + 300.0), (W / 2.0 - 700.0, H / 2.0 + 400.0));
+        shift_drag_select(
+            &mut game,
+            (W / 2.0 - 800.0, H / 2.0 + 300.0),
+            (W / 2.0 - 700.0, H / 2.0 + 400.0),
+        );
         assert_eq!(selected_count(&game), FIRST_GROUP);
 
         // A click on bare ground.
@@ -4015,7 +4628,11 @@ mod tests {
     fn shift_still_lets_go_of_buttons_and_launches_the_superweapon() {
         let mut game = in_menu();
         let (x, y) = {
-            let b = game.buttons().into_iter().find(|b| b.action == Action::SinglePlayer).unwrap();
+            let b = game
+                .buttons()
+                .into_iter()
+                .find(|b| b.action == Action::SinglePlayer)
+                .unwrap();
             (b.x + b.w / 2.0, b.y + b.h / 2.0)
         };
         game.handle(Event::MouseMove(x, y));
@@ -4034,7 +4651,12 @@ mod tests {
     #[test]
     fn a_box_works_dragged_in_any_direction() {
         let (a, b) = around_first_group();
-        for (from, to) in [(a, b), (b, a), ((a.0, b.1), (b.0, a.1)), ((b.0, a.1), (a.0, b.1))] {
+        for (from, to) in [
+            (a, b),
+            (b, a),
+            ((a.0, b.1), (b.0, a.1)),
+            ((b.0, a.1), (a.0, b.1)),
+        ] {
             let mut game = in_battle();
             drag_select(&mut game, from, to);
             assert_eq!(selected_count(&game), FIRST_GROUP);
@@ -4061,7 +4683,9 @@ mod tests {
 
         let view = game.view();
         let unit = game.units[5];
-        let (x, y) = view.project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z).unwrap();
+        let (x, y) = view
+            .project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z)
+            .unwrap();
         click_at(&mut game, x, y);
         assert_eq!(selected_count(&game), 1, "a click picks one");
         assert!(game.units[5].selected);
@@ -4095,13 +4719,22 @@ mod tests {
                 .collect();
             assert!(!sent.is_empty());
             for (i, a) in sent.iter().enumerate() {
-                assert!((a.0 - target.0).hypot(a.1 - target.1) < 5.0, "near the click");
+                assert!(
+                    (a.0 - target.0).hypot(a.1 - target.1) < 5.0,
+                    "near the click"
+                );
                 for b in &sent[i + 1..] {
                     assert!((a.0 - b.0).hypot(a.1 - b.1) > 1.0, "not one point");
                 }
             }
         }
-        assert!(game.units.iter().filter(|u| !u.selected).all(|u| !u.is_moving()), "others stay");
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| !u.selected)
+                .all(|u| !u.is_moving()),
+            "others stay"
+        );
 
         for _ in 0..400 {
             game.update(0.05);
@@ -4167,8 +4800,15 @@ mod tests {
     fn a_click_on_ones_own_unit_selects_it_rather_than_sending_anyone() {
         let mut game = in_battle();
         select_first_group(&mut game);
-        let unit = *game.units.iter().find(|u| u.kind == UnitKind::Infantry).unwrap();
-        let (x, y) = game.view().project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z).unwrap();
+        let unit = *game
+            .units
+            .iter()
+            .find(|u| u.kind == UnitKind::Infantry)
+            .unwrap();
+        let (x, y) = game
+            .view()
+            .project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z)
+            .unwrap();
         click_at(&mut game, x, y);
         assert_eq!(selected_count(&game), 1);
         assert!(game.units.iter().all(|u| !u.is_moving()));
@@ -4207,7 +4847,10 @@ mod tests {
         for _ in 0..400 {
             game.update(0.05);
         }
-        assert!(game.units.iter().all(|u| !u.is_moving()), "they still arrive");
+        assert!(
+            game.units.iter().all(|u| !u.is_moving()),
+            "they still arrive"
+        );
     }
 
     #[test]
@@ -4220,14 +4863,26 @@ mod tests {
         game.handle(Event::MouseMove(W - 1.0, H / 2.0));
 
         game.update(0.2);
-        assert!(game.camera.x > Camera::centered().x, "the edge still scrolls during a drag");
+        assert!(
+            game.camera.x > Camera::centered().x,
+            "the edge still scrolls during a drag"
+        );
         assert_eq!(game.selection_anchor, Some(anchored), "fixed on the map");
         let (west, _, east, _) = game.selection_ground().unwrap();
-        assert_eq!(west, anchored.0, "the start stays where it was on the ground");
+        assert_eq!(
+            west, anchored.0,
+            "the start stays where it was on the ground"
+        );
         let under_cursor = game.view().ground_at(W - 1.0, H / 2.0).unwrap();
-        assert!((east - under_cursor.0).abs() < 0.001, "the other corner stays under the cursor");
+        assert!(
+            (east - under_cursor.0).abs() < 0.001,
+            "the other corner stays under the cursor"
+        );
         let on_screen = game.view().project(anchored.0, 0.0, anchored.1).unwrap();
-        assert!(on_screen.0 < start.0 - 10.0, "on screen the start slid away: {on_screen:?}");
+        assert!(
+            on_screen.0 < start.0 - 10.0,
+            "on screen the start slid away: {on_screen:?}"
+        );
     }
 
     #[test]
@@ -4235,7 +4890,10 @@ mod tests {
         let mut game = in_battle();
         game.handle(Event::Wheel(10.0));
         settle_zoom(&mut game);
-        assert_eq!(game.camera.zoom, 0.5, "the low position shows perspective best");
+        assert_eq!(
+            game.camera.zoom, 0.5,
+            "the low position shows perspective best"
+        );
         game.handle(Event::MouseMove(W / 2.0 - 300.0, H / 2.0 - 300.0));
         game.handle(Event::MouseDown);
         game.handle(Event::MouseMove(W / 2.0 + 300.0, H / 2.0 + 300.0));
@@ -4245,9 +4903,18 @@ mod tests {
         // Clockwise from the far edge: far, right, near, left.
         let (far, right, near, left) = (edges[0], edges[1], edges[2], edges[3]);
         let width = |edge: ((f32, f32), (f32, f32))| (edge.1.0 - edge.0.0).abs();
-        assert!(width(far) < width(near) * 0.95, "the far edge looks shorter");
-        assert!((far.0.1 - far.1.1).abs() < 0.01, "far and near edges stay level");
-        assert!(width(right) > 1.0 && width(left) > 1.0, "the sides lean inward");
+        assert!(
+            width(far) < width(near) * 0.95,
+            "the far edge looks shorter"
+        );
+        assert!(
+            (far.0.1 - far.1.1).abs() < 0.01,
+            "far and near edges stay level"
+        );
+        assert!(
+            width(right) > 1.0 && width(left) > 1.0,
+            "the sides lean inward"
+        );
         for edge in edges {
             assert!((edge.0.0 - edge.1.0).abs() + (edge.0.1 - edge.1.1).abs() > 1.0);
         }
@@ -4286,7 +4953,10 @@ mod tests {
             game.update(0.05);
             for (a, b) in game.selection_edges() {
                 for (x, y) in [a, b] {
-                    assert!((-0.01..=W + 0.01).contains(&x) && (-0.01..=H + 0.01).contains(&y), "{x}, {y}");
+                    assert!(
+                        (-0.01..=W + 0.01).contains(&x) && (-0.01..=H + 0.01).contains(&y),
+                        "{x}, {y}"
+                    );
                 }
             }
         }
@@ -4299,7 +4969,12 @@ mod tests {
         game.handle(Event::MouseMove(from.0, from.1));
         game.handle(Event::MouseDown);
         game.handle(Event::MouseMove(W - 1.0, H / 2.0 + 400.0));
-        let far_x = game.units.iter().filter(|u| u.owner == 0).map(|u| u.x).fold(f32::MIN, f32::max);
+        let far_x = game
+            .units
+            .iter()
+            .filter(|u| u.owner == 0)
+            .map(|u| u.x)
+            .fold(f32::MIN, f32::max);
         for _ in 0..40 {
             game.update(0.05);
             let (sx, _) = game.view().project(far_x, 0.0, game.camera.z).unwrap();
@@ -4310,7 +4985,11 @@ mod tests {
         game.handle(Event::MouseUp);
         let players = game.units.iter().filter(|u| u.is_selectable()).count();
         assert!(players > FIRST_GROUP, "there is a second group");
-        assert_eq!(selected_count(&game), players, "both groups, a screen apart");
+        assert_eq!(
+            selected_count(&game),
+            players,
+            "both groups, a screen apart"
+        );
     }
 
     #[test]
@@ -4324,10 +5003,18 @@ mod tests {
         for _ in 0..200 {
             game.update(0.05);
         }
-        let anchor = game.selection_anchor.expect("the drag survives the start leaving the screen");
-        assert!(game.view().project(anchor.0, 0.0, anchor.1).is_none(), "its start is behind the camera");
+        let anchor = game
+            .selection_anchor
+            .expect("the drag survives the start leaving the screen");
+        assert!(
+            game.view().project(anchor.0, 0.0, anchor.1).is_none(),
+            "its start is behind the camera"
+        );
         assert!(game.selection_ground().is_some());
-        assert!(!game.selection_edges().is_empty(), "the visible part still draws");
+        assert!(
+            !game.selection_edges().is_empty(),
+            "the visible part still draws"
+        );
         game.handle(Event::MouseUp);
         assert!(game.selection_ground().is_none());
     }
@@ -4416,7 +5103,11 @@ mod tests {
         game.handle(Event::MouseMove(from.0, from.1));
         game.handle(Event::MouseDown);
         game.handle(Event::MouseMove(to.0, to.1));
-        let previewed = game.units.iter().filter(|u| game.in_selection_drag(u)).count();
+        let previewed = game
+            .units
+            .iter()
+            .filter(|u| game.in_selection_drag(u))
+            .count();
         assert_eq!(previewed, FIRST_GROUP);
         assert_eq!(selected_count(&game), 0, "not selected until release");
     }
@@ -4476,7 +5167,13 @@ mod tests {
     fn factions_form_a_triangle_of_circles() {
         let game = in_faction_select();
         assert_eq!(game.screen, Screen::FactionSelect);
-        let find = |f| *game.buttons().iter().find(|b| b.action == Action::Faction(f)).unwrap();
+        let find = |f| {
+            *game
+                .buttons()
+                .iter()
+                .find(|b| b.action == Action::Faction(f))
+                .unwrap()
+        };
         let (a, b, c) = (find(Faction::A), find(Faction::H), find(Faction::O));
         assert!(a.y < b.y && b.y == c.y, "A above, B and C level below it");
         assert!(b.x < a.x && a.x < c.x, "A between B and C");
@@ -4490,7 +5187,11 @@ mod tests {
     #[test]
     fn round_buttons_ignore_clicks_in_their_corners() {
         let mut game = in_faction_select();
-        let a = game.buttons().into_iter().find(|b| b.action == Action::Faction(Faction::A)).unwrap();
+        let a = game
+            .buttons()
+            .into_iter()
+            .find(|b| b.action == Action::Faction(Faction::A))
+            .unwrap();
         game.handle(Event::MouseMove(a.x + 2.0, a.y + 2.0));
         assert_eq!(game.hovered(), None);
         game.handle(Event::MouseMove(a.x + a.w / 2.0, a.y + 2.0));
@@ -4505,7 +5206,11 @@ mod tests {
             assert_eq!(game.screen, Screen::Movie(faction));
             assert_eq!(game.confirming, None);
             game.update(MOVIE_SECONDS);
-            assert_eq!(game.screen, Screen::FactionSelect, "returns to the same screen");
+            assert_eq!(
+                game.screen,
+                Screen::FactionSelect,
+                "returns to the same screen"
+            );
             assert_eq!(game.confirming, Some(faction));
         }
     }
@@ -4582,7 +5287,13 @@ mod tests {
     #[test]
     fn faction_screen_and_message_box_fit() {
         use crate::font::text_width;
-        for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+        for (w, h) in [
+            (1280.0, 720.0),
+            (1920.0, 1080.0),
+            (2880.0, 1800.0),
+            (1024.0, 768.0),
+            (5120.0, 1440.0),
+        ] {
             let (mx, my, mw, mh) = modal_rect(w, h);
             assert!(text_width(CONFIRM_MESSAGE) * small_text_px(h) < mw);
             for b in modal_buttons(w, h) {
@@ -4631,20 +5342,29 @@ mod tests {
         assert!(back.x < W / 2.0 && back.y > H / 2.0, "back is bottom left");
         let s = &game.skirmish;
         assert!(s.superweapons && s.living_world && s.crates);
-        assert!(!s.prebuilt_base && !s.fog_of_war, "these two start unchecked");
+        assert!(
+            !s.prebuilt_base && !s.fog_of_war,
+            "these two start unchecked"
+        );
         assert_eq!(s.allies, [Ally::None, Ally::None]);
     }
 
     #[test]
     fn setup_columns_sit_in_the_outer_thirds() {
-        for (w, h) in [(1280.0, 720.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+        for (w, h) in [
+            (1280.0, 720.0),
+            (2880.0, 1800.0),
+            (1024.0, 768.0),
+            (5120.0, 1440.0),
+        ] {
             for b in setup_widgets(w, h) {
-                let right = matches!(
-                    b.action,
-                    Action::MapDropdown | Action::SetDifficulty(_)
-                );
+                let right = matches!(b.action, Action::MapDropdown | Action::SetDifficulty(_));
                 if right {
-                    assert!(b.x >= w * 2.0 / 3.0 - 0.5 && b.x + b.w <= w + 0.5, "{}", b.label);
+                    assert!(
+                        b.x >= w * 2.0 / 3.0 - 0.5 && b.x + b.w <= w + 0.5,
+                        "{}",
+                        b.label
+                    );
                 } else {
                     assert!(b.x >= 0.0 && b.x + b.w <= w / 3.0 + 0.5, "{}", b.label);
                 }
@@ -4656,15 +5376,25 @@ mod tests {
 
     #[test]
     fn setup_slider_ranges_match_the_request() {
-        let range: Vec<_> = setup_sliders(W, H).iter().map(|s| (s.label, s.min, s.max)).collect();
-        assert_eq!(range, [("AI Players", 1, 7), ("Money", 0, 30000), ("Units", 0, 30)]);
+        let range: Vec<_> = setup_sliders(W, H)
+            .iter()
+            .map(|s| (s.label, s.min, s.max))
+            .collect();
+        assert_eq!(
+            range,
+            [("AI Players", 1, 7), ("Money", 0, 30000), ("Units", 0, 30)]
+        );
     }
 
     #[test]
     fn setup_sliders_drag_and_money_snaps_to_500() {
         let mut game = in_setup();
         let money = slider(&game, SliderId::Money);
-        drag(&mut game, SliderId::Money, money.track_x + money.track_w * 0.5);
+        drag(
+            &mut game,
+            SliderId::Money,
+            money.track_x + money.track_w * 0.5,
+        );
         assert_eq!(game.skirmish.money, 15000);
         drag(&mut game, SliderId::Money, money.x_of(12340));
         assert_eq!(game.skirmish.money % 500, 0);
@@ -4688,14 +5418,24 @@ mod tests {
 
     #[test]
     fn the_whole_map_list_fits_the_screen_and_every_map_can_be_played() {
-        for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+        for (w, h) in [
+            (1280.0, 720.0),
+            (1920.0, 1080.0),
+            (2880.0, 1800.0),
+            (1024.0, 768.0),
+            (5120.0, 1440.0),
+        ] {
             let items = map_items(w, h);
             assert_eq!(items.len(), MAPS.len());
             let last = items.last().unwrap();
             assert!(last.y + last.h <= h, "at {w}x{h}");
             for item in &items {
                 let width = crate::font::text_width(item.label) * small_text_px(h);
-                assert!(width + 16.0 * ui_scale(h) < item.w, "{} at {w}x{h}", item.label);
+                assert!(
+                    width + 16.0 * ui_scale(h) < item.w,
+                    "{} at {w}x{h}",
+                    item.label
+                );
             }
         }
         for map in 0..MAPS.len() {
@@ -4719,7 +5459,10 @@ mod tests {
             .into_iter()
             .find(|b| b.action == Action::SetDifficulty(Difficulty::Hard))
             .unwrap();
-        game.handle(Event::MouseMove(hard.x + hard.w / 2.0, hard.y + hard.h / 2.0));
+        game.handle(Event::MouseMove(
+            hard.x + hard.w / 2.0,
+            hard.y + hard.h / 2.0,
+        ));
         assert!(matches!(game.hovered(), Some(Action::SelectMap(_))));
 
         game.handle(Event::MouseMove(1.0, 1.0));
@@ -4731,7 +5474,11 @@ mod tests {
         click_widget(&mut game, Action::MapDropdown);
         game.handle(Event::KeyDown(Key::Escape));
         assert!(!game.dropdown_open);
-        assert_eq!(game.screen, Screen::SkirmishSetup, "escape only closed the list");
+        assert_eq!(
+            game.screen,
+            Screen::SkirmishSetup,
+            "escape only closed the list"
+        );
     }
 
     #[test]
@@ -4750,14 +5497,21 @@ mod tests {
         click_widget(&mut game, Action::Toggle(Toggle::Crates));
         assert!(game.skirmish.fog_of_war);
         assert!(!game.skirmish.crates);
-        assert!(game.skirmish.superweapons && !game.skirmish.prebuilt_base && game.skirmish.living_world);
+        assert!(
+            game.skirmish.superweapons
+                && !game.skirmish.prebuilt_base
+                && game.skirmish.living_world
+        );
     }
 
     #[test]
     fn commander_name_accepts_typing_and_stops_at_the_limit() {
         let mut game = in_setup();
         type_key(&mut game, Key::Char('x'));
-        assert_eq!(game.skirmish.commander, "Commander", "ignored until the field is clicked");
+        assert_eq!(
+            game.skirmish.commander, "Commander",
+            "ignored until the field is clicked"
+        );
 
         click_widget(&mut game, Action::NameField);
         assert!(game.name_focused);
@@ -4786,7 +5540,11 @@ mod tests {
         click_widget(&mut game, Action::NameField);
         type_key(&mut game, Key::Escape);
         assert!(!game.name_focused);
-        assert_eq!(game.screen, Screen::SkirmishSetup, "escape did not leave the screen");
+        assert_eq!(
+            game.screen,
+            Screen::SkirmishSetup,
+            "escape did not leave the screen"
+        );
 
         click_widget(&mut game, Action::NameField);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
@@ -4809,7 +5567,9 @@ mod tests {
     fn a_side_cannot_befriend_the_same_mini_faction_twice() {
         let mut game = in_setup();
         // Every combination reachable by clicking either slot stays free of duplicates.
-        for click_slot in [0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 0] {
+        for click_slot in [
+            0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 0,
+        ] {
             click_widget(&mut game, Action::CycleAlly(click_slot));
             let [left, right] = game.skirmish.allies;
             assert!(left == Ally::None || left != right, "{left:?} twice");
@@ -4821,7 +5581,11 @@ mod tests {
 
         let mut allies = [Ally::S, Ally::F];
         cycle_ally(&mut allies, 1);
-        assert_eq!(allies, [Ally::S, Ally::None], "S is skipped, none is still allowed");
+        assert_eq!(
+            allies,
+            [Ally::S, Ally::None],
+            "S is skipped, none is still allowed"
+        );
 
         let mut allies = [Ally::None, Ally::None];
         cycle_ally(&mut allies, 0);
@@ -4896,7 +5660,10 @@ mod tests {
             let total = colors.len();
             colors.dedup_by(|a, b| a == b);
             for (i, a) in colors.iter().enumerate() {
-                assert!(!colors[i + 1..].contains(a), "{a:?} is held twice at {count}");
+                assert!(
+                    !colors[i + 1..].contains(a),
+                    "{a:?} is held twice at {count}"
+                );
             }
             assert_eq!(colors.len(), total);
         }
@@ -4934,7 +5701,10 @@ mod tests {
     fn open_color_bar_blocks_other_controls_and_escape_closes_it() {
         let mut game = in_setup();
         click_widget(&mut game, Action::ColorBar);
-        let play = setup_widgets(W, H).into_iter().find(|b| b.action == Action::StartBattle).unwrap();
+        let play = setup_widgets(W, H)
+            .into_iter()
+            .find(|b| b.action == Action::StartBattle)
+            .unwrap();
         game.handle(Event::MouseMove(play.x + 1.0, play.y + 1.0));
         assert_eq!(game.hovered(), None);
         let ai = slider(&game, SliderId::AiPlayers);
@@ -4994,14 +5764,33 @@ mod tests {
     #[test]
     fn opponent_rows_fit_the_middle_third_and_above_nothing() {
         use crate::font::text_width;
-        for (w, h) in [(1280.0, 720.0), (1440.0, 900.0), (1920.0, 1080.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+        for (w, h) in [
+            (1280.0, 720.0),
+            (1440.0, 900.0),
+            (1920.0, 1080.0),
+            (2880.0, 1800.0),
+            (1024.0, 768.0),
+            (5120.0, 1440.0),
+        ] {
             let px = small_text_px(h);
             for b in opponent_widgets(OPPONENT_SLOTS, w, h) {
-                assert!(b.x >= w / 3.0 && b.x + b.w <= w * 2.0 / 3.0, "{} at {w}x{h}", b.label);
+                assert!(
+                    b.x >= w / 3.0 && b.x + b.w <= w * 2.0 / 3.0,
+                    "{} at {w}x{h}",
+                    b.label
+                );
                 assert!(b.y + b.h < buttons(Screen::SkirmishSetup, w, h)[0].y);
                 if let Action::CycleOpponentKind(_) = b.action {
-                    for kind in [OpponentKind::Defensive, OpponentKind::Competent, OpponentKind::Attacker] {
-                        assert!(text_width(kind.label()) * px < b.w, "{} at {h}", kind.label());
+                    for kind in [
+                        OpponentKind::Defensive,
+                        OpponentKind::Competent,
+                        OpponentKind::Attacker,
+                    ] {
+                        assert!(
+                            text_width(kind.label()) * px < b.w,
+                            "{} at {h}",
+                            kind.label()
+                        );
                     }
                 }
             }
@@ -5009,8 +5798,13 @@ mod tests {
             for (i, a) in all.iter().enumerate() {
                 for b in &all[i + 1..] {
                     assert!(
-                        a.x + a.w <= b.x + 0.01 || b.x + b.w <= a.x + 0.01 || a.y + a.h <= b.y + 0.01 || b.y + b.h <= a.y + 0.01,
-                        "{:?} overlaps {:?} at {w}x{h}", a.action, b.action
+                        a.x + a.w <= b.x + 0.01
+                            || b.x + b.w <= a.x + 0.01
+                            || a.y + a.h <= b.y + 0.01
+                            || b.y + b.h <= a.y + 0.01,
+                        "{:?} overlaps {:?} at {w}x{h}",
+                        a.action,
+                        b.action
                     );
                 }
             }
@@ -5028,7 +5822,10 @@ mod tests {
         );
         assert!(faction.y + faction.h < bar.y);
         assert!(bar.y + bar.h <= play.y);
-        assert!(play.y - (bar.y + bar.h) < 30.0 * ui_scale(H), "play is just under the bar");
+        assert!(
+            play.y - (bar.y + bar.h) < 30.0 * ui_scale(H),
+            "play is just under the bar"
+        );
     }
 
     fn in_battle() -> Game {
@@ -5155,12 +5952,19 @@ mod tests {
         // The east corner of the diamond.
         click_at(&mut game, x + size - 1.0, y + size / 2.0);
         let expected = battlefield::minimap_to_world(rect, x + size - 1.0, y + size / 2.0).unwrap();
-        assert!((game.camera.x - expected.0).abs() < 1.0, "went east: {}", game.camera.x);
+        assert!(
+            (game.camera.x - expected.0).abs() < 1.0,
+            "went east: {}",
+            game.camera.x
+        );
         assert!(game.camera.x > Camera::centered().x);
 
         click_at(&mut game, x + size / 2.0, y + size / 2.0);
         assert!((game.camera.x - Camera::centered().x).abs() < 0.01);
-        assert!((game.camera.z - Camera::centered().z).abs() < 0.01, "the middle is the map's middle");
+        assert!(
+            (game.camera.z - Camera::centered().z).abs() < 0.01,
+            "the middle is the map's middle"
+        );
     }
 
     #[test]
@@ -5174,12 +5978,21 @@ mod tests {
         let start = at(0.5, 0.3);
         game.handle(Event::MouseMove(start.0, start.1));
         game.handle(Event::MouseDown);
-        assert!((game.camera.z - world(start).1).abs() < 0.01, "moves on press");
+        assert!(
+            (game.camera.z - world(start).1).abs() < 0.01,
+            "moves on press"
+        );
 
         let next = at(0.6, 0.45);
         game.handle(Event::MouseMove(next.0, next.1));
-        assert!((game.camera.x - world(next).0).abs() < 0.01, "follows the drag");
-        assert!((game.camera.z - world(next).1).abs() < 0.01, "follows the drag");
+        assert!(
+            (game.camera.x - world(next).0).abs() < 0.01,
+            "follows the drag"
+        );
+        assert!(
+            (game.camera.z - world(next).1).abs() < 0.01,
+            "follows the drag"
+        );
 
         game.handle(Event::MouseUp);
         let released = game.camera;
@@ -5198,8 +6011,12 @@ mod tests {
 
         // Off the right edge of the screen, past the minimap's edge.
         game.handle(Event::MouseMove(W - 1.0, y + size / 2.0));
-        let (east_x, _) = battlefield::minimap_to_world(rect, x + size - 0.01, y + size / 2.0).unwrap();
-        assert!((game.camera.x - east_x).abs() < 0.01, "holds to the minimap's edge");
+        let (east_x, _) =
+            battlefield::minimap_to_world(rect, x + size - 0.01, y + size / 2.0).unwrap();
+        assert!(
+            (game.camera.x - east_x).abs() < 0.01,
+            "holds to the minimap's edge"
+        );
         let held = game.camera;
         game.update(0.5);
         assert_eq!(game.camera, held, "edge scrolling waits for the release");
@@ -5240,7 +6057,10 @@ mod tests {
         let before = game.camera;
         let mut landed = game.camera;
         landed.look_at(before.x, before.z);
-        assert!((landed.x - before.x).abs() < 0.01 && (landed.z - before.z).abs() < 0.01, "already on the map");
+        assert!(
+            (landed.x - before.x).abs() < 0.01 && (landed.z - before.z).abs() < 0.01,
+            "already on the map"
+        );
     }
 
     #[test]
@@ -5259,9 +6079,18 @@ mod tests {
 
     #[test]
     fn the_battle_minimap_does_not_touch_the_scroll_edges() {
-        for (w, h) in [(1280.0, 720.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+        for (w, h) in [
+            (1280.0, 720.0),
+            (2880.0, 1800.0),
+            (1024.0, 768.0),
+            (5120.0, 1440.0),
+        ] {
             let (x, y, size) = hud::minimap_rect(w, h);
-            assert_eq!(battlefield::edge_direction((x + size - 1.0, y), w, h), (0.0, 0.0), "at {w}x{h}");
+            assert_eq!(
+                battlefield::edge_direction((x + size - 1.0, y), w, h),
+                (0.0, 0.0),
+                "at {w}x{h}"
+            );
         }
     }
 
@@ -5294,22 +6123,44 @@ mod tests {
     #[test]
     fn setup_content_fits_and_does_not_collide() {
         use crate::font::text_width;
-        for (w, h) in [(1280.0, 720.0), (1440.0, 900.0), (1920.0, 1080.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+        for (w, h) in [
+            (1280.0, 720.0),
+            (1440.0, 900.0),
+            (1920.0, 1080.0),
+            (2880.0, 1800.0),
+            (1024.0, 768.0),
+            (5120.0, 1440.0),
+        ] {
             let px = small_text_px(h);
             let widest = "W".repeat(COMMANDER_NAME_MAX);
             let all = setup_widgets(w, h);
             let name = all.iter().find(|b| b.action == Action::NameField).unwrap();
             assert!(text_width(&widest) * px < name.w, "name at {h}");
-            for b in all.iter().filter(|b| matches!(b.action, Action::SetDifficulty(_))) {
+            for b in all
+                .iter()
+                .filter(|b| matches!(b.action, Action::SetDifficulty(_)))
+            {
                 let circle = 30.0 * ui_scale(h);
-                assert!(circle + text_width(b.label) * px <= b.w, "{} at {h}", b.label);
+                assert!(
+                    circle + text_width(b.label) * px <= b.w,
+                    "{} at {h}",
+                    b.label
+                );
             }
             for s in setup_sliders(w, h) {
                 let value = text_width("30000") * px;
-                assert!(s.label_x + text_width(s.label) * px < s.value_right - value, "{} at {h}", s.label);
+                assert!(
+                    s.label_x + text_width(s.label) * px < s.value_right - value,
+                    "{} at {h}",
+                    s.label
+                );
             }
             for b in setup_checkboxes(w, h) {
-                assert!(text_width(b.label) * px < b.w - checkbox_size(h), "{} at {h}", b.label);
+                assert!(
+                    text_width(b.label) * px < b.w - checkbox_size(h),
+                    "{} at {h}",
+                    b.label
+                );
             }
             let mut rows: Vec<_> = all.clone();
             rows.extend(setup_checkboxes(w, h));
@@ -5329,13 +6180,25 @@ mod tests {
     #[test]
     fn options_content_fits_at_common_resolutions() {
         use crate::font::text_width;
-        for (w, h) in [(1280.0, 720.0), (1440.0, 900.0), (1920.0, 1080.0), (2560.0, 1600.0), (2880.0, 1800.0), (1024.0, 768.0), (5120.0, 1440.0)] {
+        for (w, h) in [
+            (1280.0, 720.0),
+            (1440.0, 900.0),
+            (1920.0, 1080.0),
+            (2560.0, 1600.0),
+            (2880.0, 1800.0),
+            (1024.0, 768.0),
+            (5120.0, 1440.0),
+        ] {
             let px = small_text_px(h);
             let (panel_x, panel_y, panel_w, panel_h) = options_panel(w, h);
             assert!(panel_x + panel_w <= w);
             for tab in TABS.iter().map(|t| t.0) {
                 for s in sliders(tab, w, h) {
-                    assert!(s.label_x + text_width(s.label) * px < s.track_x, "{} at {h}", s.label);
+                    assert!(
+                        s.label_x + text_width(s.label) * px < s.track_x,
+                        "{} at {h}",
+                        s.label
+                    );
                     assert!(s.track_x + s.track_w < panel_x + panel_w);
                     assert!(s.cy < panel_y + panel_h);
                 }
@@ -5349,22 +6212,42 @@ mod tests {
             }
             for b in tab_buttons(w, h) {
                 assert!(text_width(b.label) * px < b.w, "{} at {h}", b.label);
-                assert!(b.y + b.h <= panel_y + panel_h + 0.5, "tabs fit the panel height");
+                assert!(
+                    b.y + b.h <= panel_y + panel_h + 0.5,
+                    "tabs fit the panel height"
+                );
             }
         }
     }
 
     #[test]
     fn layout_stays_on_screen_across_aspect_ratios() {
-        for (w, h) in [(1280.0, 720.0), (1920.0, 1080.0), (2880.0, 1800.0), (5120.0, 1440.0), (1024.0, 768.0)] {
-            for screen in [Screen::MainMenu, Screen::SinglePlayerMenu, Screen::Options, Screen::Credits, Screen::EscapeMenu, Screen::FactionSelect, Screen::SkirmishSetup] {
+        for (w, h) in [
+            (1280.0, 720.0),
+            (1920.0, 1080.0),
+            (2880.0, 1800.0),
+            (5120.0, 1440.0),
+            (1024.0, 768.0),
+        ] {
+            for screen in [
+                Screen::MainMenu,
+                Screen::SinglePlayerMenu,
+                Screen::Options,
+                Screen::Credits,
+                Screen::EscapeMenu,
+                Screen::FactionSelect,
+                Screen::SkirmishSetup,
+            ] {
                 let all = buttons(screen, w, h);
                 for b in &all {
                     assert!(b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= w && b.y + b.h <= h);
                 }
                 for (i, a) in all.iter().enumerate() {
                     for b in &all[i + 1..] {
-                        let apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+                        let apart = a.x + a.w <= b.x
+                            || b.x + b.w <= a.x
+                            || a.y + a.h <= b.y
+                            || b.y + b.h <= a.y;
                         assert!(apart, "{} overlaps {}", a.label, b.label);
                     }
                 }

@@ -63,7 +63,12 @@ pub fn minimap_rect(width: f32, height: f32) -> (f32, f32, f32) {
 pub fn gauge(width: f32, height: f32) -> (f32, f32, f32, f32) {
     let s = ui_scale(height);
     let (x, y, size) = minimap_rect(width, height);
-    (x + size / 2.0, y + size / 2.0, GAUGE_INNER * s, GAUGE_OUTER * s)
+    (
+        x + size / 2.0,
+        y + size / 2.0,
+        GAUGE_INNER * s,
+        GAUGE_OUTER * s,
+    )
 }
 
 /// A point on a circle, by degrees clockwise from 12 o'clock.
@@ -83,7 +88,10 @@ pub fn energy_label_center(width: f32, height: f32) -> (f32, f32) {
 /// end at 12 o'clock.
 pub fn money_anchor(width: f32, height: f32) -> (f32, f32) {
     let s = ui_scale(height);
-    (width - MARGIN * s, (MARGIN + (GAUGE_OUTER - MINIMAP / 2.0) / 2.0) * s)
+    (
+        width - MARGIN * s,
+        (MARGIN + (GAUGE_OUTER - MINIMAP / 2.0) / 2.0) * s,
+    )
 }
 
 /// The row of small square buttons under the minimap, then the row of two wide ones.
@@ -171,7 +179,9 @@ pub fn covers(x: f32, y: f32, width: f32, height: f32) -> bool {
     let tabs = build_tabs(width, height);
     let tabs_bottom = tabs.last().map_or(0.0, |t| t.y + t.h);
     let in_panel = x >= panel_x(width, height) && x <= width - MARGIN * s && y <= bottom;
-    let in_tabs = tabs.first().is_some_and(|t| x >= t.x && x < t.x + t.w && y >= t.y && y <= tabs_bottom);
+    let in_tabs = tabs
+        .first()
+        .is_some_and(|t| x >= t.x && x < t.x + t.w && y >= t.y && y <= tabs_bottom);
     in_panel || in_tabs
 }
 
@@ -225,10 +235,20 @@ mod tests {
             let buttons = command_buttons(w, h);
             let (small, wide) = buttons.split_at(SMALL_COUNT);
             let cells = grid_cells(w, h);
-            for (name, row) in [("small", small), ("wide", wide), ("grid", &cells[..GRID_COLUMNS])] {
+            for (name, row) in [
+                ("small", small),
+                ("wide", wide),
+                ("grid", &cells[..GRID_COLUMNS]),
+            ] {
                 let last = row.last().unwrap();
-                assert!(close(row[0].x, left), "{name} starts with the gauge at {w}x{h}");
-                assert!(close(last.x + last.w, right), "{name} ends with the minimap at {w}x{h}");
+                assert!(
+                    close(row[0].x, left),
+                    "{name} starts with the gauge at {w}x{h}"
+                );
+                assert!(
+                    close(last.x + last.w, right),
+                    "{name} ends with the minimap at {w}x{h}"
+                );
             }
         }
     }
@@ -242,9 +262,18 @@ mod tests {
             let buttons = command_buttons(w, h);
             let cells = grid_cells(w, h);
             assert!(my + size <= buttons[0].y, "minimap above the small row");
-            assert!(gauge_bottom <= buttons[0].y, "gauge above the small row at {w}x{h}");
-            assert!(buttons[0].y + buttons[0].h <= buttons[SMALL_COUNT].y, "small row above wide row");
-            assert!(buttons[SMALL_COUNT].y + buttons[SMALL_COUNT].h <= cells[0].y, "wide row above grid");
+            assert!(
+                gauge_bottom <= buttons[0].y,
+                "gauge above the small row at {w}x{h}"
+            );
+            assert!(
+                buttons[0].y + buttons[0].h <= buttons[SMALL_COUNT].y,
+                "small row above wide row"
+            );
+            assert!(
+                buttons[SMALL_COUNT].y + buttons[SMALL_COUNT].h <= cells[0].y,
+                "wide row above grid"
+            );
             let last = cells.last().unwrap();
             assert!(last.y + last.h <= h, "grid ends on screen at {w}x{h}");
             assert!(mx + size <= w);
@@ -256,7 +285,10 @@ mod tests {
         let buttons = command_buttons(W, H);
         assert_eq!(buttons.len(), 7);
         assert!(close(buttons[0].w, buttons[0].h), "small ones are square");
-        assert!(buttons[SMALL_COUNT].w > buttons[SMALL_COUNT].h, "the other two are wide");
+        assert!(
+            buttons[SMALL_COUNT].w > buttons[SMALL_COUNT].h,
+            "the other two are wide"
+        );
 
         let cells = grid_cells(W, H);
         assert_eq!(cells.len(), 15);
@@ -281,7 +313,10 @@ mod tests {
     fn the_gauge_clears_the_minimap_corners_and_runs_from_7_to_12_oclock() {
         let (cx, cy, inner, _) = gauge(W, H);
         let (x, y, _) = minimap_rect(W, H);
-        assert!((x - cx).hypot(y - cy) <= inner, "top left corner stays inside the gauge");
+        assert!(
+            (x - cx).hypot(y - cy) <= inner,
+            "top left corner stays inside the gauge"
+        );
 
         let start = clock_point(cx, cy, inner, GAUGE_START_DEGREES);
         assert!(start.0 < cx && start.1 > cy, "7 o'clock is lower left");
@@ -296,11 +331,17 @@ mod tests {
             let (cx, _, inner, _) = gauge(w, h);
             let (right, y) = money_anchor(w, h);
             let (_, my, size) = minimap_rect(w, h);
-            assert!(right - text_width("$30000") * px > cx, "money clears the gauge at {w}x{h}");
+            assert!(
+                right - text_width("$30000") * px > cx,
+                "money clears the gauge at {w}x{h}"
+            );
             assert!(y < my, "money is above the minimap");
             let (lx, _) = energy_label_center(w, h);
             let half = text_width("65") * px / 2.0;
-            assert!(lx - half > cx - inner && lx + half < cx - size / 2.0, "energy fits at {w}x{h}");
+            assert!(
+                lx - half > cx - inner && lx + half < cx - size / 2.0,
+                "energy fits at {w}x{h}"
+            );
         }
     }
 
@@ -342,7 +383,11 @@ mod tests {
         for (w, h) in SCREENS {
             let px = chat_text_px(h);
             assert!(px <= small_text_px(h));
-            let widest = CHAT_MESSAGES.iter().map(|m| text_width(m)).fold(0.0, f32::max) * px;
+            let widest = CHAT_MESSAGES
+                .iter()
+                .map(|m| text_width(m))
+                .fold(0.0, f32::max)
+                * px;
             let (x, y) = chat_line(CHAT_LINES - 1, h);
             assert!(x + widest < build_tabs(w, h)[0].x, "at {w}x{h}");
             assert!(y < h / 2.0);

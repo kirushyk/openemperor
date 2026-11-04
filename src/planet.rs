@@ -83,7 +83,11 @@ fn mix(a: f32, b: f32, t: f32) -> f32 {
 
 fn mix_colors(from: [f32; 3], to: [f32; 3], t: f32) -> [f32; 3] {
     let t = t.clamp(0.0, 1.0);
-    [mix(from[0], to[0], t), mix(from[1], to[1], t), mix(from[2], to[2], t)]
+    [
+        mix(from[0], to[0], t),
+        mix(from[1], to[1], t),
+        mix(from[2], to[2], t),
+    ]
 }
 
 /// Smooth 3D value noise from 0 to 1. Sampling in 3D means the surface has no seam.
@@ -96,8 +100,16 @@ fn value_noise(p: [f32; 3], seed: u32) -> f32 {
     });
     let at = |dx, dy, dz| lattice(ix + dx, iy + dy, iz + dz, seed);
     mix(
-        mix(mix(at(0, 0, 0), at(1, 0, 0), fx), mix(at(0, 1, 0), at(1, 1, 0), fx), fy),
-        mix(mix(at(0, 0, 1), at(1, 0, 1), fx), mix(at(0, 1, 1), at(1, 1, 1), fx), fy),
+        mix(
+            mix(at(0, 0, 0), at(1, 0, 0), fx),
+            mix(at(0, 1, 0), at(1, 1, 0), fx),
+            fy,
+        ),
+        mix(
+            mix(at(0, 0, 1), at(1, 0, 1), fx),
+            mix(at(0, 1, 1), at(1, 1, 1), fx),
+            fy,
+        ),
         fz,
     )
 }
@@ -169,7 +181,13 @@ fn build_sphere(
             points.push(point);
         }
     }
-    Mesh { rows, cols, points, colors, alphas }
+    Mesh {
+        rows,
+        cols,
+        points,
+        colors,
+        alphas,
+    }
 }
 
 /// Meshes per faction: detailed, then coarse. Built once, on first use.
@@ -195,12 +213,30 @@ pub fn draw_sandy(out: &mut Vec<Vertex>, cx: f32, cy: f32, radius: f32, seconds:
     static CLOUDS: OnceLock<Mesh> = OnceLock::new();
     let surface = SURFACE.get_or_init(|| build_sphere(72, 144, sandy_color, |_| 1.0));
     let clouds = CLOUDS.get_or_init(|| build_sphere(72, 144, |_| CLOUD_COLOR, cloud_alpha));
-    draw_mesh(out, surface, (cx, cy, radius), seconds * SANDY_SPIN, AXIAL_TILT);
-    draw_mesh(out, clouds, (cx, cy, radius * CLOUD_HEIGHT), seconds * CLOUD_SPIN, CLOUD_TILT);
+    draw_mesh(
+        out,
+        surface,
+        (cx, cy, radius),
+        seconds * SANDY_SPIN,
+        AXIAL_TILT,
+    );
+    draw_mesh(
+        out,
+        clouds,
+        (cx, cy, radius * CLOUD_HEIGHT),
+        seconds * CLOUD_SPIN,
+        CLOUD_TILT,
+    );
 }
 
 /// Appends the side of a sphere facing the viewer, skipping parts that are fully see-through.
-fn draw_mesh(out: &mut Vec<Vertex>, mesh: &Mesh, (cx, cy, radius): (f32, f32, f32), spin: f32, tilt: f32) {
+fn draw_mesh(
+    out: &mut Vec<Vertex>,
+    mesh: &Mesh,
+    (cx, cy, radius): (f32, f32, f32),
+    spin: f32,
+    tilt: f32,
+) {
     let (spin_sin, spin_cos) = spin.sin_cos();
     let (tilt_sin, tilt_cos) = tilt.sin_cos();
 
@@ -267,28 +303,42 @@ mod tests {
     #[test]
     fn the_sandy_planet_is_sandy_with_some_clear_sky_and_some_cloud() {
         let vertices = sandy(0.0);
-        let (ground, clouds): (Vec<Vertex>, Vec<Vertex>) = vertices.iter().partition(|v| v.a == 1.0);
+        let (ground, clouds): (Vec<Vertex>, Vec<Vertex>) =
+            vertices.iter().partition(|v| v.a == 1.0);
         assert!(!ground.is_empty() && !clouds.is_empty());
         let [r, g, b] = average_color(&ground);
         assert!(r > g && g > b, "sandy: {:?}", [r, g, b]);
-        assert!(clouds.iter().all(|v| v.a <= CLOUD_ALPHA), "clouds stay see-through");
+        assert!(
+            clouds.iter().all(|v| v.a <= CLOUD_ALPHA),
+            "clouds stay see-through"
+        );
         assert!(clouds.iter().any(|v| v.a > 0.3), "but can be seen");
         assert!(clouds.len() < ground.len(), "with gaps between them");
     }
 
     #[test]
     fn the_sandy_planet_turns_very_slowly_and_its_clouds_a_bit_differently() {
-        const { assert!(SANDY_SPIN < SPIN_SPEED / 10.0, "much slower than the faction planets") };
+        const {
+            assert!(
+                SANDY_SPIN < SPIN_SPEED / 10.0,
+                "much slower than the faction planets"
+            )
+        };
         assert_ne!(CLOUD_SPIN, SANDY_SPIN);
         assert_ne!(CLOUD_TILT, AXIAL_TILT);
         assert_ne!(sandy(0.0), sandy(30.0));
         assert_eq!(sandy(12.0), sandy(12.0));
 
-        let ground = |vertices: Vec<Vertex>| -> Vec<Vertex> { vertices.into_iter().filter(|v| v.a == 1.0).collect() };
+        let ground = |vertices: Vec<Vertex>| -> Vec<Vertex> {
+            vertices.into_iter().filter(|v| v.a == 1.0).collect()
+        };
         let early = ground(sandy(0.0))[0];
         let later = ground(sandy(1.0))[0];
         let moved = (early.x - later.x).hypot(early.y - later.y);
-        assert!(moved < 400.0 * 0.05, "a tiny part of the way in a second: {moved}");
+        assert!(
+            moved < 400.0 * 0.05,
+            "a tiny part of the way in a second: {moved}"
+        );
     }
 
     #[test]
@@ -301,7 +351,10 @@ mod tests {
                 .map(|v| (v.x - 500.0).hypot(v.y - 400.0))
                 .fold(0.0, f32::max);
             assert!(farthest <= radius + 0.01, "outside the circle: {farthest}");
-            assert!(farthest >= radius * 0.98, "does not reach the rim: {farthest}");
+            assert!(
+                farthest >= radius * 0.98,
+                "does not reach the rim: {farthest}"
+            );
         }
     }
 
@@ -310,7 +363,10 @@ mod tests {
         let mesh = &meshes()[0][0];
         let all_quads = mesh.rows * mesh.cols;
         let quads = drawn(Faction::A, 200.0, 0.0).len() / 6;
-        assert!(quads > all_quads / 3 && quads < all_quads * 3 / 4, "{quads} of {all_quads}");
+        assert!(
+            quads > all_quads / 3 && quads < all_quads * 3 / 4,
+            "{quads} of {all_quads}"
+        );
     }
 
     #[test]
@@ -334,13 +390,20 @@ mod tests {
             let [deep, _, land] = palette(faction);
             let colors = &meshes()[faction as usize][0].colors;
             let near = |c: &[f32; 3], target: [f32; 3]| {
-                (c[0] - target[0]).abs() + (c[1] - target[1]).abs() + (c[2] - target[2]).abs() < 0.25
+                (c[0] - target[0]).abs() + (c[1] - target[1]).abs() + (c[2] - target[2]).abs()
+                    < 0.25
             };
             let sea = colors.iter().filter(|c| near(c, deep)).count();
             let ground = colors.iter().filter(|c| near(c, land)).count();
             let total = colors.len();
-            assert!(sea > total / 50, "{faction:?}: too little sea, {sea} of {total}");
-            assert!(ground > total / 50, "{faction:?}: too little land, {ground} of {total}");
+            assert!(
+                sea > total / 50,
+                "{faction:?}: too little sea, {sea} of {total}"
+            );
+            assert!(
+                ground > total / 50,
+                "{faction:?}: too little land, {ground} of {total}"
+            );
         }
     }
 
@@ -349,9 +412,15 @@ mod tests {
         let blue = average_color(&drawn(Faction::A, 200.0, 0.0));
         let red = average_color(&drawn(Faction::H, 200.0, 0.0));
         let cyan = average_color(&drawn(Faction::O, 200.0, 0.0));
-        assert!(blue[2] > blue[0] && blue[2] > blue[1], "A is blue: {blue:?}");
+        assert!(
+            blue[2] > blue[0] && blue[2] > blue[1],
+            "A is blue: {blue:?}"
+        );
         assert!(red[0] > red[1] && red[0] > red[2], "H is red: {red:?}");
-        assert!(cyan[1] > cyan[0] && cyan[2] > cyan[0], "O is cyan: {cyan:?}");
+        assert!(
+            cyan[1] > cyan[0] && cyan[2] > cyan[0],
+            "O is cyan: {cyan:?}"
+        );
     }
 
     #[test]
@@ -359,7 +428,10 @@ mod tests {
         let mesh = &meshes()[1][0];
         let stride = mesh.cols + 1;
         for row in 0..=mesh.rows {
-            let (first, last) = (mesh.colors[row * stride], mesh.colors[row * stride + mesh.cols]);
+            let (first, last) = (
+                mesh.colors[row * stride],
+                mesh.colors[row * stride + mesh.cols],
+            );
             for i in 0..3 {
                 assert!((first[i] - last[i]).abs() < 0.02, "row {row}");
             }

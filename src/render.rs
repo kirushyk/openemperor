@@ -342,6 +342,7 @@ fn draw_battle_stats(canvas: &mut Canvas, game: &Game) {
     let rows = [
         ("Infantry", game.killed.infantry, game.lost.infantry),
         ("Vehicles", game.killed.vehicles, game.lost.vehicles),
+        ("Aircraft", game.killed.aircraft, game.lost.aircraft),
         ("Buildings", game.killed.buildings, game.lost.buildings),
     ];
     for (i, (name, killed, lost)) in rows.into_iter().enumerate() {
@@ -385,6 +386,7 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
 }
 
 /// Units and ruins as simple boxes, farthest first, shaded per face so they read as solid.
+/// Whatever flies goes over all of that, with its shadow and ring down on the ground below.
 fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     enum Object<'a> {
         Unit(&'a Unit),
@@ -397,13 +399,22 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     let view = battlefield::View::new(game.camera, game.width, game.height);
     draw_poison(canvas, game, &view);
     draw_order_lines(canvas, game, &view);
-    let mut order: Vec<Object> = game.units.iter().map(Object::Unit).collect();
+    let is_marked = |unit: &Unit| unit.selected || game.in_selection_drag(unit);
+    let mut flying: Vec<&Unit> = game.units.iter().filter(|u| u.kind.flies()).collect();
+    flying.sort_by(|a, b| a.z.total_cmp(&b.z));
+    for unit in &flying {
+        draw_shadow(canvas, &view, (unit.x, unit.y, unit.z), unit.kind.radius());
+        if is_marked(unit) {
+            draw_selected_ring(canvas, game, &view, unit);
+        }
+    }
+    let mut order: Vec<Object> = game.units.iter().filter(|u| !u.kind.flies()).map(Object::Unit).collect();
     order.extend(battlefield::terrain(game.battle_map).ruins().iter().map(Object::Ruin));
     order.sort_by(|a, b| z_of(a).total_cmp(&z_of(b)));
     for object in order {
         match object {
             Object::Unit(unit) => {
-                if unit.selected || game.in_selection_drag(unit) {
+                if is_marked(unit) {
                     draw_selected_ring(canvas, game, &view, unit);
                 }
                 draw_unit(canvas, game, &view, unit);
@@ -416,6 +427,15 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             }
         }
     }
+    for unit in flying {
+        draw_unit(canvas, game, &view, unit);
+        draw_health_bar(canvas, game, &view, unit);
+    }
+}
+
+/// The shadow of something in the air, on the ground straight below it.
+fn draw_shadow(canvas: &mut Canvas, view: &battlefield::View, below: (f32, f32, f32), radius: f32) {
+    draw_ground_disc(canvas, view, below, radius, [0.0, 0.0, 0.0], (SHADOW[3], SHADOW[3]));
 }
 
 /// A flat disc on the ground, seen in perspective, fading out towards its rim if asked.
@@ -487,7 +507,7 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     for shell in &game.combat.shells {
         let (_, ground, _) = shell.landing();
         let (x, y, z) = shell.position();
-        draw_ground_disc(canvas, view, (x, ground, z), 0.16, [0.0, 0.0, 0.0], (SHADOW[3], SHADOW[3]));
+        draw_shadow(canvas, view, (x, ground, z), 0.16);
         if let Some((px, py)) = view.project(x, y, z) {
             canvas.circle(px, py, (5.0 * s).max(2.0), SHELL_BODY);
         }
@@ -536,7 +556,7 @@ fn draw_health_bar(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
     if unit.health >= unit.kind.max_health() {
         return;
     }
-    let Some((x, y)) = view.project(unit.x, unit.y + 1.0, unit.z) else { return };
+    let Some((x, y)) = view.project(unit.x, unit.y + unit.altitude + 1.0, unit.z) else { return };
     let s = ui_scale(game.height);
     let (width, height) = (30.0 * s, (4.0 * s).max(2.0));
     let share = (unit.health / unit.kind.max_health()).clamp(0.0, 1.0);
@@ -590,8 +610,9 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
     }
 }
 
-/// A unit from simple boxes turned to its heading. Infantry is one tall thin block, and a
-/// vehicle is a hull with a turret and a barrel, so that its turning can be seen.
+/// A unit from simple boxes turned to its heading. Infantry is one tall thin block, a vehicle
+/// is a hull with a turret and a barrel, and an aircraft is a body with wings and a tail, so
+/// that their turning can be seen.
 fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
     let [r, g, b, _] = team_color(unit.color);
     let color = [r, g, b];
@@ -611,6 +632,18 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
             let (barrel_x, barrel_z) = ahead(0.4);
             let barrel = (barrel_x, barrel_z, 0.25, 0.04, unit.heading);
             draw_turned_box(canvas, game, view, barrel, (hull_top + 0.06, hull_top + 0.13), color.map(|c| c * 0.6));
+        }
+        UnitKind::Aircraft => {
+            let base = unit.y + unit.altitude;
+            let (tail_x, tail_z) = ahead(-0.36);
+            let tailplane = (tail_x, tail_z, 0.07, 0.18, unit.heading);
+            draw_turned_box(canvas, game, view, tailplane, (base + 0.1, base + 0.13), color.map(|c| c * 0.7));
+            let wings = (unit.x, unit.z, 0.13, 0.45, unit.heading);
+            draw_turned_box(canvas, game, view, wings, (base + 0.05, base + 0.09), color.map(|c| c * 0.7));
+            let body = (unit.x, unit.z, 0.45, 0.08, unit.heading);
+            draw_turned_box(canvas, game, view, body, (base, base + 0.16), color);
+            let fin = (tail_x, tail_z, 0.07, 0.015, unit.heading);
+            draw_turned_box(canvas, game, view, fin, (base + 0.16, base + 0.32), color.map(|c| c * 0.85));
         }
     }
 }

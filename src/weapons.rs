@@ -34,7 +34,7 @@ pub const STRIKE_RADIUS: f32 = 7.0;
 /// Immediate damage at the center; it falls to half of this at the edge.
 const STRIKE_DAMAGE: f32 = 400.0;
 pub const POISON_SECONDS: f32 = 60.0;
-/// Damage per second to anyone standing on poisoned land.
+/// Damage per second to anyone on the ground in poisoned land.
 const POISON_DAMAGE: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +57,11 @@ impl WeaponKind {
             WeaponKind::Laser => 9.0,
             WeaponKind::Mortar => 16.0,
         }
+    }
+
+    /// Mortar shells only come down on the ground. Everything else can aim up.
+    fn can_target(self, kind: UnitKind) -> bool {
+        self != WeaponKind::Mortar || !kind.flies()
     }
 
     fn cooldown(self) -> f32 {
@@ -230,12 +235,18 @@ impl Combat {
                     self.beams.push(Beam { from, to, life: 1.0 });
                 }
                 WeaponKind::Missile => {
-                    // Launched upward, so that it visibly rises and turns towards its target.
+                    // From the ground it is launched upward, so that it visibly rises and turns
+                    // towards its target. From the air it has a clear shot.
                     let (dx, dz) = (to.0 - from.0, to.2 - from.2);
                     let flat = dx.hypot(dz).max(0.0001);
+                    let direction = if units[i].kind.flies() {
+                        direction_to(from, to)
+                    } else {
+                        direction_to((0.0, 0.0, 0.0), (dx / flat, 0.8, dz / flat))
+                    };
                     self.missiles.push(Missile {
                         position: from,
-                        direction: direction_to((0.0, 0.0, 0.0), (dx / flat, 0.8, dz / flat)),
+                        direction,
                         target_id: units[target].id,
                         fuel: MISSILE_FUEL_SECONDS,
                     });
@@ -337,7 +348,7 @@ impl Combat {
     fn poison_land(&mut self, units: &mut [Unit], dt: f32) {
         for zone in &mut self.poison {
             zone.life -= dt;
-            for unit in units.iter_mut().filter(|u| u.alive) {
+            for unit in units.iter_mut().filter(|u| u.alive && !u.kind.flies()) {
                 if (unit.x - zone.x).hypot(unit.z - zone.z) < STRIKE_RADIUS {
                     hurt(unit, POISON_DAMAGE * dt);
                 }
@@ -365,9 +376,10 @@ fn nearest_enemy(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usiz
     let from = units[shooter].center();
     let owner = units[shooter].owner;
     let mut best = None;
-    let mut best_distance = units[shooter].weapon.range();
+    let weapon = units[shooter].weapon;
+    let mut best_distance = weapon.range();
     for (i, unit) in units.iter().enumerate() {
-        if unit.alive && are_enemies(teams, owner, unit.owner) {
+        if unit.alive && are_enemies(teams, owner, unit.owner) && weapon.can_target(unit.kind) {
             let away = distance(from, unit.center());
             if away <= best_distance {
                 best = Some(i);
@@ -706,6 +718,80 @@ mod tests {
         assert_eq!(combat.poison.len(), 1, "still there just before the minute is up");
         run(&mut combat, &mut units, 2.0);
         assert!(combat.poison.is_empty(), "gone after a minute");
+    }
+
+    fn plane_at(x: f32, z: f32) -> Unit {
+        let mut unit = Unit::for_test(x, z, UnitKind::Aircraft);
+        unit.id = 5;
+        unit.owner = 1;
+        unit.color = TeamColor::Red;
+        unit.cooldown = 1000.0;
+        unit
+    }
+
+    #[test]
+    fn mortars_cannot_aim_at_aircraft_but_everything_else_can() {
+        let mut units = [shooter(WeaponKind::Mortar), plane_at(5.0, 60.0)];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 2.0);
+        assert!(combat.shells.is_empty(), "held fire");
+
+        for weapon in [WeaponKind::Bullet, WeaponKind::Laser, WeaponKind::Missile] {
+            let mut units = [shooter(weapon), plane_at(5.0, 60.0)];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 3.0);
+            assert!(units[1].health < UnitKind::Aircraft.max_health(), "{weapon:?}");
+        }
+    }
+
+    #[test]
+    fn a_mortar_prefers_what_it_can_reach_over_a_nearer_aircraft() {
+        let mut units = [shooter(WeaponKind::Mortar), plane_at(3.0, 60.0), target_at(14.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert_eq!(combat.shells.len(), 1);
+        assert_eq!(combat.shells[0].landing(), units[2].center());
+    }
+
+    #[test]
+    fn a_shell_bursting_on_the_ground_does_not_reach_aircraft_overhead() {
+        let mut units = [shooter(WeaponKind::Mortar), target_at(14.0, 60.0), plane_at(14.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        units[0].cooldown = 1000.0;
+        run(&mut combat, &mut units, 3.0);
+        assert!(units[1].health < 100.0, "the infantry below is hit");
+        assert_eq!(units[2].health, UnitKind::Aircraft.max_health());
+    }
+
+    #[test]
+    fn an_aircraft_fires_missiles_down_at_units_beneath_it() {
+        let mut plane = Unit::for_test(0.0, 60.0, UnitKind::Aircraft);
+        plane.id = 1;
+        plane.weapon = WeaponKind::Missile;
+        for target_x in [0.5, 6.0, 11.0] {
+            let mut units = [plane, target_at(target_x, 60.0)];
+            let mut combat = Combat::default();
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            assert!(combat.missiles[0].direction.1 < 0.0, "aimed down");
+            units[0].cooldown = 1000.0;
+            run(&mut combat, &mut units, 3.0);
+            assert!(units[1].health < 100.0, "from {target_x} away");
+        }
+    }
+
+    #[test]
+    fn poisoned_land_spares_aircraft_but_the_strike_itself_does_not() {
+        let mut combat = Combat::default();
+        combat.poison.push(PoisonZone { x: 0.0, z: 60.0, life: POISON_SECONDS });
+        let mut units = [plane_at(1.0, 60.0)];
+        run(&mut combat, &mut units, 5.0);
+        assert_eq!(units[0].health, UnitKind::Aircraft.max_health());
+
+        let mut combat = Combat::default();
+        combat.launch_strike(0.0, 60.0);
+        run(&mut combat, &mut units, 2.0);
+        assert!(!units[0].alive);
     }
 
     #[test]

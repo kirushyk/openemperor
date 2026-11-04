@@ -44,6 +44,7 @@ pub enum Outcome {
 pub struct Casualties {
     pub infantry: i32,
     pub vehicles: i32,
+    pub aircraft: i32,
     pub buildings: i32,
 }
 
@@ -52,6 +53,7 @@ impl Casualties {
         match unit.kind {
             UnitKind::Infantry => self.infantry += 1,
             UnitKind::Vehicle => self.vehicles += 1,
+            UnitKind::Aircraft => self.aircraft += 1,
         }
     }
 }
@@ -1189,12 +1191,26 @@ impl Game {
             .collect()
     }
 
-    /// Whether the drag in progress would select this unit.
+    /// Whether the drag in progress would select this unit. An aircraft counts both by the
+    /// spot below it and by the spot it appears over on screen, since a box drawn around
+    /// what the player sees should catch it.
     pub fn in_selection_drag(&self, unit: &Unit) -> bool {
-        match self.selection_ground() {
-            Some(rectangle) if unit.owner == 0 => units::in_selection(rectangle, unit),
-            _ => false,
+        let Some(rectangle) = self.selection_ground().filter(|_| unit.owner == 0) else { return false };
+        units::in_selection(rectangle, unit) || self.appears_in_selection(rectangle, unit)
+    }
+
+    fn appears_in_selection(&self, rectangle: (f32, f32, f32, f32), unit: &Unit) -> bool {
+        if !unit.kind.flies() {
+            return false;
         }
+        let view = self.view();
+        let (x, y, z) = unit.center();
+        let appears_over = view.project(x, y, z).and_then(|(px, py)| view.ground_at(px, py));
+        appears_over.is_some_and(|(x, z)| {
+            let mut seen = *unit;
+            (seen.x, seen.z) = (x, z);
+            units::in_selection(rectangle, &seen)
+        })
     }
 
     fn begin_selection(&mut self) {
@@ -1248,7 +1264,8 @@ impl Game {
         let mut best = None;
         let mut best_distance = reach;
         for (i, unit) in self.units.iter().enumerate().filter(|(_, u)| u.owner == 0) {
-            let Some((x, y)) = view.project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z) else { continue };
+            let middle = unit.y + unit.altitude + units::HEIGHT / 2.0;
+            let Some((x, y)) = view.project(unit.x, middle, unit.z) else { continue };
             let distance = (x - self.mouse.0).hypot(y - self.mouse.1);
             if distance <= best_distance {
                 best = Some(i);
@@ -2453,7 +2470,7 @@ mod tests {
             unit.alive = false;
         }
         game.update(0.01);
-        assert_eq!(game.lost, Casualties { infantry: lost_infantry, vehicles: 0, buildings: 0 });
+        assert_eq!(game.lost, Casualties { infantry: lost_infantry, ..Casualties::default() });
         assert!(vehicles > 0);
     }
 
@@ -2640,7 +2657,7 @@ mod tests {
         assert!(!game.aiming_strike);
         assert_eq!(game.combat.strikes.len(), 1);
         assert_eq!((game.combat.strikes[0].x, game.combat.strikes[0].z), expected);
-        assert_eq!(selected_count(&game), 12, "the selection stands");
+        assert_eq!(selected_count(&game), FIRST_GROUP, "the selection stands");
         assert!(game.units.iter().all(|u| !u.is_moving()), "and gets no order");
     }
 
@@ -2651,7 +2668,7 @@ mod tests {
         pick_superweapon(&mut game);
         game.handle(Event::RightDown);
         assert!(!game.aiming_strike);
-        assert_eq!(selected_count(&game), 12, "without deselecting");
+        assert_eq!(selected_count(&game), FIRST_GROUP, "without deselecting");
         assert!(game.combat.strikes.is_empty());
 
         pick_superweapon(&mut game);
@@ -2940,6 +2957,9 @@ mod tests {
         assert!(game.chat.is_empty());
     }
 
+    /// How many units the player's first group has.
+    const FIRST_GROUP: usize = 16;
+
     fn selected_count(game: &Game) -> usize {
         game.units.iter().filter(|u| u.selected).count()
     }
@@ -2961,8 +2981,65 @@ mod tests {
         let mut game = in_battle();
         let (from, to) = around_first_group();
         drag_select(&mut game, from, to);
-        assert_eq!(selected_count(&game), 12, "the first group, not the far one");
+        assert_eq!(selected_count(&game), FIRST_GROUP, "the first group, not the far one");
         assert!(game.selection_ground().is_none(), "the box ends with the release");
+    }
+
+    fn first_plane(game: &Game) -> usize {
+        game.units.iter().position(|u| u.kind == UnitKind::Aircraft).unwrap()
+    }
+
+    #[test]
+    fn a_box_around_an_aircraft_as_seen_selects_it_as_does_one_around_its_shadow() {
+        let game = in_battle();
+        let plane = game.units[first_plane(&game)];
+        let view = game.view();
+        let (x, y, z) = plane.center();
+        let seen = view.project(x, y, z).unwrap();
+        let shadow = view.project(plane.x, plane.y, plane.z).unwrap();
+        assert!(seen.1 < shadow.1 - 40.0, "it appears well above its shadow");
+        for around in [seen, shadow] {
+            let mut game = in_battle();
+            drag_select(&mut game, (around.0 - 30.0, around.1 - 30.0), (around.0 + 30.0, around.1 + 30.0));
+            assert!(game.units[first_plane(&game)].selected, "around {around:?}");
+        }
+    }
+
+    #[test]
+    fn clicking_where_an_aircraft_appears_selects_it_and_it_can_then_be_sent() {
+        let mut game = in_battle();
+        let index = first_plane(&game);
+        let (x, y, z) = game.units[index].center();
+        let (px, py) = game.view().project(x, y, z).unwrap();
+        click_at(&mut game, px, py);
+        assert!(game.units[index].selected);
+        assert_eq!(selected_count(&game), 1);
+
+        click_at(&mut game, W / 2.0 + 500.0, H / 2.0 + 200.0);
+        assert!(game.units[index].is_moving(), "sent there");
+    }
+
+    #[test]
+    fn aircraft_cast_a_shadow_on_the_ground() {
+        let shadows = |game: &Game| {
+            crate::render::build(game).iter().filter(|v| v.r == 0.0 && v.g == 0.0 && v.b == 0.0 && v.a == 0.3).count()
+        };
+        let mut game = in_battle();
+        let with_planes = shadows(&game);
+        game.units.retain(|u| !u.kind.flies());
+        assert!(with_planes > shadows(&game));
+    }
+
+    #[test]
+    fn statistics_count_aircraft_on_their_own() {
+        let mut game = in_battle();
+        let planes = game.units.iter().filter(|u| u.kind == UnitKind::Aircraft).count() as i32;
+        for unit in game.units.iter_mut().filter(|u| u.kind == UnitKind::Aircraft) {
+            unit.alive = false;
+        }
+        game.update(0.01);
+        assert_eq!(game.lost.aircraft, planes);
+        assert_eq!(game.lost.infantry + game.lost.vehicles, 0);
     }
 
     #[test]
@@ -2971,7 +3048,7 @@ mod tests {
         for (from, to) in [(a, b), (b, a), ((a.0, b.1), (b.0, a.1)), ((b.0, a.1), (a.0, b.1))] {
             let mut game = in_battle();
             drag_select(&mut game, from, to);
-            assert_eq!(selected_count(&game), 12);
+            assert_eq!(selected_count(&game), FIRST_GROUP);
         }
     }
 
@@ -2984,7 +3061,7 @@ mod tests {
         let (from, to) = around_first_group();
         drag_select(&mut game, from, to);
         assert!(!game.units[first_enemy].selected);
-        assert_eq!(selected_count(&game), 12);
+        assert_eq!(selected_count(&game), FIRST_GROUP);
     }
 
     #[test]
@@ -3007,7 +3084,7 @@ mod tests {
     fn select_first_group(game: &mut Game) {
         let (from, to) = around_first_group();
         drag_select(game, from, to);
-        assert_eq!(selected_count(game), 12);
+        assert_eq!(selected_count(game), FIRST_GROUP);
     }
 
     #[test]
@@ -3017,13 +3094,22 @@ mod tests {
         let clicked = (W / 2.0 - 800.0, H / 2.0 + 300.0);
         let target = game.view().ground_at(clicked.0, clicked.1).unwrap();
         click_at(&mut game, clicked.0, clicked.1);
-        assert_eq!(selected_count(&game), 12, "they stay selected");
+        assert_eq!(selected_count(&game), FIRST_GROUP, "they stay selected");
 
-        let sent: Vec<(f32, f32)> = game.units.iter().filter(|u| u.selected).map(|u| u.destination).collect();
-        for (i, a) in sent.iter().enumerate() {
-            assert!((a.0 - target.0).hypot(a.1 - target.1) < 5.0, "near the click");
-            for b in &sent[i + 1..] {
-                assert!((a.0 - b.0).hypot(a.1 - b.1) > 1.0, "not one point");
+        // The air and the ground reserve their spots separately.
+        for flying in [false, true] {
+            let sent: Vec<(f32, f32)> = game
+                .units
+                .iter()
+                .filter(|u| u.selected && u.kind.flies() == flying)
+                .map(|u| u.destination)
+                .collect();
+            assert!(!sent.is_empty());
+            for (i, a) in sent.iter().enumerate() {
+                assert!((a.0 - target.0).hypot(a.1 - target.1) < 5.0, "near the click");
+                for b in &sent[i + 1..] {
+                    assert!((a.0 - b.0).hypot(a.1 - b.1) > 1.0, "not one point");
+                }
             }
         }
         assert!(game.units.iter().filter(|u| !u.selected).all(|u| !u.is_moving()), "others stay");
@@ -3074,11 +3160,11 @@ mod tests {
         select_first_group(&mut game);
         game.handle(Event::KeyDown(Key::Escape));
         game.handle(Event::RightDown);
-        assert_eq!(selected_count(&game), 12, "in the menu");
+        assert_eq!(selected_count(&game), FIRST_GROUP, "in the menu");
         game.handle(Event::KeyDown(Key::Escape));
         game.handle(Event::KeyDown(Key::Pause));
         game.handle(Event::RightDown);
-        assert_eq!(selected_count(&game), 12, "while paused");
+        assert_eq!(selected_count(&game), FIRST_GROUP, "while paused");
     }
 
     #[test]
@@ -3092,7 +3178,7 @@ mod tests {
     fn a_click_on_ones_own_unit_selects_it_rather_than_sending_anyone() {
         let mut game = in_battle();
         select_first_group(&mut game);
-        let unit = game.units[3];
+        let unit = *game.units.iter().find(|u| u.kind == UnitKind::Infantry).unwrap();
         let (x, y) = game.view().project(unit.x, unit.y + units::HEIGHT / 2.0, unit.z).unwrap();
         click_at(&mut game, x, y);
         assert_eq!(selected_count(&game), 1);
@@ -3234,7 +3320,7 @@ mod tests {
         }
         game.handle(Event::MouseUp);
         let players = game.units.iter().filter(|u| u.owner == 0).count();
-        assert!(players > 12, "there is a second group");
+        assert!(players > FIRST_GROUP, "there is a second group");
         assert_eq!(selected_count(&game), players, "both groups, a screen apart");
     }
 
@@ -3304,7 +3390,7 @@ mod tests {
         begin(&mut game);
         game.handle(Event::KeyDown(Key::Escape));
         assert!(game.selection_ground().is_none(), "the menu cancels");
-        assert_eq!(selected_count(&game), 12);
+        assert_eq!(selected_count(&game), FIRST_GROUP);
 
         let mut game = in_battle();
         drag_select(&mut game, from, to);
@@ -3313,7 +3399,7 @@ mod tests {
         assert!(game.selection_ground().is_none(), "losing focus cancels");
         game.handle(Event::Focus(true));
         game.handle(Event::MouseUp);
-        assert_eq!(selected_count(&game), 12);
+        assert_eq!(selected_count(&game), FIRST_GROUP);
 
         let mut game = in_battle();
         drag_select(&mut game, from, to);
@@ -3342,7 +3428,7 @@ mod tests {
         game.handle(Event::MouseDown);
         game.handle(Event::MouseMove(to.0, to.1));
         let previewed = game.units.iter().filter(|u| game.in_selection_drag(u)).count();
-        assert_eq!(previewed, 12);
+        assert_eq!(previewed, FIRST_GROUP);
         assert_eq!(selected_count(&game), 0, "not selected until release");
     }
 

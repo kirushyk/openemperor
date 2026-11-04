@@ -39,6 +39,8 @@ pub enum UnitKind {
     Infantry,
     /// Must turn to face its way before it drives.
     Vehicle,
+    /// Stays in the air, passing over water, lava, ruins and anyone on the ground.
+    Aircraft,
 }
 
 impl UnitKind {
@@ -47,13 +49,24 @@ impl UnitKind {
         match self {
             UnitKind::Infantry => 0.25,
             UnitKind::Vehicle => 0.45,
+            UnitKind::Aircraft => 0.4,
         }
+    }
+
+    pub fn flies(self) -> bool {
+        self == UnitKind::Aircraft
+    }
+
+    /// Its height above the ground. High enough for its sphere to clear everything down there.
+    fn altitude(self) -> f32 {
+        if self.flies() { CRUISE_ALTITUDE } else { 0.0 }
     }
 
     pub fn max_health(self) -> f32 {
         match self {
             UnitKind::Infantry => 100.0,
             UnitKind::Vehicle => 300.0,
+            UnitKind::Aircraft => 150.0,
         }
     }
 
@@ -62,10 +75,13 @@ impl UnitKind {
         match self {
             UnitKind::Infantry => 2.5,
             UnitKind::Vehicle => 4.5,
+            UnitKind::Aircraft => 7.0,
         }
     }
 }
 
+/// How high aircraft fly, in world units.
+const CRUISE_ALTITUDE: f32 = 3.0;
 /// Radians per second a vehicle can turn.
 const TURN_SPEED: f32 = 3.0;
 /// The player's second group, far enough east to need scrolling to from the first.
@@ -74,6 +90,8 @@ const SECOND_GROUP_X: f32 = 35.0;
 const OPPONENT_RING: f32 = 29.4;
 /// How far map objects must stay from where groups start.
 const CLEARANCE: f32 = 9.0;
+/// A block of the player's this deep has a row of aircraft.
+const ROWS_WITH_AIRCRAFT: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Unit {
@@ -83,7 +101,7 @@ pub struct Unit {
     pub weapon: WeaponKind,
     /// Seconds until it can fire again.
     pub cooldown: f32,
-    /// Height above the ground. Always 0 until something flies, but missiles already chase it.
+    /// Height above the ground: 0 for all but aircraft.
     pub altitude: f32,
     pub x: f32,
     /// Height of the ground it stands on.
@@ -117,6 +135,11 @@ impl Unit {
         (self.destination.0 - self.x).hypot(self.destination.1 - self.z)
     }
 
+    /// Whether it could be at this spot. Aircraft only have to stay on the map.
+    fn can_enter(&self, terrain: &Terrain, x: f32, z: f32) -> bool {
+        if self.kind.flies() { terrain.on_map(x, z) } else { terrain.can_walk(x, z) }
+    }
+
     /// Its collision sphere's center height.
     fn sphere_y(&self) -> f32 {
         self.y + self.altitude + self.kind.radius()
@@ -140,7 +163,7 @@ impl Unit {
             health: kind.max_health(),
             weapon: WeaponKind::Bullet,
             cooldown: 0.0,
-            altitude: 0.0,
+            altitude: kind.altitude(),
             x,
             y: 0.0,
             z,
@@ -158,12 +181,13 @@ impl Unit {
     }
 }
 
-/// What a block of units carries: vehicles have mortars. The player's infantry mixes the
-/// three small arms by column, so that all of them are on the field, and opponents' have
-/// bullets.
+/// What a block of units carries: vehicles have mortars and aircraft have missiles. The
+/// player's infantry mixes the three small arms by column, so that all of them are on the
+/// field, and opponents' have bullets.
 fn weapon_for(kind: UnitKind, owner: usize, column: usize) -> WeaponKind {
     match (kind, owner, column % 3) {
         (UnitKind::Vehicle, _, _) => WeaponKind::Mortar,
+        (UnitKind::Aircraft, _, _) => WeaponKind::Missile,
         (UnitKind::Infantry, 0, 1) => WeaponKind::Missile,
         (UnitKind::Infantry, 0, 2) => WeaponKind::Laser,
         (UnitKind::Infantry, _, _) => WeaponKind::Bullet,
@@ -179,8 +203,22 @@ pub fn are_enemies(teams: &[usize], a: usize, b: usize) -> bool {
     }
 }
 
-/// Places a block of units centered on a world point. Only the player has vehicles, in the
-/// block's last row, so that a skirmish's enemies can all be run over.
+/// Who stands where in a block. Only the player has vehicles, in the block's last row, so
+/// that a skirmish's enemies can all be run over, and aircraft, in the first row of a block
+/// deep enough to spare one.
+fn kind_in_block(owner: usize, row: usize, rows: usize) -> UnitKind {
+    if owner != 0 {
+        UnitKind::Infantry
+    } else if row + 1 == rows {
+        UnitKind::Vehicle
+    } else if row == 0 && rows >= ROWS_WITH_AIRCRAFT {
+        UnitKind::Aircraft
+    } else {
+        UnitKind::Infantry
+    }
+}
+
+/// Places a block of units centered on a world point.
 fn spawn_group(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
@@ -192,13 +230,13 @@ fn spawn_group(
         for col in 0..cols {
             let x = cx + (col as f32 - (cols - 1) as f32 / 2.0) * SPACING;
             let z = cz + (row as f32 - (rows - 1) as f32 / 2.0) * SPACING;
-            let kind = if owner == 0 && row + 1 == rows { UnitKind::Vehicle } else { UnitKind::Infantry };
+            let kind = kind_in_block(owner, row, rows);
             units.push(Unit {
                 id: units.len() as u32,
                 health: kind.max_health(),
                 weapon: weapon_for(kind, owner, col),
                 cooldown: 0.0,
-                altitude: 0.0,
+                altitude: kind.altitude(),
                 x,
                 y: terrain.height_at(x, z),
                 z,
@@ -222,7 +260,7 @@ fn spawn_group(
 pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
     let mut units = Vec::new();
     let player = (0, colors[0]);
-    spawn_group(&mut units, terrain, (0.0, MAP_MIDDLE_Z), (4, 3), player);
+    spawn_group(&mut units, terrain, (0.0, MAP_MIDDLE_Z), (4, ROWS_WITH_AIRCRAFT), player);
     spawn_group(&mut units, terrain, (SECOND_GROUP_X, MAP_MIDDLE_Z), (4, 2), player);
     let opponents = colors.len() - 1;
     for (i, &color) in colors[1..].iter().enumerate() {
@@ -254,9 +292,15 @@ pub fn keeps_clear(x: f32, z: f32) -> bool {
 }
 
 /// Up to `count` free spots near a point, nearest first, each far enough from the others
-/// and from every point in `taken`. Spots must be walkable, so a click on water finds the
-/// nearest land.
-fn find_slots(terrain: &Terrain, target: (f32, f32), count: usize, taken: &[(f32, f32)]) -> Vec<(f32, f32)> {
+/// and from every point in `taken`. Spots on the ground must be walkable, so a click on water
+/// finds the nearest land. Spots in the air only have to be on the map.
+fn find_slots(
+    terrain: &Terrain,
+    target: (f32, f32),
+    count: usize,
+    taken: &[(f32, f32)],
+    flying: bool,
+) -> Vec<(f32, f32)> {
     let mut offsets = Vec::new();
     for j in -SLOT_SEARCH_RINGS..=SLOT_SEARCH_RINGS {
         for i in -SLOT_SEARCH_RINGS..=SLOT_SEARCH_RINGS {
@@ -273,11 +317,16 @@ fn find_slots(terrain: &Terrain, target: (f32, f32), count: usize, taken: &[(f32
             break;
         }
         let spot = (target.0 + dx, target.1 + dz);
-        let clear_of_ruins = terrain.ruins().iter().all(|piece| {
-            let (near_x, near_z) = nearest_on_footprint(piece, spot.0, spot.1);
-            (near_x - spot.0).hypot(near_z - spot.1) > UnitKind::Vehicle.radius()
-        });
-        if clear_of_ruins && terrain.can_walk(spot.0, spot.1) && is_free(spot, taken) && is_free(spot, &slots) {
+        let usable = if flying {
+            terrain.on_map(spot.0, spot.1)
+        } else {
+            let clear_of_ruins = terrain.ruins().iter().all(|piece| {
+                let (near_x, near_z) = nearest_on_footprint(piece, spot.0, spot.1);
+                (near_x - spot.0).hypot(near_z - spot.1) > UnitKind::Vehicle.radius()
+            });
+            clear_of_ruins && terrain.can_walk(spot.0, spot.1)
+        };
+        if usable && is_free(spot, taken) && is_free(spot, &slots) {
             slots.push(spot);
         }
     }
@@ -294,15 +343,24 @@ fn nearest_on_footprint(piece: &RuinPiece, x: f32, z: f32) -> (f32, f32) {
 
 /// Sends every selected unit to its own reserved spot near a point. Friendly destinations stay
 /// reserved. Enemies' only do if nobody heavy was sent: heavy units may aim right at them.
+/// The air and the ground reserve their spots separately, since they cannot get in each
+/// other's way.
 pub fn order_move(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, teams: &[usize]) {
-    let any_heavy = units.iter().any(|u| u.selected && u.heavy);
+    for flying in [false, true] {
+        order_layer(units, target, terrain, teams, flying);
+    }
+}
+
+fn order_layer(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, teams: &[usize], flying: bool) {
+    let in_layer = |u: &Unit| u.kind.flies() == flying;
+    let any_heavy = units.iter().any(|u| in_layer(u) && u.selected && u.heavy);
     let taken: Vec<(f32, f32)> = units
         .iter()
-        .filter(|u| !u.selected && u.alive && !(any_heavy && are_enemies(teams, 0, u.owner)))
+        .filter(|u| in_layer(u) && !u.selected && u.alive && !(any_heavy && are_enemies(teams, 0, u.owner)))
         .map(|u| u.destination)
         .collect();
-    let mut chosen: Vec<usize> = (0..units.len()).filter(|&i| units[i].selected).collect();
-    let mut slots = find_slots(terrain, target, chosen.len(), &taken);
+    let mut chosen: Vec<usize> = (0..units.len()).filter(|&i| in_layer(&units[i]) && units[i].selected).collect();
+    let mut slots = find_slots(terrain, target, chosen.len(), &taken, flying);
     // Farthest first, so that those with the longest walk are not left the leftover spots.
     let distance = |unit: &Unit, spot: (f32, f32)| (unit.x - spot.0).hypot(unit.z - spot.1);
     chosen.sort_by(|&a, &b| distance(&units[b], target).total_cmp(&distance(&units[a], target)));
@@ -343,7 +401,8 @@ fn prey_direction(units: &[Unit], index: usize, teams: &[usize], ahead: (f32, f3
 
 /// Which way to head: straight for the destination, bending right around whatever stands
 /// close ahead. Everyone keeps right, so two units meeting head-on pass each other. Heavy
-/// units go out of their way for infantry they can squash, then carry on.
+/// units go out of their way for infantry they can squash, then carry on. The air and the
+/// ground ignore each other, and aircraft pass over ruins.
 fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) -> (f32, f32) {
     let unit = &units[index];
     let (to_x, to_z) = (unit.destination.0 - unit.x, unit.destination.1 - unit.z);
@@ -354,7 +413,8 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
     let (right_x, right_z) = (-want_z, want_x);
     let mut sideways = 0.0;
     for (other_index, other) in units.iter().enumerate() {
-        if other_index == index || !other.alive || can_squash(unit, other, teams) {
+        let other_layer = other.kind.flies() != unit.kind.flies();
+        if other_index == index || !other.alive || other_layer || can_squash(unit, other, teams) {
             continue;
         }
         let (dx, dz) = (other.x - unit.x, other.z - unit.z);
@@ -364,7 +424,8 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
             sideways += (1.0 - distance / range) * 2.0;
         }
     }
-    for piece in terrain.ruins() {
+    let ruins = if unit.kind.flies() { &[][..] } else { terrain.ruins() };
+    for piece in ruins {
         let (near_x, near_z) = nearest_on_footprint(piece, unit.x, unit.z);
         let (dx, dz) = (near_x - unit.x, near_z - unit.z);
         let distance = dx.hypot(dz);
@@ -383,13 +444,13 @@ fn turn_between(from: f32, to: f32) -> f32 {
     (to - from + PI).rem_euclid(TAU) - PI
 }
 
-/// Moves a unit along its way, sliding along water or lava it cannot enter. Returns whether
+/// Moves a unit along its way, sliding along whatever it cannot enter. Returns whether
 /// those got in its way.
 fn walk(unit: &mut Unit, terrain: &Terrain, (dir_x, dir_z): (f32, f32), dt: f32) -> bool {
     let distance = (unit.kind.speed() * dt).min(unit.remaining());
     let (dx, dz) = (dir_x * distance, dir_z * distance);
     let tries = [(dx, dz), (dx, 0.0), (0.0, dz)];
-    match tries.iter().find(|(tx, tz)| terrain.can_walk(unit.x + tx, unit.z + tz)) {
+    match tries.iter().find(|(tx, tz)| unit.can_enter(terrain, unit.x + tx, unit.z + tz)) {
         Some(&(tx, tz)) => {
             unit.x += tx;
             unit.z += tz;
@@ -401,6 +462,9 @@ fn walk(unit: &mut Unit, terrain: &Terrain, (dir_x, dir_z): (f32, f32), dt: f32)
 
 /// Pushes a unit's sphere out of any ruin it reaches. Returns whether it touched one.
 fn push_out_of_ruins(unit: &mut Unit, terrain: &Terrain) -> bool {
+    if unit.kind.flies() {
+        return false;
+    }
     let radius = unit.kind.radius();
     let mut touched = false;
     for piece in terrain.ruins() {
@@ -477,7 +541,7 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 for (i, sign, share) in [(a, -1.0, share_a), (b, 1.0, share_b)] {
                     let push = overlap * share;
                     let (x, z) = (units[i].x + nx * push * sign, units[i].z + nz * push * sign);
-                    if terrain.can_walk(x, z) {
+                    if units[i].can_enter(terrain, x, z) {
                         units[i].x = x;
                         units[i].z = z;
                     }
@@ -496,18 +560,23 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
         let (dir_x, dir_z) = steering(units, i, terrain, teams);
         let way = dir_z.atan2(dir_x);
         let unit = &mut units[i];
+        let turn = turn_between(unit.heading, way);
+        let most = TURN_SPEED * dt;
         match unit.kind {
             UnitKind::Infantry => {
                 unit.heading = way;
                 held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
             }
             UnitKind::Vehicle => {
-                let turn = turn_between(unit.heading, way);
-                let most = TURN_SPEED * dt;
                 unit.heading += turn.clamp(-most, most);
                 if turn.abs() <= DRIVE_ALIGNMENT {
                     held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
                 }
+            }
+            // Nothing holds it back from setting off while its nose comes around.
+            UnitKind::Aircraft => {
+                unit.heading += turn.clamp(-most, most);
+                held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
             }
         }
     }
@@ -710,6 +779,99 @@ mod tests {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
         assert!(units[1].alive);
+    }
+
+    #[test]
+    fn aircraft_fly_straight_over_ruins_water_and_units_on_the_ground() {
+        let terrain = map_with_impassable_lower_terrain();
+        let (water_x, water_z) = (-40..=40)
+            .flat_map(|x| (30..=100).map(move |z| (x as f32, z as f32)))
+            .find(|&(x, z)| terrain.on_map(x, z) && !terrain.can_walk(x, z))
+            .expect("this map has water");
+        let mut plane = unit_at(0.0, MAP_MIDDLE_Z, UnitKind::Aircraft);
+        plane.destination = (water_x, water_z);
+        let mut units = [plane];
+        for _ in 0..400 {
+            advance(&mut units, terrain, &[0], 0.05);
+        }
+        assert_eq!(units[0].destination, (water_x, water_z), "it did not give up");
+        assert!(!units[0].is_moving(), "it hovers over the water: {:?}", units[0]);
+
+        let walled = Terrain::open_with_ruins(vec![wall(0.0, 60.0, 0.5, 3.0, 2.0)]);
+        let tank = unit_at(2.0, 60.0, UnitKind::Vehicle);
+        let mut units = [unit_at(-5.0, 60.0, UnitKind::Aircraft), tank];
+        units[0].heading = 0.0;
+        units[0].destination = (5.0, 60.0);
+        for _ in 0..40 {
+            advance(&mut units, &walled, &[0], 0.05);
+            assert_eq!(units[0].z, 60.0, "never strays: {:?}", units[0]);
+            assert_eq!((units[1].x, units[1].z), (2.0, 60.0), "the tank is not pushed");
+        }
+        assert!(!units[0].is_moving(), "{:?}", units[0]);
+    }
+
+    #[test]
+    fn aircraft_keep_clear_of_each_other() {
+        let mut units = [unit_at(-5.0, 60.0, UnitKind::Aircraft), unit_at(5.0, 60.0, UnitKind::Aircraft)];
+        units[0].destination = (5.0, 60.0);
+        units[1].destination = (-5.0, 60.0);
+        for _ in 0..200 {
+            advance(&mut units, open_ground(), &[], 0.05);
+            assert!(largest_overlap(&units) < 0.05);
+        }
+        assert!(!units[0].is_moving() && !units[1].is_moving(), "{units:?}");
+    }
+
+    #[test]
+    fn nothing_on_the_ground_squashes_or_is_squashed_by_aircraft() {
+        let mut units = [unit_at(-3.0, 60.0, UnitKind::Vehicle), enemy_at(0.0, 60.0, UnitKind::Aircraft)];
+        units[0].heading = 0.0;
+        units[0].destination = (3.0, 60.0);
+        for _ in 0..100 {
+            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+        }
+        assert!(units[1].alive);
+        assert_eq!((units[1].x, units[1].z), (0.0, 60.0), "the vehicle passed under it");
+    }
+
+    #[test]
+    fn the_air_and_the_ground_may_be_sent_to_the_same_spot() {
+        let mut units = [unit_at(-3.0, 60.0, UnitKind::Infantry), unit_at(3.0, 60.0, UnitKind::Aircraft)];
+        units[0].selected = true;
+        units[1].selected = true;
+        order_move(&mut units, (0.0, 50.0), open_ground(), &[]);
+        assert_eq!(units[0].destination, (0.0, 50.0));
+        assert_eq!(units[1].destination, (0.0, 50.0));
+    }
+
+    #[test]
+    fn aircraft_may_be_sent_over_ruins_and_water_but_not_off_the_map() {
+        let walled = Terrain::open_with_ruins(vec![wall(0.0, 60.0, 1.0, 1.0, 1.0)]);
+        let mut units = [unit_at(-8.0, 60.0, UnitKind::Aircraft)];
+        units[0].selected = true;
+        order_move(&mut units, (0.0, 60.0), &walled, &[0]);
+        assert_eq!(units[0].destination, (0.0, 60.0), "right over the ruin");
+
+        let terrain = map_with_impassable_lower_terrain();
+        let water = (-40..=40)
+            .flat_map(|x| (30..=100).map(move |z| (x as f32, z as f32)))
+            .find(|&(x, z)| terrain.on_map(x, z) && !terrain.can_walk(x, z))
+            .expect("this map has water");
+        order_move(&mut units, water, terrain, &[0]);
+        assert_eq!(units[0].destination, water, "right over the water");
+
+        order_move(&mut units, (0.0, -30.0), terrain, &[0]);
+        assert!(terrain.on_map(units[0].destination.0, units[0].destination.1), "{:?}", units[0].destination);
+    }
+
+    #[test]
+    fn the_player_starts_with_aircraft_in_the_air_and_the_others_do_not() {
+        let units = spawn(terrain(0), &COLORS);
+        let planes: Vec<_> = units.iter().filter(|u| u.kind == UnitKind::Aircraft).collect();
+        assert!(!planes.is_empty());
+        assert!(planes.iter().all(|u| u.owner == 0 && u.altitude == CRUISE_ALTITUDE && !u.heavy));
+        assert!(planes.iter().all(|u| u.weapon == WeaponKind::Missile));
+        assert!(units.iter().filter(|u| !u.kind.flies()).all(|u| u.altitude == 0.0));
     }
 
     #[test]

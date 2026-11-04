@@ -254,11 +254,14 @@ impl Terrain {
 
     /// Whether a unit may stand here: on the map, and not in water or lava.
     pub fn can_walk(&self, x: f32, z: f32) -> bool {
+        self.on_map(x, z)
+            && (self.planet.lower_is_solid() || self.height_at(x, z) >= GROUND_HEIGHT * 0.5)
+    }
+
+    pub fn on_map(&self, x: f32, z: f32) -> bool {
         let last = MAP_CELLS as f32;
         let (u, v) = world_to_grid(x, z);
-        (0.0..=last).contains(&u)
-            && (0.0..=last).contains(&v)
-            && (self.planet.lower_is_solid() || self.height_at(x, z) >= GROUND_HEIGHT * 0.5)
+        (0.0..=last).contains(&u) && (0.0..=last).contains(&v)
     }
 
     /// Flat sand holding only the given ruins, for testing how units meet them.

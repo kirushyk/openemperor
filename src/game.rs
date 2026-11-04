@@ -37,6 +37,9 @@ const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
 /// Seconds of battle before the superweapon can fire again.
 pub const SUPERWEAPON_RECHARGE: f32 = 60.0;
 
+/// How long a chat line stays up, in seconds of battle.
+const CHAT_SECONDS: f32 = 12.0;
+
 /// How long the Victory or Defeat message stays up, in seconds.
 pub const OUTCOME_SECONDS: f32 = 10.0;
 
@@ -59,6 +62,13 @@ pub enum CursorLook {
     Arrow,
     Attack,
     Heal,
+}
+
+/// One message in the battle's chat.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChatLine {
+    pub text: String,
+    posted_at: f32,
 }
 
 /// What a click with Control held would order.
@@ -1179,9 +1189,9 @@ pub struct Game {
     /// The player's money first, then each opponent's.
     money: Vec<i32>,
     /// Newest last, at most `hud::CHAT_LINES`.
-    pub chat: Vec<&'static str>,
-    next_chat_at: f32,
-    chat_random: u32,
+    pub chat: Vec<ChatLine>,
+    /// Which owners were already reported defeated.
+    reported_defeated: Vec<bool>,
     /// Seconds of battle played, which stand still while paused.
     battle_time: f32,
     /// Seconds since the current screen opened.
@@ -1233,8 +1243,7 @@ impl Game {
             energy: STARTING_ENERGY,
             money: vec![DEFAULT_BATTLE_MONEY],
             chat: Vec::new(),
-            next_chat_at: 0.0,
-            chat_random: 0x9E37_79B9,
+            reported_defeated: Vec::new(),
             battle_time: 0.0,
             screen_elapsed: 0.0,
         }
@@ -1400,6 +1409,7 @@ impl Game {
             self.next_unit_id,
         ) {
             self.next_unit_id += 1;
+            self.post_chat(format!("{} ready", role.name()));
         }
     }
 
@@ -1553,16 +1563,14 @@ impl Game {
         self.money[0]
     }
 
-    /// Posts a random message every few seconds of battle, scrolling out the oldest.
-    fn update_chat(&mut self) {
-        while self.battle_time >= self.next_chat_at {
-            let index =
-                battlefield::xorshift(&mut self.chat_random) as usize % hud::CHAT_MESSAGES.len();
-            self.chat.push(hud::CHAT_MESSAGES[index]);
-            if self.chat.len() > hud::CHAT_LINES {
-                self.chat.remove(0);
-            }
-            self.next_chat_at += 3.0 + (battlefield::xorshift(&mut self.chat_random) % 5) as f32;
+    /// Posts a message, scrolling out the oldest if the chat is full.
+    fn post_chat(&mut self, text: String) {
+        self.chat.push(ChatLine {
+            text,
+            posted_at: self.battle_time,
+        });
+        if self.chat.len() > hud::CHAT_LINES {
+            self.chat.remove(0);
         }
     }
 
@@ -1622,14 +1630,20 @@ impl Game {
     /// Counts the dead, clears them away, and decides the battle if that ends it: it is won
     /// when no enemy of the player is left, and lost when the player has nothing left.
     fn settle_casualties(&mut self) {
+        let mut lost_names = Vec::new();
         for unit in self.units.iter().filter(|u| !u.alive) {
             if unit.owner == 0 {
                 self.lost.count(unit);
+                lost_names.push(unit.name());
             } else if units::are_enemies(&self.teams, 0, unit.owner) {
                 self.killed.count(unit);
             }
         }
         self.units.retain(|u| u.alive);
+        for name in lost_names {
+            self.post_chat(format!("{name} lost"));
+        }
+        self.report_defeats();
         if self.outcome.is_some() {
             return;
         }
@@ -1649,6 +1663,18 @@ impl Game {
             self.key_paused = false;
             self.aiming_strike = false;
             self.outcome_elapsed = 0.0;
+        }
+    }
+
+    /// Posts a message for each side that has just lost everything.
+    fn report_defeats(&mut self) {
+        let rows = self.stats_rows();
+        for (owner, row) in rows.iter().enumerate() {
+            let beaten = !self.units.iter().any(|u| u.owner == owner);
+            if beaten && !self.reported_defeated[owner] {
+                self.reported_defeated[owner] = true;
+                self.post_chat(format!("{} defeated", row.name));
+            }
         }
     }
 
@@ -1732,9 +1758,9 @@ impl Game {
             vec![DEFAULT_BATTLE_MONEY; 2]
         };
         self.chat.clear();
-        self.next_chat_at = 1.0;
         let colors: Vec<TeamColor> = self.stats_rows().iter().map(|row| row.color).collect();
         self.teams = (0..colors.len()).collect();
+        self.reported_defeated = vec![false; colors.len()];
         self.units = units::spawn(battlefield::terrain(map), &colors);
         self.next_unit_id = self.units.len() as u32;
         self.combat = Combat::default();
@@ -1974,12 +2000,18 @@ impl Game {
         self.screen_elapsed += dt;
         if self.in_battle && !self.is_paused() {
             self.battle_time += dt;
-            self.update_chat();
+            let battle_time = self.battle_time;
+            self.chat
+                .retain(|line| battle_time - line.posted_at < CHAT_SECONDS);
             let terrain = battlefield::terrain(self.battle_map);
             units::advance(&mut self.units, terrain, &self.teams, dt);
             self.combat
                 .advance(&mut self.units, &self.teams, terrain, dt);
+            let was_recharging = self.strike_recharge > 0.0;
             self.strike_recharge = (self.strike_recharge - dt).max(0.0);
+            if was_recharging && self.strike_recharge <= 0.0 && self.superweapon_allowed() {
+                self.post_chat("Superweapon ready".to_string());
+            }
             if self.screen == Screen::InGame {
                 self.settle_casualties();
             }
@@ -3418,49 +3450,114 @@ mod tests {
         assert_eq!(game.stats_rows()[0].money, DEFAULT_BATTLE_MONEY);
     }
 
+    fn chat_texts(game: &Game) -> Vec<&str> {
+        game.chat.iter().map(|line| line.text.as_str()).collect()
+    }
+
     #[test]
-    fn chat_posts_during_battle_and_keeps_only_the_last_few_lines() {
+    fn nothing_is_posted_until_something_happens() {
         let mut game = in_battle();
-        assert!(game.chat.is_empty());
-        for _ in 0..10 {
+        for _ in 0..20 {
             game.update(1.0);
         }
-        let posted = game.chat.len();
-        assert!(posted >= 2, "only {posted} after 10 seconds");
-        for _ in 0..200 {
-            game.update(1.0);
-            assert!(game.chat.len() <= hud::CHAT_LINES);
+        assert!(chat_texts(&game).is_empty(), "{:?}", chat_texts(&game));
+    }
+
+    #[test]
+    fn a_new_unit_reports_it_is_ready() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildCell(2));
+        assert_eq!(chat_texts(&game), ["Sniper ready"]);
+    }
+
+    #[test]
+    fn losing_a_unit_or_building_reports_it_but_killing_one_does_not() {
+        let mut game = in_battle();
+        let tower = tower_of(&game, 0);
+        game.units[tower].alive = false;
+        game.update(0.01);
+        assert_eq!(chat_texts(&game), ["Tower lost"]);
+
+        let mut game = in_battle();
+        let enemy = game.units.iter().position(|u| u.owner == 1).unwrap();
+        game.units[enemy].alive = false;
+        game.update(0.01);
+        assert!(chat_texts(&game).is_empty());
+    }
+
+    #[test]
+    fn a_side_with_nothing_left_is_reported_defeated_once() {
+        let mut game = in_battle();
+        kill_owners(&mut game, &[1]);
+        let name = game.stats_rows()[1].name.clone();
+        assert_eq!(chat_texts(&game), [format!("{name} defeated")]);
+        game.update(0.01);
+        assert_eq!(chat_texts(&game).len(), 1, "only once");
+    }
+
+    #[test]
+    fn the_player_is_reported_defeated_too() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildCell(0));
+        game.units.retain(|u| u.owner != 0 || u.role == Role::Scout);
+        game.chat.clear();
+        kill_owners(&mut game, &[0]);
+        let name = game.stats_rows()[0].name.clone();
+        assert_eq!(
+            chat_texts(&game),
+            ["Scout lost".to_string(), format!("{name} defeated")]
+        );
+    }
+
+    #[test]
+    fn the_superweapon_reports_ready_when_it_has_recharged_and_not_before() {
+        let mut game = in_battle();
+        game.update(1.0);
+        assert!(
+            chat_texts(&game).is_empty(),
+            "ready from the start needs no message"
+        );
+
+        game.strike_recharge = 2.0;
+        game.update(1.0);
+        assert!(chat_texts(&game).is_empty(), "still recharging");
+        game.update(1.5);
+        assert_eq!(chat_texts(&game), ["Superweapon ready"]);
+        game.update(1.0);
+        assert_eq!(chat_texts(&game).len(), 1, "only once");
+    }
+
+    #[test]
+    fn a_turned_off_superweapon_never_reports_ready() {
+        let mut game = in_battle();
+        game.skirmish.superweapons = false;
+        game.strike_recharge = 1.0;
+        game.update(2.0);
+        assert!(chat_texts(&game).is_empty());
+    }
+
+    #[test]
+    fn chat_keeps_only_the_last_few_lines_and_they_age_away() {
+        let mut game = in_battle();
+        for _ in 0..hud::CHAT_LINES + 2 {
+            click_hud(&mut game, Action::BuildCell(0));
         }
         assert_eq!(game.chat.len(), hud::CHAT_LINES);
+        game.update(CHAT_SECONDS - 1.0);
+        assert_eq!(game.chat.len(), hud::CHAT_LINES, "still there");
+        game.update(2.0);
+        assert!(game.chat.is_empty(), "gone");
     }
 
     #[test]
-    fn chat_varies_and_uses_every_message_given_time() {
+    fn chat_stands_still_while_paused_and_clears_for_a_new_battle() {
         let mut game = in_battle();
-        let mut seen: Vec<&str> = Vec::new();
-        for _ in 0..3000 {
-            game.update(1.0);
-            for line in &game.chat {
-                if !seen.contains(line) {
-                    seen.push(line);
-                }
-            }
-        }
-        assert_eq!(seen.len(), hud::CHAT_MESSAGES.len());
-    }
-
-    #[test]
-    fn chat_stops_while_paused_and_clears_for_a_new_battle() {
-        let mut game = in_battle();
-        for _ in 0..20 {
-            game.update(1.0);
-        }
+        click_hud(&mut game, Action::BuildCell(0));
         let before = game.chat.clone();
         game.handle(Event::KeyDown(Key::Pause));
-        for _ in 0..20 {
-            game.update(1.0);
-        }
+        game.update(CHAT_SECONDS * 2.0);
         assert_eq!(game.chat, before);
+        game.handle(Event::KeyDown(Key::Pause));
         leave_battle(&mut game);
         click(&mut game, Action::SinglePlayer);
         click(&mut game, Action::Tutorial);

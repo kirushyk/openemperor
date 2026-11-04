@@ -138,7 +138,7 @@ pub struct Terrain {
 }
 
 /// Xorshift: repeatable, and it needs no dependency.
-pub fn xorshift(state: &mut u32) -> u32 {
+fn xorshift(state: &mut u32) -> u32 {
     *state ^= *state << 13;
     *state ^= *state >> 17;
     *state ^= *state << 5;

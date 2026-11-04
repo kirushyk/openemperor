@@ -33,20 +33,6 @@ pub const GAUGE_END_DEGREES: f32 = 360.0;
 pub const MAX_ENERGY: i32 = 100;
 
 pub const CHAT_LINES: usize = 5;
-pub const CHAT_MESSAGES: [&str; 12] = [
-    "Unit lost",
-    "Reinforcements are approaching",
-    "Base under attack",
-    "Construction complete",
-    "Enemy unit spotted",
-    "Insufficient funds",
-    "Low power",
-    "Building captured",
-    "New technology available",
-    "Radar online",
-    "Crate discovered",
-    "Ally requests assistance",
-];
 
 fn panel_x(width: f32, height: f32) -> f32 {
     width - (MARGIN + PANEL_W) * ui_scale(height)
@@ -372,22 +358,12 @@ mod tests {
     }
 
     #[test]
-    fn the_chat_has_the_two_requested_messages_and_ten_more() {
-        assert!(CHAT_MESSAGES.contains(&"Unit lost"));
-        assert!(CHAT_MESSAGES.contains(&"Reinforcements are approaching"));
-        assert_eq!(CHAT_MESSAGES.len(), 12);
-    }
-
-    #[test]
     fn the_chat_stays_clear_of_the_tabs_and_is_small() {
         for (w, h) in SCREENS {
             let px = chat_text_px(h);
             assert!(px <= small_text_px(h));
-            let widest = CHAT_MESSAGES
-                .iter()
-                .map(|m| text_width(m))
-                .fold(0.0, f32::max)
-                * px;
+            // The longest line there can be: a name of the longest length, defeated.
+            let widest = text_width("Sixteen letters! defeated") * px;
             let (x, y) = chat_line(CHAT_LINES - 1, h);
             assert!(x + widest < build_tabs(w, h)[0].x, "at {w}x{h}");
             assert!(y < h / 2.0);

@@ -1600,7 +1600,7 @@ fn draw_chat(canvas: &mut Canvas, game: &Game) {
     let px = chat_px(game);
     for (i, line) in game.chat.iter().enumerate() {
         let (x, cy) = hud::chat_line(i, game.height);
-        let (w, h) = (font::text_width(line) * px, font::CAP_HEIGHT * px);
+        let (w, h) = (font::text_width(&line.text) * px, font::CAP_HEIGHT * px);
         let pad = 4.0 * s;
         canvas.rect(
             x - pad,
@@ -1609,7 +1609,7 @@ fn draw_chat(canvas: &mut Canvas, game: &Game) {
             h + pad * 2.0,
             CHAT_BACKING,
         );
-        canvas.text_left(line, x, cy, px, TEXT);
+        canvas.text_left(&line.text, x, cy, px, TEXT);
     }
 }
 

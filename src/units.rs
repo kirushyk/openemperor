@@ -135,6 +135,12 @@ const RELOAD_SECONDS: f32 = 1.2;
 const LEAVES_PAD: f32 = 1.5;
 /// How close above its pad a machine has come to settle on it.
 const OVER_PAD: f32 = 0.5;
+/// How close to a pad a machine short of rockets gets a full one to make way, or goes to it.
+const PAD_NEARBY: f32 = 10.0;
+/// How far from a pad a machine waits for it to be free.
+const PAD_BESIDE: f32 = 2.8;
+/// How far from a pad a machine waiting for it no longer counts as beside it.
+const PAD_WAITS: f32 = 4.5;
 /// How far along the row of a group's buildings its landing pad stands, past the hangar.
 const PAD_ALONG: f32 = -5.5;
 /// How much of its health something must have lost to smoke, to show black stains, and to burn.
@@ -1865,10 +1871,15 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 // A carryall and the vehicle it has hold of are meant to be together.
                 let held_by =
                     |held: &Unit, by: &Unit| held.theft.is_some_and(|theft| theft.carrier == by.id);
+                // And so are a machine and the pad it is using.
+                let using =
+                    |machine: &Unit, pad: &Unit| machine.pad.is_some_and(|used| used.id == pad.id);
                 if !units[a].alive
                     || !units[b].alive
                     || held_by(&units[a], &units[b])
                     || held_by(&units[b], &units[a])
+                    || using(&units[a], &units[b])
+                    || using(&units[b], &units[a])
                 {
                     continue;
                 }
@@ -1901,6 +1912,10 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                     Ordering::Equal => (0.5, 0.5),
                 };
                 for (i, sign, share) in [(a, -1.0, share_a), (b, 1.0, share_b)] {
+                    // Nothing at all moves a building, however solid the other is.
+                    if units[i].kind.is_building() {
+                        continue;
+                    }
                     let push = overlap * share;
                     let (x, z) = (units[i].x + nx * push * sign, units[i].z + nz * push * sign);
                     if units[i].can_enter(terrain, x, z) {
@@ -2269,7 +2284,8 @@ fn alert_landers(units: &mut [Unit], teams: &[usize]) {
 
 /// Sends machines out of rockets to a free landing pad of their owner's, loads those sitting on
 /// one, and lets go of a pad once they have left it with rockets on board. One out of rockets
-/// that has been sent elsewhere goes there first, then back. With no pad free it waits.
+/// that has been sent elsewhere goes there first, then back. With no pad free it waits beside
+/// the nearest. A full one on a pad makes way for a friend near it that is short of rockets.
 fn tend_pads(units: &mut [Unit], dt: f32) {
     let is_pad_of =
         |u: &Unit, owner: usize| u.alive && u.role == Role::LandingPad && u.owner == owner;
@@ -2288,17 +2304,34 @@ fn tend_pads(units: &mut [Unit], dt: f32) {
             {
                 units[i].pad = None;
             }
-            Some(_) if unit.is_on_pad() => {
-                if unit.rockets_fired > 0 {
-                    units[i].reloading += dt;
-                    if units[i].reloading >= RELOAD_SECONDS {
-                        units[i].reloading = 0.0;
-                        units[i].rockets_fired -= 1;
-                    }
+            Some(_) if unit.is_on_pad() && unit.rockets_fired > 0 => {
+                units[i].reloading += dt;
+                if units[i].reloading >= RELOAD_SECONDS {
+                    units[i].reloading = 0.0;
+                    units[i].rockets_fired -= 1;
+                }
+            }
+            Some(pad) if unit.is_on_pad() => {
+                // Full, it makes way for a friend close by that is not.
+                let is_short_nearby = |u: &Unit| {
+                    u.id != unit.id
+                        && u.alive
+                        && u.owner == unit.owner
+                        && u.role.lands()
+                        && u.rockets_fired > 0
+                        && u.pad.is_none()
+                        && (u.x - pad.x).hypot(u.z - pad.z) <= PAD_NEARBY
+                };
+                if idle && units.iter().any(is_short_nearby) {
+                    units[i].pad = None;
+                    units[i].destination = beside_pad(pad, unit.id);
+                    units[i].reset_progress();
                 }
             }
             Some(pad) if !out => {
-                if (pad.x - unit.x).hypot(pad.z - unit.z) > LEAVES_PAD {
+                // It lets go of it if it has been sent off somewhere else.
+                let heading_there = unit.destination == (pad.x, pad.z);
+                if !heading_there && (pad.x - unit.x).hypot(pad.z - unit.z) > LEAVES_PAD {
                     units[i].pad = None;
                 }
             }
@@ -2308,31 +2341,46 @@ fn tend_pads(units: &mut [Unit], dt: f32) {
                     units[i].reset_progress();
                 }
             }
-            None if out && idle => {
+            // With rockets left it only tops up at a pad close by, with no enemy to go up for.
+            None if idle && (out || (unit.rockets_fired > 0 && !unit.alerted)) => {
                 let taken = |id: u32| {
                     units
                         .iter()
                         .any(|u| u.alive && u.pad.is_some_and(|pad| pad.id == id))
                 };
                 let away = |u: &Unit| (u.x - unit.x).hypot(u.z - unit.z);
-                let nearest = units
-                    .iter()
-                    .filter(|u| is_pad_of(u, unit.owner) && !taken(u.id))
-                    .min_by(|a, b| away(a).total_cmp(&away(b)))
-                    .map(|u| Pad {
-                        id: u.id,
-                        x: u.x,
-                        z: u.z,
-                    });
-                if let Some(pad) = nearest {
+                let as_pad = |u: &Unit| Pad {
+                    id: u.id,
+                    x: u.x,
+                    z: u.z,
+                };
+                let nearest_of = |free: bool| {
+                    units
+                        .iter()
+                        .filter(|u| is_pad_of(u, unit.owner) && (!free || !taken(u.id)))
+                        .min_by(|a, b| away(a).total_cmp(&away(b)))
+                };
+                let free = nearest_of(true).filter(|u| out || away(u) <= PAD_NEARBY);
+                if let Some(pad) = free.map(as_pad) {
                     units[i].pad = Some(pad);
                     units[i].destination = (pad.x, pad.z);
                     units[i].reset_progress();
+                } else if out && let Some(busy) = nearest_of(false).filter(|u| away(u) > PAD_WAITS)
+                {
+                    // All taken: it waits by the nearest, looking again every step.
+                    units[i].destination = beside_pad(as_pad(busy), unit.id);
+                    units[i].reset_progress();
                 }
             }
-            None => {}
+            _ => {}
         }
     }
+}
+
+/// A spot beside a landing pad to wait or to make way at, its own for each machine.
+fn beside_pad(pad: Pad, id: u32) -> (f32, f32) {
+    let (sin, cos) = (id as f32 * 2.4).sin_cos();
+    (pad.x + cos * PAD_BESIDE, pad.z + sin * PAD_BESIDE)
 }
 
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
@@ -4788,6 +4836,66 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_fires_all_it_has_then_flies_back_lands_on_the_unmoved_deck_and_loads_up() {
+        let terrain = open_map();
+        for role in [Role::Ornithopter, Role::Destroyer] {
+            let [mut machine, pad] = machine_and_pad(role);
+            machine.rockets_fired = 0;
+            machine.heading = std::f32::consts::PI;
+            // Far enough from the pad that it will not rise for this enemy once loaded.
+            machine.x = -25.0;
+            machine.destination = (-25.0, 50.0);
+            let mut enemy = enemy_at(-30.0, 50.0, UnitKind::Vehicle);
+            enemy.id = 9;
+            enemy.health = 1e7;
+            enemy.weapon = WeaponKind::Unarmed;
+            let spot = (pad.x, pad.z);
+            let mut units = [machine, pad, enemy];
+            let mut combat = crate::weapons::Combat::default();
+            let (mut ran_out, mut landed) = (false, false);
+            for _ in 0..6000 {
+                advance(&mut units, &terrain, &[0, 1], 0.05);
+                combat.advance(&mut units, &[0, 1], &terrain, 0.05);
+                assert_eq!((units[1].x, units[1].z), spot, "the pad stays put");
+                ran_out |= !units[0].has_rockets();
+                let over = (units[0].x - spot.0).hypot(units[0].z - spot.1);
+                landed |= ran_out && over < OVER_PAD && units[0].altitude == PAD_TOP;
+                if landed && units[0].rockets_fired == 0 {
+                    break;
+                }
+            }
+            assert!(ran_out, "{role:?} used them all: {:?}", units[0]);
+            assert!(
+                landed,
+                "{role:?} came back and sat on the deck: {:?}",
+                units[0]
+            );
+            assert_eq!(units[0].rockets_fired, 0, "{role:?} is loaded");
+        }
+    }
+
+    #[test]
+    fn nothing_shoves_a_building_not_even_another_building_or_a_machine_coming_down() {
+        let terrain = open_map();
+        let mut hangar = unit_at(0.0, 50.0, UnitKind::Building);
+        hangar.id = 1;
+        let mut pad = unit_at(1.0, 50.0, UnitKind::Building);
+        pad.role = Role::LandingPad;
+        pad.id = 2;
+        let mut machine = unit_at(2.0, 50.0, UnitKind::Aircraft);
+        machine.role = Role::Ornithopter;
+        machine.id = 3;
+        machine.altitude = 0.5;
+        machine.destination = (2.0, 52.0);
+        let mut units = [hangar, pad, machine];
+        for _ in 0..40 {
+            advance(&mut units, &terrain, &[0], 0.05);
+        }
+        assert_eq!((units[0].x, units[0].z), (0.0, 50.0));
+        assert_eq!((units[1].x, units[1].z), (1.0, 50.0));
+    }
+
+    #[test]
     fn a_pad_takes_one_machine_and_the_other_waits_for_it_to_be_free() {
         let terrain = open_map();
         let [first, pad] = machine_and_pad(Role::Ornithopter);
@@ -4803,7 +4911,102 @@ mod tests {
             .iter()
             .find(|u| u.role.lands() && u.pad.is_none())
             .unwrap();
-        assert!(!waiting.is_moving());
+        assert!(waiting.is_moving(), "it comes to wait beside the pad");
+    }
+
+    #[test]
+    fn a_machine_with_no_free_pad_waits_beside_one_and_a_full_one_makes_way_for_it() {
+        let terrain = open_map();
+        let [mut full, pad] = machine_and_pad(Role::Ornithopter);
+        full.rockets_fired = 0;
+        full.x = pad.x;
+        full.z = pad.z;
+        full.destination = (pad.x, pad.z);
+        full.altitude = PAD_TOP;
+        full.pad = Some(Pad {
+            id: pad.id,
+            x: pad.x,
+            z: pad.z,
+        });
+        let spot = (pad.x, pad.z);
+        // Far off at first, so it has to come and wait.
+        let mut empty = machine_and_pad(Role::Destroyer)[0];
+        empty.id = 3;
+        empty.x = -20.0;
+        empty.destination = (-20.0, 50.0);
+        let mut loading = full;
+        loading.rockets_fired = 11;
+        let mut units = [loading, pad, empty];
+        for _ in 0..200 {
+            advance(&mut units, &terrain, &[0], 0.05);
+        }
+        assert!(units[0].is_on_pad(), "still loading");
+        let waits = (units[2].x - spot.0).hypot(units[2].z - spot.1);
+        assert!(waits < PAD_WAITS + 0.5, "it came to wait: {waits}");
+        assert!(units[2].rockets_fired > 0);
+        // The one on the pad finishes loading first, then gives way, and the other gets it.
+        for _ in 0..700 {
+            advance(&mut units, &terrain, &[0], 0.05);
+        }
+        assert_eq!(units[0].rockets_fired, 0);
+        assert_eq!(units[0].pad, None, "it made way");
+        assert!((units[0].x - spot.0).hypot(units[0].z - spot.1) > OVER_PAD);
+        assert_eq!(units[0].altitude, 0.0, "and sat down beside it");
+        assert_eq!(
+            units[2].rockets_fired, 0,
+            "the other loaded up: {:?}",
+            units[2]
+        );
+        assert_eq!((units[1].x, units[1].z), spot);
+    }
+
+    #[test]
+    fn a_full_machine_does_not_make_way_for_one_that_is_full_or_far_off() {
+        let terrain = open_map();
+        let [mut sitting, pad] = machine_and_pad(Role::Ornithopter);
+        sitting.rockets_fired = 0;
+        sitting.x = pad.x;
+        sitting.z = pad.z;
+        sitting.destination = (pad.x, pad.z);
+        sitting.altitude = PAD_TOP;
+        sitting.pad = Some(Pad {
+            id: pad.id,
+            x: pad.x,
+            z: pad.z,
+        });
+        let mut full = sitting;
+        full.id = 3;
+        full.pad = None;
+        full.altitude = 0.0;
+        full.x = pad.x + 4.0;
+        full.destination = (full.x, full.z);
+        let mut short_far = full;
+        short_far.id = 4;
+        short_far.rockets_fired = 1;
+        short_far.x = pad.x + PAD_NEARBY + 8.0;
+        short_far.destination = (short_far.x, short_far.z);
+        let mut units = [sitting, pad, full, short_far];
+        for _ in 0..40 {
+            advance(&mut units, &terrain, &[0], 0.05);
+        }
+        assert!(units[0].is_on_pad(), "{:?}", units[0]);
+    }
+
+    #[test]
+    fn a_machine_with_some_rockets_left_tops_up_at_a_free_pad_close_by() {
+        let terrain = open_map();
+        let [mut machine, pad] = machine_and_pad(Role::Ornithopter);
+        machine.rockets_fired = 2;
+        machine.x = pad.x - 5.0;
+        machine.destination = (machine.x, machine.z);
+        let mut units = [machine, pad];
+        for _ in 0..400 {
+            advance(&mut units, &terrain, &[0], 0.05);
+            if units[0].rockets_fired == 0 {
+                break;
+            }
+        }
+        assert_eq!(units[0].rockets_fired, 0, "{:?}", units[0]);
     }
 
     #[test]

@@ -133,10 +133,18 @@ pub const MAX_LIGHTS: usize = 16;
 /// What the ground shader makes of the ground.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Material {
-    Plain = 0,
+    /// Water low down, grass on the land.
     Water = 1,
+    /// Sand low down, dried cracked earth on the raised ground.
     Sand = 2,
+    /// Lava low down, dried cracked earth on the land.
     Lava = 3,
+    /// Ice low down, snow on the raised ground.
+    Ice = 4,
+    /// Gravel low down, slate on the raised ground.
+    Stone = 5,
+    /// Moss low down, slate on the raised ground.
+    Moss = 6,
 }
 
 /// A frame: the world, for the backend to place, light and shade, then what goes on the screen.

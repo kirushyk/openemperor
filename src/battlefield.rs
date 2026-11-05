@@ -642,7 +642,9 @@ impl Terrain {
             Planet::A => Material::Sand,
             Planet::C => Material::Water,
             Planet::G => Material::Lava,
-            Planet::D | Planet::S | Planet::T => Material::Plain,
+            Planet::D => Material::Ice,
+            Planet::S => Material::Stone,
+            Planet::T => Material::Moss,
         }
     }
 
@@ -1414,7 +1416,7 @@ pub fn draw(
     let shore = match terrain.material() {
         Material::Water => Some(BEACH),
         Material::Lava => Some(BASALT),
-        Material::Plain | Material::Sand => None,
+        Material::Sand | Material::Ice | Material::Stone | Material::Moss => None,
     };
     let view = View::new(camera, width, height);
     let point = |u: usize, v: usize| {
@@ -2222,7 +2224,9 @@ mod tests {
         assert_eq!(terrain(map_on(Planet::A)).material(), Material::Sand);
         assert_eq!(terrain(map_on(Planet::C)).material(), Material::Water);
         assert_eq!(terrain(map_on(Planet::G)).material(), Material::Lava);
-        assert_eq!(terrain(map_on(Planet::D)).material(), Material::Plain);
+        assert_eq!(terrain(map_on(Planet::D)).material(), Material::Ice);
+        assert_eq!(terrain(map_on(Planet::S)).material(), Material::Stone);
+        assert_eq!(terrain(map_on(Planet::T)).material(), Material::Moss);
     }
 
     #[test]

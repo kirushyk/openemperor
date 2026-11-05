@@ -1492,7 +1492,6 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
         }
         UnitKind::Building => draw_building(canvas, game, view, unit, color),
         UnitKind::Tower => {
-            let (right_x, right_z) = (-forward_z, forward_x);
             let wall = (unit.x, unit.z, 0.5, 0.5, 0.0);
             let head_base = units::TUBE_HEIGHT - 0.2;
             part(wall, (unit.y, unit.y + head_base), color.map(|c| c * 0.8));
@@ -1510,17 +1509,76 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
                 return;
             }
             for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
-                let tube = (
-                    ahead_x + right_x * side,
-                    ahead_z + right_z * side,
-                    0.3,
-                    0.06,
-                    unit.heading,
-                );
-                part(tube, height, color.map(|c| c * 0.5));
+                draw_tube(canvas, game, view, unit, side, color.map(|c| c * 0.5));
             }
         }
     }
+}
+
+/// A square tube of a missile tower, hinged at its back end and raised to its pitch.
+fn draw_tube(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    unit: &Unit,
+    side: f32,
+    color: [f32; 3],
+) {
+    const HALF: f32 = 0.06;
+    let (sin, cos) = unit.heading.sin_cos();
+    let (rise, out) = unit.tube_pitch.sin_cos();
+    // A point given along the tube, across it to the right, and up from its middle.
+    let point = |along: f32, across: f32, up: f32| {
+        let ahead = units::TUBE_HINGE + along * out - up * rise;
+        let right = side + across;
+        view.project(
+            unit.x + cos * ahead - sin * right,
+            unit.y + units::TUBE_HEIGHT + along * rise + up * out,
+            unit.z + sin * ahead + cos * right,
+        )
+    };
+    let length = units::TUBE_LENGTH;
+    let mut face = |corners: [(f32, f32, f32); 4], shade: f32| {
+        if let [Some(a), Some(b), Some(c), Some(d)] =
+            corners.map(|(along, across, up)| point(along, across, up))
+        {
+            fill_quad(canvas, game, [a, b, c, d], color.map(|c| c * shade));
+        }
+    };
+    // The side farther from the camera goes first, so that the nearer one covers it.
+    let (camera_x, camera_z) = view.position_on_ground();
+    let right_is_near = (camera_x - unit.x) * -sin + (camera_z - unit.z) * cos > 0.0;
+    let near = if right_is_near { HALF } else { -HALF };
+    for (across, shade) in [(-near, 0.6), (near, 0.8)] {
+        face(
+            [
+                (0.0, across, -HALF),
+                (length, across, -HALF),
+                (length, across, HALF),
+                (0.0, across, HALF),
+            ],
+            shade,
+        );
+    }
+    face(
+        [
+            (0.0, -HALF, HALF),
+            (length, -HALF, HALF),
+            (length, HALF, HALF),
+            (0.0, HALF, HALF),
+        ],
+        1.0,
+    );
+    // The open end, dark inside.
+    face(
+        [
+            (length, -HALF, -HALF),
+            (length, HALF, -HALF),
+            (length, HALF, HALF),
+            (length, -HALF, HALF),
+        ],
+        0.25,
+    );
 }
 
 /// A barracks, factory or hangar, with its door on its south side.

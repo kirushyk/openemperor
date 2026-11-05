@@ -6,8 +6,8 @@
 
 use crate::battlefield::Terrain;
 use crate::units::{
-    Point, ROCKET_SIDES, Role, Target, Unit, UnitKind, are_enemies, are_friends, distance,
-    substeps, turn_between,
+    Point, ROCKET_SIDES, Role, TUBE_HEIGHT, Target, Unit, UnitKind, are_enemies, are_friends,
+    distance, substeps, turn_between,
 };
 
 /// A unit with nothing in range looks again this often, in seconds.
@@ -35,6 +35,13 @@ const AIM_TURN: f32 = 2.0;
 const TOWER_IDLE_TURN: f32 = 0.5;
 /// How close to its target it must point, in radians, before it fires.
 const AIM_ALIGNMENT: f32 = 0.1;
+/// Radians per second a missile tower raises or lowers its tubes.
+const TUBE_PITCH_SPEED: f32 = 1.2;
+/// How far above its target a missile tower points, so that its missiles clear the ground.
+const TUBE_LOFT: f32 = 0.3;
+/// The lowest and highest its tubes go.
+const TUBE_LOWEST: f32 = -0.3;
+const TUBE_HIGHEST: f32 = 1.2;
 
 /// Fire and gas stay low: anything higher than this above the ground is out of their reach.
 const SPRAY_CEILING: f32 = 2.0;
@@ -466,6 +473,11 @@ impl Combat {
                 let flat = dx.hypot(dz).max(0.0001);
                 let direction = if units[i].altitude > 0.0 {
                     direction_to(from, to)
+                } else if units[i].role == Role::Tower {
+                    // A tower's missiles leave the way its tubes point.
+                    let (rise, out) = units[i].tube_pitch.sin_cos();
+                    let (sin, cos) = units[i].heading.sin_cos();
+                    (cos * out, rise, sin * out)
                 } else {
                     direction_to((0.0, 0.0, 0.0), (dx / flat, 0.8, dz / flat))
                 };
@@ -779,21 +791,38 @@ fn choose_aim(units: &[Unit], shooter: usize, teams: &[usize], terrain: &Terrain
 /// keeps looking slowly around. Returns whether it now points at its aim.
 fn turn_to_aim(units: &mut [Unit], index: usize, aim: Option<Aim>, dt: f32) -> bool {
     let goal = match aim {
-        Some(Aim::Unit(t)) => (units[t].x, units[t].z),
-        Some(Aim::Place((x, _, z))) => (x, z),
+        Some(Aim::Unit(t)) => units[t].center(),
+        Some(Aim::Place(place)) => place,
         None => {
             if units[index].kind.is_building() {
                 units[index].heading += TOWER_IDLE_TURN * dt;
+                pitch_tubes(&mut units[index], 0.0, dt);
             }
             return false;
         }
     };
-    let (dx, dz) = (goal.0 - units[index].x, goal.1 - units[index].z);
+    let (dx, dz) = (goal.0 - units[index].x, goal.2 - units[index].z);
     let turn = turn_between(units[index].heading, dz.atan2(dx));
     let most = AIM_TURN * dt;
     let turned = turn.clamp(-most, most);
     units[index].heading += turned;
-    (turn - turned).abs() <= AIM_ALIGNMENT
+    let unit = &mut units[index];
+    let pitched = unit.role != Role::Tower || {
+        let rise = goal.1 - unit.y - TUBE_HEIGHT;
+        let wanted = (rise.atan2(dx.hypot(dz)) + TUBE_LOFT).clamp(TUBE_LOWEST, TUBE_HIGHEST);
+        pitch_tubes(unit, wanted, dt)
+    };
+    pitched && (turn - turned).abs() <= AIM_ALIGNMENT
+}
+
+/// Raises or lowers a missile tower's tubes towards a pitch. Returns whether they are there.
+fn pitch_tubes(unit: &mut Unit, wanted: f32, dt: f32) -> bool {
+    if unit.role != Role::Tower {
+        return true;
+    }
+    let most = TUBE_PITCH_SPEED * dt;
+    unit.tube_pitch += (wanted - unit.tube_pitch).clamp(-most, most);
+    (wanted - unit.tube_pitch).abs() <= AIM_ALIGNMENT
 }
 
 /// The enemy it was told to attack if that one is in range, otherwise whoever is nearest.
@@ -2105,6 +2134,71 @@ mod tests {
         units[0].altitude = up;
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         assert_eq!(combat.missiles.len(), 1);
+    }
+
+    fn missile_tower_facing_east() -> Unit {
+        let mut tower = Unit::for_test(0.0, 60.0, UnitKind::Tower);
+        tower.id = 1;
+        tower.weapon = WeaponKind::Missile;
+        tower.heading = 0.0;
+        tower
+    }
+
+    #[test]
+    fn a_missile_tower_raises_its_tubes_higher_for_aircraft_before_firing_along_them() {
+        let mut units = [missile_tower_facing_east(), plane_at(4.0, 60.0)];
+        units[1].cooldown = 1000.0;
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.02);
+        assert!(
+            combat.missiles.is_empty(),
+            "the tubes still have to come up"
+        );
+        let mut last = units[0].tube_pitch;
+        assert!(last > 0.0);
+        while combat.missiles.is_empty() {
+            combat.advance(&mut units, &TEAMS, flat(), 0.02);
+            assert!(units[0].tube_pitch >= last, "only up");
+            last = units[0].tube_pitch;
+            assert!(last < 2.0, "it should have fired");
+        }
+        let (dx, dy, _) = combat.missiles[0].direction;
+        assert!(dy > 0.4 && dx > 0.0, "up along its tube: {dy} {dx}");
+        assert!(units[0].muzzle().1 > TUBE_HEIGHT, "the tube's end rose too");
+    }
+
+    #[test]
+    fn a_missile_tower_lowers_its_tubes_for_something_on_the_ground_right_below_it() {
+        let mut units = [missile_tower_facing_east(), target_at(2.0, 60.0)];
+        units[1].cooldown = 1000.0;
+        let mut combat = Combat::default();
+        let mut lowest = 0.0_f32;
+        for _ in 0..100 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            lowest = lowest.min(units[0].tube_pitch);
+        }
+        assert!(lowest < 0.0, "{lowest}");
+        assert!(units[1].health < 100.0, "and it hits");
+    }
+
+    #[test]
+    fn a_missile_tower_with_nothing_to_fire_at_levels_its_tubes_and_a_flame_tower_has_none() {
+        let mut units = [missile_tower_facing_east()];
+        units[0].tube_pitch = 0.8;
+        let mut combat = Combat::default();
+        for _ in 0..40 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert_eq!(units[0].tube_pitch, 0.0);
+
+        let mut flame = missile_tower_facing_east();
+        flame.role = Role::FlameTower;
+        flame.weapon = WeaponKind::Flame;
+        let mut units = [flame, target_at(2.0, 60.0)];
+        for _ in 0..20 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert_eq!(units[0].tube_pitch, 0.0);
     }
 
     fn rocket_launcher_facing_east() -> Unit {

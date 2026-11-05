@@ -353,6 +353,9 @@ const OPPONENT_TOWER_OFFSET: f32 = 3.5;
 pub const TUBE_HEIGHT: f32 = 1.26;
 /// How far ahead of a tower's middle its tubes end, and how far apart they stand from it.
 const TUBE_REACH: f32 = 0.7;
+/// How far ahead of a tower's middle its tubes are hinged, and how long they are from there.
+pub const TUBE_HINGE: f32 = 0.1;
+pub const TUBE_LENGTH: f32 = TUBE_REACH - TUBE_HINGE;
 pub const TUBE_SPREAD: f32 = 0.18;
 /// Where a rocket launcher's rockets lie from its middle, in the order they are fired: the left
 /// rack's three, then the right rack's.
@@ -409,6 +412,8 @@ pub struct Unit {
     pub alive: bool,
     /// Which of a tower's two tubes fires next.
     pub second_tube: bool,
+    /// How far a missile tower's tubes are raised, in radians: below level if negative.
+    pub tube_pitch: f32,
     /// How many rockets of its salvo have gone: they stay gone until it has reloaded.
     pub rockets_fired: usize,
     /// How far it leans into a turn along its length, in radians: positive to its right.
@@ -626,10 +631,12 @@ impl Unit {
                 (_, true) => TUBE_SPREAD,
                 (_, false) => -TUBE_SPREAD,
             };
+            let (rise, out) = self.tube_pitch.sin_cos();
+            let reach = TUBE_HINGE + TUBE_LENGTH * out;
             return (
-                self.x + cos * TUBE_REACH - sin * side,
-                self.y + TUBE_HEIGHT,
-                self.z + sin * TUBE_REACH + cos * side,
+                self.x + cos * reach - sin * side,
+                self.y + TUBE_HEIGHT + TUBE_LENGTH * rise,
+                self.z + sin * reach + cos * side,
             );
         }
         (self.x, self.y + self.altitude + HEIGHT * 0.8, self.z)
@@ -675,6 +682,7 @@ impl Unit {
             heavy: kind == UnitKind::Vehicle,
             alive: true,
             second_tube: false,
+            tube_pitch: 0.0,
             rockets_fired: 0,
             bank: 0.0,
             alerted: false,
@@ -791,6 +799,7 @@ fn place_unit(
         heavy: kind == UnitKind::Vehicle,
         alive: true,
         second_tube: false,
+        tube_pitch: 0.0,
         rockets_fired: 0,
         bank: 0.0,
         alerted: false,

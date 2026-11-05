@@ -1085,7 +1085,11 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
             None if unit.is_moving() => {
                 draw_dashed_line(canvas, game, view, from, unit.destination, ORDER_LINE)
             }
-            None => {}
+            None => {
+                if let Some(point) = unit.gathering {
+                    draw_dashed_line(canvas, game, view, from, point, ORDER_LINE);
+                }
+            }
         }
     }
 }

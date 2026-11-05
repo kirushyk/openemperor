@@ -62,7 +62,8 @@ pub enum UnitKind {
     Vehicle,
     /// Stays in the air, passing over water, lava, ruins and anyone on the ground.
     Aircraft,
-    /// A building: it never moves and takes no orders, and turns its two tubes by itself.
+    /// A building that fights: it never moves, turns its two tubes by itself, and can be told
+    /// what to fire on.
     Tower,
     /// A large building that makes units and fights no one.
     Building,
@@ -435,6 +436,8 @@ pub struct Unit {
     pub second_tube: bool,
     /// How far a missile tower's tubes are raised, in radians: below level if negative.
     pub tube_pitch: f32,
+    /// Where a building that makes units sends them, if the player has said.
+    pub gathering: Option<(f32, f32)>,
     /// How many shots of its salvo have gone: they stay gone until it has reloaded.
     pub salvo_fired: usize,
     /// How far back each of a Heavy Strider's cannons has recoiled, from 1 when it fires to 0.
@@ -695,7 +698,13 @@ impl Unit {
 
     /// Whether the player can select it, and so give it orders.
     pub fn is_selectable(&self) -> bool {
-        self.owner == 0 && !self.kind.is_building()
+        self.owner == 0
+    }
+
+    /// Whether a box or the select-all key takes it. Buildings that make units are only ever
+    /// picked by a single click of their own.
+    pub fn is_selected_in_groups(&self) -> bool {
+        self.is_selectable() && self.kind != UnitKind::Building
     }
 
     /// A lone player's unit standing at a point, ready to fire with bullets.
@@ -724,6 +733,7 @@ impl Unit {
             alive: true,
             second_tube: false,
             tube_pitch: 0.0,
+            gathering: None,
             salvo_fired: 0,
             recoil: [0.0; 4],
             stride: 0.0,
@@ -843,6 +853,7 @@ fn place_unit(
         alive: true,
         second_tube: false,
         tube_pitch: 0.0,
+        gathering: None,
         salvo_fired: 0,
         recoil: [0.0; 4],
         stride: 0.0,
@@ -906,27 +917,45 @@ pub fn produce(
     } else {
         door
     };
-    let taken: Vec<(f32, f32)> = units
+    let taken = spots_taken(units, false);
+    let Some(&spot) = find_slots(terrain, near, 1, &taken, false).first() else {
+        return false;
+    };
+    let side = (owner, maker.color);
+    let appears_at = if vehicle { door } else { spot };
+    // Sent on to the gathering point if there is one, to a spot there of its own.
+    let flying = role.kind().flies() && !role.lands();
+    let gathers_at = maker.gathering.and_then(|point| {
+        let taken = spots_taken(units, flying);
+        find_slots(terrain, point, 1, &taken, flying)
+            .first()
+            .copied()
+    });
+    place_unit(units, terrain, appears_at, role, role.weapon(), side, id);
+    if let Some(new) = units.last_mut() {
+        if vehicle {
+            new.heading = FRAC_PI_2;
+        }
+        if let Some(way) = gathers_at.or(vehicle.then_some(spot)) {
+            new.destination = way;
+        }
+    }
+    true
+}
+
+/// Where a new unit must not go: where everyone in its layer stands or is headed, and around
+/// the buildings.
+fn spots_taken(units: &[Unit], flying: bool) -> Vec<(f32, f32)> {
+    units
         .iter()
-        .filter(|u| u.alive && !u.keeps_to_the_air())
+        .filter(|u| u.alive && u.keeps_to_the_air() == flying)
         .flat_map(|u| {
             let around = u.kind.is_building().then(|| building_footprint(u));
             [(u.x, u.z), u.destination]
                 .into_iter()
                 .chain(around.into_iter().flatten())
         })
-        .collect();
-    let Some(&spot) = find_slots(terrain, near, 1, &taken, false).first() else {
-        return false;
-    };
-    let side = (owner, maker.color);
-    let appears_at = if vehicle { door } else { spot };
-    place_unit(units, terrain, appears_at, role, role.weapon(), side, id);
-    if let Some(new) = units.last_mut().filter(|_| vehicle) {
-        new.heading = FRAC_PI_2;
-        new.destination = spot;
-    }
-    true
+        .collect()
 }
 
 /// Puts up an owner's three buildings in a row behind a group's middle.
@@ -1124,6 +1153,13 @@ pub fn order_move(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, tea
     for flying in [false, true] {
         order_layer(units, target, terrain, teams, flying);
     }
+    // A tower cannot go anywhere, but it does give up what it was told to fire on.
+    for tower in units
+        .iter_mut()
+        .filter(|u| u.selected && u.kind == UnitKind::Tower)
+    {
+        tower.target = None;
+    }
 }
 
 fn order_layer(
@@ -1140,7 +1176,8 @@ fn order_layer(
         .filter(|u| {
             let can_be_run_over =
                 any_heavy && are_enemies(teams, 0, u.owner) && !u.kind.is_building();
-            in_layer(u) && !u.selected && u.alive && !can_be_run_over
+            // Buildings stay in the way whether selected or not.
+            in_layer(u) && (!u.selected || u.kind.is_building()) && u.alive && !can_be_run_over
         })
         .flat_map(|u| {
             let around = u.kind.is_building().then(|| building_footprint(u));
@@ -1149,7 +1186,10 @@ fn order_layer(
         .collect();
     // Deployed units are dug in and stay put.
     let mut chosen: Vec<usize> = (0..units.len())
-        .filter(|&i| in_layer(&units[i]) && units[i].selected && !units[i].deployed)
+        .filter(|&i| {
+            let unit = &units[i];
+            in_layer(unit) && unit.selected && !unit.deployed && !unit.kind.is_building()
+        })
         .collect();
     let mut slots = find_slots(terrain, target, chosen.len(), &taken, flying);
     // Farthest first, so that those with the longest walk are not left the leftover spots.
@@ -1164,6 +1204,16 @@ fn order_layer(
         units[i].target = None;
         units[i].unloading = units[i].carrying;
         units[i].reset_progress();
+    }
+}
+
+/// Tells every selected building that makes units where to send them.
+pub fn set_gathering(units: &mut [Unit], point: (f32, f32)) {
+    for unit in units
+        .iter_mut()
+        .filter(|u| u.selected && u.kind == UnitKind::Building)
+    {
+        unit.gathering = Some(point);
     }
 }
 
@@ -1237,6 +1287,8 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                     if (other.x - x).hypot(other.z - z) <= touching {
                         (units[other_index].owner, units[other_index].color) =
                             (units[i].owner, units[i].color);
+                        units[other_index].selected = false;
+                        units[other_index].gathering = None;
                         units[i].stand_down();
                     } else {
                         units[i].destination = (other.x, other.z);
@@ -1246,7 +1298,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                 other.center()
             }
         };
-        if units[i].deployed {
+        if units[i].deployed || units[i].kind.is_building() {
             continue;
         }
         let away = distance(goal, units[i].center());
@@ -2244,7 +2296,7 @@ mod tests {
             assert_eq!(flame.len(), 1);
             assert_eq!(flame[0].color, color);
             assert_eq!(flame[0].weapon, WeaponKind::Flame);
-            assert!(!flame[0].is_selectable());
+            assert_eq!(flame[0].is_selected_in_groups(), owner == 0);
         }
     }
 
@@ -2260,7 +2312,7 @@ mod tests {
             assert_eq!(towers[0].color, color);
             assert_eq!(towers[0].weapon, WeaponKind::Missile);
             assert_eq!(towers[0].health, UnitKind::Tower.max_health());
-            assert!(!towers[0].is_selectable());
+            assert_eq!(towers[0].is_selected_in_groups(), owner == 0);
         }
     }
 
@@ -3223,7 +3275,8 @@ mod tests {
                 let building = building.expect("all three");
                 assert!(terrain.can_walk(building.x, building.z));
                 assert_eq!(building.weapon, WeaponKind::Unarmed);
-                assert!(!building.is_selectable());
+                assert_eq!(building.is_selectable(), owner == 0);
+                assert!(!building.is_selected_in_groups());
             }
         }
         let mut engineer = unit_at(0.0, 60.0, UnitKind::Infantry);
@@ -3250,6 +3303,79 @@ mod tests {
                 "the body is up on its legs"
             );
         }
+    }
+
+    #[test]
+    fn new_units_go_on_to_their_buildings_gathering_point_each_to_its_own_spot() {
+        let mut units = base_of(0);
+        let point = (6.0, 52.0);
+        for building in &mut units {
+            building.selected = building.role == Role::Barracks;
+        }
+        set_gathering(&mut units, point);
+        let barracks = units.iter().find(|u| u.role == Role::Barracks).unwrap();
+        assert_eq!(barracks.gathering, Some(point));
+        let factory = units.iter().find(|u| u.role == Role::Factory).unwrap();
+        assert_eq!(factory.gathering, None, "not selected");
+        assert!(produce(&mut units, open_ground(), Role::Scout, 0, 50));
+        assert!(produce(&mut units, open_ground(), Role::Scout, 0, 51));
+        let [.., first, second] = &units[..] else {
+            panic!()
+        };
+        assert!(first.is_moving() && second.is_moving());
+        assert_eq!(first.destination, point);
+        assert_ne!(second.destination, point);
+        let near = |u: &Unit| (u.destination.0 - point.0).hypot(u.destination.1 - point.1);
+        assert!(near(second) < 3.0, "{second:?}");
+        assert!(first.z > 60.0, "they set off from the building");
+    }
+
+    #[test]
+    fn a_selected_tower_takes_no_move_order_but_fires_on_what_it_is_told() {
+        let mut tower = unit_at(0.0, 60.0, UnitKind::Tower);
+        tower.selected = true;
+        tower.id = 1;
+        tower.weapon = WeaponKind::Missile;
+        let mut enemy = enemy_at(30.0, 60.0, UnitKind::Infantry);
+        enemy.id = 2;
+        let mut units = [tower, enemy];
+        order_move(&mut units, (5.0, 60.0), open_ground(), &TWO_SIDES);
+        assert_eq!(units[0].destination, (0.0, 60.0));
+        order_attack(&mut units, 1, &TWO_SIDES);
+        assert_eq!(units[0].target, Some(Target::Unit(2)));
+        advance(&mut units, open_ground(), &TWO_SIDES, 0.5);
+        assert_eq!(
+            units[0].destination,
+            (0.0, 60.0),
+            "not even after a far target"
+        );
+        assert!(!units[0].is_moving());
+        assert_eq!(units[0].x, 0.0);
+
+        order_move(&mut units, (5.0, 60.0), open_ground(), &TWO_SIDES);
+        assert_eq!(units[0].target, None, "a plain click calls it off");
+    }
+
+    #[test]
+    fn nobody_is_sent_inside_a_building_that_happens_to_be_selected() {
+        let mut units = base_of(0);
+        let barracks = *units.iter().find(|u| u.role == Role::Barracks).unwrap();
+        units[0].selected = true;
+        units
+            .iter_mut()
+            .find(|u| u.role == Role::Barracks)
+            .unwrap()
+            .selected = true;
+        let mut tank = unit_at(barracks.x + 8.0, barracks.z, UnitKind::Vehicle);
+        tank.selected = true;
+        units.push(tank);
+        order_move(&mut units, (barracks.x, barracks.z), open_ground(), &[0]);
+        let sent = units.last().unwrap().destination;
+        let away = (sent.0 - barracks.x).hypot(sent.1 - barracks.z);
+        assert!(
+            away > barracks.kind.radius() + UnitKind::Vehicle.radius(),
+            "{away}"
+        );
     }
 
     #[test]

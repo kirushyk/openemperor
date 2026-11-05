@@ -1349,7 +1349,10 @@ impl Game {
     /// spot below it and by the spot it appears over on screen, since a box drawn around
     /// what the player sees should catch it.
     pub fn in_selection_drag(&self, unit: &Unit) -> bool {
-        let Some(rectangle) = self.selection_ground().filter(|_| unit.is_selectable()) else {
+        let Some(rectangle) = self
+            .selection_ground()
+            .filter(|_| unit.is_selected_in_groups())
+        else {
             return false;
         };
         units::in_selection(rectangle, unit) || self.appears_in_selection(rectangle, unit)
@@ -1576,8 +1579,11 @@ impl Game {
         } else if let Some(chosen) = self.attackable_under_cursor() {
             units::order_attack(&mut self.units, chosen, &self.teams);
         } else if let Some(picked) = self.unit_under_cursor() {
+            // A building that makes units is always picked on its own.
+            let adding = adding && self.units[picked].kind != UnitKind::Building;
             for (i, unit) in self.units.iter_mut().enumerate() {
-                unit.selected = i == picked || (adding && unit.selected);
+                let stays = adding && unit.selected && unit.kind != UnitKind::Building;
+                unit.selected = i == picked || stays;
             }
         } else if adding {
             // Nothing picked, nothing to add.
@@ -1588,6 +1594,7 @@ impl Game {
                 battlefield::terrain(self.battle_map),
                 &self.teams,
             );
+            units::set_gathering(&mut self.units, target);
         }
         self.selection_anchor = None;
     }
@@ -2194,7 +2201,7 @@ impl Game {
                 }
                 (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => {
                     for unit in &mut self.units {
-                        unit.selected = unit.is_selectable();
+                        unit.selected = unit.is_selected_in_groups();
                     }
                 }
                 (_, Key::Escape) => self.go_back(),
@@ -3639,7 +3646,7 @@ mod tests {
     }
 
     /// How many units the player's first group has.
-    const FIRST_GROUP: usize = 16;
+    const FIRST_GROUP: usize = 18;
 
     fn selected_count(game: &Game) -> usize {
         game.units.iter().filter(|u| u.selected).count()
@@ -3978,12 +3985,13 @@ mod tests {
     }
 
     #[test]
-    fn the_players_tower_cannot_be_selected_but_stands_in_the_box() {
+    fn the_players_tower_is_selected_by_a_box_or_a_click_along_with_everyone_else() {
         let mut game = in_battle();
         let tower = tower_of(&game, 0);
         let (from, to) = around_first_group();
         drag_select(&mut game, from, to);
-        assert!(!game.units[tower].selected);
+        assert!(game.units[tower].selected);
+        assert!(selected_count(&game) > 1, "together with the group");
 
         game.handle(Event::RightDown);
         let unit = game.units[tower];
@@ -3992,7 +4000,107 @@ mod tests {
             .project(unit.x, unit.pick_height(), unit.z)
             .unwrap();
         click_at(&mut game, x, y);
-        assert_eq!(selected_count(&game), 0);
+        assert_eq!(selected_count(&game), 1);
+        assert!(game.units[tower].selected);
+
+        game.handle(Event::KeyDown(Key::Char('a')));
+        assert!(game.units[tower].selected, "and by the select-all key");
+    }
+
+    #[test]
+    fn a_selected_tower_can_be_forced_to_fire_on_a_place_or_a_friend() {
+        let mut game = in_battle();
+        let tower = tower_of(&game, 0);
+        game.units[tower].selected = true;
+        let (x, y) = clear_spot_on_screen();
+        let place = game.view().ground_at(x, y).unwrap();
+        game.handle(Event::Control(true));
+        assert_eq!(game.cursor_look(), CursorLook::Attack);
+        click_at(&mut game, x, y);
+        assert_eq!(
+            game.units[tower].target,
+            Some(crate::units::Target::Place(place.0, place.1))
+        );
+
+        let friend = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .unwrap();
+        let unit = game.units[friend];
+        let (x, y) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
+        click_at(&mut game, x, y);
+        assert_eq!(
+            game.units[tower].target,
+            Some(crate::units::Target::Forced(unit.id))
+        );
+        assert_eq!(
+            game.units[tower].destination,
+            (game.units[tower].x, game.units[tower].z)
+        );
+    }
+
+    #[test]
+    fn a_building_that_makes_units_is_picked_only_by_a_click_and_sets_its_gathering_point() {
+        let mut game = in_battle();
+        let barracks = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Barracks)
+            .unwrap();
+        let unit = game.units[barracks];
+        let at = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
+        // A box right around it finds nothing, and neither does the select-all key.
+        drag_select(
+            &mut game,
+            (at.0 - 60.0, at.1 - 60.0),
+            (at.0 + 60.0, at.1 + 60.0),
+        );
+        assert!(!game.units[barracks].selected);
+        game.handle(Event::KeyDown(Key::Char('a')));
+        assert!(!game.units[barracks].selected);
+        assert!(selected_count(&game) > 0);
+
+        // A click takes it alone, even with Shift.
+        game.handle(Event::MouseMove(at.0, at.1));
+        game.handle(Event::MouseDown);
+        game.handle(Event::ShiftMouseUp);
+        assert!(game.units[barracks].selected);
+        assert_eq!(selected_count(&game), 1);
+
+        assert_eq!(
+            line_vertices(&game, crate::render::ORDER_LINE),
+            0,
+            "no point yet"
+        );
+        let (x, y) = clear_spot_on_screen();
+        let point = game.view().ground_at(x, y).unwrap();
+        click_at(&mut game, x, y);
+        assert_eq!(game.units[barracks].gathering, Some(point));
+        assert!(game.units[barracks].selected, "the selection stands");
+        assert!(
+            line_vertices(&game, crate::render::ORDER_LINE) > 0,
+            "a dashed line"
+        );
+
+        let before = game.units.len();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Infantry));
+        click_hud(&mut game, Action::BuildCell(0));
+        assert_eq!(game.units.len(), before + 1);
+        assert_eq!(game.units[before].destination, point);
+
+        game.handle(Event::RightDown);
+        assert_eq!(
+            line_vertices(&game, crate::render::ORDER_LINE),
+            0,
+            "only when selected"
+        );
     }
 
     #[test]
@@ -4563,7 +4671,11 @@ mod tests {
     #[test]
     fn the_a_key_selects_all_the_players_units_anywhere_on_the_map() {
         let mut game = in_battle();
-        let everyone = game.units.iter().filter(|u| u.is_selectable()).count();
+        let everyone = game
+            .units
+            .iter()
+            .filter(|u| u.is_selected_in_groups())
+            .count();
         assert!(everyone > FIRST_GROUP, "including the group off screen");
         game.handle(Event::KeyDown(Key::Char('a')));
         assert_eq!(selected_count(&game), everyone);
@@ -4578,8 +4690,8 @@ mod tests {
             game.units
                 .iter()
                 .filter(|u| u.selected)
-                .all(|u| !u.kind.is_building()),
-            "no towers"
+                .all(|u| u.kind != UnitKind::Building),
+            "no buildings that make units"
         );
 
         game.handle(Event::RightDown);
@@ -5296,7 +5408,7 @@ mod tests {
             let sent: Vec<(f32, f32)> = game
                 .units
                 .iter()
-                .filter(|u| u.selected && u.kind.flies() == flying)
+                .filter(|u| u.selected && !u.kind.is_building() && u.kind.flies() == flying)
                 .map(|u| u.destination)
                 .collect();
             assert!(!sent.is_empty());
@@ -5591,7 +5703,11 @@ mod tests {
             }
         }
         game.handle(Event::MouseUp);
-        let players = game.units.iter().filter(|u| u.is_selectable()).count();
+        let players = game
+            .units
+            .iter()
+            .filter(|u| u.is_selected_in_groups())
+            .count();
         assert!(players > FIRST_GROUP, "there is a second group");
         assert_eq!(
             selected_count(&game),

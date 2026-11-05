@@ -1477,7 +1477,7 @@ impl Game {
         for owner in 1..self.teams.len() {
             let can_build: Vec<Role> = OPPONENT_BUILDS
                 .into_iter()
-                .filter(|&role| units::maker_of(&self.units, role, owner).is_some())
+                .filter(|&role| units::has_free_maker(&self.units, role, owner))
                 .collect();
             let (x, _) = terrain.random_point(&mut self.opponent_random);
             let which = (x.abs() * 1000.0) as usize;
@@ -1518,6 +1518,19 @@ impl Game {
                 }
                 _ => None,
             })
+    }
+
+    /// The number to show on this role's button: how many are ordered, once there is more than
+    /// the one its dimming already shows.
+    pub fn queue_badge(&self, role: Role) -> Option<usize> {
+        let orders: usize = self
+            .units
+            .iter()
+            .filter(|u| u.alive && u.owner == 0)
+            .map(|u| u.orders_for(role))
+            .sum();
+        let shown_by_dimming = usize::from(self.making_progress(role).is_some());
+        (orders > shown_by_dimming).then_some(orders)
     }
 
     /// Lets everything being made come out at once.
@@ -2361,7 +2374,7 @@ impl Game {
     /// Makes what the cell makes, or gets the superweapon ready to aim.
     fn activate_build_cell(&mut self, cell: usize) {
         if let Some(role) = Game::build_role(self.build_tab, cell) {
-            // There is no cost yet. A building already busy takes no more.
+            // There is no cost yet. A busy building queues it.
             units::start_making(&mut self.units, role, 0);
         } else if self.build_tab == BuildTab::Vehicles
             && cell == SUPERWEAPON_CELL
@@ -4594,10 +4607,6 @@ mod tests {
         assert_eq!(game.units.len(), known);
         let half_dim = line_vertices(&game, dim);
 
-        // A second click on any infantry while it is busy starts nothing.
-        click_at(&mut game, cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
-        assert!(game.making_progress(Role::LightInfantry).unwrap() > 0.4);
-
         game.update(seconds / 2.0 + 0.01);
         assert_eq!(game.making_progress(Role::LightInfantry), None);
         assert_eq!(game.units.len(), known + 1);
@@ -4605,6 +4614,81 @@ mod tests {
         assert!(game.chat.iter().any(|l| l.text == "Light Infantry ready"));
         assert!(half_dim > 0);
         assert_eq!(line_vertices(&game, dim), 0, "the button is back");
+    }
+
+    #[test]
+    fn repeat_clicks_count_on_the_button_and_units_come_out_in_the_order_clicked() {
+        let mut game = in_battle();
+        let cells = hud::grid_cells(W, H);
+        let press = |game: &mut Game, cell: usize| {
+            let b = cells[cell];
+            click_at(game, b.x + b.w / 2.0, b.y + b.h / 2.0);
+        };
+        let (scout, light) = (Role::Scout, Role::LightInfantry);
+        let known = game.units.len();
+
+        press(&mut game, 1);
+        assert_eq!(game.queue_badge(light), None, "the dimming shows this one");
+        assert!(game.making_progress(light).is_some());
+        press(&mut game, 1);
+        assert_eq!(game.queue_badge(light), Some(2));
+        press(&mut game, 1);
+        assert_eq!(game.queue_badge(light), Some(3));
+
+        press(&mut game, 0);
+        assert_eq!(game.queue_badge(scout), Some(1), "waiting, so it shows a 1");
+        assert_eq!(game.making_progress(scout), None, "and it is not dim");
+        assert_eq!(game.queue_badge(light), Some(3));
+        press(&mut game, 1);
+        assert_eq!(game.queue_badge(light), Some(4));
+
+        let with_badges = crate::render::build(&game).len();
+        game.units.iter_mut().for_each(|u| u.making = None);
+        assert!(with_badges > crate::render::build(&game).len(), "they draw");
+        let mut game = in_battle();
+        for cell in [1, 1, 0, 1] {
+            press(&mut game, cell);
+        }
+
+        let mut made = Vec::new();
+        for _ in 0..200 {
+            game.update(0.5);
+            made = game.units[known..]
+                .iter()
+                .filter(|u| u.owner == 0)
+                .map(|u| u.role)
+                .collect();
+            if made.len() == 4 {
+                break;
+            }
+        }
+        assert_eq!(made, [light, light, scout, light]);
+        assert_eq!(game.queue_badge(light), None);
+        assert_eq!(game.queue_badge(scout), None);
+    }
+
+    #[test]
+    fn the_factory_and_the_hangar_keep_queues_of_their_own() {
+        let mut game = in_battle();
+        let cells = hud::grid_cells(W, H);
+        let press = |game: &mut Game, cell: usize| {
+            let b = cells[cell];
+            click_at(game, b.x + b.w / 2.0, b.y + b.h / 2.0);
+        };
+        press(&mut game, 0);
+        press(&mut game, 0);
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        press(&mut game, 0);
+        press(&mut game, 12);
+        assert!(game.making_progress(Role::Scout).is_some());
+        assert!(
+            game.making_progress(Role::Tank).is_some(),
+            "not behind the scouts"
+        );
+        assert!(game.making_progress(Role::AirDefensePlatform).is_some());
+        press(&mut game, 1);
+        assert_eq!(game.queue_badge(Role::RepairVehicle), Some(1));
+        assert_eq!(game.queue_badge(Role::Scout), Some(2));
     }
 
     #[test]

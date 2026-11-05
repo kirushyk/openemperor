@@ -125,6 +125,8 @@ impl UnitKind {
 }
 
 const BUILDING_RADIUS: f32 = 1.2;
+/// How many units a building can have waiting behind the one it is making.
+const QUEUE_ROOM: usize = 30;
 /// How far beyond its side the door of a building is.
 const DOOR_MARGIN: f32 = 0.2;
 /// How far out of a factory's door a new vehicle drives.
@@ -454,6 +456,8 @@ pub struct Unit {
     pub tube_pitch: f32,
     /// What a building is making and the seconds left: one thing at a time.
     pub making: Option<(Role, f32)>,
+    /// What it makes after that, in order, with the empty places at the end.
+    queue: [Option<Role>; QUEUE_ROOM],
     /// Where a building that makes units sends them, if the player has said.
     pub gathering: Option<(f32, f32)>,
     /// How many shots of its salvo have gone: they stay gone until it has reloaded.
@@ -479,6 +483,25 @@ impl Unit {
     /// Whether it still has somewhere to go, or can never stop anyway.
     pub fn is_moving(&self) -> bool {
         self.alive && (self.remaining() > ARRIVED || self.role.never_stops())
+    }
+
+    /// How many of this role it is making or has waiting.
+    pub fn orders_for(&self, role: Role) -> usize {
+        let making = self.making.iter().filter(|(making, _)| *making == role);
+        let waiting = self.queue.iter().flatten().filter(|&&waits| waits == role);
+        making.count() + waiting.count()
+    }
+
+    /// How many units it has waiting behind the one it is making.
+    fn waiting(&self) -> usize {
+        self.queue.iter().flatten().count()
+    }
+
+    /// Moves on to the next unit waiting, if there is one.
+    fn start_next(&mut self) {
+        self.making = self.queue[0].map(|role| (role, role.build_seconds()));
+        self.queue.rotate_left(1);
+        self.queue[QUEUE_ROOM - 1] = None;
     }
 
     /// Whether it has a fight to be up in the air for: an order, or an enemy nearby.
@@ -752,6 +775,7 @@ impl Unit {
             second_tube: false,
             tube_pitch: 0.0,
             making: None,
+            queue: [None; QUEUE_ROOM],
             gathering: None,
             salvo_fired: 0,
             recoil: [0.0; 4],
@@ -873,6 +897,7 @@ fn place_unit(
         second_tube: false,
         tube_pitch: 0.0,
         making: None,
+        queue: [None; QUEUE_ROOM],
         gathering: None,
         salvo_fired: 0,
         recoil: [0.0; 4],
@@ -925,21 +950,37 @@ fn produce(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, owner: usize, i
     produce_at(units, terrain, role, &maker, id)
 }
 
-/// Starts an owner's free building on a role. Returns whether one could take it.
+/// Whether an owner has a building of the right kind with nothing to do.
+pub fn has_free_maker(units: &[Unit], role: Role, owner: usize) -> bool {
+    role.made_in().is_some_and(|made_in| {
+        units
+            .iter()
+            .any(|u| u.alive && u.owner == owner && u.role == made_in && u.making.is_none())
+    })
+}
+
+/// Gives a role to the owner's building of the right kind that has the least to do: at once if
+/// it is free, otherwise at the end of its queue. Returns whether one could take it.
 pub fn start_making(units: &mut [Unit], role: Role, owner: usize) -> bool {
     let Some(made_in) = role.made_in() else {
         return false;
     };
-    let free = units
+    let least_busy = units
         .iter_mut()
-        .find(|u| u.alive && u.owner == owner && u.role == made_in && u.making.is_none());
-    match free {
-        Some(building) => {
-            building.making = Some((role, role.build_seconds()));
-            true
-        }
-        None => false,
+        .filter(|u| u.alive && u.owner == owner && u.role == made_in)
+        .min_by_key(|u| (u.making.is_some(), u.waiting()));
+    let Some(building) = least_busy else {
+        return false;
+    };
+    if building.making.is_none() {
+        building.making = Some((role, role.build_seconds()));
+        return true;
     }
+    let Some(place) = building.queue.iter_mut().find(|place| place.is_none()) else {
+        return false;
+    };
+    *place = Some(role);
+    true
 }
 
 /// Counts down what every building is making. Returns the buildings done with theirs.
@@ -969,7 +1010,7 @@ pub fn finish_making(
     if !produce_at(units, terrain, role, &maker, id) {
         return None;
     }
-    units[index].making = None;
+    units[index].start_next();
     Some(units.len() - 1)
 }
 
@@ -1367,6 +1408,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                         units[other_index].selected = false;
                         units[other_index].gathering = None;
                         units[other_index].making = None;
+                        units[other_index].queue = [None; QUEUE_ROOM];
                         units[i].stand_down();
                     } else {
                         units[i].destination = (other.x, other.z);
@@ -3475,7 +3517,11 @@ mod tests {
         let barracks = units.iter().position(|u| u.role == Role::Barracks).unwrap();
         let known = units.len();
         assert!(start_making(&mut units, Role::Scout, 0));
-        assert!(!start_making(&mut units, Role::Sniper, 0), "it is busy");
+        assert!(
+            start_making(&mut units, Role::Sniper, 0),
+            "it waits its turn"
+        );
+        assert_eq!(units[barracks].orders_for(Role::Sniper), 1);
         assert!(
             start_making(&mut units, Role::Tank, 0),
             "the factory is not"
@@ -3488,8 +3534,66 @@ mod tests {
         assert_eq!(work_on_making(&mut units, seconds / 2.0), [barracks]);
         let new = finish_making(&mut units, open_ground(), barracks, 50).unwrap();
         assert_eq!(units[new].role, Role::Scout);
-        assert_eq!(units[barracks].making, None);
-        assert!(start_making(&mut units, Role::Sniper, 0), "free again");
+        assert_eq!(
+            units[barracks].making.map(|(role, _)| role),
+            Some(Role::Sniper),
+            "the next one starts"
+        );
+        assert_eq!(units[barracks].orders_for(Role::Sniper), 1);
+        assert_eq!(units[barracks].waiting(), 0);
+        assert!(!has_free_maker(&units, Role::Scout, 0));
+        work_on_making(&mut units, Role::Sniper.build_seconds());
+        finish_making(&mut units, open_ground(), barracks, 51).unwrap();
+        assert_eq!(units[barracks].making, None, "nothing left");
+        assert!(has_free_maker(&units, Role::Scout, 0));
+    }
+
+    #[test]
+    fn a_queue_is_kept_in_the_order_given_and_has_an_end() {
+        let mut units = base_of(0);
+        let barracks = units.iter().position(|u| u.role == Role::Barracks).unwrap();
+        let order = [
+            Role::Scout,
+            Role::Sniper,
+            Role::Scout,
+            Role::Engineer,
+            Role::Sniper,
+        ];
+        for role in order {
+            assert!(start_making(&mut units, role, 0));
+        }
+        let mut made = Vec::new();
+        for id in 0..order.len() as u32 {
+            let role = units[barracks].making.unwrap().0;
+            work_on_making(&mut units, role.build_seconds());
+            let new = finish_making(&mut units, open_ground(), barracks, 50 + id).unwrap();
+            made.push(units[new].role);
+        }
+        assert_eq!(made, order);
+
+        assert!(start_making(&mut units, Role::Scout, 0), "making it");
+        for _ in 0..QUEUE_ROOM {
+            assert!(start_making(&mut units, Role::Scout, 0));
+        }
+        assert!(!start_making(&mut units, Role::Scout, 0), "no more room");
+    }
+
+    #[test]
+    fn with_two_buildings_of_a_kind_the_work_goes_to_the_one_with_less_to_do() {
+        let mut units = base_of(0);
+        let mut second = *units.iter().find(|u| u.role == Role::Barracks).unwrap();
+        second.x += 10.0;
+        second.id = 40;
+        units.push(second);
+        for _ in 0..4 {
+            assert!(start_making(&mut units, Role::Scout, 0));
+        }
+        let orders: Vec<usize> = units
+            .iter()
+            .filter(|u| u.role == Role::Barracks)
+            .map(|u| u.orders_for(Role::Scout))
+            .collect();
+        assert_eq!(orders, [2, 2]);
     }
 
     #[test]

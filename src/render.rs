@@ -2145,6 +2145,11 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
                 canvas.triangle(wedge, MAKING_DIM);
             }
         }
+        if let Some(count) = makes.and_then(|role| game.queue_badge(role)) {
+            let px = small_text_px(game.height);
+            let (x, y) = (cell.x + cell.w - 12.0 * s, cell.y + cell.h - 12.0 * s);
+            canvas.text_centered(&count.to_string(), x, y, px, GOLD);
+        }
     }
     for tab in hud::build_tabs(game.width, game.height) {
         let Action::BuildTab(kind) = tab.action else {

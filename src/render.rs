@@ -74,6 +74,8 @@ const REPAIR_CORE: Color = [0.85, 1.0, 0.9, 1.0];
 const FIRE_COLOR: [f32; 3] = [1.0, 0.5, 0.1];
 const GAS_COLOR: [f32; 3] = [0.35, 0.9, 0.25];
 const FLARE_GLOW: [f32; 3] = [1.0, 0.7, 0.2];
+const GUN_STREAK: Color = [1.0, 0.93, 0.6, 1.0];
+const GUN_TRAIL: Color = [1.0, 0.8, 0.4, 0.45];
 const FLARE_CORE: [f32; 3] = [1.0, 0.97, 0.8];
 const BLAST_COLOR: [f32; 3] = [1.0, 0.62, 0.15];
 const MISSILE_BODY: Color = [0.95, 0.95, 0.9, 1.0];
@@ -1044,6 +1046,17 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             }
         }
     }
+    for wreck in game
+        .combat
+        .wrecks
+        .iter()
+        .filter(|w| game.sight_at(w.unit.x, w.unit.z) == Sight::Visible)
+    {
+        let drawn = canvas.objects.len();
+        draw_unit_model(canvas, game, &view, &wreck.unit);
+        stain_model(canvas, drawn, &wreck.unit);
+        draw_flames(canvas, game, &view, &wreck.unit);
+    }
     if let Some((building, can)) = game.placing_preview() {
         let color = if can { PLACE_OK } else { PLACE_NOT };
         draw_draped_disc(
@@ -1186,6 +1199,27 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     }
     for spray in game.combat.sprays.iter().filter(|s| seen(s.from)) {
         draw_spray(canvas, view, spray);
+    }
+    for streak in game.combat.streaks.iter().filter(|s| seen(s.from)) {
+        // A short bright dash racing from the gun to what it hit, with a fainter line behind.
+        let at = |t: f32| {
+            (
+                streak.from.0 + (streak.to.0 - streak.from.0) * t,
+                streak.from.1 + (streak.to.1 - streak.from.1) * t,
+                streak.from.2 + (streak.to.2 - streak.from.2) * t,
+            )
+        };
+        let head = (1.0 - streak.life) * 1.3;
+        let (front, back) = (head.min(1.0), (head - 0.4).clamp(0.0, 1.0));
+        let thick = (3.0 * s).max(1.5);
+        canvas.deep_line(
+            view,
+            at(0.0),
+            at(front),
+            thick * 0.5,
+            faded(GUN_TRAIL, streak.life),
+        );
+        canvas.deep_line(view, at(back), at(front), thick, GUN_STREAK);
     }
     for flare in game.combat.flares.iter().filter(|f| seen(f.at)) {
         draw_flare(canvas, view, flare, s);

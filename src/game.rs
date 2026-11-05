@@ -6,6 +6,7 @@ use crate::hud::{self, DEPLOY_BUTTON};
 use crate::platform::{Event, Key};
 use crate::units::{self, Role, Unit, UnitKind};
 use crate::weapons::Combat;
+use crate::weapons::OVERKILL_BLOWS_APART;
 
 pub const INTRO_SECONDS: f32 = 3.0;
 pub const LOADING_SECONDS: f32 = 2.0;
@@ -1969,7 +1970,15 @@ impl Game {
     fn settle_casualties(&mut self) {
         let mut lost_names = Vec::new();
         for unit in self.units.iter().filter(|u| !u.alive) {
-            self.combat.explode(unit.center(), unit.kind.radius() * 2.0);
+            // Up in the air and not hit hard, it comes down in one piece. Otherwise it goes up
+            // here, the harder it was hit past dead the more so.
+            let overkill = unit.overkill();
+            if unit.kind.flies() && unit.altitude > 0.0 && overkill < OVERKILL_BLOWS_APART {
+                self.combat.shoot_down(unit);
+            } else {
+                self.combat
+                    .explode_destroyed(unit.center(), unit.kind.radius() * 2.0, overkill);
+            }
             if unit.owner == 0 {
                 self.lost.count(unit);
                 lost_names.push(unit.name());
@@ -4439,6 +4448,38 @@ mod tests {
     }
 
     #[test]
+    fn an_aircraft_barely_killed_falls_and_one_killed_hard_blows_apart_in_the_air() {
+        let plane = |game: &Game| {
+            game.units
+                .iter()
+                .position(|u| u.owner == 0 && u.kind == UnitKind::Aircraft && u.altitude > 0.0)
+                .unwrap()
+        };
+        let mut game = in_battle();
+        let barely = plane(&game);
+        game.units[barely].health = -1.0;
+        game.units[barely].alive = false;
+        game.update(0.01);
+        assert_eq!(game.combat.wrecks.len(), 1, "it falls");
+        assert!(game.combat.blasts.is_empty(), "with no blast yet");
+        assert_eq!(game.lost.aircraft, 1, "and is lost already");
+        let drawn = crate::render::build_frame(&game).objects.len();
+        game.combat.wrecks.clear();
+        assert!(
+            crate::render::build_frame(&game).objects.len() < drawn,
+            "it draws"
+        );
+
+        let mut game = in_battle();
+        let hard = plane(&game);
+        game.units[hard].health = -game.units[hard].max_health();
+        game.units[hard].alive = false;
+        game.update(0.01);
+        assert!(game.combat.wrecks.is_empty());
+        assert!(game.combat.blasts.len() > 1, "it blows apart");
+    }
+
+    #[test]
     fn nothing_of_the_world_is_drawn_outside_a_battle() {
         let game = Game::new(W, H);
         let frame = crate::render::build_frame(&game);
@@ -5129,7 +5170,8 @@ mod tests {
     fn whatever_is_destroyed_goes_up_in_an_explosion_with_particles_that_draw() {
         let mut game = in_battle();
         let before = crate::render::build(&game).len();
-        game.units[0].alive = false;
+        let on_ground = game.units.iter().position(|u| u.altitude <= 0.0).unwrap();
+        game.units[on_ground].alive = false;
         game.update(0.01);
         assert!(!game.combat.particles.is_empty());
         assert!(crate::render::build(&game).len() > before);

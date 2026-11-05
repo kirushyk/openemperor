@@ -646,7 +646,7 @@ impl Unit {
         1.0 + RANK_ATTACK * self.rank() as f32
     }
 
-    fn speed(&self) -> f32 {
+    pub fn speed(&self) -> f32 {
         self.role.speed() * (1.0 + RANK_SPEED * self.rank() as f32)
     }
 
@@ -700,6 +700,11 @@ impl Unit {
         } else {
             (1.0 - self.health / self.max_health()).clamp(0.0, 1.0)
         }
+    }
+
+    /// How far past dead it was hit, as a share of all the health it can have.
+    pub fn overkill(&self) -> f32 {
+        (-self.health / self.max_health()).max(0.0)
     }
 
     /// Whether it can be forced to fire on another unit, whoever that is.

@@ -83,6 +83,11 @@ const PARTICLES_ALIVE_AT_MOST: usize = 800;
 const PARTICLE_SECONDS: f32 = 0.9;
 const PARTICLE_GRAVITY: f32 = 7.0;
 const HEAVY_BLAST_RADIUS: f32 = 1.5;
+const STREAK_SECONDS: f32 = 0.14;
+/// How hard a shot-down aircraft falls.
+const WRECK_GRAVITY: f32 = 9.0;
+/// Hit this far past dead, an aircraft blows apart in the air and does not fall.
+pub const OVERKILL_BLOWS_APART: f32 = 0.3;
 /// What is damaged leaves this many of them free for explosions.
 const WEAR_PARTICLES_AT_MOST: usize = 600;
 /// Eruptions leave this many of them free for explosions.
@@ -381,6 +386,29 @@ pub struct Spray {
     pub life: f32,
 }
 
+/// A shot from a gun on its way to where it hit, seen for just a moment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GunStreak {
+    pub from: Point,
+    pub to: Point,
+    /// From 1 when it is fired down to 0.
+    pub life: f32,
+}
+
+/// An aircraft shot down, falling with the way it had on it until it hits the ground. It is out
+/// of the battle already: nothing can hit it, and it does nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wreck {
+    /// As it looks right now.
+    pub unit: Unit,
+    /// Along x, up and along z, in world units per second.
+    velocity: Point,
+    /// Radians per second it tumbles.
+    spin: f32,
+    /// How many puffs of smoke it has yet to leave, short of a whole one.
+    owed: f32,
+}
+
 /// The burst of light where a gun is fired.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Flare {
@@ -479,6 +507,8 @@ pub struct Combat {
     pub blasts: Vec<Blast>,
     pub particles: Vec<Particle>,
     pub eruptions: Vec<Eruption>,
+    pub streaks: Vec<GunStreak>,
+    pub wrecks: Vec<Wreck>,
     /// How long until each of the map's vents goes up, from when it is found to have any.
     vent_waits: Vec<f32>,
     /// Where the next explosion's scatter comes from.
@@ -589,6 +619,129 @@ impl Combat {
         self.random = random;
     }
 
+    /// What is left of a unit going up, more of it the harder it was hit past dead: one blast
+    /// that grows with that, and smaller ones around it.
+    pub fn explode_destroyed(&mut self, at: Point, radius: f32, overkill: f32) {
+        const MOST_OVERKILL: f32 = 2.0;
+        let overkill = overkill.min(MOST_OVERKILL);
+        self.explode(at, radius * (1.0 + overkill * 1.5));
+        let extra = (overkill * 4.0) as usize;
+        let mut random = self.random | 1;
+        let mut blasts = Vec::with_capacity(extra);
+        for _ in 0..extra {
+            let mut next = || next_random(&mut random) * 2.0 - 1.0;
+            let reach = radius * (1.0 + overkill);
+            let spot = (
+                at.0 + next() * reach,
+                at.1 + (next() + 1.0) * radius * 0.6,
+                at.2 + next() * reach,
+            );
+            blasts.push(spot);
+        }
+        self.random = random;
+        for spot in blasts {
+            self.explode(spot, radius * 0.7);
+        }
+    }
+
+    /// Lets an aircraft fall from where it was shot down, with the way it had on it.
+    pub fn shoot_down(&mut self, unit: &Unit) {
+        let mut random = self.random | 1;
+        let along = if unit.is_moving() { unit.speed() } else { 0.0 };
+        let (sin, cos) = unit.heading.sin_cos();
+        let mut wreck = *unit;
+        // It stays alive only for what it looks like: all burnt and on fire.
+        wreck.alive = true;
+        wreck.health = 1.0;
+        wreck.selected = false;
+        self.wrecks.push(Wreck {
+            unit: wreck,
+            velocity: (cos * along, 0.0, sin * along),
+            spin: (next_random(&mut random) - 0.5) * 7.0,
+            owed: 0.0,
+        });
+        self.random = random;
+    }
+
+    /// Wrecks fall and tumble, trailing smoke, and blow up where they hit the ground.
+    fn fall_wrecks(&mut self, terrain: &Terrain, dt: f32) {
+        const SMOKE_PER_SECOND: f32 = 26.0;
+        if self.wrecks.is_empty() {
+            return;
+        }
+        let mut random = self.random | 1;
+        let mut trail = Vec::new();
+        let mut hits = Vec::new();
+        self.wrecks.retain_mut(|wreck| {
+            wreck.velocity.1 -= WRECK_GRAVITY * dt;
+            let unit = &mut wreck.unit;
+            unit.x += wreck.velocity.0 * dt;
+            unit.z += wreck.velocity.2 * dt;
+            unit.altitude += wreck.velocity.1 * dt;
+            unit.bank += wreck.spin * dt;
+            unit.heading += wreck.spin * 0.4 * dt;
+            let ground = terrain.height_at(unit.x, unit.z).max(0.0);
+            if unit.y + unit.altitude <= ground {
+                hits.push((unit.x, ground, unit.z, unit.kind.radius()));
+                return false;
+            }
+            wreck.owed += SMOKE_PER_SECOND * dt;
+            while wreck.owed >= 1.0 {
+                wreck.owed -= 1.0;
+                let mut next = || next_random(&mut random);
+                trail.push(Particle {
+                    position: (unit.x, unit.y + unit.altitude, unit.z),
+                    velocity: (next() * 0.4 - 0.2, 0.5 + next() * 0.5, next() * 0.4 - 0.2),
+                    size: (0.6 + next()) * 0.3,
+                    smoke: true,
+                    flame: false,
+                    life: 1.0,
+                    fade: 1.0 / (1.3 * (0.6 + next() * 0.8)),
+                });
+            }
+            true
+        });
+        self.random = random;
+        let room = PARTICLES_ALIVE_AT_MOST.saturating_sub(self.particles.len());
+        trail.truncate(room);
+        self.particles.append(&mut trail);
+        for (x, ground, z, radius) in hits {
+            self.explode((x, ground, z), radius * 3.0);
+        }
+    }
+
+    /// Sparks flying out the way a gun fired, and out of what it hit.
+    fn throw_gun_sparks(&mut self, from: Point, to: Point, count: usize, hit: bool) {
+        let way = direction_to(from, to);
+        let mut random = self.random | 1;
+        for i in 0..count + if hit { 4 } else { 0 } {
+            let at_muzzle = i < count;
+            let mut next = || next_random(&mut random);
+            let spread = if at_muzzle { 1.6 } else { 3.5 };
+            let speed = if at_muzzle {
+                6.0 + next() * 7.0
+            } else {
+                -(1.5 + next() * 3.0)
+            };
+            let mut sideways = || (next_random(&mut random) - 0.5) * spread;
+            let (sx, sy, sz) = (sideways(), sideways(), sideways());
+            let mut next = || next_random(&mut random);
+            if self.particles.len() >= PARTICLES_ALIVE_AT_MOST {
+                break;
+            }
+            self.particles.push(Particle {
+                position: if at_muzzle { from } else { to },
+                velocity: (way.0 * speed + sx, way.1 * speed + sy, way.2 * speed + sz),
+                size: (0.6 + next()) * 0.055,
+                smoke: false,
+                flame: false,
+                life: 1.0,
+                fade: 1.0 / (0.22 * (0.6 + next())),
+            });
+        }
+        self.random = random;
+    }
+
     /// Moves sparks and smoke along, stopping them at the ground, and drops the spent ones.
     fn fly_particles(&mut self, terrain: &Terrain, dt: f32) {
         for particle in &mut self.particles {
@@ -618,6 +771,7 @@ impl Combat {
         }
         self.work_vents(terrain, dt);
         self.show_wear(units, dt);
+        self.fall_wrecks(terrain, dt);
     }
 
     /// What has lost enough of its health smokes, more the worse it is, and past that burns.
@@ -680,6 +834,7 @@ impl Combat {
         ease_recoil(units, dt);
         fade(&mut self.beams, dt / BEAM_SECONDS, |b| &mut b.life);
         fade(&mut self.flares, dt / FLARE_SECONDS, |f| &mut f.life);
+        fade(&mut self.streaks, dt / STREAK_SECONDS, |s| &mut s.life);
         fade(&mut self.sprays, dt / SPRAY_SECONDS, |s| &mut s.life);
         fade(&mut self.blasts, dt / BLAST_SECONDS, |b| &mut b.life);
         self.fly_particles(terrain, dt);
@@ -748,6 +903,12 @@ impl Combat {
                 size,
                 life: 1.0,
             });
+            self.streaks.push(GunStreak {
+                from: at,
+                to,
+                life: 1.0,
+            });
+            self.throw_gun_sparks(at, to, (size / 2.0) as usize + 2, target.is_some());
         }
         match weapon {
             WeaponKind::Bullet
@@ -1581,6 +1742,103 @@ mod tests {
         let before = combat.particles.len();
         combat.explode((0.0, 0.0, 60.0), 1.0);
         assert!(combat.particles.len() > before);
+    }
+
+    #[test]
+    fn a_gun_shows_which_way_it_fired_with_a_streak_and_sparks_going_that_way() {
+        let mut units = [shooter(WeaponKind::Bullet), target_at(5.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.01);
+        assert_eq!(combat.streaks.len(), 1);
+        assert_eq!(combat.streaks[0].from, units[0].gun_tip());
+        assert_eq!(combat.streaks[0].to, units[1].center());
+        let from_gun: Vec<&Particle> = combat
+            .particles
+            .iter()
+            .filter(|p| p.position.0 < 2.0)
+            .collect();
+        assert!(from_gun.len() >= 3);
+        let ahead = from_gun.iter().filter(|p| p.velocity.0 > 0.0).count();
+        assert_eq!(ahead, from_gun.len(), "they go the way of the shot");
+        assert!(
+            combat.particles.iter().any(|p| p.position.0 > 3.0),
+            "and from what it hit"
+        );
+        run(&mut combat, &mut units, 0.0);
+        let mut quiet = [units[0], units[1]];
+        quiet[0].cooldown = 1000.0;
+        run(&mut combat, &mut quiet, 0.4);
+        assert!(combat.streaks.is_empty(), "gone in a moment");
+    }
+
+    #[test]
+    fn missiles_lasers_and_sprays_have_no_gun_streak() {
+        for weapon in [WeaponKind::Missile, WeaponKind::Laser, WeaponKind::Flame] {
+            let mut units = [shooter(weapon), target_at(3.0, 60.0)];
+            let mut combat = Combat::default();
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            assert!(combat.streaks.is_empty(), "{weapon:?}");
+        }
+    }
+
+    #[test]
+    fn the_harder_something_is_hit_past_dead_the_bigger_it_goes_up() {
+        let blown = |overkill: f32| {
+            let mut combat = Combat::default();
+            combat.explode_destroyed((0.0, 1.0, 60.0), 0.5, overkill);
+            let widest = combat.blasts.iter().map(|b| b.radius).fold(0.0, f32::max);
+            (combat.blasts.len(), combat.particles.len(), widest)
+        };
+        let (plain, some, huge) = (blown(0.0), blown(0.6), blown(5.0));
+        assert_eq!(plain.0, 1, "no more than the one blast");
+        assert!(some.0 > plain.0 && some.1 > plain.1 && some.2 > plain.2);
+        assert!(huge.0 > some.0 && huge.2 > some.2);
+        assert_eq!(huge, blown(50.0), "up to a point");
+    }
+
+    #[test]
+    fn a_shot_down_aircraft_falls_on_a_curve_tumbling_and_smoking_and_blows_up_on_the_ground() {
+        let mut plane = Unit::for_test(0.0, 60.0, UnitKind::Aircraft);
+        plane.heading = 0.0;
+        plane.destination = (30.0, 60.0);
+        plane.altitude = 3.0;
+        let mut combat = Combat::default();
+        combat.shoot_down(&plane);
+        let mut units: [Unit; 0] = [];
+        let start_bank = combat.wrecks[0].unit.bank;
+        let mut heights = vec![combat.wrecks[0].unit.altitude];
+        let mut last_x = 0.0;
+        while let Some(wreck) = combat.wrecks.first() {
+            last_x = wreck.unit.x;
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            if let Some(wreck) = combat.wrecks.first() {
+                heights.push(wreck.unit.altitude);
+                assert_ne!(wreck.unit.bank, start_bank, "it tumbles");
+            }
+            assert!(heights.len() < 200, "it lands");
+        }
+        assert!(last_x > 1.0, "it carried on the way it was going: {last_x}");
+        let drops: Vec<f32> = heights.windows(2).map(|h| h[0] - h[1]).collect();
+        assert!(
+            drops.windows(2).all(|d| d[1] > d[0]),
+            "it falls faster and faster"
+        );
+        assert_eq!(combat.blasts.len(), 1, "it blows up where it hits");
+        assert!(combat.blasts[0].at.1 < 0.01);
+        assert!(combat.particles.iter().any(|p| p.smoke));
+    }
+
+    #[test]
+    fn a_wreck_hurts_nobody_and_nothing_can_hit_it() {
+        let mut plane = Unit::for_test(0.0, 60.0, UnitKind::Aircraft);
+        plane.altitude = 2.0;
+        let mut combat = Combat::default();
+        combat.shoot_down(&plane);
+        let mut units = [target_at(0.0, 60.0)];
+        let health = units[0].health;
+        run(&mut combat, &mut units, 3.0);
+        assert!(combat.wrecks.is_empty());
+        assert_eq!(units[0].health, health);
     }
 
     fn lava_map() -> &'static Terrain {

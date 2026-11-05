@@ -1998,7 +1998,7 @@ impl Game {
             // Up in the air and not hit hard, it comes down in one piece. Otherwise it goes up
             // here, the harder it was hit past dead the more so.
             let overkill = unit.overkill();
-            if unit.kind.flies() && unit.altitude > 0.0 && overkill < OVERKILL_BLOWS_APART {
+            if unit.kind.flies() && !unit.is_grounded() && overkill < OVERKILL_BLOWS_APART {
                 self.combat.shoot_down(unit);
             } else {
                 self.combat

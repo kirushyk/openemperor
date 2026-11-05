@@ -1625,7 +1625,9 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
     for unit in game.units.iter().filter(|u| u.selected) {
         let after = match unit.target {
             Some(Target::Place(x, z)) => Some((x, z)),
-            Some(Target::Unit(id) | Target::Forced(id)) => game
+            Some(
+                Target::Unit(id) | Target::Forced(id) | Target::Rescue(id) | Target::RunOver(id),
+            ) => game
                 .units
                 .iter()
                 .find(|u| u.alive && u.id == id && game.shows(u))
@@ -1634,7 +1636,10 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
         };
         let from = (unit.x, unit.z);
         match after {
-            Some(to) if matches!(unit.role, Role::RepairVehicle | Role::AdvancedCarryall) => {
+            Some(to)
+                if matches!(unit.role, Role::RepairVehicle | Role::AdvancedCarryall)
+                    && !matches!(unit.target, Some(Target::RunOver(_))) =>
+            {
                 draw_dashed_line(canvas, game, view, from, to, HEAL_LINE)
             }
             Some(to) => draw_dashed_line(canvas, game, view, from, to, ATTACK_LINE),
@@ -1750,7 +1755,7 @@ fn draw_ornithopter(canvas: &mut Canvas, game: &Game, unit: &Unit, color: [f32; 
     const WING_ROOT: f32 = 0.1;
     let wing_color = color.map(|c| c * 0.7 + 0.25);
     let beat = |phase: f32| {
-        if unit.altitude > 0.0 {
+        if !unit.is_grounded() {
             0.14 + 0.22 * (game.battle_time() * WING_BEATS + phase).sin()
         } else {
             0.1
@@ -1788,7 +1793,7 @@ fn draw_destroyer(canvas: &mut Canvas, game: &Game, unit: &Unit, color: [f32; 3]
     const WING_ROOT: f32 = 0.2;
     let wing_color = color.map(|c| c * 0.55 + 0.2);
     let beat = |phase: f32| {
-        if unit.altitude > 0.0 {
+        if !unit.is_grounded() {
             0.2 + 0.24 * (game.battle_time() * WING_BEATS * 0.6 + phase).sin()
         } else {
             0.14

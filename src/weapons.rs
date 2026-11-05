@@ -1082,7 +1082,7 @@ impl Combat {
             if index == sprayer
                 || !other.alive
                 || !harmed
-                || !unit.weapon.can_target(other.altitude)
+                || !unit.weapon.can_target(other.height_as_target())
             {
                 continue;
             }
@@ -1236,7 +1236,7 @@ impl Combat {
     fn poison_land(&mut self, units: &mut [Unit], dt: f32) {
         for zone in &mut self.poison {
             zone.life -= dt;
-            for unit in units.iter_mut().filter(|u| u.alive && u.altitude <= 0.0) {
+            for unit in units.iter_mut().filter(|u| u.alive && u.is_grounded()) {
                 if (unit.x - zone.x).hypot(unit.z - zone.z) < STRIKE_RADIUS {
                     hurt(unit, POISON_DAMAGE * dt);
                 }
@@ -1272,7 +1272,7 @@ fn strike(
     for index in 0..units.len() {
         let unit = units[index];
         let touched = distance(at, unit.center()) <= unit.kind.radius() + PLACE_SHOT_SPREAD;
-        if index != firing && unit.alive && touched && weapon.can_target(unit.altitude) {
+        if index != firing && unit.alive && touched && weapon.can_target(unit.height_as_target()) {
             hit(units, index, weapon, shooter, teams);
         }
     }
@@ -1297,25 +1297,29 @@ fn harm(units: &mut [Unit], victim: usize, damage: f32, shooter: Shooter, teams:
     answer_attacker(units, victim, shooter.id, teams);
 }
 
-/// Whoever is shot at by an enemy goes after it, if it can hurt it and has nothing else to do.
-/// The player's units on their way somewhere stay on their way, as they were told to; an
-/// opponent's are only wandering. What cannot move has only its range to go by.
+/// Whoever is shot at by an enemy goes after it, if it has nothing else to do: to fire on it if
+/// it can hurt it, or with nothing to fire, to drive over it if it is infantry. A friend it
+/// went to mend by itself can wait for that. The player's units on their way somewhere stay on
+/// their way, as they were told to; an opponent's are only wandering. What cannot move has only
+/// its range to go by.
 fn answer_attacker(units: &mut [Unit], victim: usize, attacker_id: u32, teams: &[usize]) {
     let unit = units[victim];
-    let is_free = unit.target.is_none()
+    let is_rescuing = matches!(unit.target, Some(Target::Rescue(_)));
+    let is_free = (unit.target.is_none() || is_rescuing)
         && unit.theft.is_none()
         && !unit.deployed
         && !unit.kind.is_building()
-        && (!unit.is_moving() || unit.owner != 0);
+        && (!unit.is_moving() || unit.owner != 0 || is_rescuing);
     if !is_free {
         return;
     }
-    let can_answer = units
-        .iter()
-        .find(|u| u.id == attacker_id)
-        .is_some_and(|attacker| unit.can_attack(attacker, teams));
-    if can_answer {
+    let Some(attacker) = units.iter().find(|u| u.id == attacker_id) else {
+        return;
+    };
+    if unit.can_attack(attacker, teams) {
         units[victim].target = Some(Target::Unit(attacker_id));
+    } else if crate::units::can_run_over(&unit, attacker, teams) {
+        units[victim].target = Some(Target::RunOver(attacker_id));
     }
 }
 
@@ -1456,7 +1460,7 @@ fn nearest_to_repair(units: &[Unit], repairer: usize, teams: &[usize]) -> Option
             && distance(from, unit.center()) <= reach + unit.kind.radius()
     };
     let sent_to = match units[repairer].target {
-        Some(Target::Unit(id)) => units
+        Some(Target::Unit(id) | Target::Rescue(id)) => units
             .iter()
             .position(|u| u.id == id)
             .filter(|&i| needs_it(i)),
@@ -1479,7 +1483,7 @@ fn nearest_enemy(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usiz
     for (i, unit) in units.iter().enumerate() {
         if unit.alive
             && are_enemies(teams, owner, unit.owner)
-            && weapon.can_target(unit.altitude)
+            && weapon.can_target(unit.height_as_target())
             && unit.kind != UnitKind::Building
         {
             let away = distance(from, unit.center());
@@ -1708,6 +1712,98 @@ mod tests {
         let attacker = Shooter::of(&units[2]);
         hit(&mut units, 1, WeaponKind::Bullet, attacker, &TEAMS);
         assert_eq!(units[1].target, None);
+    }
+
+    /// A repair vehicle with an enemy soldier firing on it.
+    fn fixer_under_fire() -> [Unit; 2] {
+        let mut fixer = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        fixer.role = Role::RepairVehicle;
+        fixer.weapon = WeaponKind::Repair;
+        fixer.id = 1;
+        let mut soldier = target_at(5.0, 60.0);
+        soldier.id = 2;
+        soldier.weapon = WeaponKind::Bullet;
+        [fixer, soldier]
+    }
+
+    #[test]
+    fn a_vehicle_with_nothing_to_fire_drives_over_infantry_attacking_it_and_is_free_again() {
+        let mut units = fixer_under_fire();
+        let attacker = Shooter::of(&units[1]);
+        hit(&mut units, 0, WeaponKind::Bullet, attacker, &TEAMS);
+        assert_eq!(units[0].target, Some(Target::RunOver(2)));
+        for _ in 0..200 {
+            crate::units::advance(&mut units, flat(), &TEAMS, 0.05);
+            if !units[1].alive {
+                break;
+            }
+        }
+        assert!(!units[1].alive, "squashed: {:?}", units[0]);
+        crate::units::advance(&mut units, flat(), &TEAMS, 0.05);
+        assert_eq!(units[0].target, None);
+    }
+
+    #[test]
+    fn a_vehicle_with_a_gun_fires_back_and_only_infantry_gets_driven_over() {
+        let mut armed = fixer_under_fire();
+        armed[0].weapon = WeaponKind::Cannon;
+        let attacker = Shooter::of(&armed[1]);
+        hit(&mut armed, 0, WeaponKind::Bullet, attacker, &TEAMS);
+        assert_eq!(armed[0].target, Some(Target::Unit(2)));
+
+        let mut by_tank = fixer_under_fire();
+        by_tank[1].kind = UnitKind::Vehicle;
+        let attacker = Shooter::of(&by_tank[1]);
+        hit(&mut by_tank, 0, WeaponKind::Cannon, attacker, &TEAMS);
+        assert_eq!(by_tank[0].target, None, "it cannot run over a tank");
+    }
+
+    #[test]
+    fn being_attacked_comes_before_a_rescue_but_not_before_the_players_order() {
+        let mut units = fixer_under_fire();
+        units[0].target = Some(Target::Rescue(9));
+        units[0].destination = (9.0, 60.0);
+        let attacker = Shooter::of(&units[1]);
+        hit(&mut units, 0, WeaponKind::Bullet, attacker, &TEAMS);
+        assert_eq!(units[0].target, Some(Target::RunOver(2)));
+
+        let mut units = fixer_under_fire();
+        units[0].destination = (-20.0, 60.0);
+        let attacker = Shooter::of(&units[1]);
+        hit(&mut units, 0, WeaponKind::Bullet, attacker, &TEAMS);
+        assert_eq!(units[0].target, None, "told to go");
+
+        let mut units = fixer_under_fire();
+        units[0].target = Some(Target::Unit(9));
+        let attacker = Shooter::of(&units[1]);
+        hit(&mut units, 0, WeaponKind::Bullet, attacker, &TEAMS);
+        assert_eq!(
+            units[0].target,
+            Some(Target::Unit(9)),
+            "told to mend that one"
+        );
+    }
+
+    #[test]
+    fn a_machine_on_a_pad_can_be_hit_by_what_reaches_the_ground_and_not_by_what_only_aims_up() {
+        let mut machine = target_at(4.0, 60.0);
+        machine.kind = UnitKind::Aircraft;
+        machine.role = Role::Ornithopter;
+        machine.weapon = WeaponKind::Unarmed;
+        machine.altitude = crate::units::PAD_TOP;
+        let mut units = [shooter(WeaponKind::Bullet), machine];
+        let health = units[1].health;
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 1.0);
+        assert!(units[1].health < health, "bullets reach it");
+
+        let mut units = [shooter(WeaponKind::AirMissile), machine];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 1.0);
+        assert!(
+            combat.missiles.is_empty(),
+            "anti-air missiles do not go for it"
+        );
     }
 
     #[test]

@@ -474,6 +474,10 @@ pub enum Target {
     Forced(u32),
     /// A place on the map (x, z) to fire at until told otherwise.
     Place(f32, f32),
+    /// By id: a hurt friend a repair vehicle went to by itself, until it is mended.
+    Rescue(u32),
+    /// By id: infantry attacking a vehicle with no other answer to it, to drive over.
+    RunOver(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -664,7 +668,21 @@ impl Unit {
 
     /// Whether a repair vehicle can work on it: a vehicle, or an aircraft while it is grounded.
     pub fn can_be_repaired(&self) -> bool {
-        self.kind == UnitKind::Vehicle || (self.kind.flies() && self.altitude <= 0.0)
+        self.kind == UnitKind::Vehicle || (self.kind.flies() && self.is_grounded())
+    }
+
+    /// Whether it is down: on the ground, or for what lands, sitting on the deck of a pad.
+    pub fn is_grounded(&self) -> bool {
+        self.altitude <= 0.0 || (self.role.lands() && self.altitude <= PAD_TOP + 0.01)
+    }
+
+    /// How high it counts as being for what can reach it: what is down is on the ground.
+    pub fn height_as_target(&self) -> f32 {
+        if self.is_grounded() {
+            0.0
+        } else {
+            self.altitude
+        }
     }
 
     /// Forgets any target and stays where it is.
@@ -718,7 +736,7 @@ impl Unit {
             && self.alive
             && other.alive
             && self.id != other.id
-            && self.weapon.can_target(other.altitude)
+            && self.weapon.can_target(other.height_as_target())
     }
 
     /// Whether it can be told to fire at a place on the ground.
@@ -778,7 +796,7 @@ impl Unit {
             && other.alive
             && self.has_rockets()
             && are_enemies(teams, self.owner, other.owner)
-            && self.weapon.can_target(other.altitude)
+            && self.weapon.can_target(other.height_as_target())
     }
 
     /// Whether it could be at this spot. Aircraft only have to stay on the map.
@@ -1645,9 +1663,11 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
             Target::Place(place_x, place_z) => {
                 (place_x, terrain.height_at(place_x, place_z), place_z)
             }
-            Target::Unit(id) | Target::Forced(id) => {
+            Target::Unit(id) | Target::Forced(id) | Target::Rescue(id) | Target::RunOver(id) => {
                 let fit = |u: &Unit| match target {
                     Target::Forced(_) => units[i].can_fire_on(u),
+                    Target::Rescue(_) => units[i].can_fix(u, teams) && u.health < u.max_health(),
+                    Target::RunOver(_) => can_run_over(&units[i], u, teams),
                     _ => units[i].can_attack(u, teams) || units[i].can_tend(u, teams),
                 };
                 let Some(other_index) = units.iter().position(|u| u.alive && u.id == id && fit(u))
@@ -1671,6 +1691,11 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                     }
                     continue;
                 }
+                if matches!(target, Target::RunOver(_)) {
+                    // Right over it: it is no use stopping short.
+                    units[i].destination = (other.x, other.z);
+                    continue;
+                }
                 other.center()
             }
         };
@@ -1685,6 +1710,40 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
         } else {
             (goal.0, goal.2)
         };
+    }
+}
+
+/// Whether it could go after this one to drive over it: a heavy unit, enemy infantry.
+pub fn can_run_over(squasher: &Unit, victim: &Unit, teams: &[usize]) -> bool {
+    squasher.heavy
+        && squasher.alive
+        && victim.alive
+        && victim.kind == UnitKind::Infantry
+        && are_enemies(teams, squasher.owner, victim.owner)
+}
+
+/// Sends repair vehicles with nothing to do to the nearest hurt friend close by.
+fn rush_to_the_hurt(units: &mut [Unit], teams: &[usize]) {
+    /// How far off a repair vehicle notices a friend that is hurt.
+    const NOTICES: f32 = 12.0;
+    for i in 0..units.len() {
+        let unit = units[i];
+        if unit.weapon != WeaponKind::Repair
+            || !unit.alive
+            || unit.target.is_some()
+            || unit.is_moving()
+        {
+            continue;
+        }
+        let away = |u: &Unit| (u.x - unit.x).hypot(u.z - unit.z);
+        let hurt = units
+            .iter()
+            .filter(|u| unit.can_fix(u, teams) && u.health < u.max_health() && away(u) <= NOTICES)
+            .min_by(|a, b| away(a).total_cmp(&away(b)));
+        if let Some(friend) = hurt {
+            units[i].target = Some(Target::Rescue(friend.id));
+            units[i].reset_progress();
+        }
     }
 }
 
@@ -2408,6 +2467,7 @@ fn beside_pad(pad: Pad, id: u32) -> (f32, f32) {
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
     tend_pads(units, dt);
     alert_landers(units, teams);
+    rush_to_the_hurt(units, teams);
     chase_targets(units, terrain, teams);
     // Spheres only start to overlap when something moves.
     if !units
@@ -4854,6 +4914,108 @@ mod tests {
         assert!((units[0].x - 8.0).hypot(units[0].z - 50.0) < OVER_PAD);
         assert_eq!(units[0].altitude, PAD_TOP, "sitting on the deck");
         assert!(units[0].has_rockets());
+    }
+
+    #[test]
+    fn a_repair_vehicle_goes_by_itself_to_a_hurt_friend_close_by_mends_it_and_is_free_again() {
+        let terrain = open_map();
+        let mut fixer = unit_at(0.0, 50.0, UnitKind::Vehicle);
+        fixer.role = Role::RepairVehicle;
+        fixer.weapon = WeaponKind::Repair;
+        fixer.id = 1;
+        let mut hurt = unit_at(8.0, 50.0, UnitKind::Vehicle);
+        hurt.id = 2;
+        hurt.health = hurt.max_health() - 30.0;
+        hurt.weapon = WeaponKind::Unarmed;
+        let mut far = unit_at(-30.0, 50.0, UnitKind::Vehicle);
+        far.id = 3;
+        far.health = 1.0;
+        far.weapon = WeaponKind::Unarmed;
+        let mut units = [fixer, hurt, far];
+        let mut combat = crate::weapons::Combat::default();
+        advance(&mut units, &terrain, &[0], 0.05);
+        assert_eq!(
+            units[0].target,
+            Some(Target::Rescue(2)),
+            "not the one out of reach"
+        );
+        for _ in 0..400 {
+            advance(&mut units, &terrain, &[0], 0.05);
+            combat.advance(&mut units, &[0], &terrain, 0.05);
+        }
+        assert_eq!(units[1].health, units[1].max_health(), "mended");
+        assert_eq!(units[0].target, None, "and free again");
+        assert!(!units[0].is_moving());
+        assert_eq!(units[2].health, 1.0);
+    }
+
+    #[test]
+    fn a_repair_vehicle_on_its_way_somewhere_or_with_a_job_does_not_rush_off() {
+        let terrain = open_map();
+        let mut fixer = unit_at(0.0, 50.0, UnitKind::Vehicle);
+        fixer.role = Role::RepairVehicle;
+        fixer.weapon = WeaponKind::Repair;
+        fixer.id = 1;
+        fixer.destination = (-20.0, 50.0);
+        let mut hurt = unit_at(5.0, 50.0, UnitKind::Vehicle);
+        hurt.id = 2;
+        hurt.health = 10.0;
+        let mut enemy = hurt;
+        enemy.id = 3;
+        enemy.owner = 1;
+        enemy.z = 55.0;
+        let mut units = [fixer, hurt, enemy];
+        advance(&mut units, &terrain, &[0, 1], 0.05);
+        assert_eq!(units[0].target, None, "told to go");
+        units[0].destination = (units[0].x, units[0].z);
+        units[1].alive = false;
+        advance(&mut units, &terrain, &[0, 1], 0.05);
+        assert_eq!(units[0].target, None, "no help for an enemy");
+    }
+
+    #[test]
+    fn a_machine_sitting_on_a_pad_counts_as_grounded_and_one_up_in_the_air_does_not() {
+        let mut machine = unit_at(0.0, 50.0, UnitKind::Aircraft);
+        machine.role = Role::Destroyer;
+        machine.altitude = PAD_TOP;
+        assert!(machine.is_grounded() && machine.can_be_repaired());
+        assert_eq!(machine.height_as_target(), 0.0);
+        machine.altitude = 1.0;
+        assert!(!machine.is_grounded() && !machine.can_be_repaired());
+        assert_eq!(machine.height_as_target(), 1.0);
+        // What does not land is in the air even that low.
+        let mut carryall = unit_at(0.0, 50.0, UnitKind::Aircraft);
+        carryall.altitude = PAD_TOP;
+        assert!(!carryall.is_grounded());
+    }
+
+    #[test]
+    fn a_repair_vehicle_mends_a_machine_sitting_on_a_pad() {
+        let terrain = open_map();
+        let [mut machine, pad] = machine_and_pad(Role::Ornithopter);
+        machine.rockets_fired = 0;
+        machine.x = pad.x;
+        machine.z = pad.z;
+        machine.destination = (pad.x, pad.z);
+        machine.altitude = PAD_TOP;
+        machine.pad = Some(Pad {
+            id: pad.id,
+            x: pad.x,
+            z: pad.z,
+        });
+        machine.health = 20.0;
+        let mut fixer = unit_at(pad.x - 7.0, pad.z, UnitKind::Vehicle);
+        fixer.role = Role::RepairVehicle;
+        fixer.weapon = WeaponKind::Repair;
+        fixer.id = 3;
+        let mut units = [machine, pad, fixer];
+        let mut combat = crate::weapons::Combat::default();
+        for _ in 0..600 {
+            advance(&mut units, &terrain, &[0], 0.05);
+            combat.advance(&mut units, &[0], &terrain, 0.05);
+        }
+        assert_eq!(units[0].health, units[0].max_health(), "{:?}", units[2]);
+        assert!(units[0].is_on_pad(), "it stayed put");
     }
 
     #[test]

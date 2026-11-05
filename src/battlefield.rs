@@ -219,7 +219,7 @@ pub struct Terrain {
     normals: Vec<[f32; 3]>,
     /// Where lava erupts now and then.
     vents: Vec<(f32, f32)>,
-    /// Which grid points can be walked on, worked out the first time a route is looked for.
+    /// Which grid points a route may go through, worked out the first time it is needed.
     walkable: OnceLock<Vec<bool>>,
 }
 
@@ -661,14 +661,74 @@ impl Terrain {
         self.colors[grid_index(u, v)]
     }
 
-    /// Whether someone could walk straight from one point to the other.
+    /// Which grid points a route may go through: what can be walked on, and clear of ruins by
+    /// enough to get past them.
+    fn route_grid(&self) -> &[bool] {
+        self.walkable.get_or_init(|| {
+            /// How far from a ruin a route keeps.
+            const CLEAR_OF_RUINS: f32 = 0.7;
+            let mut grid: Vec<bool> = (0..GRID_POINTS)
+                .map(|index| {
+                    let (u, v) = (index % (MOST_CELLS + 1), index / (MOST_CELLS + 1));
+                    let (x, z) = grid_to_world(u as f32, v as f32);
+                    self.can_walk(x, z)
+                })
+                .collect();
+            for piece in &self.ruins {
+                let reach = piece.half_x.max(piece.half_z) + CLEAR_OF_RUINS;
+                self.for_points_near(piece.x, piece.z, reach, |index, x, z| {
+                    let dx = (x - piece.x).abs() - piece.half_x;
+                    let dz = (z - piece.z).abs() - piece.half_z;
+                    if dx.max(0.0).hypot(dz.max(0.0)) < CLEAR_OF_RUINS {
+                        grid[index] = false;
+                    }
+                });
+            }
+            grid
+        })
+    }
+
+    /// Calls back with each grid point on the map within a square around a place.
+    fn for_points_near(&self, x: f32, z: f32, reach: f32, mut visit: impl FnMut(usize, f32, f32)) {
+        let (u, v) = world_to_grid(x, z);
+        // A step along one grid axis covers 0.7 of a world unit, so this reaches far enough.
+        let span = reach * 1.5 + 1.0;
+        let last = self.size.cells() as i32;
+        let range = |center: f32| {
+            ((center - span).floor() as i32).max(0)..=((center + span).ceil() as i32).min(last)
+        };
+        for point_v in range(v) {
+            for point_u in range(u) {
+                let (px, pz) = grid_to_world(point_u as f32, point_v as f32);
+                visit(grid_index(point_u as usize, point_v as usize), px, pz);
+            }
+        }
+    }
+
+    /// Whether someone could walk straight from one point to the other, past ruins too. What
+    /// lies right at either end is no matter: it may well stand beside a wall.
     pub fn line_is_clear(&self, from: (f32, f32), to: (f32, f32)) -> bool {
+        Self::line_is_clear_on(self.route_grid(), from, to)
+    }
+
+    fn line_is_clear_on(grid: &[bool], from: (f32, f32), to: (f32, f32)) -> bool {
         const STEP: f32 = 0.2;
+        const ENDS: f32 = 0.75;
         let length = (to.0 - from.0).hypot(to.1 - from.1);
         let steps = (length / STEP).ceil().max(1.0) as usize;
         (1..=steps).all(|i| {
             let t = i as f32 / steps as f32;
-            self.can_walk(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+            let along = t * length;
+            if along < ENDS || length - along < ENDS {
+                return true;
+            }
+            let (u, v) = world_to_grid(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+            let (u, v) = (u.round(), v.round());
+            u >= 0.0
+                && v >= 0.0
+                && u <= MOST_CELLS as f32
+                && v <= MOST_CELLS as f32
+                && grid[grid_index(u as usize, v as usize)]
         })
     }
 
@@ -693,18 +753,36 @@ impl Terrain {
     /// along the shortest route as can be reached in a straight line. `None` if there is no
     /// way there at all.
     pub fn next_on_route(&self, from: (f32, f32), to: (f32, f32)) -> Option<(f32, f32)> {
+        self.next_on_grid(self.route_grid(), from, to)
+    }
+
+    /// As `next_on_route`, keeping clear of these as well, each given as (x, z, how far).
+    pub fn next_on_route_around(
+        &self,
+        from: (f32, f32),
+        to: (f32, f32),
+        obstacles: &[(f32, f32, f32)],
+    ) -> Option<(f32, f32)> {
+        let mut grid = self.route_grid().to_vec();
+        for &(x, z, reach) in obstacles {
+            self.for_points_near(x, z, reach, |index, px, pz| {
+                if (px - x).hypot(pz - z) < reach {
+                    grid[index] = false;
+                }
+            });
+        }
+        self.next_on_grid(&grid, from, to)
+    }
+
+    fn next_on_grid(
+        &self,
+        grid_walkable: &[bool],
+        from: (f32, f32),
+        to: (f32, f32),
+    ) -> Option<(f32, f32)> {
         const STRAIGHT: u32 = 10;
         const DIAGONAL: u32 = 14;
         const NOWHERE: usize = usize::MAX;
-        let grid_walkable = self.walkable.get_or_init(|| {
-            (0..GRID_POINTS)
-                .map(|index| {
-                    let (u, v) = (index % (MOST_CELLS + 1), index / (MOST_CELLS + 1));
-                    let (x, z) = grid_to_world(u as f32, v as f32);
-                    self.can_walk(x, z)
-                })
-                .collect()
-        });
         let walkable = |index: usize| grid_walkable[index];
         // The walkable grid point nearest a world point.
         let snap = |(x, z): (f32, f32)| -> Option<usize> {
@@ -794,7 +872,7 @@ impl Terrain {
         route
             .iter()
             .map(|&index| point(index))
-            .find(|&spot| self.line_is_clear(from, spot))
+            .find(|&spot| Self::line_is_clear_on(grid_walkable, from, spot))
             .or_else(|| route.iter().rev().nth(1).map(|&index| point(index)))
     }
 
@@ -2240,6 +2318,53 @@ mod tests {
         }
         let flat = Terrain::open_with_ruins(Vec::new()).find_normals();
         assert_eq!(flat[grid_index(5, 5)], [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_route_goes_around_a_ruin_and_around_what_it_is_told_to_keep_clear_of() {
+        let wall = RuinPiece {
+            x: 0.0,
+            y: 0.0,
+            z: 40.0,
+            half_x: 6.0,
+            half_z: 0.1,
+            height: 1.0,
+            shade: 1.0,
+        };
+        let terrain = Terrain::open_with_ruins(vec![wall]);
+        let (from, to) = ((0.0, 35.0), (0.0, 45.0));
+        assert!(!terrain.line_is_clear(from, to), "the wall is in the way");
+        let next = terrain.next_on_route(from, to).unwrap();
+        assert!(next.0.abs() > 3.0, "off to one end of it: {next:?}");
+
+        let open = Terrain::open_with_ruins(Vec::new());
+        assert!(open.line_is_clear(from, to));
+        let around = open
+            .next_on_route_around(from, to, &[(0.0, 40.0, 2.0)])
+            .unwrap();
+        assert!(open.line_is_clear(from, around));
+        assert!(around != to && around.0.abs() > 0.5, "{around:?}");
+        assert_eq!(
+            open.next_on_route_around(from, to, &[]).map(|_| ()),
+            Some(())
+        );
+    }
+
+    #[test]
+    fn a_wall_right_at_either_end_of_a_line_does_not_count_as_in_the_way() {
+        let wall = RuinPiece {
+            x: 0.0,
+            y: 0.0,
+            z: 40.0,
+            half_x: 6.0,
+            half_z: 0.1,
+            height: 1.0,
+            shade: 1.0,
+        };
+        let terrain = Terrain::open_with_ruins(vec![wall]);
+        // Beside the wall, going away from it.
+        assert!(terrain.line_is_clear((0.0, 39.5), (0.0, 30.0)));
+        assert!(terrain.line_is_clear((0.0, 30.0), (0.0, 39.5)));
     }
 
     #[test]

@@ -38,9 +38,15 @@ const DRIVE_ALIGNMENT: f32 = 0.15;
 const AVOID_MARGIN: f32 = 0.9;
 /// How long a unit keeps pressing against water, lava or a ruin without getting any nearer
 /// before it gives up, in seconds.
-const BLOCKED_PATIENCE: f32 = 3.0;
+const BLOCKED_PATIENCE: f32 = 8.0;
 /// Getting this much nearer counts as progress.
 const PROGRESS: f32 = 0.05;
+/// How often a unit on its way is looked at, to see that it is getting somewhere.
+const STALL_LOOK_SECONDS: f32 = 1.2;
+/// How much of what it could cover between looks it must have covered.
+const STALL_SHARE: f32 = 0.25;
+/// How many looks in a row finding it has got nowhere before it gives up altogether.
+const STALL_LOOKS_AT_MOST: u8 = 10;
 /// How far a heavy unit will swerve to run down enemy infantry.
 const SQUASH_LURE: f32 = 4.0;
 /// How nearly ahead that infantry must be, as the cosine of the angle off its way: it will
@@ -552,6 +558,8 @@ pub struct Unit {
     reloading: f32,
     /// The enemy carryall that has hold of it, if one has.
     pub theft: Option<Theft>,
+    /// How it is getting on with going somewhere.
+    stall: Stall,
 }
 
 impl Unit {
@@ -692,6 +700,7 @@ impl Unit {
     }
 
     fn reset_progress(&mut self) {
+        self.stall = Stall::NOT_STALLED;
         self.blocked_for = 0.0;
         self.best_remaining = f32::INFINITY;
     }
@@ -944,6 +953,7 @@ impl Unit {
             pad: None,
             reloading: 0.0,
             theft: None,
+            stall: Stall::NOT_STALLED,
         }
     }
 }
@@ -1071,6 +1081,7 @@ fn place_unit(
         pad: None,
         reloading: 0.0,
         theft: None,
+        stall: Stall::NOT_STALLED,
     });
 }
 
@@ -1905,6 +1916,32 @@ pub struct Theft {
     pub struggle: f32,
 }
 
+/// How a unit on the ground is getting on with going somewhere, looked at now and then.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Stall {
+    /// Where it was when last looked at.
+    at: (f32, f32),
+    /// How long until it is looked at again.
+    wait: f32,
+    /// How many looks in a row found it no nearer to getting there.
+    looks: u8,
+    /// Whether it has got nearer since the last look: closer to where it is going, or to the
+    /// next point on a route there.
+    got_nearer: bool,
+    /// Whether it should find a new way around what is holding it up.
+    rethink: bool,
+}
+
+impl Stall {
+    const NOT_STALLED: Stall = Stall {
+        at: (f32::MAX, f32::MAX),
+        wait: STALL_LOOK_SECONDS,
+        looks: 0,
+        got_nearer: false,
+        rethink: false,
+    };
+}
+
 /// A landing pad, and where it stands.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pad {
@@ -1918,6 +1955,8 @@ struct Pad {
 struct Way {
     through: (f32, f32),
     to: (f32, f32),
+    /// Whether it is only a step to one side, with no route to go by.
+    aside: bool,
 }
 
 /// Heavy units on the move kill enemy infantry whose spheres they touch.
@@ -2022,6 +2061,8 @@ fn plan_way(unit: &mut Unit, terrain: &Terrain, may_search: bool) -> bool {
         let there = (way.through.0 - unit.x).hypot(way.through.1 - unit.z) < THROUGH;
         if there {
             unit.blocked_for = 0.0;
+            // A step aside gets it no nearer, for all that it got there.
+            unit.stall.got_nearer |= !way.aside;
         }
         if !there && moved < STILL_GOOD {
             return false;
@@ -2037,8 +2078,70 @@ fn plan_way(unit: &mut Unit, terrain: &Terrain, may_search: bool) -> bool {
     unit.way = Some(Way {
         through,
         to: unit.destination,
+        aside: false,
     });
     true
+}
+
+/// Sees whether a unit on the ground is getting anywhere. One that is not tries a new way, and
+/// after long enough gives up: nobody is left pressing against a wall for ever.
+fn watch_for_stall(unit: &mut Unit, dt: f32) {
+    if !unit.is_moving() {
+        unit.stall = Stall::NOT_STALLED;
+        return;
+    }
+    unit.stall.wait -= dt;
+    if unit.stall.wait > 0.0 {
+        return;
+    }
+    let (x, z) = unit.stall.at;
+    let covered = (unit.x - x).hypot(unit.z - z);
+    unit.stall.at = (unit.x, unit.z);
+    unit.stall.wait = STALL_LOOK_SECONDS;
+    let got_nearer = std::mem::take(&mut unit.stall.got_nearer);
+    unit.stall.looks = if got_nearer { 0 } else { unit.stall.looks + 1 };
+    if unit.stall.looks > STALL_LOOKS_AT_MOST {
+        unit.stand_down();
+        unit.stall = Stall::NOT_STALLED;
+    } else if covered < unit.speed() * STALL_LOOK_SECONDS * STALL_SHARE {
+        unit.stall.rethink = true;
+    }
+}
+
+/// Finds a new way for a stalled unit, around everything on the ground that is staying where it
+/// is as well as what stands on the map. With none, it tries stepping aside, a different way
+/// each time.
+fn find_new_way(units: &mut [Unit], i: usize, terrain: &Terrain) {
+    let unit = units[i];
+    let target_id = match unit.target {
+        Some(Target::Unit(id) | Target::Forced(id) | Target::Rescue(id) | Target::RunOver(id)) => {
+            Some(id)
+        }
+        _ => None,
+    };
+    let obstacles: Vec<(f32, f32, f32)> = units
+        .iter()
+        .filter(|u| {
+            u.id != unit.id
+                && u.alive
+                && u.altitude <= 0.0
+                && Some(u.id) != target_id
+                && (u.kind.is_building() || u.deployed || !u.is_moving())
+        })
+        .map(|u| (u.x, u.z, u.kind.radius() + unit.kind.radius()))
+        .collect();
+    let here = (unit.x, unit.z);
+    let route = terrain.next_on_route_around(here, unit.destination, &obstacles);
+    let through = route.unwrap_or_else(|| {
+        let (sin, cos) = (unit.heading + FRAC_PI_2 * f32::from(unit.stall.looks)).sin_cos();
+        (unit.x + cos * 2.0, unit.z + sin * 2.0)
+    });
+    units[i].way = Some(Way {
+        through,
+        to: unit.destination,
+        aside: route.is_none(),
+    });
+    units[i].stall.rethink = false;
 }
 
 fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
@@ -2061,8 +2164,13 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
             fly_on(&mut units[i], terrain, dt);
             continue;
         }
-        if !units[i].kind.flies() && plan_way(&mut units[i], terrain, searches > 0) {
-            searches -= 1;
+        if !units[i].kind.flies() {
+            if units[i].stall.rethink && searches > 0 {
+                find_new_way(units, i, terrain);
+                searches -= 1;
+            } else if plan_way(&mut units[i], terrain, searches > 0) {
+                searches -= 1;
+            }
         }
         let (dir_x, dir_z) = steering(units, i, terrain, teams);
         let way = dir_z.atan2(dir_x);
@@ -2118,6 +2226,9 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
             unit.y = unit.y.max(0.0);
         }
         give_up_if_stuck(unit, held_back[i], dt);
+        if !unit.kind.flies() {
+            watch_for_stall(unit, dt);
+        }
     }
 }
 
@@ -2161,8 +2272,8 @@ fn fly_on(unit: &mut Unit, terrain: &Terrain, dt: f32) {
 }
 
 /// Crowds only delay a unit, so its order stands. If water, lava or a ruin keeps it from
-/// getting any nearer, or it is wedged on its way to a target, there is no way through
-/// without path finding: it settles for here and forgets the target.
+/// getting any nearer, or it is wedged on its way to a target, for all the new ways it has
+/// tried meanwhile, there is no way through: it settles for here and forgets the target.
 fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
     if !unit.is_moving() {
         unit.reset_progress();
@@ -2171,6 +2282,7 @@ fn give_up_if_stuck(unit: &mut Unit, held_back: bool, dt: f32) {
     if unit.remaining() < unit.best_remaining - PROGRESS {
         unit.best_remaining = unit.remaining();
         unit.blocked_for = 0.0;
+        unit.stall.got_nearer = true;
     } else if held_back {
         unit.blocked_for += dt;
         if unit.blocked_for > BLOCKED_PATIENCE {
@@ -5016,6 +5128,106 @@ mod tests {
         }
         assert_eq!(units[0].health, units[0].max_health(), "{:?}", units[2]);
         assert!(units[0].is_on_pad(), "it stayed put");
+    }
+
+    /// Runs units until the first has got where it was going, or for a minute at most.
+    fn go(units: &mut [Unit], terrain: &Terrain) {
+        for _ in 0..1200 {
+            advance(units, terrain, &[0], 0.05);
+            if !units[0].is_moving() {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn a_unit_gets_around_a_building_in_its_way() {
+        let terrain = open_map();
+        let mut tank = unit_at(0.0, 45.0, UnitKind::Vehicle);
+        tank.id = 1;
+        tank.destination = (0.0, 55.0);
+        let mut building = unit_at(0.0, 50.0, UnitKind::Building);
+        building.id = 2;
+        let mut units = [tank, building];
+        go(&mut units, &terrain);
+        let left = (units[0].x).hypot(units[0].z - 55.0);
+        assert!(left < 0.5, "it got there: {:?}", units[0]);
+    }
+
+    #[test]
+    fn a_unit_gets_around_a_row_of_others_that_are_standing_still() {
+        let terrain = open_map();
+        let mut tank = unit_at(0.0, 45.0, UnitKind::Vehicle);
+        tank.id = 1;
+        tank.destination = (0.0, 55.0);
+        let mut units = vec![tank];
+        for i in 0..11 {
+            let mut guard = unit_at(i as f32 - 5.0, 50.0, UnitKind::Vehicle);
+            guard.id = 2 + i;
+            guard.weapon = WeaponKind::Unarmed;
+            units.push(guard);
+        }
+        go(&mut units, &terrain);
+        let left = (units[0].x).hypot(units[0].z - 55.0);
+        assert!(left < 1.0, "it got there: {:?}", units[0]);
+    }
+
+    #[test]
+    fn a_unit_gets_around_a_ruin_wall_and_out_of_a_corner_of_one() {
+        let piece = |x: f32, z: f32, half_x: f32, half_z: f32| RuinPiece {
+            x,
+            y: 0.0,
+            z,
+            half_x,
+            half_z,
+            height: 1.0,
+            shade: 1.0,
+        };
+        // A wall with a return at each end, opening away from where it is going.
+        let terrain = Terrain::open_with_ruins(vec![
+            piece(0.0, 50.0, 5.0, 0.1),
+            piece(-5.0, 47.0, 0.1, 3.0),
+            piece(5.0, 47.0, 0.1, 3.0),
+        ]);
+        let mut soldier = unit_at(0.0, 48.0, UnitKind::Infantry);
+        soldier.destination = (0.0, 56.0);
+        let mut units = [soldier];
+        go(&mut units, &terrain);
+        let left = (units[0].x).hypot(units[0].z - 56.0);
+        assert!(left < 0.5, "it got there: {:?}", units[0]);
+    }
+
+    #[test]
+    fn a_unit_boxed_in_gives_up_rather_than_pressing_on_for_ever() {
+        let terrain = open_map();
+        let mut soldier = unit_at(0.0, 50.0, UnitKind::Infantry);
+        soldier.id = 1;
+        soldier.destination = (0.0, 60.0);
+        let mut units = vec![soldier];
+        for i in 0..12 {
+            let (sin, cos) = (i as f32 / 12.0 * TAU).sin_cos();
+            let mut wall = unit_at(cos * 1.7, 50.0 + sin * 1.7, UnitKind::Building);
+            wall.id = 2 + i;
+            units.push(wall);
+        }
+        for _ in 0..1200 {
+            advance(&mut units, &terrain, &[0], 0.05);
+        }
+        assert!(!units[0].is_moving(), "{:?}", units[0]);
+    }
+
+    #[test]
+    fn a_unit_getting_on_fine_is_not_looked_at_twice() {
+        let terrain = open_map();
+        let mut tank = unit_at(0.0, 30.0, UnitKind::Vehicle);
+        tank.destination = (0.0, 90.0);
+        let mut units = [tank];
+        for _ in 0..200 {
+            advance(&mut units, &terrain, &[], 0.05);
+            assert_eq!(units[0].way, None);
+            assert!(!units[0].stall.rethink);
+            assert_eq!(units[0].stall.looks.min(1), units[0].stall.looks);
+        }
     }
 
     #[test]

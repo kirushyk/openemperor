@@ -75,8 +75,9 @@ const BUILDING_BUILDS: [Role; 4] = [
     Role::Hangar,
     Role::LandingPad,
 ];
-/// How often each opponent builds something, in seconds of battle.
-const OPPONENT_BUILD_SECONDS: f32 = 15.0;
+/// How much an opponent has standing at most before it stops making more, so that a long battle
+/// does not bury the game in units.
+const OPPONENT_UNITS_AT_MOST: usize = 80;
 
 /// How long a chat line stays up, in seconds of battle.
 const CHAT_SECONDS: f32 = 12.0;
@@ -1252,8 +1253,6 @@ pub struct Game {
     following: Option<u32>,
     pub site: Site,
     /// Seconds until opponents next build something.
-    opponents_build_in: f32,
-    /// What opponents' choices come from.
     opponent_random: u32,
     pub combat: Combat,
     /// The superweapon is chosen and waiting for a click on the map.
@@ -1323,7 +1322,6 @@ impl Game {
             carried: Vec::new(),
             following: None,
             site: Site::Idle,
-            opponents_build_in: OPPONENT_BUILD_SECONDS,
             opponent_random: 1,
             combat: Combat::default(),
             aiming_strike: false,
@@ -1516,26 +1514,30 @@ impl Game {
         }
     }
 
-    /// Every so often each opponent starts building something it can at random, and sends it
-    /// to a random place on the map when it is done. That is all the strategy they have for now.
-    fn run_opponents(&mut self, dt: f32) {
-        self.opponents_build_in -= dt;
-        if self.opponents_build_in > 0.0 {
-            return;
-        }
-        self.opponents_build_in = OPPONENT_BUILD_SECONDS;
+    /// Each opponent keeps all its buildings busy, starting something at random the moment one
+    /// is free, and sends it to a random place on the map when it is done. That is all the
+    /// strategy they have for now.
+    fn run_opponents(&mut self) {
         let terrain = battlefield::terrain(self.battle_map);
         for owner in 1..self.teams.len() {
-            let can_build: Vec<Role> = OPPONENT_BUILDS
-                .into_iter()
-                .filter(|&role| units::has_free_maker(&self.units, role, owner))
-                .collect();
-            let (x, _) = terrain.random_point(&mut self.opponent_random);
-            let which = (x.abs() * 1000.0) as usize;
-            let Some(&role) = can_build.get(which % can_build.len().max(1)) else {
-                continue;
-            };
-            units::start_making(&mut self.units, role, owner);
+            let mut standing = self
+                .units
+                .iter()
+                .filter(|u| u.alive && u.owner == owner)
+                .count();
+            while standing < OPPONENT_UNITS_AT_MOST {
+                let can_build: Vec<Role> = OPPONENT_BUILDS
+                    .into_iter()
+                    .filter(|&role| units::has_free_maker(&self.units, role, owner))
+                    .collect();
+                if can_build.is_empty() {
+                    break;
+                }
+                let (x, _) = terrain.random_point(&mut self.opponent_random);
+                let which = (x.abs() * 1000.0) as usize;
+                units::start_making(&mut self.units, can_build[which % can_build.len()], owner);
+                standing += 1;
+            }
         }
     }
 
@@ -2160,7 +2162,6 @@ impl Game {
         self.carried.clear();
         self.following = None;
         self.site = Site::Idle;
-        self.opponents_build_in = OPPONENT_BUILD_SECONDS;
         self.opponent_random = map as u32 * 2 + 1;
         self.combat = Combat::default();
         self.aiming_strike = false;
@@ -2420,7 +2421,7 @@ impl Game {
             if self.screen == Screen::InGame {
                 self.settle_casualties();
                 if self.outcome.is_none() {
-                    self.run_opponents(dt);
+                    self.run_opponents();
                     self.work_on_making(dt);
                     self.work_on_site(dt);
                 }
@@ -4667,6 +4668,8 @@ mod tests {
     #[test]
     fn a_unit_in_range_of_its_target_still_shows_the_red_line() {
         let mut game = in_battle();
+        // Nobody comes to finish them off in the minute this takes.
+        game.units.retain(|u| u.owner == 0 || !u.role.makes_units());
         let (enemy, (x, y)) = enemy_beside_first_group(&mut game);
         select_first_group(&mut game);
         click_at(&mut game, x, y);
@@ -5133,20 +5136,51 @@ mod tests {
     }
 
     #[test]
-    fn opponents_build_with_what_they_have_and_send_it_off_at_random() {
+    fn opponents_keep_every_building_busy_and_send_what_comes_out_off_at_random() {
         let mut game = in_battle();
         let owners = 1..game.teams.len();
+        let makers = |game: &Game, owner: usize| {
+            game.units
+                .iter()
+                .filter(|u| u.owner == owner && u.role.makes_units())
+                .collect::<Vec<_>>()
+                .len()
+        };
         let of = |game: &Game, owner: usize| game.units.iter().filter(|u| u.owner == owner).count();
         let before: Vec<usize> = owners.clone().map(|owner| of(&game, owner)).collect();
-        game.update(OPPONENT_BUILD_SECONDS / 2.0);
-        assert_eq!(of(&game, 1), before[0], "not yet");
-        let known = game.units.len();
-        game.run_opponents(OPPONENT_BUILD_SECONDS);
-        assert_eq!(game.units.len(), known, "it takes time");
-        game.finish_all_making();
-        for (owner, before) in owners.zip(before) {
-            assert_eq!(of(&game, owner), before + 1, "owner {owner}");
+        game.update(0.01);
+        for owner in owners.clone() {
+            assert!(makers(&game, owner) > 0);
+            assert!(
+                game.units
+                    .iter()
+                    .filter(|u| u.owner == owner && u.role.makes_units())
+                    .all(|u| u.making.is_some()),
+                "owner {owner} starts on everything at once"
+            );
         }
+        let known = game.units.len();
+        assert_eq!(
+            known,
+            before.iter().sum::<usize>() + of(&game, 0),
+            "it takes time"
+        );
+        game.finish_all_making();
+        for (owner, before) in owners.clone().zip(before) {
+            assert_eq!(
+                of(&game, owner),
+                before + makers(&game, owner),
+                "owner {owner}"
+            );
+        }
+        // As soon as they are done, they are busy again.
+        game.update(0.01);
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.owner != 0 && u.role.makes_units())
+                .all(|u| u.making.is_some())
+        );
         let new = &game.units[known..];
         assert!(
             new.iter()
@@ -5164,6 +5198,35 @@ mod tests {
     }
 
     #[test]
+    fn opponents_stop_making_more_at_a_limit_and_start_again_when_they_lose_some() {
+        let mut game = in_battle();
+        let terrain = battlefield::terrain(game.battle_map);
+        let side = (1, TeamColor::Red);
+        let standing = game.units.iter().filter(|u| u.owner == 1).count();
+        for i in standing..OPPONENT_UNITS_AT_MOST {
+            let at = (200.0 + i as f32, 40.0);
+            let extra = units::new_building(terrain, at, Role::Tank, side, 5000 + i as u32);
+            game.units.push(extra);
+        }
+        game.units
+            .iter_mut()
+            .filter(|u| u.owner == 1)
+            .for_each(|u| u.making = None);
+        let idle = |game: &Game| {
+            game.units
+                .iter()
+                .filter(|u| u.owner == 1 && u.role.makes_units())
+                .all(|u| u.making.is_none())
+        };
+        game.run_opponents();
+        assert!(idle(&game), "at the limit");
+        let tank = game.units.iter().position(|u| u.id == 5079).unwrap();
+        game.units[tank].alive = false;
+        game.run_opponents();
+        assert!(!idle(&game), "under it again");
+    }
+
+    #[test]
     fn opponents_without_their_buildings_build_nothing_but_with_one_left_only_its_kind() {
         let mut game = in_battle();
         let enemy = |u: &Unit| u.owner != 0;
@@ -5171,7 +5234,7 @@ mod tests {
             .retain(|u| !(enemy(u) && u.kind == UnitKind::Building));
         let known = game.units.len();
         for _ in 0..4 {
-            game.run_opponents(OPPONENT_BUILD_SECONDS);
+            game.run_opponents();
             game.finish_all_making();
         }
         assert_eq!(game.units.len(), known);
@@ -5181,7 +5244,7 @@ mod tests {
             .retain(|u| u.owner == 0 || u.role != Role::Factory && u.role != Role::Hangar);
         let known = game.units.len();
         for _ in 0..4 {
-            game.run_opponents(OPPONENT_BUILD_SECONDS);
+            game.run_opponents();
             game.finish_all_making();
         }
         assert!(game.units.len() > known);
@@ -5195,6 +5258,7 @@ mod tests {
     #[test]
     fn a_click_starts_a_unit_that_appears_when_done_and_the_button_shows_how_far_it_is() {
         let mut game = in_battle();
+        game.units.retain(|u| u.owner == 0 || !u.role.makes_units());
         let cell = hud::grid_cells(W, H)[1];
         let known = game.units.len();
         assert_eq!(game.making_progress(Role::LightInfantry), None);

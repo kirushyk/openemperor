@@ -367,6 +367,12 @@ impl Role {
         }
     }
 
+    /// Whether it is a building that makes units.
+    #[cfg(test)]
+    pub fn makes_units(self) -> bool {
+        matches!(self, Role::Barracks | Role::Factory | Role::Hangar)
+    }
+
     /// Whether it sits on the ground when it has nowhere to go.
     pub fn lands(self) -> bool {
         matches!(self, Role::Ornithopter | Role::Destroyer)

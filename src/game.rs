@@ -105,6 +105,8 @@ pub enum CursorLook {
     Heal,
     /// A selected carryall would pick up or put down a vehicle here.
     Carry,
+    /// The selected would go here, or a selected building would send what it makes here.
+    Move,
 }
 
 /// The new building the player has on the way: one at a time.
@@ -1760,9 +1762,27 @@ impl Game {
             None => match self.attackable_under_cursor() {
                 Some(unit) => look_at(&self.units[unit]),
                 None if self.would_put_down_here() => CursorLook::Carry,
+                None if self.would_go_here() => CursorLook::Move,
                 None => CursorLook::Arrow,
             },
         }
+    }
+
+    /// Whether a click here would send somewhere any of what is selected: whatever can move, or
+    /// a building that makes units, whose gathering point it would be.
+    fn would_go_here(&self) -> bool {
+        let goes = |u: &&Unit| {
+            !u.deployed
+                && match u.kind {
+                    UnitKind::Tower => false,
+                    UnitKind::Building => u.role != Role::LandingPad,
+                    _ => true,
+                }
+        };
+        self.can_order_attack_here()
+            && self.selected_units().iter().any(goes)
+            && self.unit_under_cursor().is_none()
+            && self.view().ground_at(self.mouse.0, self.mouse.1).is_some()
     }
 
     /// Whether a click would send a selected carryall here to put down what it holds.
@@ -4366,6 +4386,57 @@ mod tests {
         }
     }
 
+    /// A battle with the cursor over open ground, and nothing selected.
+    fn cursor_on_open_ground() -> Game {
+        let mut game = in_battle();
+        game.units.iter_mut().for_each(|u| u.selected = false);
+        let (x, y) = clear_spot_on_screen();
+        game.handle(Event::MouseMove(x, y));
+        game
+    }
+
+    #[test]
+    fn the_cursor_shows_where_the_selected_would_go_only_when_a_click_would_send_them() {
+        let mut game = cursor_on_open_ground();
+        assert_eq!(game.cursor_look(), CursorLook::Arrow, "nothing selected");
+        let ring = crate::render::MOVE_CURSOR;
+        assert_eq!(line_vertices(&game, ring), 0);
+
+        let soldier = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
+            .unwrap();
+        game.units[soldier].selected = true;
+        assert_eq!(game.cursor_look(), CursorLook::Move);
+        assert!(line_vertices(&game, ring) > 0, "it draws");
+        assert!(!game.cursor_means_attack());
+
+        // A click on open ground then does what the cursor said.
+        let (x, y) = game.mouse;
+        click_at(&mut game, x, y);
+        assert!(game.units[soldier].is_moving());
+
+        // Over the HUD it is an arrow again.
+        let button = hud::all_buttons(W, H)[0];
+        game.handle(Event::MouseMove(button.x + 1.0, button.y + 1.0));
+        assert_eq!(game.cursor_look(), CursorLook::Arrow);
+    }
+
+    #[test]
+    fn what_cannot_go_anywhere_shows_no_move_cursor_but_a_building_setting_its_point_does() {
+        let selecting = |wanted: fn(&Unit) -> bool| {
+            let mut game = cursor_on_open_ground();
+            let chosen = game.units.iter().position(|u| u.owner == 0 && wanted(u));
+            game.units[chosen.unwrap()].selected = true;
+            game.cursor_look()
+        };
+        assert_eq!(selecting(|u| u.kind == UnitKind::Tower), CursorLook::Arrow);
+        assert_eq!(selecting(|u| u.role == Role::LandingPad), CursorLook::Arrow);
+        assert_eq!(selecting(|u| u.role == Role::Factory), CursorLook::Move);
+        assert_eq!(selecting(|u| u.kind == UnitKind::Vehicle), CursorLook::Move);
+    }
+
     #[test]
     fn nothing_of_the_world_is_drawn_outside_a_battle() {
         let game = Game::new(W, H);
@@ -4941,7 +5012,7 @@ mod tests {
         let carrier = game.units[carryall];
         game.units.retain(|u| u.id == carrier.id);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
-        assert_eq!(game.cursor_look(), CursorLook::Arrow, "nothing in hand");
+        assert_eq!(game.cursor_look(), CursorLook::Move, "nothing in hand");
         game.units[0].carrying = true;
         assert_eq!(game.cursor_look(), CursorLook::Carry);
         assert!(!crate::render::build(&game).is_empty());
@@ -6234,7 +6305,11 @@ mod tests {
 
         let (_, (x, y)) = enemy_beside_first_group(&mut game);
         game.handle(Event::MouseMove(x, y));
-        assert_eq!(game.cursor_look(), CursorLook::Arrow, "an enemy");
+        assert_eq!(
+            game.cursor_look(),
+            CursorLook::Move,
+            "an enemy it cannot harm, which a click just walks up to"
+        );
     }
 
     #[test]

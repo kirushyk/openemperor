@@ -61,6 +61,7 @@ const SELECTED_RING: Color = [0.35, 1.0, 0.45, 1.0];
 pub const ORDER_LINE: Color = [0.35, 1.0, 0.45, 0.85];
 pub const ATTACK_LINE: Color = [1.0, 0.2, 0.15, 0.85];
 pub const ATTACK_CURSOR: Color = [0.95, 0.12, 0.1, 1.0];
+pub const MOVE_CURSOR: Color = [0.2, 0.92, 0.32, 1.0];
 pub const HEAL_LINE: Color = [0.3, 0.6, 1.0, 0.85];
 pub const HEAL_CURSOR: Color = [0.25, 0.6, 1.0, 1.0];
 pub const MEDAL: Color = [1.0, 0.82, 0.25, 1.0];
@@ -459,6 +460,33 @@ impl Canvas {
 
     /// A red bullseye centered on the cursor, with four arrows around it pointing in and
     /// slowly turning. A dark edge keeps it readable over red units and red ground.
+    /// A green ring with four arrows inside it, drawing in on the point it would send them to.
+    fn move_cursor(&mut self, (x, y): (f32, f32), s: f32, seconds: f32) {
+        /// Times per second the arrows draw in.
+        const PULSE: f32 = 1.2;
+        let outer = 26.0 * s;
+        let thickness = (4.0 * s).max(1.0);
+        let edge = (2.0 * s).max(1.0);
+        self.ring((x, y), outer, thickness + edge * 2.0, CURSOR_EDGE);
+        self.ring((x, y), outer, thickness, MOVE_CURSOR);
+        let drawn_in = 3.0 * s * (seconds * PULSE * TAU).sin();
+        for arrow in 0..4 {
+            let (sin, cos) = (arrow as f32 * FRAC_PI_2).sin_cos();
+            // Measured out from the center and sideways from the arrow's middle.
+            let at = |out: f32, side: f32| (x + cos * out - sin * side, y + sin * out + cos * side);
+            let (tip, base, half) = (7.0 * s + drawn_in, 18.0 * s + drawn_in, 6.5 * s);
+            self.triangle(
+                [
+                    at(tip - edge * 1.8, 0.0),
+                    at(base + edge, -half - edge * 1.6),
+                    at(base + edge, half + edge * 1.6),
+                ],
+                CURSOR_EDGE,
+            );
+            self.triangle([at(tip, 0.0), at(base, -half), at(base, half)], MOVE_CURSOR);
+        }
+    }
+
     fn attack_cursor(&mut self, (x, y): (f32, f32), s: f32, seconds: f32) {
         /// Radians per second the arrows turn.
         const SPIN: f32 = 1.5;
@@ -759,6 +787,7 @@ fn canvas_of(game: &Game) -> Canvas {
         CursorLook::Attack => canvas.attack_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::Heal => canvas.heal_cursor(game.mouse, s),
         CursorLook::Carry => canvas.carry_cursor(game.mouse, s),
+        CursorLook::Move => canvas.move_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::Arrow => canvas.cursor(game.mouse, s),
     }
     canvas

@@ -34,6 +34,19 @@ All of this is done per pixel on the GPU, like the rest of the lighting.
 - Fuselages are built from rings of points along the nose-to-tail line, so they taper instead of
   being boxes.
 
+**Headlamps.** Every lamp is a real fitting on the model, a glass lens in a small steel housing,
+and its beam starts at that lens instead of on the ground in front of the unit as now.
+
+- **How many:** smaller machines carry one lamp in the middle; bigger ones carry two, one at
+  each side, and cast two beams that overlap ahead.
+- **The beam:** each beam is an additive white trapezium. Its narrow end sits at the lens and its
+  wide end lies on the ground ahead. It is brightest at the lens and fades to nothing at the far
+  edge, so where two beams overlap the ground is lit brighter. It only ever adds light, never
+  darkens.
+- **Movement:** the beams turn, lean and shake with the part the lamp is fixed to.
+
+Each model's entry below says where its lamps sit.
+
 **What stays the same.** Footprint, height, heading and every animated part keep working as they
 do now:
 
@@ -45,58 +58,80 @@ Stains, flames, shadows, headlights and selection rings work on the new models u
 
 **Budget.** The figures below are roughly triangles per model. A battle with about 400 machines
 on screen comes to about 150,000 triangles, drawn twice (once more for shadows). Units off
-screen are skipped.
+screen are skipped. Tracked vehicles push that toward 200,000 when they're most of the army.
 
 ## Ground vehicles
 
-### Tank (now about 30, aim about 350)
+### Tracks (tank, catapult and repair vehicle)
+
+Each track is a chain of separate links, not one solid belt:
+
+- **Links:** about 26 a side, each its own small plate (a thin box with a raised grouser bar
+  across it). The links run around the full loop: flat along the ground, up around the idler at
+  the front, back along the top over the wheels, and down around the sprocket at the back. Small
+  gaps between neighbouring links show the ground or the wheels behind.
+- **Motion:** the links travel around the loop as the vehicle drives, by how far it has gone,
+  and stand still when it stops. When it turns on the spot, the two sides run opposite ways.
+- **Wheels:** inside the loop are road wheels (8 sides each), a toothed drive sprocket at the back
+  and a plain idler at the front, all dark gunmetal. Thin steel side skirts cover the top run of
+  links on the tank only.
+
+The links alone come to about 500 triangles per vehicle, which raises the three tracked budgets
+below.
+
+### Tank (now about 30, aim about 850)
 
 A squat main battle tank, wider than tall.
 
 - **Hull:** a bevelled hull with a sloped front glacis and a flat engine deck at the back with two
   grille slats.
-- **Tracks:** one track on each side: a long rounded belt with five road wheels showing (8 sides
-  each), a drive sprocket at the back and an idler at the front. The track and wheels are dark
-  gunmetal.
+- **Tracks:** linked tracks as above, with five road wheels a side.
 - **Turret:** an eight-sided turret with sloped sides, sitting a little back of the middle.
 - **Gun:** a round barrel (10 sides) with a thicker mantlet where it leaves the turret and a muzzle
   brake ring at the tip.
 - **Fittings:** a small commander's hatch, and a stubby antenna at the rear corner.
+- **Headlamps:** two, low on the front corners of the hull on either side of the glacis, below
+  the gun.
 - **Team color:** the turret roof and a band along each hull side above the tracks.
 
-### Repair Vehicle (now about 30, aim about 300)
+### Repair Vehicle (now about 30, aim about 800)
 
-A boxy six-wheeled truck, a workshop on wheels.
+A boxy tracked workshop.
 
 - **Cab:** a short cab at the front with a dark windscreen.
 - **Body:** a taller box workshop behind the cab, its side panels with seams.
-- **Wheels:** three round wheels a side (12 sides, dark rubber with steel hubs).
+- **Tracks:** linked tracks as above, with four road wheels a side and no skirts.
 - **Crane:** a small folded crane arm on the roof: two bars and a hook.
 - **Beacon:** an amber beacon on the cab.
 - **Marking:** the white cross stays on the roof.
+- **Headlamps:** one, set into the middle of the cab front under the windscreen. The amber
+  beacon stays a light of its own.
 - **Team color:** the cab and a stripe along the workshop sides.
 
-### Catapult (now about 30, aim about 300)
+### Catapult (now about 30, aim about 800)
 
 A tracked artillery carrier with a big throwing arm.
 
-- **Base:** the same tracked running gear as the tank, slightly shorter, with a low open-topped
-  hull.
+- **Base:** linked tracks as above, slightly shorter than the tank's with four road wheels a
+  side, under a low open-topped hull.
 - **Arm:** a pivot block in the middle carries a long steel throwing arm, built as two parallel
   beams with cross braces, angled back.
 - **Bucket:** a round cup at the end of the arm (8-sided bowl).
 - **Counterweight:** a counterweight box at the arm's front end.
+- **Headlamps:** one, in the middle of the hull front under the counterweight.
 - **Team color:** the hull sides and the counterweight.
 
 ### Rocket Launcher (now about 60, aim about 400)
 
 A six-wheeled truck carrying two rocket racks.
 
-- **Wheels and cab:** six wheels like the repair vehicle, with a low armored cab at the front.
+- **Wheels and cab:** three round wheels a side (12 sides, dark rubber with steel hubs), with a
+  low armored cab at the front.
 - **Racks:** two racks behind the cab, each an open frame of thin steel bars rather than a solid
   block, so the rockets show inside it. The racks tilt up a little towards the front.
 - **Rockets:** each rocket is a white round body (6 sides) with a pointed nose cone and four tiny
   fins. They vanish one by one as the salvo fires, as now (`ROCKET_SIDES`, `ROCKET_HEIGHT`).
+- **Headlamps:** two, on the cab's front bumper.
 - **Team color:** the cab and the rack side plates.
 
 ### Strider (now about 60, aim about 450)
@@ -111,6 +146,7 @@ A small walking missile carrier, like a bird-legged mech.
 - **Body:** a rounded cockpit body, wider at the front, with a dark visor slit.
 - **Pods:** a missile pod on each side: a short round box with a face of four round tube mouths,
   dark inside.
+- **Headlamps:** one, under the cockpit's chin. Its beam bobs with the body as it walks.
 - **Team color:** the cockpit shell's top and the pod side plates.
 
 ### Heavy Strider (now about 90, aim about 800)
@@ -124,6 +160,7 @@ The same idea twice the size: a walking gun platform.
   muzzle ring. They still slide back when they fire (`CANNON_SIDES`, `CANNON_HEIGHT`,
   `CANNON_REACH`).
 - **Fittings:** exhaust stacks at the back.
+- **Headlamps:** the two lenses on the sensor head, one beam each.
 - **Team color:** the raised top armor and the knee caps.
 
 ## Aircraft
@@ -138,7 +175,8 @@ A long open lifting frame that hangs in the air.
   - a darker exhaust at the back;
   - a short pylon tying it to the spine.
 - **Underside:** a clamp frame under the spine where the cables and the carried vehicle hang.
-- **Lamp:** the big round floodlight under the nose stays, as a glass disc in a steel housing.
+- **Lamps:** two round floodlights under the nose, glass discs in steel housings.
+- **Headlamps:** two big floodlights under the nose, one each side of the clamp frame.
 - **Team color:** the nacelle front rings and a band across the spine's middle.
 
 ### Air Defense Platform (now about 50, aim about 400)
@@ -150,6 +188,7 @@ A hovering gun platform on two floats.
 - **Bridge:** a girder bridge between them.
 - **Turret:** a turret on a round ring mount in the middle.
 - **Gun:** a twin-barrel automatic gun, two thin round barrels with an ammo box beside them.
+- **Headlamps:** one at the front end of each float, as now.
 - **Team color:** the top of each float and the turret's sides.
 
 ### Air Drone (now 4, aim about 120)
@@ -162,6 +201,7 @@ A small fast delta-wing drone.
 - **Fin:** one swept tail fin.
 - **Canopy:** a dark sensor dome on the nose.
 - **Exhaust:** the flame comes from the nozzle as now.
+- **Headlamps:** none, as now: it's too fast and small to carry one.
 - **Team color:** the wing tips and the fin.
 
 ### Ornithopter (now about 30, aim about 350)
@@ -175,6 +215,8 @@ A slim attack machine with two pairs of flapping wings.
 - **Wings:** four wings, each a thin skin over three ribs, curved slightly and wider at the root.
   They beat in turn in flight and lie still when it sits, as now.
 - **Rails:** a short rocket rail under each side.
+- **Headlamps:** new, one under the nose, shining ahead and down while it flies and off while it
+  sits.
 - **Team color:** the wing tips, the fin, and a stripe down the spine.
 
 ### Destroyer (now about 50, aim about 500)
@@ -186,6 +228,8 @@ A heavy armored ornithopter.
 - **Wings:** four heavier wings with thicker ribs and a reinforced leading edge. They beat slower,
   as now.
 - **Pods:** two big rocket pods (12 sides), each with a face of six round tube mouths.
+- **Headlamps:** new, two under the armored nose, shining ahead and down while it flies and off
+  while it sits.
 - **Team color:** the nose armor band, the twin fins and the wing tips.
 
 ## Not in this pass

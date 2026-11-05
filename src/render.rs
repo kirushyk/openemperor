@@ -2363,9 +2363,16 @@ fn draw_diplomacy(canvas: &mut Canvas, game: &Game) {
             36.0 * s,
             team_color(row.color),
         );
-        canvas.text_left(&row.name, name_x, cy, px, TEXT);
-        canvas.text_left(&format!("${}", row.money), money_x, cy, px, GOLD);
+        let defeated = game.is_defeated(i);
+        let (name_color, money_color) = if defeated {
+            (QUIET, QUIET)
+        } else {
+            (TEXT, GOLD)
+        };
+        canvas.text_left(&row.name, name_x, cy, px, name_color);
+        canvas.text_left(&format!("${}", row.money), money_x, cy, px, money_color);
         match row.faction {
+            _ if defeated => canvas.text_left("Defeated", faction_x, cy, px, DEFEAT_RED),
             Some(faction) => {
                 draw_planet(canvas, game, faction, (planet_x, cy, 26.0 * s), BORDER);
                 canvas.text_left(faction.label(), faction_x, cy, px, TEXT);

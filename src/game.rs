@@ -1959,6 +1959,11 @@ impl Game {
         }
     }
 
+    /// Whether this side has lost everything, the player being owner 0.
+    pub fn is_defeated(&self, owner: usize) -> bool {
+        self.reported_defeated.get(owner) == Some(&true)
+    }
+
     /// Posts a message for each side that has just lost everything.
     fn report_defeats(&mut self) {
         let rows = self.stats_rows();
@@ -3904,6 +3909,17 @@ mod tests {
         assert_eq!(chat_texts(&game), [format!("{name} defeated")]);
         game.update(0.01);
         assert_eq!(chat_texts(&game).len(), 1, "only once");
+    }
+
+    #[test]
+    fn diplomacy_knows_who_is_defeated_and_that_stays_so() {
+        let mut game = in_battle();
+        assert!(!game.is_defeated(1), "nobody has lost anything yet");
+        kill_owners(&mut game, &[1]);
+        assert!(game.is_defeated(1));
+        assert!(!game.is_defeated(0));
+        game.update(0.01);
+        assert!(game.is_defeated(1));
     }
 
     #[test]

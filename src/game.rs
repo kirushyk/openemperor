@@ -48,6 +48,26 @@ const CARRYALL_CELL: usize = BOTTOM_ROW_START - hud::GRID_COLUMNS;
 /// Seconds of battle before the superweapon can fire again.
 pub const SUPERWEAPON_RECHARGE: f32 = 60.0;
 
+/// What opponents build, one at random whenever they get to. They leave out what only helps
+/// others, since they have no plan for it yet.
+const OPPONENT_BUILDS: [Role; 13] = [
+    Role::LightInfantry,
+    Role::Sniper,
+    Role::KInfantry,
+    Role::FlameInfantry,
+    Role::GasInfantry,
+    Role::Tank,
+    Role::Catapult,
+    Role::RocketLauncher,
+    Role::Strider,
+    Role::HeavyStrider,
+    Role::AirDefensePlatform,
+    Role::AirDrone,
+    Role::Ornithopter,
+];
+/// How often each opponent builds something, in seconds of battle.
+const OPPONENT_BUILD_SECONDS: f32 = 15.0;
+
 /// How long a chat line stays up, in seconds of battle.
 const CHAT_SECONDS: f32 = 12.0;
 
@@ -1185,6 +1205,10 @@ pub struct Game {
     pub units: Vec<Unit>,
     /// Vehicles carryalls hold, which are out of `units` meanwhile.
     pub carried: Vec<units::Carried>,
+    /// Seconds until opponents next build something.
+    opponents_build_in: f32,
+    /// What opponents' choices come from.
+    opponent_random: u32,
     pub combat: Combat,
     /// The superweapon is chosen and waiting for a click on the map.
     pub aiming_strike: bool,
@@ -1250,6 +1274,8 @@ impl Game {
             minimap_dragging: false,
             units: Vec::new(),
             carried: Vec::new(),
+            opponents_build_in: OPPONENT_BUILD_SECONDS,
+            opponent_random: 1,
             combat: Combat::default(),
             aiming_strike: false,
             strike_recharge: 0.0,
@@ -1436,6 +1462,34 @@ impl Game {
                 .or_else(|| BOTTOM_VEHICLE_BUILDS.get(cell.checked_sub(BOTTOM_ROW_START)?))
                 .copied(),
             BuildTab::Buildings => None,
+        }
+    }
+
+    /// Every so often each opponent builds something it can at random and sends it to a random
+    /// place on the map. That is all the strategy they have for now.
+    fn run_opponents(&mut self, dt: f32) {
+        self.opponents_build_in -= dt;
+        if self.opponents_build_in > 0.0 {
+            return;
+        }
+        self.opponents_build_in = OPPONENT_BUILD_SECONDS;
+        let terrain = battlefield::terrain(self.battle_map);
+        for owner in 1..self.teams.len() {
+            let can_build: Vec<Role> = OPPONENT_BUILDS
+                .into_iter()
+                .filter(|&role| units::maker_of(&self.units, role, owner).is_some())
+                .collect();
+            let (x, _) = terrain.random_point(&mut self.opponent_random);
+            let which = (x.abs() * 1000.0) as usize;
+            let Some(&role) = can_build.get(which % can_build.len().max(1)) else {
+                continue;
+            };
+            if units::produce(&mut self.units, terrain, role, owner, self.next_unit_id) {
+                self.next_unit_id += 1;
+                let point = terrain.random_point(&mut self.opponent_random);
+                let new = self.units.len() - 1;
+                units::send_to_spot(&mut self.units, new, point, terrain);
+            }
         }
     }
 
@@ -1697,6 +1751,7 @@ impl Game {
     fn settle_casualties(&mut self) {
         let mut lost_names = Vec::new();
         for unit in self.units.iter().filter(|u| !u.alive) {
+            self.combat.explode(unit.center(), unit.kind.radius() * 2.0);
             if unit.owner == 0 {
                 self.lost.count(unit);
                 lost_names.push(unit.name());
@@ -1831,6 +1886,8 @@ impl Game {
         self.fog = self.fog_allowed().then(Fog::new);
         self.update_fog();
         self.carried.clear();
+        self.opponents_build_in = OPPONENT_BUILD_SECONDS;
+        self.opponent_random = map as u32 * 2 + 1;
         self.combat = Combat::default();
         self.aiming_strike = false;
         self.strike_recharge = 0.0;
@@ -2083,6 +2140,9 @@ impl Game {
             }
             if self.screen == Screen::InGame {
                 self.settle_casualties();
+                if self.outcome.is_none() {
+                    self.run_opponents(dt);
+                }
             }
             self.update_fog();
         }
@@ -3301,6 +3361,9 @@ mod tests {
         drag(&mut game, SliderId::AiPlayers, ai.x_of(1));
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
+        // Nobody fires on these without an order.
+        game.units
+            .retain(|u| u.owner != 1 || u.kind != UnitKind::Building);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         let enemies = game
             .units
@@ -3329,10 +3392,7 @@ mod tests {
         }
         assert_eq!(game.outcome, Some(Outcome::Victory));
         assert_eq!(game.killed.infantry, enemies);
-        assert_eq!(
-            game.killed.buildings, 5,
-            "its towers and buildings fell too"
-        );
+        assert_eq!(game.killed.buildings, 2, "its towers fell too");
     }
 
     #[test]
@@ -4409,6 +4469,72 @@ mod tests {
         assert!(
             (knee.0).abs() < 0.001 && (knee.1 - 0.5).abs() < 0.001,
             "{knee:?}"
+        );
+    }
+
+    #[test]
+    fn whatever_is_destroyed_goes_up_in_an_explosion_with_particles_that_draw() {
+        let mut game = in_battle();
+        let before = crate::render::build(&game).len();
+        game.units[0].alive = false;
+        game.update(0.01);
+        assert!(!game.combat.particles.is_empty());
+        assert!(crate::render::build(&game).len() > before);
+    }
+
+    #[test]
+    fn opponents_build_with_what_they_have_and_send_it_off_at_random() {
+        let mut game = in_battle();
+        let owners = 1..game.teams.len();
+        let of = |game: &Game, owner: usize| game.units.iter().filter(|u| u.owner == owner).count();
+        let before: Vec<usize> = owners.clone().map(|owner| of(&game, owner)).collect();
+        game.update(OPPONENT_BUILD_SECONDS / 2.0);
+        assert_eq!(of(&game, 1), before[0], "not yet");
+        let known = game.units.len();
+        game.run_opponents(OPPONENT_BUILD_SECONDS);
+        for (owner, before) in owners.zip(before) {
+            assert_eq!(of(&game, owner), before + 1, "owner {owner}");
+        }
+        let new = &game.units[known..];
+        assert!(
+            new.iter()
+                .all(|u| u.owner != 0 && u.is_moving() && !u.selected)
+        );
+        let terrain = battlefield::terrain(game.battle_map);
+        assert!(
+            new.iter()
+                .all(|u| terrain.on_map(u.destination.0, u.destination.1))
+        );
+        assert!(
+            !game.chat.iter().any(|line| line.text.ends_with("ready")),
+            "only yours"
+        );
+    }
+
+    #[test]
+    fn opponents_without_their_buildings_build_nothing_but_with_one_left_only_its_kind() {
+        let mut game = in_battle();
+        let enemy = |u: &Unit| u.owner != 0;
+        game.units
+            .retain(|u| !(enemy(u) && u.kind == UnitKind::Building));
+        let known = game.units.len();
+        for _ in 0..4 {
+            game.run_opponents(OPPONENT_BUILD_SECONDS);
+        }
+        assert_eq!(game.units.len(), known);
+
+        let mut game = in_battle();
+        game.units
+            .retain(|u| u.owner == 0 || u.role != Role::Factory && u.role != Role::Hangar);
+        let known = game.units.len();
+        for _ in 0..4 {
+            game.run_opponents(OPPONENT_BUILD_SECONDS);
+        }
+        assert!(game.units.len() > known);
+        assert!(
+            game.units[known..]
+                .iter()
+                .all(|u| u.kind == UnitKind::Infantry)
         );
     }
 

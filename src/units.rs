@@ -943,6 +943,15 @@ pub fn produce(
     true
 }
 
+/// Sends a unit to its own free spot near a point, if there is one.
+pub fn send_to_spot(units: &mut [Unit], index: usize, point: (f32, f32), terrain: &Terrain) {
+    let flying = units[index].keeps_to_the_air();
+    let taken = spots_taken(units, flying);
+    if let Some(&spot) = find_slots(terrain, point, 1, &taken, flying).first() {
+        units[index].destination = spot;
+    }
+}
+
 /// Where a new unit must not go: where everyone in its layer stands or is headed, and around
 /// the buildings.
 fn spots_taken(units: &[Unit], flying: bool) -> Vec<(f32, f32)> {
@@ -1756,6 +1765,7 @@ fn alert_landers(units: &mut [Unit], teams: &[usize]) {
         );
         units[i].alerted = units.iter().any(|other| {
             lander.can_attack(other, teams)
+                && other.kind != UnitKind::Building
                 && distance(up_there, other.center()) <= lander.weapon.range()
         });
     }
@@ -3009,6 +3019,18 @@ mod tests {
             advance(&mut units, terrain, &teams, 0.05);
         }
         assert_eq!(units[0].altitude, 0.0, "safe, so it sits back");
+    }
+
+    #[test]
+    fn a_sitting_ornithopter_stays_down_beside_an_enemy_building_that_makes_units() {
+        let terrain = crate::battlefield::terrain(0);
+        let mut barracks = Unit::for_test(4.0, MAP_MIDDLE_Z, UnitKind::Building);
+        barracks.owner = 1;
+        let mut units = [ornithopter_at(0.0, MAP_MIDDLE_Z), barracks];
+        for _ in 0..40 {
+            advance(&mut units, terrain, &[0, 1], 0.05);
+        }
+        assert_eq!(units[0].altitude, 0.0);
     }
 
     #[test]

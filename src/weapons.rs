@@ -4,7 +4,9 @@
 //! nearest enemy in range, most only while standing still. Whatever can only fire straight
 //! ahead first turns to face its target.
 
-use crate::battlefield::Terrain;
+use crate::battlefield::{Terrain, next_random};
+use std::f32::consts::TAU;
+
 use crate::units::{
     CANNON_SIDES, Point, ROCKET_SIDES, Role, TUBE_HEIGHT, Target, Unit, UnitKind, are_enemies,
     are_friends, distance, substeps, turn_between,
@@ -71,6 +73,15 @@ const VETERAN_HEALING: f32 = 1.0;
 const BEAM_SECONDS: f32 = 0.2;
 const FLARE_SECONDS: f32 = 0.1;
 const BLAST_SECONDS: f32 = 0.5;
+
+/// How many particles an explosion throws out, for its size.
+const PARTICLES_PER_RADIUS: f32 = 14.0;
+const PARTICLES_AT_LEAST: usize = 8;
+const PARTICLES_AT_MOST: usize = 80;
+/// More than this at once and new explosions throw out no more.
+const PARTICLES_ALIVE_AT_MOST: usize = 800;
+const PARTICLE_SECONDS: f32 = 0.9;
+const PARTICLE_GRAVITY: f32 = 7.0;
 
 /// How high the radioactive missile starts, and how long it takes to come down.
 const STRIKE_HEIGHT: f32 = 60.0;
@@ -168,11 +179,12 @@ impl WeaponKind {
         }
     }
 
-    /// Only lasers and missiles can be fired on the move. Everything else must stand still.
+    /// Only lasers, missiles and the automatic gun can be fired on the move. Everything else
+    /// must stand still.
     fn fires_on_move(self) -> bool {
         matches!(
             self,
-            WeaponKind::Laser | WeaponKind::Missile | WeaponKind::AirMissile
+            WeaponKind::Laser | WeaponKind::Missile | WeaponKind::AirMissile | WeaponKind::AutoGun
         )
     }
 
@@ -365,6 +377,21 @@ pub struct Blast {
     pub life: f32,
 }
 
+/// A spark or a puff of smoke thrown out by an explosion.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Particle {
+    pub position: Point,
+    velocity: Point,
+    /// How wide it is, in world units.
+    pub size: f32,
+    /// Smoke drifts up and darkens; a spark glows and falls.
+    pub smoke: bool,
+    /// From 1 when it is thrown out down to 0.
+    pub life: f32,
+    /// How much life it loses each second.
+    fade: f32,
+}
+
 /// The radioactive missile on its way down.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Strike {
@@ -396,11 +423,64 @@ pub struct Combat {
     pub flares: Vec<Flare>,
     pub sprays: Vec<Spray>,
     pub blasts: Vec<Blast>,
+    pub particles: Vec<Particle>,
+    /// Where the next explosion's scatter comes from.
+    random: u32,
     pub strikes: Vec<Strike>,
     pub poison: Vec<PoisonZone>,
 }
 
 impl Combat {
+    /// A flash on the ground, and sparks and smoke thrown out from a point, more and farther
+    /// the bigger it is.
+    pub fn explode(&mut self, at: Point, radius: f32) {
+        self.blasts.push(Blast {
+            at,
+            radius,
+            life: 1.0,
+        });
+        let count = ((PARTICLES_PER_RADIUS * radius) as usize + PARTICLES_AT_LEAST)
+            .min(PARTICLES_AT_MOST)
+            .min(PARTICLES_ALIVE_AT_MOST.saturating_sub(self.particles.len()));
+        let mut random = self.random | 1;
+        let mut next = || next_random(&mut random);
+        for i in 0..count {
+            let smoke = i % 3 == 0;
+            let angle = next() * TAU;
+            let speed = (0.5 + next()) * radius.min(3.0) * if smoke { 0.6 } else { 3.0 };
+            let up = if smoke {
+                0.5 + next()
+            } else {
+                1.0 + next() * 3.0
+            };
+            self.particles.push(Particle {
+                position: at,
+                velocity: (angle.cos() * speed, up, angle.sin() * speed),
+                size: (0.5 + next()) * if smoke { 0.22 } else { 0.08 },
+                smoke,
+                life: 1.0,
+                fade: 1.0 / (PARTICLE_SECONDS * (0.5 + next())),
+            });
+        }
+        self.random = random;
+    }
+
+    /// Moves sparks and smoke along, stopping them at the ground, and drops the spent ones.
+    fn fly_particles(&mut self, terrain: &Terrain, dt: f32) {
+        for particle in &mut self.particles {
+            if !particle.smoke {
+                particle.velocity.1 -= PARTICLE_GRAVITY * dt;
+            }
+            let (x, y, z) = particle.position;
+            let (dx, dy, dz) = particle.velocity;
+            let (x, z) = (x + dx * dt, z + dz * dt);
+            let ground = terrain.height_at(x, z);
+            particle.position = (x, (y + dy * dt).max(ground), z);
+            particle.life -= particle.fade * dt;
+        }
+        self.particles.retain(|p| p.life > 0.0);
+    }
+
     /// Sends the radioactive missile at a point on the ground.
     pub fn launch_strike(&mut self, x: f32, z: f32) {
         self.strikes.push(Strike { x, z, elapsed: 0.0 });
@@ -426,6 +506,7 @@ impl Combat {
         fade(&mut self.flares, dt / FLARE_SECONDS, |f| &mut f.life);
         fade(&mut self.sprays, dt / SPRAY_SECONDS, |s| &mut s.life);
         fade(&mut self.blasts, dt / BLAST_SECONDS, |b| &mut b.life);
+        self.fly_particles(terrain, dt);
     }
 
     fn fire(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
@@ -650,25 +731,13 @@ impl Combat {
                         hit(units, index, missile.weapon, missile.shooter, teams);
                     }
                 }
-                self.blasts.push(Blast {
-                    at: missile.position,
-                    radius: MISSILE_BLAST_RADIUS,
-                    life: 1.0,
-                });
+                self.explode(missile.position, MISSILE_BLAST_RADIUS);
             } else if let Some(t) = reached {
                 hit(units, t, missile.weapon, missile.shooter, teams);
-                self.blasts.push(Blast {
-                    at: missile.position,
-                    radius: MISSILE_BLAST_RADIUS,
-                    life: 1.0,
-                });
+                self.explode(missile.position, MISSILE_BLAST_RADIUS);
             } else if y <= terrain.height_at(x, z) || missile.fuel <= 0.0 {
                 // A miss: it hits the ground or burns out, harming nobody.
-                self.blasts.push(Blast {
-                    at: missile.position,
-                    radius: MISSILE_BLAST_RADIUS * 0.6,
-                    life: 1.0,
-                });
+                self.explode(missile.position, MISSILE_BLAST_RADIUS * 0.6);
             } else {
                 flying.push(missile);
             }
@@ -705,11 +774,7 @@ impl Combat {
                     }
                 }
             }
-            self.blasts.push(Blast {
-                at: shell.landing,
-                radius: blast_radius,
-                life: 1.0,
-            });
+            self.explode(shell.landing, blast_radius);
         }
         self.shells = flying;
     }
@@ -729,11 +794,7 @@ impl Combat {
                     hurt(unit, STRIKE_DAMAGE * (1.0 - away / STRIKE_RADIUS * 0.5));
                 }
             }
-            self.blasts.push(Blast {
-                at: (strike.x, 0.0, strike.z),
-                radius: STRIKE_RADIUS,
-                life: 1.0,
-            });
+            self.explode((strike.x, 0.0, strike.z), STRIKE_RADIUS);
             self.poison.push(PoisonZone {
                 x: strike.x,
                 z: strike.z,
@@ -966,6 +1027,7 @@ fn nearest_enemy(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usiz
         if unit.alive
             && are_enemies(teams, owner, unit.owner)
             && weapon.can_target(unit.kind, unit.altitude)
+            && unit.kind != UnitKind::Building
         {
             let away = distance(from, unit.center());
             if away <= best_distance {
@@ -1984,7 +2046,7 @@ mod tests {
     }
 
     #[test]
-    fn only_lasers_and_missiles_can_be_fired_on_the_move() {
+    fn only_lasers_missiles_and_the_automatic_gun_can_be_fired_on_the_move() {
         for weapon in [WeaponKind::Laser, WeaponKind::Missile] {
             let mut units = [moving(shooter(weapon)), target_at(4.0, 60.0)];
             let mut combat = Combat::default();
@@ -1999,7 +2061,6 @@ mod tests {
             WeaponKind::Sniper,
             WeaponKind::Pistol,
             WeaponKind::Cannon,
-            WeaponKind::AutoGun,
             WeaponKind::Mortar,
             WeaponKind::Flame,
             WeaponKind::Gas,
@@ -2376,6 +2437,91 @@ mod tests {
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         assert_eq!(combat.missiles.len(), 1);
+    }
+
+    #[test]
+    fn an_explosion_throws_out_sparks_and_smoke_that_stay_above_the_ground_and_die_out() {
+        let mut combat = Combat::default();
+        combat.explode((0.0, 1.0, 60.0), 1.0);
+        let small = combat.particles.len();
+        assert!(small >= PARTICLES_AT_LEAST);
+        assert_eq!(combat.blasts.len(), 1);
+        assert!(combat.particles.iter().any(|p| p.smoke));
+        assert!(combat.particles.iter().any(|p| !p.smoke));
+        let directions: Vec<_> = combat.particles.iter().map(|p| p.velocity).collect();
+        assert_ne!(directions[0], directions[1], "they scatter");
+
+        let mut big = Combat::default();
+        big.explode((0.0, 1.0, 60.0), 3.0);
+        assert!(big.particles.len() > small);
+
+        for _ in 0..10 {
+            combat.advance(&mut [], &TEAMS, flat(), 0.05);
+        }
+        assert!(
+            combat
+                .particles
+                .iter()
+                .any(|p| p.position != (0.0, 1.0, 60.0))
+        );
+        assert!(combat.particles.iter().all(|p| p.position.1 >= 0.0));
+        for _ in 0..60 {
+            combat.advance(&mut [], &TEAMS, flat(), 0.05);
+        }
+        assert!(combat.particles.is_empty(), "they die out");
+    }
+
+    #[test]
+    fn however_many_explosions_go_off_the_particles_stay_bounded() {
+        let mut combat = Combat::default();
+        for _ in 0..100 {
+            combat.explode((0.0, 1.0, 60.0), 7.0);
+        }
+        assert!(combat.particles.len() <= PARTICLES_ALIVE_AT_MOST);
+    }
+
+    #[test]
+    fn the_automatic_gun_fires_on_the_move() {
+        let mut gunner = shooter(WeaponKind::AutoGun);
+        gunner.destination = (gunner.x, 70.0);
+        let mut units = [gunner, target_at(4.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert!(units[1].health < 100.0);
+    }
+
+    fn enemy_barracks_at(x: f32, z: f32) -> Unit {
+        let mut barracks = target_at(x, z);
+        barracks.role = Role::Barracks;
+        barracks.kind = UnitKind::Building;
+        barracks
+    }
+
+    #[test]
+    fn nobody_fires_on_a_building_that_makes_units_unless_ordered_but_towers_draw_fire() {
+        let mut units = [shooter(WeaponKind::Bullet), enemy_barracks_at(3.0, 60.0)];
+        let before = units[1].health;
+        let mut combat = Combat::default();
+        for _ in 0..40 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert_eq!(units[1].health, before, "no order");
+
+        units[0].target = Some(Target::Unit(units[1].id));
+        for _ in 0..40 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert!(units[1].health < before, "ordered");
+
+        let mut tower = enemy_barracks_at(3.0, 60.0);
+        tower.role = Role::Tower;
+        tower.kind = UnitKind::Tower;
+        let mut units = [shooter(WeaponKind::Bullet), tower];
+        let before = units[1].health;
+        for _ in 0..40 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert!(units[1].health < before, "a tower is aggressive");
     }
 
     fn rocket_launcher_facing_east() -> Unit {

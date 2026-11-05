@@ -32,6 +32,7 @@ const WING_BEATS: f32 = 30.0;
 /// How far to each side of a platform's middle its two blocks lie.
 const PLATFORM_BLOCK_SIDE: f32 = 0.27;
 const BUILDING_DOOR: [f32; 3] = [0.05, 0.05, 0.06];
+const SMOKE: [f32; 3] = [0.16, 0.15, 0.14];
 const CABLE: Color = [0.1, 0.1, 0.1, 1.0];
 const QUIET: Color = [0.55, 0.53, 0.48, 1.0];
 const GOLD: Color = [0.95, 0.76, 0.32, 1.0];
@@ -945,6 +946,41 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
             reach,
             BLAST_COLOR,
             (0.9 * blast.life, 0.1 * blast.life),
+        );
+    }
+    for particle in game.combat.particles.iter().filter(|p| seen(p.position)) {
+        draw_particle(canvas, view, particle);
+    }
+}
+
+/// A small diamond: a spark adds its light and shrinks as it cools, and smoke covers what is
+/// behind it and spreads as it fades.
+fn draw_particle(
+    canvas: &mut Canvas,
+    view: &battlefield::View,
+    particle: &crate::weapons::Particle,
+) {
+    let (x, y, z) = particle.position;
+    let life = particle.life;
+    let grown = if particle.smoke {
+        particle.size * (2.0 - life)
+    } else {
+        particle.size * (0.4 + 0.6 * life)
+    };
+    let (Some(middle), Some(above)) = (view.project(x, y, z), view.project(x, y + grown, z)) else {
+        return;
+    };
+    let reach = (middle.1 - above.1).abs().max(1.0);
+    let (left, right) = ((middle.0 - reach, middle.1), (middle.0 + reach, middle.1));
+    let (top, bottom) = ((middle.0, middle.1 - reach), (middle.0, middle.1 + reach));
+    if particle.smoke {
+        let color = with_alpha(SMOKE, 0.5 * life);
+        canvas.triangle([left, top, right], color);
+        canvas.triangle([left, right, bottom], color);
+    } else {
+        let glow = [life, life * (0.3 + 0.6 * life), 0.3 * life * life];
+        canvas.vertices.extend(
+            [left, top, right, left, right, bottom].map(|corner| Vertex::light(corner, glow)),
         );
     }
 }

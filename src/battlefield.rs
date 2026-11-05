@@ -147,7 +147,7 @@ fn xorshift(state: &mut u32) -> u32 {
 }
 
 /// A repeatable random number from 0 to 1.
-fn next_random(state: &mut u32) -> f32 {
+pub fn next_random(state: &mut u32) -> f32 {
     (xorshift(state) & 0xFFFF) as f32 / 65535.0
 }
 
@@ -310,6 +310,12 @@ impl Terrain {
     }
 
     /// The destroyed buildings on this map.
+    /// A point anywhere on the map.
+    pub fn random_point(&self, random: &mut u32) -> (f32, f32) {
+        let (u, v) = (next_random(random), next_random(random));
+        grid_to_world(u * GRID_LAST, v * GRID_LAST)
+    }
+
     pub fn ruins(&self) -> &[RuinPiece] {
         &self.ruins
     }

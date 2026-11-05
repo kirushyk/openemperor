@@ -1218,6 +1218,9 @@ pub struct Game {
     pub campaign_mission: usize,
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
+    /// Where on the map a press on the minimap would send the selected, and the cursor's place
+    /// at that press, until it turns into a drag that moves the camera instead.
+    minimap_order: Option<((f32, f32), (f32, f32))>,
     pub units: Vec<Unit>,
     /// Vehicles carryalls hold, which are out of `units` meanwhile.
     pub carried: Vec<units::Carried>,
@@ -1291,6 +1294,7 @@ impl Game {
             lost: Casualties::default(),
             campaign_mission: 0,
             minimap_dragging: false,
+            minimap_order: None,
             units: Vec::new(),
             carried: Vec::new(),
             following: None,
@@ -2005,9 +2009,37 @@ impl Game {
         }
         let rect = hud::minimap_rect(self.width, self.height);
         if let Some((x, z)) = battlefield::minimap_to_world(rect, self.mouse.0, self.mouse.1) {
-            self.camera.look_at(x, z);
-            self.following = None;
             self.minimap_dragging = true;
+            if self.minimap_click_gives_order() {
+                self.minimap_order = Some(((x, z), self.mouse));
+            } else {
+                self.camera.look_at(x, z);
+                self.following = None;
+            }
+        }
+    }
+
+    /// Whether a click on the minimap sends the selected there: whatever can move, and buildings
+    /// that send what they make. Otherwise it moves the camera.
+    fn minimap_click_gives_order(&self) -> bool {
+        !self.aiming_strike
+            && !matches!(self.site, Site::Placing(_))
+            && self
+                .selected_units()
+                .iter()
+                .any(|u| u.kind != UnitKind::Tower)
+    }
+
+    /// Sends the selected to where the minimap was clicked, if it was not dragged.
+    fn finish_minimap_order(&mut self) {
+        if let Some((target, _)) = self.minimap_order.take() {
+            units::order_move(
+                &mut self.units,
+                target,
+                battlefield::terrain(self.battle_map),
+                &self.teams,
+            );
+            units::set_gathering(&mut self.units, target);
         }
     }
 
@@ -2016,6 +2048,14 @@ impl Game {
         if !self.minimap_dragging || self.key_paused {
             return;
         }
+        if let Some((_, pressed_at)) = self.minimap_order {
+            let moved = (self.mouse.0 - pressed_at.0).hypot(self.mouse.1 - pressed_at.1);
+            if moved <= CLICK_SLOP * ui_scale(self.height) {
+                return;
+            }
+            self.minimap_order = None;
+        }
+        self.following = None;
         let rect = hud::minimap_rect(self.width, self.height);
         let (x, y, size) = rect;
         let px = self.mouse.0.clamp(x, x + size - 0.01);
@@ -2434,6 +2474,7 @@ impl Game {
             Event::MouseUp | Event::ShiftMouseUp => {
                 self.dragging = None;
                 self.minimap_dragging = false;
+                self.finish_minimap_order();
                 self.finish_selection(event == Event::ShiftMouseUp);
                 let pressed = self.pressed.take();
                 if self.screen == Screen::Intro {
@@ -2577,6 +2618,7 @@ impl Game {
         self.pressed = None;
         self.dragging = None;
         self.minimap_dragging = false;
+        self.minimap_order = None;
         self.selection_anchor = None;
         self.confirming = None;
         self.name_focused = false;
@@ -5482,9 +5524,15 @@ mod tests {
         game.handle(Event::KeyDown(Key::Char('f')));
         assert!(game.following.is_some());
         let (x, y, size) = hud::minimap_rect(W, H);
-        game.handle(Event::MouseMove(x + size / 3.0, y + size / 2.0));
+        click_at(&mut game, x + size / 3.0, y + size / 2.0);
+        assert!(
+            game.following.is_some(),
+            "a click sends it, and the camera goes along"
+        );
         game.handle(Event::MouseDown);
-        assert_eq!(game.following, None);
+        game.handle(Event::MouseMove(x + size / 2.0, y + size / 2.0));
+        assert_eq!(game.following, None, "a drag takes the camera away");
+        game.handle(Event::MouseUp);
     }
 
     #[test]
@@ -7543,6 +7591,74 @@ mod tests {
         game.handle(Event::MouseMove(x, y));
         game.handle(Event::MouseDown);
         game.handle(Event::MouseUp);
+    }
+
+    /// A point on the minimap well inside its diamond, and the map's place under it.
+    fn minimap_point() -> ((f32, f32), (f32, f32)) {
+        let rect = hud::minimap_rect(W, H);
+        let at = (rect.0 + rect.2 * 0.6, rect.1 + rect.2 * 0.5);
+        (at, battlefield::minimap_to_world(rect, at.0, at.1).unwrap())
+    }
+
+    #[test]
+    fn a_click_on_the_minimap_sends_the_selected_there_and_leaves_the_camera() {
+        let mut game = in_battle();
+        let tank = tank_of(&game);
+        game.units[tank].selected = true;
+        let other = game.units[tank + 1];
+        let camera = (game.camera.x, game.camera.z);
+        let (at, world) = minimap_point();
+        click_at(&mut game, at.0, at.1);
+        assert_eq!((game.camera.x, game.camera.z), camera);
+        let sent = game.units[tank].destination;
+        assert!(
+            (sent.0 - world.0).hypot(sent.1 - world.1) < 5.0,
+            "{sent:?} {world:?}"
+        );
+        assert!(game.units[tank].selected, "the selection stands");
+        assert_eq!(game.units[tank + 1].destination, other.destination);
+    }
+
+    #[test]
+    fn a_drag_on_the_minimap_still_moves_the_camera_with_units_selected_and_gives_no_order() {
+        let mut game = in_battle();
+        let tank = tank_of(&game);
+        game.units[tank].selected = true;
+        let stays = game.units[tank].destination;
+        let (at, _) = minimap_point();
+        let far = (at.0 + 40.0, at.1 + 20.0);
+        game.handle(Event::MouseMove(at.0, at.1));
+        game.handle(Event::MouseDown);
+        let camera = (game.camera.x, game.camera.z);
+        game.handle(Event::MouseMove(far.0, far.1));
+        assert_ne!((game.camera.x, game.camera.z), camera);
+        game.handle(Event::MouseUp);
+        assert_eq!(game.units[tank].destination, stays);
+    }
+
+    #[test]
+    fn a_click_on_the_minimap_moves_the_camera_with_only_a_tower_selected() {
+        let mut game = in_battle();
+        let tower = tower_of(&game, 0);
+        game.units[tower].selected = true;
+        let camera = (game.camera.x, game.camera.z);
+        let (at, _) = minimap_point();
+        click_at(&mut game, at.0, at.1);
+        assert_ne!((game.camera.x, game.camera.z), camera);
+    }
+
+    #[test]
+    fn a_click_on_the_minimap_sets_a_selected_buildings_gathering_point() {
+        let mut game = in_battle();
+        let barracks = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Barracks)
+            .unwrap();
+        game.units[barracks].selected = true;
+        let (at, world) = minimap_point();
+        click_at(&mut game, at.0, at.1);
+        assert_eq!(game.units[barracks].gathering, Some(world));
     }
 
     #[test]

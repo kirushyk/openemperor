@@ -1221,6 +1221,8 @@ pub struct Game {
     pub units: Vec<Unit>,
     /// Vehicles carryalls hold, which are out of `units` meanwhile.
     pub carried: Vec<units::Carried>,
+    /// The id of the unit the camera stays on, if any.
+    following: Option<u32>,
     pub site: Site,
     /// Seconds until opponents next build something.
     opponents_build_in: f32,
@@ -1291,6 +1293,7 @@ impl Game {
             minimap_dragging: false,
             units: Vec::new(),
             carried: Vec::new(),
+            following: None,
             site: Site::Idle,
             opponents_build_in: OPPONENT_BUILD_SECONDS,
             opponent_random: 1,
@@ -1566,6 +1569,17 @@ impl Game {
             }
         }
         self.work_on_making(0.0);
+    }
+
+    /// Keeps the camera on the unit it follows, and lets go once that is no longer there.
+    fn follow_with_camera(&mut self) {
+        let Some(id) = self.following else {
+            return;
+        };
+        match self.units.iter().find(|u| u.alive && u.id == id) {
+            Some(unit) => self.camera.look_at(unit.x, unit.z),
+            None => self.following = None,
+        }
     }
 
     /// Selects everything of the player's that can move and shows on screen. If that is already
@@ -1992,6 +2006,7 @@ impl Game {
         let rect = hud::minimap_rect(self.width, self.height);
         if let Some((x, z)) = battlefield::minimap_to_world(rect, self.mouse.0, self.mouse.1) {
             self.camera.look_at(x, z);
+            self.following = None;
             self.minimap_dragging = true;
         }
     }
@@ -2041,6 +2056,7 @@ impl Game {
         self.fog = self.fog_allowed().then(Fog::new);
         self.update_fog();
         self.carried.clear();
+        self.following = None;
         self.site = Site::Idle;
         self.opponents_build_in = OPPONENT_BUILD_SECONDS;
         self.opponent_random = map as u32 * 2 + 1;
@@ -2329,7 +2345,12 @@ impl Game {
                     self.outcome_elapsed += dt;
                 }
                 self.camera.ease_zoom(dt);
-                if self.focused && !self.key_paused && !self.minimap_dragging {
+                self.follow_with_camera();
+                if self.following.is_none()
+                    && self.focused
+                    && !self.key_paused
+                    && !self.minimap_dragging
+                {
                     let direction =
                         battlefield::edge_direction(self.mouse, self.width, self.height);
                     self.camera.scroll(direction, self.settings.scroll_rate, dt);
@@ -2439,6 +2460,13 @@ impl Game {
                     units::toggle_deploy(&mut self.units)
                 }
                 (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => self.select_all(),
+                (Screen::InGame, Key::Char('f' | 'F')) if !self.key_paused => {
+                    self.following = match self.following {
+                        Some(_) => None,
+                        None => self.units.iter().find(|u| u.selected).map(|u| u.id),
+                    };
+                    self.follow_with_camera();
+                }
                 (Screen::InGame, Key::Char('h' | 'H')) if !self.key_paused => units::order_move(
                     &mut self.units,
                     HOME,
@@ -5388,6 +5416,64 @@ mod tests {
         game.handle(Event::KeyDown(Key::Pause));
         game.handle(Event::KeyDown(Key::Char('h')));
         assert_eq!(game.units[tank].destination, away, "not while paused");
+    }
+
+    fn tank_of(game: &Game) -> usize {
+        game.units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_f_key_keeps_the_camera_on_the_selected_unit_until_pressed_again() {
+        let mut game = in_battle();
+        game.handle(Event::KeyDown(Key::Char('f')));
+        assert_eq!(game.following, None, "nobody selected");
+
+        let tank = tank_of(&game);
+        game.units[tank].selected = true;
+        game.units[tank].destination = (game.units[tank].x + 6.0, game.units[tank].z);
+        game.handle(Event::KeyDown(Key::Char('F')));
+        let id = game.units[tank].id;
+        assert_eq!(game.following, Some(id));
+        let close = |game: &Game| {
+            let unit = game.units.iter().find(|u| u.id == id).unwrap();
+            (unit.x - game.camera.x).hypot(unit.z - game.camera.z) < 0.01
+        };
+        assert!(close(&game), "at once");
+        let start = game.camera.x;
+        for _ in 0..20 {
+            game.update(0.05);
+            assert!(close(&game));
+        }
+        assert!(game.camera.x > start, "it went along");
+
+        game.handle(Event::KeyDown(Key::Char('f')));
+        assert_eq!(game.following, None, "released");
+        let (x, z) = (game.camera.x, game.camera.z);
+        game.update(0.5);
+        assert_eq!((game.camera.x, game.camera.z), (x, z), "and it stays");
+    }
+
+    #[test]
+    fn the_camera_lets_go_of_a_unit_that_is_gone_or_when_the_minimap_is_used() {
+        let mut game = in_battle();
+        let tank = tank_of(&game);
+        game.units[tank].selected = true;
+        game.handle(Event::KeyDown(Key::Char('f')));
+        game.units[tank].alive = false;
+        game.update(0.05);
+        assert_eq!(game.following, None);
+
+        let tank = tank_of(&game);
+        game.units[tank].selected = true;
+        game.handle(Event::KeyDown(Key::Char('f')));
+        assert!(game.following.is_some());
+        let (x, y, size) = hud::minimap_rect(W, H);
+        game.handle(Event::MouseMove(x + size / 3.0, y + size / 2.0));
+        game.handle(Event::MouseDown);
+        assert_eq!(game.following, None);
     }
 
     #[test]

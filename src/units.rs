@@ -323,7 +323,9 @@ impl Role {
             Role::RocketLauncher | Role::Ornithopter | Role::AirDefensePlatform => 11.0,
             Role::AdvancedCarryall => 12.0,
             Role::HeavyStrider => 15.0,
-            Role::Tower | Role::FlameTower | Role::Barracks | Role::Factory | Role::Hangar => 0.0,
+            Role::Barracks => 15.0,
+            Role::Factory | Role::Hangar => 20.0,
+            Role::Tower | Role::FlameTower => 0.0,
         }
     }
 
@@ -1099,6 +1101,44 @@ fn spots_taken(units: &[Unit], flying: bool) -> Vec<(f32, f32)> {
                 .chain(around.into_iter().flatten())
         })
         .collect()
+}
+
+/// Whether a new building could go up here: on land, clear of ruins and of everyone on the
+/// ground.
+pub fn can_place_building(units: &[Unit], terrain: &Terrain, (x, z): (f32, f32)) -> bool {
+    let radius = BUILDING_RADIUS;
+    let on_land = [
+        (0.0, 0.0),
+        (-radius, 0.0),
+        (radius, 0.0),
+        (0.0, -radius),
+        (0.0, radius),
+    ]
+    .iter()
+    .all(|(dx, dz)| terrain.can_walk(x + dx, z + dz));
+    let clear_of_ruins = terrain.ruins().iter().all(|piece| {
+        let (near_x, near_z) = nearest_on_footprint(piece, x, z);
+        (near_x - x).hypot(near_z - z) > radius
+    });
+    on_land
+        && clear_of_ruins
+        && units
+            .iter()
+            .filter(|u| u.alive && u.altitude <= 0.0)
+            .all(|u| (u.x - x).hypot(u.z - z) > radius + u.kind.radius())
+}
+
+/// A new building that has not been put anywhere yet.
+pub fn new_building(
+    terrain: &Terrain,
+    at: (f32, f32),
+    role: Role,
+    side: (usize, TeamColor),
+    id: u32,
+) -> Unit {
+    let mut built = Vec::with_capacity(1);
+    place_unit(&mut built, terrain, at, role, role.weapon(), side, id);
+    built[0]
 }
 
 /// Puts up an owner's three buildings in a row behind a group's middle.
@@ -3681,6 +3721,43 @@ mod tests {
         }
         assert!(Role::HeavyStrider.build_seconds() > Role::Tank.build_seconds());
         assert!(Role::Tank.build_seconds() > Role::Scout.build_seconds());
+    }
+
+    #[test]
+    fn a_new_building_needs_clear_land() {
+        let terrain = open_ground();
+        let units = base_of(0);
+        let barracks = units.iter().find(|u| u.role == Role::Barracks).unwrap();
+        assert!(!can_place_building(
+            &units,
+            terrain,
+            (barracks.x, barracks.z)
+        ));
+        assert!(!can_place_building(
+            &units,
+            terrain,
+            (barracks.x + 1.5, barracks.z)
+        ));
+        assert!(can_place_building(
+            &units,
+            terrain,
+            (barracks.x - 8.0, barracks.z)
+        ));
+        let mut plane = Unit::for_test(barracks.x + 8.0, barracks.z, UnitKind::Aircraft);
+        plane.alive = true;
+        assert!(
+            can_place_building(&[plane], terrain, (plane.x, plane.z)),
+            "what flies is not in the way"
+        );
+        let sitting = Unit {
+            altitude: 0.0,
+            ..plane
+        };
+        assert!(!can_place_building(&[sitting], terrain, (plane.x, plane.z)));
+        assert!(
+            !can_place_building(&[], terrain, (-1000.0, 60.0)),
+            "off the map"
+        );
     }
 
     #[test]

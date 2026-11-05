@@ -65,6 +65,8 @@ const OPPONENT_BUILDS: [Role; 13] = [
     Role::AirDrone,
     Role::Ornithopter,
 ];
+/// What the Buildings menu makes, in order.
+const BUILDING_BUILDS: [Role; 3] = [Role::Barracks, Role::Factory, Role::Hangar];
 /// How often each opponent builds something, in seconds of battle.
 const OPPONENT_BUILD_SECONDS: f32 = 15.0;
 
@@ -95,6 +97,18 @@ pub enum CursorLook {
     Heal,
     /// A selected carryall would pick up or put down a vehicle here.
     Carry,
+}
+
+/// The new building the player has on the way: one at a time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Site {
+    Idle,
+    /// Being built, with the seconds left.
+    Building(Role, f32),
+    /// Done, and waiting for its button to be clicked.
+    Ready(Role),
+    /// Its button was clicked, and the next click on the map puts it there.
+    Placing(Role),
 }
 
 /// One message in the battle's chat.
@@ -1205,6 +1219,7 @@ pub struct Game {
     pub units: Vec<Unit>,
     /// Vehicles carryalls hold, which are out of `units` meanwhile.
     pub carried: Vec<units::Carried>,
+    pub site: Site,
     /// Seconds until opponents next build something.
     opponents_build_in: f32,
     /// What opponents' choices come from.
@@ -1274,6 +1289,7 @@ impl Game {
             minimap_dragging: false,
             units: Vec::new(),
             carried: Vec::new(),
+            site: Site::Idle,
             opponents_build_in: OPPONENT_BUILD_SECONDS,
             opponent_random: 1,
             combat: Combat::default(),
@@ -1429,6 +1445,7 @@ impl Game {
     fn can_order_attack_here(&self) -> bool {
         self.cursor_on_battlefield()
             && !self.aiming_strike
+            && !matches!(self.site, Site::Placing(_))
             && !self.minimap_dragging
             && self.is_click_so_far()
     }
@@ -1461,7 +1478,7 @@ impl Game {
                 .get(cell)
                 .or_else(|| BOTTOM_VEHICLE_BUILDS.get(cell.checked_sub(BOTTOM_ROW_START)?))
                 .copied(),
-            BuildTab::Buildings => None,
+            BuildTab::Buildings => BUILDING_BUILDS.get(cell).copied(),
         }
     }
 
@@ -1509,6 +1526,11 @@ impl Game {
     /// How much of this role the player's building has made so far, from 0 to 1, if it is
     /// making one.
     pub fn making_progress(&self, role: Role) -> Option<f32> {
+        if let Site::Building(on_site, left) = self.site
+            && on_site == role
+        {
+            return Some(1.0 - left / role.build_seconds());
+        }
         self.units
             .iter()
             .filter(|u| u.alive && u.owner == 0)
@@ -1544,9 +1566,63 @@ impl Game {
         self.work_on_making(0.0);
     }
 
-    /// Whether the player has the building that makes this.
+    /// Whether the player has the building that makes this. Nothing is needed for a building.
     pub fn can_produce(&self, role: Role) -> bool {
-        units::maker_of(&self.units, role, 0).is_some()
+        role.made_in().is_none() || units::maker_of(&self.units, role, 0).is_some()
+    }
+
+    /// Moves along the building on its way.
+    fn work_on_site(&mut self, dt: f32) {
+        if let Site::Building(role, left) = self.site {
+            let left = left - dt;
+            self.site = if left > 0.0 {
+                Site::Building(role, left)
+            } else {
+                self.post_chat(format!("{} ready to place", role.name()));
+                Site::Ready(role)
+            };
+        }
+    }
+
+    /// A click on a building's button: starts it, or takes it up to place once it is ready.
+    fn click_building(&mut self, role: Role) {
+        match self.site {
+            Site::Idle => self.site = Site::Building(role, role.build_seconds()),
+            Site::Ready(ready) if ready == role => {
+                self.aiming_strike = false;
+                self.site = Site::Placing(role);
+            }
+            _ => {}
+        }
+    }
+
+    /// The building on its way, if it is of this role.
+    fn site_of(&self, role: Role) -> bool {
+        match self.site {
+            Site::Idle => false,
+            Site::Building(on_site, _) | Site::Ready(on_site) | Site::Placing(on_site) => {
+                on_site == role
+            }
+        }
+    }
+
+    /// Whether this building is done and waiting to be placed.
+    pub fn is_ready_to_place(&self, role: Role) -> bool {
+        self.site == Site::Ready(role) || self.site == Site::Placing(role)
+    }
+
+    /// The building about to be placed where the cursor is, and whether it can go there.
+    pub fn placing_preview(&self) -> Option<(Unit, bool)> {
+        let Site::Placing(role) = self.site else {
+            return None;
+        };
+        let at = self.view().ground_at(self.mouse.0, self.mouse.1)?;
+        let terrain = battlefield::terrain(self.battle_map);
+        let side = (0, self.stats_rows().first()?.color);
+        let building = units::new_building(terrain, at, role, side, self.next_unit_id);
+        let can = units::can_place_building(&self.units, terrain, at)
+            && self.sight_at(at.0, at.1) != Sight::Unexplored;
+        Some((building, can))
     }
 
     /// The tip text for what the cursor is over: a button making something, or a unit.
@@ -1644,6 +1720,18 @@ impl Game {
     /// does not send everyone off.
     fn finish_selection(&mut self, adding: bool) {
         if self.selection_anchor.is_none() {
+            return;
+        }
+        if let Some((building, true)) = self.placing_preview() {
+            self.units.push(building);
+            self.next_unit_id += 1;
+            self.site = Site::Idle;
+            self.selection_anchor = None;
+            return;
+        }
+        if matches!(self.site, Site::Placing(_)) {
+            // Not there. It stays up until a good click, or a right click.
+            self.selection_anchor = None;
             return;
         }
         if self.aiming_strike {
@@ -1927,6 +2015,7 @@ impl Game {
         self.fog = self.fog_allowed().then(Fog::new);
         self.update_fog();
         self.carried.clear();
+        self.site = Site::Idle;
         self.opponents_build_in = OPPONENT_BUILD_SECONDS;
         self.opponent_random = map as u32 * 2 + 1;
         self.combat = Combat::default();
@@ -2143,6 +2232,11 @@ impl Game {
             self.selection_anchor = None;
             return;
         }
+        if let Site::Placing(role) = self.site {
+            self.site = Site::Ready(role);
+            self.selection_anchor = None;
+            return;
+        }
         if self.stats_open {
             self.stats_open = false;
             return;
@@ -2184,6 +2278,7 @@ impl Game {
                 if self.outcome.is_none() {
                     self.run_opponents(dt);
                     self.work_on_making(dt);
+                    self.work_on_site(dt);
                 }
             }
             self.update_fog();
@@ -2241,8 +2336,16 @@ impl Game {
                 {
                     // On a build button it calls off one of those, and the selection stands.
                     if let Some(role) = Game::build_role(self.build_tab, cell) {
-                        units::cancel_making(&mut self.units, role, 0);
+                        if self.site_of(role) {
+                            self.site = Site::Idle;
+                        } else {
+                            units::cancel_making(&mut self.units, role, 0);
+                        }
                     }
+                } else if let Site::Placing(role) = self.site {
+                    // Elsewhere it only stops placing; the building stays ready.
+                    self.site = Site::Ready(role);
+                    self.selection_anchor = None;
                 } else if self.screen == Screen::InGame && !self.key_paused {
                     self.selection_anchor = None;
                     for unit in &mut self.units {
@@ -2382,6 +2485,10 @@ impl Game {
     /// Makes what the cell makes, or gets the superweapon ready to aim.
     fn activate_build_cell(&mut self, cell: usize) {
         if let Some(role) = Game::build_role(self.build_tab, cell) {
+            if role.kind() == UnitKind::Building {
+                self.click_building(role);
+                return;
+            }
             // There is no cost yet. A busy building queues it.
             units::start_making(&mut self.units, role, 0);
         } else if self.build_tab == BuildTab::Vehicles
@@ -4776,6 +4883,122 @@ mod tests {
         assert!(wedges.iter().map(centers).any(|c| c.0 < 45.0 && c.1 < 45.0));
         assert!(wedges.iter().map(centers).any(|c| c.0 > 55.0 && c.1 > 55.0));
         assert!(making_dim_wedges(square, 1.0).is_empty());
+    }
+
+    #[test]
+    fn the_buildings_menu_builds_with_the_clock_then_a_click_places_it_on_the_map() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        let cells = hud::grid_cells(W, H);
+        let press = |game: &mut Game, cell: usize| {
+            let b = cells[cell];
+            click_at(game, b.x + b.w / 2.0, b.y + b.h / 2.0);
+        };
+        let ours = |game: &Game| game.units.iter().filter(|u| u.owner == 0).count();
+        let known = ours(&game);
+
+        press(&mut game, 1);
+        assert_eq!(game.making_progress(Role::Factory), Some(0.0));
+        assert!(
+            line_vertices(&game, crate::render::MAKING_DIM) > 0,
+            "it dims"
+        );
+        press(&mut game, 0);
+        assert_eq!(game.making_progress(Role::Barracks), None, "one at a time");
+        press(&mut game, 1);
+        assert_eq!(
+            game.queue_badge(Role::Factory),
+            None,
+            "buildings have no queue"
+        );
+
+        game.update(Role::Factory.build_seconds() + 0.1);
+        assert_eq!(game.site, Site::Ready(Role::Factory));
+        assert!(game.is_ready_to_place(Role::Factory));
+        assert!(game.chat.iter().any(|l| l.text == "Factory ready to place"));
+        assert_eq!(ours(&game), known, "not on the map yet");
+        assert_eq!(game.making_progress(Role::Factory), None);
+
+        press(&mut game, 1);
+        assert_eq!(game.site, Site::Placing(Role::Factory));
+
+        // On top of the first group it cannot go.
+        let unit = game
+            .units
+            .iter()
+            .find(|u| u.role == Role::Tank)
+            .copied()
+            .unwrap();
+        let (x, y) = game.view().project(unit.x, unit.y, unit.z).unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert!(!game.placing_preview().unwrap().1);
+        assert!(!crate::render::build(&game).is_empty());
+        click_at(&mut game, x, y);
+        assert_eq!(ours(&game), known);
+        assert_eq!(
+            game.site,
+            Site::Placing(Role::Factory),
+            "it waits for a good click"
+        );
+
+        // A right click puts it down again, ready.
+        game.handle(Event::RightDown);
+        assert_eq!(game.site, Site::Ready(Role::Factory));
+        press(&mut game, 1);
+        assert_eq!(
+            game.cursor_look(),
+            CursorLook::Arrow,
+            "no orders while placing"
+        );
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.site, Site::Ready(Role::Factory), "Escape as well");
+        assert_eq!(game.screen, Screen::InGame);
+        press(&mut game, 1);
+
+        let (x, y) = clear_spot_on_screen();
+        let spot = game.view().ground_at(x, y).unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert!(game.placing_preview().unwrap().1, "{spot:?}");
+        assert!(!crate::render::build(&game).is_empty());
+        click_at(&mut game, x, y);
+        assert_eq!(game.site, Site::Idle);
+        assert_eq!(ours(&game), known + 1);
+        let built = *game.units.last().unwrap();
+        assert_eq!((built.role, built.owner), (Role::Factory, 0));
+        assert_eq!((built.x, built.z), spot);
+        assert_eq!(built.color, game.units[0].color);
+    }
+
+    #[test]
+    fn a_lost_building_can_be_built_again_and_its_units_made_again() {
+        let mut game = in_battle();
+        game.units
+            .retain(|u| u.role != Role::Barracks || u.owner != 0);
+        assert!(!game.can_produce(Role::Scout));
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        click_hud(&mut game, Action::BuildCell(0));
+        game.update(Role::Barracks.build_seconds() + 0.1);
+        click_hud(&mut game, Action::BuildCell(0));
+        let (x, y) = clear_spot_on_screen();
+        click_at(&mut game, x, y);
+        assert!(game.can_produce(Role::Scout));
+    }
+
+    #[test]
+    fn a_right_click_on_a_buildings_button_calls_it_off_at_any_stage() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        let b = hud::grid_cells(W, H)[2];
+        let at = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+        click_at(&mut game, at.0, at.1);
+        assert!(matches!(game.site, Site::Building(Role::Hangar, _)));
+        game.handle(Event::MouseMove(at.0, at.1));
+        game.handle(Event::RightDown);
+        assert_eq!(game.site, Site::Idle);
+
+        game.site = Site::Ready(Role::Hangar);
+        game.handle(Event::RightDown);
+        assert_eq!(game.site, Site::Idle);
     }
 
     #[test]

@@ -34,6 +34,8 @@ const PLATFORM_BLOCK_SIDE: f32 = 0.27;
 const BUILDING_DOOR: [f32; 3] = [0.05, 0.05, 0.06];
 const SMOKE: [f32; 3] = [0.16, 0.15, 0.14];
 pub const MAKING_DIM: Color = [0.0, 0.0, 0.0, 0.62];
+const PLACE_OK: [f32; 3] = [0.3, 1.0, 0.4];
+const PLACE_NOT: [f32; 3] = [1.0, 0.25, 0.2];
 const CABLE: Color = [0.1, 0.1, 0.1, 1.0];
 const QUIET: Color = [0.55, 0.53, 0.48, 1.0];
 const GOLD: Color = [0.95, 0.76, 0.32, 1.0];
@@ -772,6 +774,18 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
                 );
             }
         }
+    }
+    if let Some((building, can)) = game.placing_preview() {
+        let color = if can { PLACE_OK } else { PLACE_NOT };
+        draw_ground_disc(
+            canvas,
+            &view,
+            (building.x, building.y, building.z),
+            building.kind.radius(),
+            color,
+            (0.5, 0.5),
+        );
+        draw_unit_model(canvas, game, &view, &building);
     }
     for unit in flying {
         draw_carried(canvas, game, &view, unit);
@@ -2144,6 +2158,9 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
             for wedge in making_dim_wedges((cell.x, cell.y, cell.w, cell.h), progress) {
                 canvas.triangle(wedge, MAKING_DIM);
             }
+        }
+        if makes.is_some_and(|role| game.is_ready_to_place(role)) {
+            canvas.text_centered("Ready", cx, cell.y + cell.h - 12.0 * s, chat_px(game), GOLD);
         }
         if let Some(count) = makes.and_then(|role| game.queue_badge(role)) {
             let px = small_text_px(game.height);

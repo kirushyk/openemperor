@@ -3716,6 +3716,7 @@ mod tests {
         });
         game.combat.flares.push(crate::weapons::Flare {
             at: (x, 1.0, z),
+            direction: (1.0, 0.0, 0.0),
             size: 7.0,
             life: 0.5,
         });
@@ -4268,6 +4269,40 @@ mod tests {
         });
         game.units[enemy].altitude = 1.0;
         assert_eq!(crate::render::build_frame(&game).objects.len(), held);
+    }
+
+    #[test]
+    fn gunfire_draws_flames_going_the_way_of_the_shot_and_lights_what_is_around_it() {
+        let mut game = in_battle();
+        game.fog = None;
+        let (x, y, z) = game.units[0].center();
+        let flare = |direction| crate::weapons::Flare {
+            at: (x, y, z),
+            direction,
+            size: 16.0,
+            life: 1.0,
+        };
+        let before = crate::render::build_frame(&game);
+        game.combat.flares.push(flare((1.0, 0.0, 0.0)));
+        let right = crate::render::build_frame(&game);
+        assert_eq!(right.lights.len(), before.lights.len() + 1);
+        assert!(right.effects.len() > before.effects.len());
+        game.combat.flares[0] = flare((-1.0, 0.0, 0.0));
+        let left = crate::render::build_frame(&game);
+        let (from_x, _) = game.view().project(x, y, z).unwrap();
+        // The tips of the flames carry no light at all, and lie the way of the shot.
+        let tips = |frame: &crate::platform::Frame| {
+            let new = &frame.effects[before.effects.len()..];
+            let mean = |it: Vec<f32>| it.iter().sum::<f32>() / it.len() as f32;
+            mean(
+                new.iter()
+                    .filter(|v| v.a == 0.0 && v.r == 0.0)
+                    .map(|v| v.x)
+                    .collect(),
+            )
+        };
+        assert!(tips(&right) > from_x, "to the right");
+        assert!(tips(&left) < from_x, "to the left");
     }
 
     #[test]
@@ -6372,6 +6407,7 @@ mod tests {
             });
             game.combat.flares.push(crate::weapons::Flare {
                 at: (x, 1.0, z),
+                direction: (1.0, 0.0, 0.0),
                 size: 7.0,
                 life: 0.5,
             });

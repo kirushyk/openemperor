@@ -385,6 +385,8 @@ pub struct Spray {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Flare {
     pub at: Point,
+    /// The way the shot went, as a unit vector, which is the way its flames lick.
+    pub direction: Point,
     pub size: f32,
     /// From 1 when it is fired down to 0.
     pub life: f32,
@@ -739,8 +741,10 @@ impl Combat {
         // Only firing as ordered at a place or a friend can hurt friends.
         let forced = target.is_none_or(|t| units[i].target == Some(Target::Forced(units[t].id)));
         if let Some(size) = weapon.flare() {
+            let at = units[i].gun_tip();
             self.flares.push(Flare {
-                at: from,
+                at,
+                direction: direction_to(at, to),
                 size,
                 life: 1.0,
             });
@@ -1661,7 +1665,8 @@ mod tests {
             1,
             "only a flare to see, where it was fired"
         );
-        assert_eq!(combat.flares[0].at, units[0].muzzle());
+        assert_eq!(combat.flares[0].at, units[0].gun_tip());
+        assert!(combat.flares[0].direction.0 > 0.9, "towards the target");
         assert!(combat.beams.is_empty() && combat.missiles.is_empty() && combat.blasts.is_empty());
         run(&mut combat, &mut units, 0.2);
         assert!(combat.flares.is_empty(), "and it fades");
@@ -2200,6 +2205,31 @@ mod tests {
         let size = |w: WeaponKind| w.flare().unwrap();
         assert!(size(WeaponKind::Cannon) > size(WeaponKind::Sniper));
         assert_eq!(WeaponKind::Missile.flare(), None);
+    }
+
+    #[test]
+    fn a_guns_flare_is_outside_its_body_ahead_of_it_and_its_flames_go_the_way_of_the_shot() {
+        for (role, kind, half_body) in [
+            (Role::Tank, UnitKind::Vehicle, 0.45),
+            (Role::LightInfantry, UnitKind::Infantry, 0.13),
+            (Role::Sniper, UnitKind::Infantry, 0.1),
+            (Role::KInfantry, UnitKind::Infantry, 0.17),
+        ] {
+            let mut gun = Unit::for_test(0.0, 60.0, kind);
+            gun.role = role;
+            gun.weapon = WeaponKind::Bullet;
+            gun.heading = 0.0;
+            let (x, _, z) = gun.gun_tip();
+            assert!(x > half_body, "{role:?}: {x}");
+            assert_eq!(z, 60.0, "{role:?}");
+        }
+        // It follows the way the gun is facing, and up with what carries it.
+        let mut tank = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        tank.heading = std::f32::consts::FRAC_PI_2;
+        let (x, y, z) = tank.gun_tip();
+        assert!(x.abs() < 0.001 && z > 60.5);
+        tank.altitude = 2.0;
+        assert!((tank.gun_tip().1 - y - 2.0).abs() < 0.001);
     }
 
     #[test]

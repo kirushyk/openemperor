@@ -817,6 +817,22 @@ impl Unit {
         (self.x, self.y + self.altitude + HEIGHT * 0.8, self.z)
     }
 
+    /// Where gunfire comes out: at the end of the barrel, outside its body.
+    pub fn gun_tip(&self) -> (f32, f32, f32) {
+        let base = self.y + self.altitude;
+        let (ahead, up) = match (self.role, self.deployed) {
+            (Role::KInfantry, true) => (0.75, 0.18),
+            (Role::KInfantry, false) => (0.2, 0.42),
+            (Role::Sniper, _) => (0.56, 0.42),
+            (Role::AirDefensePlatform, _) => (0.5, 0.175),
+            _ if self.kind == UnitKind::Infantry => (0.16, 0.4),
+            _ if self.kind == UnitKind::Vehicle => (0.65, 0.375),
+            _ => (0.3, HEIGHT * 0.8),
+        };
+        let (sin, cos) = self.heading.sin_cos();
+        (self.x + cos * ahead, base + up, self.z + sin * ahead)
+    }
+
     /// The height on screen that a click aims at.
     pub fn pick_height(&self) -> f32 {
         let above_feet = if self.kind.is_building() {

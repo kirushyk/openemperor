@@ -592,9 +592,26 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
                 unused: 0.0,
             }
         });
+    // Gunfire goes last: it is many and brief, and must not put out what burns on.
+    let shots = game
+        .combat
+        .flares
+        .iter()
+        .rev()
+        .filter(|flare| seen(flare.at))
+        .map(|flare| {
+            let light = flare.life * flare.size * 0.07;
+            PointLight {
+                place: [flare.at.0, flare.at.1 + 0.2, flare.at.2],
+                radius: 1.2 + flare.size * 0.14,
+                color: [light, light * 0.68, light * 0.3],
+                unused: 0.0,
+            }
+        });
     eruptions
         .chain(blasts)
         .chain(fires)
+        .chain(shots)
         .take(MAX_LIGHTS)
         .collect()
 }
@@ -1142,20 +1159,7 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
         draw_spray(canvas, view, spray);
     }
     for flare in game.combat.flares.iter().filter(|f| seen(f.at)) {
-        let (x, y, z) = flare.at;
-        if let Some((px, py, depth)) = view.project_deep(x, y, z) {
-            let size = flare.size * s;
-            let mark = canvas.vertices.len();
-            canvas.star(
-                (px, py),
-                (size, size * 0.35),
-                6,
-                flare.life,
-                with_alpha(FLARE_GLOW, 0.8 * flare.life),
-            );
-            canvas.circle(px, py, size * 0.35, with_alpha(FLARE_CORE, flare.life));
-            canvas.deepen(mark, depth);
-        }
+        draw_flare(canvas, view, flare, s);
     }
     for missile in game.combat.missiles.iter().filter(|m| seen(m.position)) {
         let (x, y, z) = missile.position;
@@ -1227,6 +1231,73 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     for particle in game.combat.particles.iter().filter(|p| seen(p.position)) {
         draw_particle(canvas, view, particle);
     }
+}
+
+/// Gunfire leaving a barrel: a burst of light at its end, and flames licking out the way the
+/// shot went, a long one with a shorter one to each side.
+fn draw_flare(
+    canvas: &mut Canvas,
+    view: &battlefield::View,
+    flare: &crate::weapons::Flare,
+    scale: f32,
+) {
+    /// How far its middle flame reaches, in world units, for a flare of size 1.
+    const FLAME_REACH: f32 = 0.07;
+    const SIDE_ANGLE: f32 = 0.5;
+    let (x, y, z) = flare.at;
+    let Some((px, py, depth)) = view.project_deep(x, y, z) else {
+        return;
+    };
+    let (dx, dy, dz) = flare.direction;
+    // It shoots out fast and thins as it goes.
+    let reach = flare.size * FLAME_REACH * (0.55 + 0.45 * flare.life);
+    let (sin, cos) = SIDE_ANGLE.sin_cos();
+    for (way_x, way_z, length) in [
+        (dx, dz, 1.0),
+        (dx * cos - dz * sin, dx * sin + dz * cos, 0.55),
+        (dx * cos + dz * sin, dz * cos - dx * sin, 0.55),
+    ] {
+        let end = (
+            x + way_x * reach * length,
+            y + dy * reach * length,
+            z + way_z * reach * length,
+        );
+        let Some((ex, ey, end_depth)) = view.project_deep(end.0, end.1, end.2) else {
+            continue;
+        };
+        let (along_x, along_y) = (ex - px, ey - py);
+        let width = 0.22 * along_x.hypot(along_y).max(2.0);
+        let across = along_x.hypot(along_y).max(0.001);
+        let (nx, ny) = (-along_y / across * width, along_x / across * width);
+        let hot = [1.0, 0.72, 0.28].map(|c: f32| c * flare.life);
+        // Widest a little way along, closing to a point at its end.
+        let (mid_x, mid_y) = (px + along_x * 0.35, py + along_y * 0.35);
+        let mid_depth = depth + (end_depth - depth) * 0.35;
+        let at = |point: (f32, f32), color: [f32; 3], at_depth: f32| {
+            EffectVertex::of(Vertex::light(point, color), at_depth)
+        };
+        let warm = hot.map(|c| c * 0.7);
+        let (left, right) = ((mid_x + nx, mid_y + ny), (mid_x - nx, mid_y - ny));
+        canvas.effects.extend([
+            at((px, py), hot, depth),
+            at(left, warm, mid_depth),
+            at(right, warm, mid_depth),
+            at(left, warm, mid_depth),
+            at(right, warm, mid_depth),
+            at((ex, ey), [0.0; 3], end_depth),
+        ]);
+    }
+    let size = flare.size * scale;
+    let mark = canvas.vertices.len();
+    canvas.star(
+        (px, py),
+        (size, size * 0.35),
+        6,
+        flare.life,
+        with_alpha(FLARE_GLOW, 0.8 * flare.life),
+    );
+    canvas.circle(px, py, size * 0.35, with_alpha(FLARE_CORE, flare.life));
+    canvas.deepen(mark, depth);
 }
 
 /// Lava bursting up from a vent: a glowing pool where it comes out and a fountain of light

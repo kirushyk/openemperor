@@ -1,6 +1,6 @@
 //! Game flow and menu logic. No OS or GPU code, so it runs under `cargo test`.
 
-use crate::battlefield::{self, Camera};
+use crate::battlefield::{self, Camera, MapSize};
 use crate::fog::{Fog, Sight};
 use crate::hud::{self, DEPLOY_BUTTON};
 use crate::platform::{Event, Key};
@@ -75,8 +75,6 @@ const BUILDING_BUILDS: [Role; 4] = [
     Role::Hangar,
     Role::LandingPad,
 ];
-/// Where the H key sends the selected: a fixed place for now, where the player's base starts.
-const HOME: (f32, f32) = (0.0, battlefield::MAP_MIDDLE_Z);
 /// How often each opponent builds something, in seconds of battle.
 const OPPONENT_BUILD_SECONDS: f32 = 15.0;
 
@@ -347,6 +345,7 @@ pub struct SkirmishConfig {
     pub opponents: [Opponent; OPPONENT_SLOTS],
     /// Index into `MAPS`.
     pub map: usize,
+    pub map_size: MapSize,
     pub difficulty: Difficulty,
     pub ai_players: i32,
     pub money: i32,
@@ -403,6 +402,7 @@ impl Default for SkirmishConfig {
             allies: [Ally::None; 2],
             opponents,
             map: 0,
+            map_size: MapSize::S,
             difficulty: Difficulty::Normal,
             ai_players: 3,
             money: 10000,
@@ -534,6 +534,7 @@ pub enum Action {
     BuildTab(BuildTab),
     NameField,
     MapDropdown,
+    SetMapSize(MapSize),
     SelectMap(usize),
     SetDifficulty(Difficulty),
     CycleFaction,
@@ -921,6 +922,9 @@ pub fn opponent_widgets(count: usize, width: f32, height: f32) -> Vec<Button> {
 }
 
 /// Name field, map dropdown, difficulty radios, faction and ally circles, color bar, Play.
+/// How wide each map size's button is.
+const MAP_SIZE_W: f32 = 52.0;
+
 pub fn setup_widgets(width: f32, height: f32) -> Vec<Button> {
     const FACTION_CY: f32 = 430.0;
     const FACTION_R: f32 = 100.0;
@@ -945,6 +949,15 @@ pub fn setup_widgets(width: f32, height: f32) -> Vec<Button> {
         y: 420.0 * s,
         w: rw / 3.0,
         h: 44.0 * s,
+    };
+    // On the map's row, as far right as they go, from the last of them.
+    let size_button = |from_right: f32, size, label| Button {
+        action: Action::SetMapSize(size),
+        label,
+        x: rx + rw - (from_right + 1.0) * MAP_SIZE_W * s,
+        y: 352.0 * s,
+        w: MAP_SIZE_W * s,
+        h: 52.0 * s,
     };
     let (bar_x, bar_y, bar_w, bar_h) = color_bar_rect(width, height);
     vec![
@@ -980,9 +993,12 @@ pub fn setup_widgets(width: f32, height: f32) -> Vec<Button> {
             label: "Map",
             x: rx,
             y: 352.0 * s,
-            w: rw,
+            w: rw - (MAP_SIZE_W * 3.0 + 8.0) * s,
             h: 52.0 * s,
         },
+        size_button(2.0, MapSize::S, "S"),
+        size_button(1.0, MapSize::M, "M"),
+        size_button(0.0, MapSize::L, "L"),
         radio(0.0, Action::SetDifficulty(Difficulty::Easy), "Easy"),
         radio(1.0, Action::SetDifficulty(Difficulty::Normal), "Normal"),
         radio(2.0, Action::SetDifficulty(Difficulty::Hard), "Hard"),
@@ -2022,7 +2038,9 @@ impl Game {
             return;
         }
         let rect = hud::minimap_rect(self.width, self.height);
-        if let Some((x, z)) = battlefield::minimap_to_world(rect, self.mouse.0, self.mouse.1) {
+        if let Some((x, z)) =
+            battlefield::minimap_to_world(rect, self.middle_z(), self.mouse.0, self.mouse.1)
+        {
             self.minimap_dragging = true;
             if self.minimap_click_gives_order() {
                 self.minimap_order = Some(((x, z), self.mouse));
@@ -2074,9 +2092,21 @@ impl Game {
         let (x, y, size) = rect;
         let px = self.mouse.0.clamp(x, x + size - 0.01);
         let py = self.mouse.1.clamp(y, y + size - 0.01);
-        if let Some((world_x, world_z)) = battlefield::minimap_to_world(rect, px, py) {
+        if let Some((world_x, world_z)) =
+            battlefield::minimap_to_world(rect, self.middle_z(), px, py)
+        {
             self.camera.look_at(world_x, world_z);
         }
+    }
+
+    /// Where the H key sends the selected: a fixed place for now, where the player's base starts.
+    fn home(&self) -> (f32, f32) {
+        (0.0, self.middle_z())
+    }
+
+    /// How far south of the north corner the middle of the battle's map is.
+    pub fn middle_z(&self) -> f32 {
+        battlefield::terrain(self.battle_map).size().middle_z()
     }
 
     fn start_battle(&mut self, map: usize, faction: Option<Faction>, kind: BattleKind) {
@@ -2088,7 +2118,7 @@ impl Game {
         self.outcome_elapsed = 0.0;
         self.killed = Casualties::default();
         self.lost = Casualties::default();
-        self.camera = Camera::centered();
+        self.camera = Camera::centered_on(battlefield::terrain(map).size());
         self.in_battle = true;
         self.pausable = true;
         self.key_paused = false;
@@ -2533,12 +2563,15 @@ impl Game {
                     };
                     self.follow_with_camera();
                 }
-                (Screen::InGame, Key::Char('h' | 'H')) if !self.key_paused => units::order_move(
-                    &mut self.units,
-                    HOME,
-                    battlefield::terrain(self.battle_map),
-                    &self.teams,
-                ),
+                (Screen::InGame, Key::Char('h' | 'H')) if !self.key_paused => {
+                    let home = self.home();
+                    units::order_move(
+                        &mut self.units,
+                        home,
+                        battlefield::terrain(self.battle_map),
+                        &self.teams,
+                    );
+                }
                 (_, Key::Escape) => self.go_back(),
                 _ => {}
             },
@@ -2566,7 +2599,11 @@ impl Game {
                 self.start_battle(0, self.confirming, BattleKind::Campaign);
             }
             Action::SkirmishBattle => self.set_screen(Screen::SkirmishSetup),
-            Action::StartBattle => self.start_battle(self.skirmish.map, None, BattleKind::Skirmish),
+            Action::StartBattle => {
+                let id = battlefield::terrain_id(self.skirmish.map, self.skirmish.map_size);
+                self.start_battle(id, None, BattleKind::Skirmish);
+            }
+            Action::SetMapSize(size) => self.skirmish.map_size = size,
             Action::NameField => self.name_focused = true,
             Action::MapDropdown => self.dropdown_open = true,
             Action::SelectMap(map) => {
@@ -4306,6 +4343,31 @@ mod tests {
     }
 
     #[test]
+    fn a_skirmish_is_fought_on_the_chosen_size_of_map_with_everything_scaled_to_it() {
+        let mut game = in_setup();
+        assert_eq!(
+            game.skirmish.map_size,
+            MapSize::S,
+            "as maps have always been"
+        );
+        click_widget(&mut game, Action::SetMapSize(MapSize::L));
+        assert_eq!(game.skirmish.map_size, MapSize::L);
+        assert!(!crate::render::build(&game).is_empty());
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        assert_eq!(battlefield::terrain(game.battle_map).size(), MapSize::L);
+        assert_eq!(game.camera.z, MapSize::L.middle_z());
+        assert_eq!(game.home(), (0.0, MapSize::L.middle_z()));
+        assert!(!crate::render::build(&game).is_empty());
+        let (at_x, at_y) = (W / 2.0, H / 2.0);
+        let (x, _) = game.view().ground_at(at_x, at_y).unwrap();
+        assert!(x.abs() < 0.5);
+        // Everybody starts near the middle of the bigger map.
+        let player = game.units.iter().find(|u| u.owner == 0).unwrap();
+        assert!((player.z - MapSize::L.middle_z()).abs() < 15.0);
+    }
+
+    #[test]
     fn nothing_of_the_world_is_drawn_outside_a_battle() {
         let game = Game::new(W, H);
         let frame = crate::render::build_frame(&game);
@@ -5701,7 +5763,10 @@ mod tests {
         game.units[tank].selected = true;
         game.handle(Event::KeyDown(Key::Char('h')));
         let sent = game.units[tank].destination;
-        assert!((sent.0 - HOME.0).hypot(sent.1 - HOME.1) < 8.0, "{sent:?}");
+        assert!(
+            (sent.0 - game.home().0).hypot(sent.1 - game.home().1) < 8.0,
+            "{sent:?}"
+        );
         assert_ne!(sent, away);
         assert_eq!(game.units[other].destination, stays, "not selected");
 
@@ -7257,7 +7322,10 @@ mod tests {
             (5120.0, 1440.0),
         ] {
             for b in setup_widgets(w, h) {
-                let right = matches!(b.action, Action::MapDropdown | Action::SetDifficulty(_));
+                let right = matches!(
+                    b.action,
+                    Action::MapDropdown | Action::SetMapSize(_) | Action::SetDifficulty(_)
+                );
                 if right {
                     assert!(
                         b.x >= w * 2.0 / 3.0 - 0.5 && b.x + b.w <= w + 0.5,
@@ -7845,7 +7913,10 @@ mod tests {
     fn minimap_point() -> ((f32, f32), (f32, f32)) {
         let rect = hud::minimap_rect(W, H);
         let at = (rect.0 + rect.2 * 0.6, rect.1 + rect.2 * 0.5);
-        (at, battlefield::minimap_to_world(rect, at.0, at.1).unwrap())
+        (
+            at,
+            battlefield::minimap_to_world(rect, battlefield::MAP_MIDDLE_Z, at.0, at.1).unwrap(),
+        )
     }
 
     #[test]
@@ -7918,7 +7989,13 @@ mod tests {
 
         // The east corner of the diamond.
         click_at(&mut game, x + size - 1.0, y + size / 2.0);
-        let expected = battlefield::minimap_to_world(rect, x + size - 1.0, y + size / 2.0).unwrap();
+        let expected = battlefield::minimap_to_world(
+            rect,
+            battlefield::MAP_MIDDLE_Z,
+            x + size - 1.0,
+            y + size / 2.0,
+        )
+        .unwrap();
         assert!(
             (game.camera.x - expected.0).abs() < 1.0,
             "went east: {}",
@@ -7940,7 +8017,9 @@ mod tests {
         let rect = hud::minimap_rect(W, H);
         let (x, y, size) = rect;
         let at = |fx: f32, fy: f32| (x + size * fx, y + size * fy);
-        let world = |p: (f32, f32)| battlefield::minimap_to_world(rect, p.0, p.1).unwrap();
+        let world = |p: (f32, f32)| {
+            battlefield::minimap_to_world(rect, battlefield::MAP_MIDDLE_Z, p.0, p.1).unwrap()
+        };
 
         let start = at(0.5, 0.3);
         game.handle(Event::MouseMove(start.0, start.1));
@@ -7978,8 +8057,13 @@ mod tests {
 
         // Off the right edge of the screen, past the minimap's edge.
         game.handle(Event::MouseMove(W - 1.0, y + size / 2.0));
-        let (east_x, _) =
-            battlefield::minimap_to_world(rect, x + size - 0.01, y + size / 2.0).unwrap();
+        let (east_x, _) = battlefield::minimap_to_world(
+            rect,
+            battlefield::MAP_MIDDLE_Z,
+            x + size - 0.01,
+            y + size / 2.0,
+        )
+        .unwrap();
         assert!(
             (game.camera.x - east_x).abs() < 0.01,
             "holds to the minimap's edge"

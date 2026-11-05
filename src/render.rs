@@ -1,6 +1,6 @@
 //! Turns game state into a triangle list. Backends only ever see colored triangles.
 
-use crate::battlefield::{self, MAP_CELLS, SUN};
+use crate::battlefield::{self, SUN};
 use crate::fog::{Fog, Sight};
 use crate::font;
 use crate::game::{
@@ -3039,6 +3039,13 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
                     canvas.rect(caret_x, cy - 4.0 * px, px, 8.0 * px, GOLD);
                 }
             }
+            Action::SetMapSize(size) => {
+                let chosen = setup.map_size == size;
+                let color = if chosen { GOLD } else { edge };
+                canvas.bordered_rect((b.x, b.y, b.w, b.h), border, color, BUTTON);
+                let letter = if chosen { GOLD } else { TEXT };
+                canvas.text_centered(b.label, cx, cy, px, letter);
+            }
             Action::MapDropdown => {
                 draw_field(canvas, game, b);
                 canvas.text_left(MAPS[setup.map], b.x + 16.0 * s, cy, px, TEXT);
@@ -3125,7 +3132,8 @@ fn draw_minimap(canvas: &mut Canvas, game: &Game) {
     let s = ui_scale(game.height);
     let px = small_text_px(game.height);
     let (x, y, size) = minimap_rect(game.width, game.height);
-    draw_map_diamond(canvas, game, game.skirmish.map, None, (x, y, size));
+    let shown = battlefield::terrain_id(game.skirmish.map, game.skirmish.map_size);
+    draw_map_diamond(canvas, game, shown, None, (x, y, size));
 
     let (mid_x, mid_y) = (x + size / 2.0, y + size / 2.0);
     let inset = 16.0 * s;
@@ -3145,13 +3153,13 @@ fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
         .iter()
         .filter(|z| game.sight_at(z.x, z.z) == Sight::Visible)
     {
-        let (x, y) = battlefield::world_to_minimap(rect, zone.x, zone.z);
-        let radius = STRIKE_RADIUS / battlefield::MAP_MIDDLE_Z * rect.2 / 2.0;
+        let (x, y) = battlefield::world_to_minimap(rect, game.middle_z(), zone.x, zone.z);
+        let radius = STRIKE_RADIUS / game.middle_z() * rect.2 / 2.0;
         canvas.circle(x, y, radius, with_alpha(POISON_FILL, 0.45));
     }
     let dot = (3.0 * ui_scale(game.height)).round().max(2.0);
     for unit in game.units.iter().filter(|u| game.shows(u)) {
-        let (x, y) = battlefield::world_to_minimap(rect, unit.x, unit.z);
+        let (x, y) = battlefield::world_to_minimap(rect, game.middle_z(), unit.x, unit.z);
         let color = if unit.selected {
             VIEW_OUTLINE
         } else {
@@ -3170,7 +3178,7 @@ fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
     let Some(corners) = view.ground_corners() else {
         return;
     };
-    let on_map = corners.map(|(x, z)| battlefield::world_to_minimap(rect, x, z));
+    let on_map = corners.map(|(x, z)| battlefield::world_to_minimap(rect, game.middle_z(), x, z));
     let thickness = (2.0 * ui_scale(game.height)).max(1.0);
     for i in 0..on_map.len() {
         let (a, b) = (on_map[i], on_map[(i + 1) % on_map.len()]);
@@ -3228,8 +3236,9 @@ fn draw_map_diamond(
     fog: Option<&Fog>,
     (x, y, size): (f32, f32, f32),
 ) {
-    /// Grid steps per minimap cell.
-    const STEP: usize = 4;
+    /// Grid steps per minimap cell on a map of size S. A bigger map takes bigger ones, for as
+    /// many cells on the minimap.
+    const STEP_ON_SMALL: usize = 4;
     let border = border_px(game.height);
     canvas.rect(
         x - border,
@@ -3241,7 +3250,9 @@ fn draw_map_diamond(
     canvas.rect(x, y, size, size, CLEAR_RGBA);
 
     let terrain = battlefield::terrain(map);
-    let cells = MAP_CELLS as f32;
+    let grid_cells = terrain.size().cells();
+    let cells = grid_cells as f32;
+    let step = (STEP_ON_SMALL as f32 * terrain.size().scale()) as usize;
     let to_screen = |u: usize, v: usize| {
         let (u, v) = (u as f32 / cells, v as f32 / cells);
         (
@@ -3249,19 +3260,19 @@ fn draw_map_diamond(
             y + (u + v) * size / 2.0,
         )
     };
-    for v in (0..MAP_CELLS).step_by(STEP) {
-        for u in (0..MAP_CELLS).step_by(STEP) {
-            let base = if terrain.is_relief(u + STEP / 2, v + STEP / 2) {
-                terrain.color_at(u + STEP / 2, v + STEP / 2)
-            } else if terrain.is_ground(u + STEP / 2, v + STEP / 2) {
+    for v in (0..grid_cells).step_by(step) {
+        for u in (0..grid_cells).step_by(step) {
+            let base = if terrain.is_relief(u + step / 2, v + step / 2) {
+                terrain.color_at(u + step / 2, v + step / 2)
+            } else if terrain.is_ground(u + step / 2, v + step / 2) {
                 terrain.upper_color()
             } else {
                 terrain.lower_color()
             };
-            let shade = fog.map_or(1.0, |fog| fog.at_grid(u + STEP / 2, v + STEP / 2).shade());
+            let shade = fog.map_or(1.0, |fog| fog.at_grid(u + step / 2, v + step / 2).shade());
             let color = with_alpha(base.map(|channel| channel * shade), 1.0);
-            let (a, b) = (to_screen(u, v), to_screen(u + STEP, v));
-            let (c, d) = (to_screen(u + STEP, v + STEP), to_screen(u, v + STEP));
+            let (a, b) = (to_screen(u, v), to_screen(u + step, v));
+            let (c, d) = (to_screen(u + step, v + step), to_screen(u, v + step));
             canvas.triangle([a, b, c], color);
             canvas.triangle([a, c, d], color);
         }
@@ -3271,7 +3282,12 @@ fn draw_map_diamond(
         fog.is_none_or(|fog| fog.at(piece.x, piece.z) != Sight::Unexplored)
     };
     for piece in terrain.ruins().iter().filter(known) {
-        let (px, py) = battlefield::world_to_minimap((x, y, size), piece.x, piece.z);
+        let (px, py) = battlefield::world_to_minimap(
+            (x, y, size),
+            terrain.size().middle_z(),
+            piece.x,
+            piece.z,
+        );
         canvas.rect(px - dot / 2.0, py - dot / 2.0, dot, dot, RUIN_ON_MINIMAP);
     }
 }

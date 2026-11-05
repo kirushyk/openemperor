@@ -1,6 +1,8 @@
 //! Placeholder units, buildings among them, and the geometry of selecting them.
 
-use crate::battlefield::{MAP_MIDDLE_Z, RuinPiece, Terrain};
+#[cfg(test)]
+use crate::battlefield::MAP_MIDDLE_Z;
+use crate::battlefield::{MapSize, RuinPiece, Terrain};
 use crate::game::TeamColor;
 use crate::weapons::WeaponKind;
 use std::cmp::Ordering;
@@ -410,9 +412,10 @@ impl Role {
 
 /// Radians per second a vehicle can turn.
 const TURN_SPEED: f32 = 3.0;
-/// The player's second group, far enough east to need scrolling to from the first.
+/// On a map of size S, the player's second group, far enough east to need scrolling to from the
+/// first.
 const SECOND_GROUP_X: f32 = 35.0;
-/// How far from the middle each opponent's group stands.
+/// On a map of size S, how far from the middle each opponent's group stands.
 const OPPONENT_RING: f32 = 29.4;
 /// How far map objects must stay from where groups start.
 const CLEARANCE: f32 = 9.0;
@@ -1308,41 +1311,40 @@ pub fn toggle_deploy(units: &mut [Unit]) {
 pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
     let mut units = Vec::new();
     let player = (0, colors[0]);
+    let Starts {
+        middle_z,
+        second_x,
+        ring,
+    } = starts(terrain.size());
     spawn_group(
         &mut units,
         terrain,
-        (0.0, MAP_MIDDLE_Z),
+        (0.0, middle_z),
         (4, ROWS_WITH_AIRCRAFT),
         player,
     );
     place_building(
         &mut units,
         terrain,
-        (PLAYER_TOWER_OFFSET, MAP_MIDDLE_Z),
+        (PLAYER_TOWER_OFFSET, middle_z),
         Role::Tower,
         player,
     );
     place_building(
         &mut units,
         terrain,
-        (-PLAYER_TOWER_OFFSET, MAP_MIDDLE_Z),
+        (-PLAYER_TOWER_OFFSET, middle_z),
         Role::FlameTower,
         player,
     );
-    place_base(&mut units, terrain, (0.0, MAP_MIDDLE_Z), (0.0, 1.0), player);
-    spawn_group(
-        &mut units,
-        terrain,
-        (SECOND_GROUP_X, MAP_MIDDLE_Z),
-        (4, 2),
-        player,
-    );
+    place_base(&mut units, terrain, (0.0, middle_z), (0.0, 1.0), player);
+    spawn_group(&mut units, terrain, (second_x, middle_z), (4, 2), player);
     let opponents = colors.len() - 1;
     for (i, &color) in colors[1..].iter().enumerate() {
         // The ring starts in the north, where it is clear of the player's second group.
         let angle = i as f32 / opponents as f32 * TAU;
         let (sin, cos) = angle.sin_cos();
-        let center = (OPPONENT_RING * sin, MAP_MIDDLE_Z - OPPONENT_RING * cos);
+        let center = (ring * sin, middle_z - ring * cos);
         spawn_group(&mut units, terrain, center, (3, 2), (i + 1, color));
         let tower = (
             center.0 + OPPONENT_TOWER_OFFSET * cos,
@@ -1379,29 +1381,53 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
 
 /// Whether a point lies where a group can start, which must be land even on a planet whose
 /// lower terrain is water or lava. Opponents spread around the whole ring.
-pub fn needs_land(x: f32, z: f32) -> bool {
+pub fn needs_land(x: f32, z: f32, size: MapSize) -> bool {
     const REACH: f32 = 7.3;
-    let from_middle = x.hypot(z - MAP_MIDDLE_Z);
-    let from_second_group = (x - SECOND_GROUP_X).hypot(z - MAP_MIDDLE_Z);
-    from_middle < REACH || from_second_group < REACH || (from_middle - OPPONENT_RING).abs() < REACH
+    let (from_middle, from_second_group, from_ring) = from_starts(x, z, size);
+    from_middle < REACH || from_second_group < REACH || from_ring < REACH
 }
 
 /// Whether a map object may stand here, away from every place a group can start.
-pub fn keeps_clear(x: f32, z: f32) -> bool {
-    let from_middle = x.hypot(z - MAP_MIDDLE_Z);
-    let from_second_group = (x - SECOND_GROUP_X).hypot(z - MAP_MIDDLE_Z);
-    from_middle > CLEARANCE
-        && from_second_group > CLEARANCE
-        && (from_middle - OPPONENT_RING).abs() > CLEARANCE * 0.8
+pub fn keeps_clear(x: f32, z: f32, size: MapSize) -> bool {
+    let (from_middle, from_second_group, from_ring) = from_starts(x, z, size);
+    from_middle > CLEARANCE && from_second_group > CLEARANCE && from_ring > CLEARANCE * 0.8
 }
 
 /// Whether a ruin may stand here: further off than other map objects, as its walls reach out
 /// from where it stands, past a group's buildings to its landing pad.
-pub fn keeps_clear_for_ruin(x: f32, z: f32) -> bool {
-    let from_middle = x.hypot(z - MAP_MIDDLE_Z);
-    let from_second_group = (x - SECOND_GROUP_X).hypot(z - MAP_MIDDLE_Z);
+pub fn keeps_clear_for_ruin(x: f32, z: f32, size: MapSize) -> bool {
+    let (from_middle, from_second_group, from_ring) = from_starts(x, z, size);
     let room = CLEARANCE + 1.0;
-    from_middle > room && from_second_group > room && (from_middle - OPPONENT_RING).abs() > room
+    from_middle > room && from_second_group > room && from_ring > room
+}
+
+/// Where groups start on a map of some size.
+struct Starts {
+    middle_z: f32,
+    /// How far east of the middle the player's second group stands.
+    second_x: f32,
+    /// How far from the middle each opponent's group stands.
+    ring: f32,
+}
+
+fn starts(size: MapSize) -> Starts {
+    Starts {
+        middle_z: size.middle_z(),
+        second_x: SECOND_GROUP_X * size.scale(),
+        ring: OPPONENT_RING * size.scale(),
+    }
+}
+
+/// How far a point is from the player's group, the second group, and the opponents' ring.
+fn from_starts(x: f32, z: f32, size: MapSize) -> (f32, f32, f32) {
+    let start = starts(size);
+    let from_middle = x.hypot(z - start.middle_z);
+    let from_second_group = (x - start.second_x).hypot(z - start.middle_z);
+    (
+        from_middle,
+        from_second_group,
+        (from_middle - start.ring).abs(),
+    )
 }
 
 /// Up to `count` free spots near a point, nearest first, each far enough from the others
@@ -4878,6 +4904,22 @@ mod tests {
         let mut soldier = unit_at(0.0, 50.0, UnitKind::Infantry);
         soldier.health = 1.0;
         assert_eq!(soldier.wear(), 0.0);
+    }
+
+    #[test]
+    fn on_any_size_of_map_everyone_starts_on_the_map_on_land_and_further_apart_when_it_is_bigger() {
+        let reach = |size: MapSize| {
+            let terrain = crate::battlefield::terrain(crate::battlefield::terrain_id(5, size));
+            let units = spawn(terrain, &[TeamColor::Blue, TeamColor::Red, TeamColor::Cyan]);
+            let opponent = units.iter().find(|u| u.owner == 1).unwrap();
+            for unit in units.iter().filter(|u| u.altitude <= 0.0) {
+                assert!(terrain.can_walk(unit.x, unit.z), "{size:?}: {unit:?}");
+            }
+            opponent.x.hypot(opponent.z - size.middle_z())
+        };
+        let (s, m, l) = (reach(MapSize::S), reach(MapSize::M), reach(MapSize::L));
+        assert!(m > s * 1.3 && m < s * 1.7, "{s} {m}");
+        assert!(l > s * 1.8 && l < s * 2.2, "{s} {l}");
     }
 
     #[test]

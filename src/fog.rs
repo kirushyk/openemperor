@@ -1,6 +1,6 @@
 //! What the player knows of the map: nothing, what was once seen, or what is seen right now.
 
-use crate::battlefield::{GRID_POINTS, MAP_CELLS, grid_index, grid_to_world, world_to_grid};
+use crate::battlefield::{GRID_POINTS, MapSize, grid_index, grid_to_world, world_to_grid};
 use crate::units::Unit;
 
 /// How bright explored land is that nobody sees right now.
@@ -57,7 +57,7 @@ impl Fog {
         let reach = radius * 1.5;
         let span = |center: f32| {
             let low = (center - reach).floor().max(0.0) as usize;
-            let high = ((center + reach).ceil().max(0.0) as usize).min(MAP_CELLS);
+            let high = ((center + reach).ceil().max(0.0) as usize).min(MapSize::L.cells());
             low..=high
         };
         for point_v in span(v) {
@@ -78,7 +78,8 @@ impl Fog {
     pub fn at(&self, x: f32, z: f32) -> Sight {
         let (u, v) = world_to_grid(x, z);
         let on_grid = |t: f32| {
-            (t.round() >= 0.0 && t.round() <= MAP_CELLS as f32).then_some(t.round() as usize)
+            (t.round() >= 0.0 && t.round() <= MapSize::L.cells() as f32)
+                .then_some(t.round() as usize)
         };
         match (on_grid(u), on_grid(v)) {
             (Some(u), Some(v)) => self.at_grid(u, v),

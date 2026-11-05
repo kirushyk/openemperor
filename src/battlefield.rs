@@ -14,9 +14,62 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::OnceLock;
 
+/// Grid cells along each side of a map of size S.
 pub const MAP_CELLS: usize = 128;
-const GRID_LAST: f32 = MAP_CELLS as f32;
-pub const GRID_POINTS: usize = (MAP_CELLS + 1) * (MAP_CELLS + 1);
+/// Along each side of the biggest map. Every map's grid is kept to this stride, so a grid point
+/// is found the same way on all of them.
+const MOST_CELLS: usize = 256;
+pub const GRID_POINTS: usize = (MOST_CELLS + 1) * (MOST_CELLS + 1);
+
+/// How big a map is. Its features stay the same size: there is just more of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapSize {
+    S,
+    /// 1.5 times as long and wide as S.
+    M,
+    /// Twice as long and wide as S, four times its area.
+    L,
+}
+
+impl MapSize {
+    /// How many of something a map of this size has, for how many a map of size S has.
+    fn spread(self, on_small: usize) -> usize {
+        (on_small as f32 * self.scale() * self.scale()).round() as usize
+    }
+
+    pub const ALL: [MapSize; 3] = [MapSize::S, MapSize::M, MapSize::L];
+
+    pub fn cells(self) -> usize {
+        match self {
+            MapSize::S => MAP_CELLS,
+            MapSize::M => MAP_CELLS * 3 / 2,
+            MapSize::L => MOST_CELLS,
+        }
+    }
+
+    /// How many times as long and wide as size S.
+    pub fn scale(self) -> f32 {
+        self.cells() as f32 / MAP_CELLS as f32
+    }
+
+    /// How far south of the north corner the middle of the map is.
+    pub fn middle_z(self) -> f32 {
+        self.cells() as f32 * CELL
+    }
+
+    fn index(self) -> usize {
+        match self {
+            MapSize::S => 0,
+            MapSize::M => 1,
+            MapSize::L => 2,
+        }
+    }
+}
+
+/// What a battle's terrain is known by: which of `game::MAPS`, at which size.
+pub fn terrain_id(map: usize, size: MapSize) -> usize {
+    map + size.index() * crate::game::MAPS.len()
+}
 /// World units per grid step along each world axis.
 const CELL: f32 = 0.5;
 /// How far ground rises above sand, in world units.
@@ -119,6 +172,7 @@ const EDGE_MARGIN: f32 = 4.0;
 const SCROLL_PER_RATE: f32 = 15.0;
 
 /// World z of the map's middle; its x is 0.
+#[cfg(test)]
 pub const MAP_MIDDLE_Z: f32 = MAP_CELLS as f32 * CELL;
 
 /// How many destroyed buildings each map tries to place.
@@ -144,6 +198,7 @@ pub struct RuinPiece {
 
 pub struct Terrain {
     planet: Planet,
+    size: MapSize,
     is_ground: Vec<bool>,
     /// How far mountains rise from the land, or pits sink into it, at each grid point.
     relief: Vec<f32>,
@@ -219,14 +274,18 @@ fn add_ruin(pieces: &mut Vec<RuinPiece>, terrain: &Terrain, x: f32, z: f32, rand
 }
 
 pub fn grid_index(u: usize, v: usize) -> usize {
-    v * (MAP_CELLS + 1) + u
+    v * (MOST_CELLS + 1) + u
 }
 
 impl Terrain {
-    fn generate(map: usize) -> Self {
-        let mut is_ground = Vec::with_capacity(GRID_POINTS);
-        let mut colors = Vec::with_capacity(GRID_POINTS);
-        let mut deep = Vec::with_capacity(GRID_POINTS);
+    fn generate(id: usize) -> Self {
+        let (map, size) = (
+            id % crate::game::MAPS.len(),
+            MapSize::ALL[id / crate::game::MAPS.len()],
+        );
+        let mut is_ground = vec![false; GRID_POINTS];
+        let mut colors = vec![[0.0; 3]; GRID_POINTS];
+        let mut deep = vec![0.0; GRID_POINTS];
         let seed = 101 + map as u32 * 13;
         let planet = MAP_PLANETS[map];
         let threshold = if planet.lower_is_solid() {
@@ -234,26 +293,28 @@ impl Terrain {
         } else {
             LAND_THRESHOLD
         };
-        for v in 0..=MAP_CELLS {
-            for u in 0..=MAP_CELLS {
+        for v in 0..=size.cells() {
+            for u in 0..=size.cells() {
                 let (fu, fv) = (u as f32 / MAP_CELLS as f32, v as f32 / MAP_CELLS as f32);
                 let height = fractal_noise([fu * 2.5, fv * 2.5, 0.5], seed);
                 let (x, z) = grid_to_world(u as f32, v as f32);
                 let ground = height > threshold
-                    || (!planet.lower_is_solid() && crate::units::needs_land(x, z));
+                    || (!planet.lower_is_solid() && crate::units::needs_land(x, z, size));
                 let grain = fractal_noise([fu * 30.0, fv * 30.0, 2.5], seed + 500) - 0.5;
                 let base = if ground {
                     planet.upper_color()
                 } else {
                     planet.lower_color()
                 };
-                is_ground.push(ground);
-                deep.push((threshold - height).max(0.0));
-                colors.push(base.map(|c| c * (1.0 + grain * 2.0 * GRAIN)));
+                let index = grid_index(u, v);
+                is_ground[index] = ground;
+                deep[index] = (threshold - height).max(0.0);
+                colors[index] = base.map(|c| c * (1.0 + grain * 2.0 * GRAIN));
             }
         }
         let mut terrain = Terrain {
             planet,
+            size,
             is_ground,
             relief: vec![0.0; GRID_POINTS],
             deep,
@@ -267,20 +328,21 @@ impl Terrain {
         terrain.raise_relief(seed, &mut random);
         let mut pieces = Vec::new();
         // Inset from the map's edges, so that no ruin hangs over them.
-        let (inset, span) = (8.0, MAP_CELLS as f32 - 16.0);
+        let (inset, span) = (8.0, size.cells() as f32 - 16.0);
         // Land is scarcer where the lower terrain cannot hold anything, so look harder there.
+        let ruin_count = size.spread(RUIN_COUNT);
         let tries = if planet.lower_is_solid() {
-            RUIN_COUNT
+            ruin_count
         } else {
-            RUIN_COUNT * 8
+            ruin_count * 8
         };
         let mut placed = 0;
         for _ in 0..tries {
             let u = inset + next_random(&mut random) * span;
             let v = inset + next_random(&mut random) * span;
             let (x, z) = grid_to_world(u, v);
-            if placed < RUIN_COUNT
-                && crate::units::keeps_clear_for_ruin(x, z)
+            if placed < ruin_count
+                && crate::units::keeps_clear_for_ruin(x, z, size)
                 && terrain.can_hold_ruin(x, z)
             {
                 add_ruin(&mut pieces, &terrain, x, z, &mut random);
@@ -303,15 +365,16 @@ impl Terrain {
         if self.material() != Material::Lava {
             return vents;
         }
-        for _ in 0..VENTS * 100 {
+        let count = self.size.spread(VENTS);
+        for _ in 0..count * 100 {
             let (u, v) = (
-                (next_random(random) * GRID_LAST) as usize,
-                (next_random(random) * GRID_LAST) as usize,
+                (next_random(random) * self.last()) as usize,
+                (next_random(random) * self.last()) as usize,
             );
             let (x, z) = grid_to_world(u as f32, v as f32);
             let is_free = vents.iter().all(|o| (o.0 - x).hypot(o.1 - z) >= APART);
             let is_out_in_it = !self.is_ground(u, v) && self.deep[grid_index(u, v)] > OUT_IN_IT;
-            if vents.len() < VENTS && is_free && is_out_in_it {
+            if vents.len() < count && is_free && is_out_in_it {
                 vents.push((x, z));
             }
         }
@@ -321,17 +384,18 @@ impl Terrain {
     /// Which way the land faces at each grid point.
     fn find_normals(&self) -> Vec<[f32; 3]> {
         let step = CELL * std::f32::consts::SQRT_2;
-        let height = |u: usize, v: usize| self.vertex_height(u.min(MAP_CELLS), v.min(MAP_CELLS));
+        let cells = self.size.cells();
+        let height = |u: usize, v: usize| self.vertex_height(u.min(cells), v.min(cells));
         let across = std::f32::consts::FRAC_1_SQRT_2;
-        let mut normals = Vec::with_capacity(GRID_POINTS);
-        for v in 0..=MAP_CELLS {
-            for u in 0..=MAP_CELLS {
+        let mut normals = vec![[0.0, 1.0, 0.0]; GRID_POINTS];
+        for v in 0..=cells {
+            for u in 0..=cells {
                 let along_u = (height(u + 1, v) - height(u.saturating_sub(1), v)) / (2.0 * step);
                 let along_v = (height(u, v + 1) - height(u, v.saturating_sub(1))) / (2.0 * step);
                 let slope_x = (along_u - along_v) * across;
                 let slope_z = (along_u + along_v) * across;
                 let length = (slope_x * slope_x + slope_z * slope_z + 1.0).sqrt();
-                normals.push([-slope_x / length, 1.0 / length, -slope_z / length]);
+                normals[grid_index(u, v)] = [-slope_x / length, 1.0 / length, -slope_z / length];
             }
         }
         normals
@@ -354,15 +418,18 @@ impl Terrain {
         } else {
             240
         };
-        for (count, is_mountain) in [(MOUNTAIN_COUNT, true), (PIT_COUNT, false)] {
+        for (count, is_mountain) in [
+            (self.size.spread(MOUNTAIN_COUNT), true),
+            (self.size.spread(PIT_COUNT), false),
+        ] {
             let mut placed = 0;
             for _ in 0..tries * count / 8 {
                 if placed == count {
                     break;
                 }
                 let (u, v) = (
-                    8.0 + next_random(random) * (GRID_LAST - 16.0),
-                    8.0 + next_random(random) * (GRID_LAST - 16.0),
+                    8.0 + next_random(random) * (self.last() - 16.0),
+                    8.0 + next_random(random) * (self.last() - 16.0),
                 );
                 let (x, z) = grid_to_world(u, v);
                 let radius = if is_mountain {
@@ -393,7 +460,7 @@ impl Terrain {
             let (sin, cos) = (i as f32 / 16.0 * std::f32::consts::TAU).sin_cos();
             [radius, radius + AROUND].iter().all(|reach| {
                 let (px, pz) = (x + cos * reach, z + sin * reach);
-                crate::units::keeps_clear(px, pz)
+                crate::units::keeps_clear(px, pz, self.size)
                     && self.can_walk(px, pz)
                     && self.can_walk(x + cos * reach * 0.5, z + sin * reach * 0.5)
             })
@@ -416,8 +483,8 @@ impl Terrain {
         const DARK_ROCK: [f32; 3] = [0.38, 0.33, 0.30];
         const FLOOR: [f32; 3] = [0.05, 0.04, 0.04];
         let reach = radius + 1.0;
-        for v in 0..=MAP_CELLS {
-            for u in 0..=MAP_CELLS {
+        for v in 0..=self.size.cells() {
+            for u in 0..=self.size.cells() {
                 let (px, pz) = grid_to_world(u as f32, v as f32);
                 if (px - x).abs() > reach || (pz - z).abs() > reach {
                     continue;
@@ -511,7 +578,7 @@ impl Terrain {
 
     pub fn on_map(&self, x: f32, z: f32) -> bool {
         let (u, v) = world_to_grid(x, z);
-        (0.0..=GRID_LAST).contains(&u) && (0.0..=GRID_LAST).contains(&v)
+        (0.0..=self.last()).contains(&u) && (0.0..=self.last()).contains(&v)
     }
 
     /// Flat sand holding only the given ruins, for testing how units meet them.
@@ -519,6 +586,7 @@ impl Terrain {
     pub fn open_with_ruins(ruins: Vec<RuinPiece>) -> Self {
         Terrain {
             planet: Planet::A,
+            size: MapSize::S,
             is_ground: vec![false; GRID_POINTS],
             relief: vec![0.0; GRID_POINTS],
             deep: vec![0.0; GRID_POINTS],
@@ -542,7 +610,16 @@ impl Terrain {
     /// A point anywhere on the map.
     pub fn random_point(&self, random: &mut u32) -> (f32, f32) {
         let (u, v) = (next_random(random), next_random(random));
-        grid_to_world(u * GRID_LAST, v * GRID_LAST)
+        grid_to_world(u * self.last(), v * self.last())
+    }
+
+    pub fn size(&self) -> MapSize {
+        self.size
+    }
+
+    /// How far along each grid axis the map goes.
+    fn last(&self) -> f32 {
+        self.size.cells() as f32
     }
 
     pub fn ruins(&self) -> &[RuinPiece] {
@@ -616,7 +693,7 @@ impl Terrain {
         let grid_walkable = self.walkable.get_or_init(|| {
             (0..GRID_POINTS)
                 .map(|index| {
-                    let (u, v) = (index % (MAP_CELLS + 1), index / (MAP_CELLS + 1));
+                    let (u, v) = (index % (MOST_CELLS + 1), index / (MOST_CELLS + 1));
                     let (x, z) = grid_to_world(u as f32, v as f32);
                     self.can_walk(x, z)
                 })
@@ -627,7 +704,7 @@ impl Terrain {
         let snap = |(x, z): (f32, f32)| -> Option<usize> {
             let (u, v) = world_to_grid(x, z);
             let (u, v) = (u.round() as i32, v.round() as i32);
-            let last = MAP_CELLS as i32;
+            let last = self.size.cells() as i32;
             (0..=4).find_map(|reach: i32| {
                 (-reach..=reach)
                     .flat_map(|du| (-reach..=reach).map(move |dv| (u + du, v + dv)))
@@ -639,8 +716,8 @@ impl Terrain {
         let (start, goal) = (snap(from)?, snap(to)?);
         let grid = |index: usize| {
             (
-                (index % (MAP_CELLS + 1)) as i32,
-                (index / (MAP_CELLS + 1)) as i32,
+                (index % (MOST_CELLS + 1)) as i32,
+                (index / (MOST_CELLS + 1)) as i32,
             )
         };
         let (goal_u, goal_v) = grid(goal);
@@ -670,7 +747,7 @@ impl Terrain {
                 (-1, -1),
             ] {
                 let (nu, nv) = (u + du, v + dv);
-                let last = MAP_CELLS as i32;
+                let last = self.size.cells() as i32;
                 if nu < 0 || nv < 0 || nu > last || nv > last {
                     continue;
                 }
@@ -722,11 +799,9 @@ impl Terrain {
 
     fn blend_at(&self, x: f32, z: f32, value: impl Fn(&Self, usize, usize) -> f32) -> f32 {
         let (u, v) = world_to_grid(x, z);
-        let (u, v) = (u.clamp(0.0, GRID_LAST), v.clamp(0.0, GRID_LAST));
-        let (u0, v0) = (
-            u.floor().min(GRID_LAST - 1.0),
-            v.floor().min(GRID_LAST - 1.0),
-        );
+        let last = self.last();
+        let (u, v) = (u.clamp(0.0, last), v.clamp(0.0, last));
+        let (u0, v0) = (u.floor().min(last - 1.0), v.floor().min(last - 1.0));
         let (tu, tv) = (u - u0, v - v0);
         let at = |du: usize, dv: usize| value(self, u0 as usize + du, v0 as usize + dv);
         let near = at(0, 0) * (1.0 - tu) + at(1, 0) * tu;
@@ -746,8 +821,8 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 
 /// The terrain of one map, generated the first time it is needed.
 pub fn terrain(map: usize) -> &'static Terrain {
-    static TERRAINS: [OnceLock<Terrain>; crate::game::MAPS.len()] =
-        [const { OnceLock::new() }; crate::game::MAPS.len()];
+    static TERRAINS: [OnceLock<Terrain>; crate::game::MAPS.len() * MapSize::ALL.len()] =
+        [const { OnceLock::new() }; crate::game::MAPS.len() * MapSize::ALL.len()];
     TERRAINS[map].get_or_init(|| Terrain::generate(map))
 }
 
@@ -772,18 +847,26 @@ pub struct Camera {
     pub z: f32,
     pub zoom: f32,
     zoom_target: f32,
+    /// How far along each grid axis the map it is kept on goes.
+    last: f32,
 }
 
 impl Camera {
-    /// Looking at the middle of the map from the top position.
+    /// Looking at the middle of a map of size S from the top position.
     pub fn centered() -> Self {
-        let middle = MAP_CELLS as f32 / 2.0;
-        let (x, z) = grid_to_world(middle, middle);
+        Self::centered_on(MapSize::S)
+    }
+
+    /// Looking at the middle of a map of this size from the top position.
+    pub fn centered_on(size: MapSize) -> Self {
+        let last = size.cells() as f32;
+        let (x, z) = grid_to_world(last / 2.0, last / 2.0);
         Camera {
             x,
             z,
             zoom: 0.0,
             zoom_target: 0.0,
+            last,
         }
     }
 
@@ -809,7 +892,7 @@ impl Camera {
     /// Moves the target, sliding along the map's edges rather than leaving the diamond.
     fn move_by(&mut self, dx: f32, dz: f32) {
         let (u, v) = world_to_grid(self.x + dx, self.z + dz);
-        (self.x, self.z) = grid_to_world(u.clamp(0.0, GRID_LAST), v.clamp(0.0, GRID_LAST));
+        (self.x, self.z) = grid_to_world(u.clamp(0.0, self.last), v.clamp(0.0, self.last));
     }
 
     /// One frame of edge scrolling. Slower when low, so the ground crosses the screen at
@@ -831,19 +914,20 @@ impl Camera {
     fn move_diagonally(&mut self, dx: f32, dz: f32) {
         let (u, v) = world_to_grid(self.x, self.z);
         let (du, dv) = world_to_grid(dx, dz);
+        let last = self.last;
         let blocked = |position: f32, step: f32| {
-            (position >= GRID_LAST && step > 0.0) || (position <= 0.0 && step < 0.0)
+            (position >= last && step > 0.0) || (position <= 0.0 && step < 0.0)
         };
         let slide = |other: f32, step: f32| {
-            let middle = GRID_LAST / 2.0;
+            let middle = last / 2.0;
             let end = if other < middle {
                 0.0
             } else if other > middle {
-                GRID_LAST
+                last
             } else if step > 0.0 {
                 0.0
             } else {
-                GRID_LAST
+                last
             };
             let distance = step.abs();
             if end > other {
@@ -859,7 +943,7 @@ impl Camera {
         } else {
             (u + du, v + dv)
         };
-        (self.x, self.z) = grid_to_world(u.clamp(0.0, GRID_LAST), v.clamp(0.0, GRID_LAST));
+        (self.x, self.z) = grid_to_world(u.clamp(0.0, self.last), v.clamp(0.0, self.last));
     }
 
     /// How far between the two positions: 0 at the top, 1 from the bottom position onward.
@@ -1116,21 +1200,31 @@ impl View {
 }
 
 /// A world point's place on a minimap square whose inscribed diamond is the whole map.
-pub fn world_to_minimap((x, y, size): (f32, f32, f32), world_x: f32, world_z: f32) -> (f32, f32) {
+pub fn world_to_minimap(
+    (x, y, size): (f32, f32, f32),
+    middle_z: f32,
+    world_x: f32,
+    world_z: f32,
+) -> (f32, f32) {
     (
-        x + size / 2.0 + world_x / MAP_MIDDLE_Z * size / 2.0,
-        y + world_z / MAP_MIDDLE_Z * size / 2.0,
+        x + size / 2.0 + world_x / middle_z * size / 2.0,
+        y + world_z / middle_z * size / 2.0,
     )
 }
 
 /// The world point under a minimap position, or `None` outside the minimap's square.
-pub fn minimap_to_world((x, y, size): (f32, f32, f32), px: f32, py: f32) -> Option<(f32, f32)> {
+pub fn minimap_to_world(
+    (x, y, size): (f32, f32, f32),
+    middle_z: f32,
+    px: f32,
+    py: f32,
+) -> Option<(f32, f32)> {
     if px < x || px >= x + size || py < y || py >= y + size {
         return None;
     }
     Some((
-        (px - (x + size / 2.0)) / (size / 2.0) * MAP_MIDDLE_Z,
-        (py - y) / (size / 2.0) * MAP_MIDDLE_Z,
+        (px - (x + size / 2.0)) / (size / 2.0) * middle_z,
+        (py - y) / (size / 2.0) * middle_z,
     ))
 }
 
@@ -1253,8 +1347,9 @@ pub fn draw(
             x >= min_x - ROOM && x <= max_x + ROOM && z >= min_z - ROOM && z <= max_z + ROOM
         })
     };
-    for u in 0..MAP_CELLS {
-        for v in (0..MAP_CELLS).filter(|&v| is_near(u, v)) {
+    let cells = terrain.size.cells();
+    for u in 0..cells {
+        for v in (0..cells).filter(|&v| is_near(u, v)) {
             let (a, b) = (point(u, v), point(u + 1, v));
             let (c, d) = (point(u + 1, v + 1), point(u, v + 1));
             out.extend([a, b, c, a, c, d]);
@@ -1580,7 +1675,7 @@ mod tests {
         let rect = (1000.0, 100.0, 400.0);
         let corner = |u, v| {
             let (x, z) = grid_to_world(u, v);
-            world_to_minimap(rect, x, z)
+            world_to_minimap(rect, MAP_MIDDLE_Z, x, z)
         };
         assert_eq!(corner(0.0, 0.0), (1200.0, 100.0), "north is top middle");
         assert_eq!(
@@ -1591,12 +1686,12 @@ mod tests {
         assert_eq!(corner(LAST, 0.0), (1400.0, 300.0), "east is right middle");
         assert_eq!(corner(0.0, LAST), (1000.0, 300.0), "west is left middle");
 
-        let (x, z) = minimap_to_world(rect, 1250.0, 260.0).unwrap();
-        let back = world_to_minimap(rect, x, z);
+        let (x, z) = minimap_to_world(rect, MAP_MIDDLE_Z, 1250.0, 260.0).unwrap();
+        let back = world_to_minimap(rect, MAP_MIDDLE_Z, x, z);
         assert!((back.0 - 1250.0).abs() < 0.01 && (back.1 - 260.0).abs() < 0.01);
-        assert_eq!(minimap_to_world(rect, 999.0, 300.0), None);
+        assert_eq!(minimap_to_world(rect, MAP_MIDDLE_Z, 999.0, 300.0), None);
         assert_eq!(
-            minimap_to_world(rect, 1200.0, 500.0),
+            minimap_to_world(rect, MAP_MIDDLE_Z, 1200.0, 500.0),
             None,
             "past the bottom edge"
         );
@@ -1733,7 +1828,7 @@ mod tests {
             .map(|map| {
                 let terrain = terrain(map);
                 let ground = terrain.is_ground.iter().filter(|g| **g).count();
-                let total = terrain.is_ground.len();
+                let total = (MAP_CELLS + 1) * (MAP_CELLS + 1);
                 assert!(
                     ground > total / 8 && ground < total * 2 / 3,
                     "map {map}: {ground} of {total}"
@@ -1897,7 +1992,10 @@ mod tests {
                         blocked += 1;
                     }
                     if terrain.relief[grid_index(u, v)].abs() > 0.0 {
-                        assert!(crate::units::keeps_clear(x, z), "map {map} near a start");
+                        assert!(
+                            crate::units::keeps_clear(x, z, MapSize::S),
+                            "map {map} near a start"
+                        );
                     }
                 }
             }
@@ -1922,6 +2020,79 @@ mod tests {
         for planet in [Planet::A, Planet::C, Planet::D, Planet::S, Planet::T] {
             assert!(terrain(map_on(planet)).vents().is_empty(), "{planet:?}");
         }
+    }
+
+    #[test]
+    fn a_map_is_as_big_as_its_size_says_with_its_things_spread_over_it_all() {
+        assert_eq!(MapSize::S.cells(), MAP_CELLS);
+        assert_eq!(MapSize::M.cells() * 2, MAP_CELLS * 3, "1.5 times as long");
+        assert_eq!(MapSize::L.cells(), MAP_CELLS * 2, "twice as long");
+        let (s, l) = (
+            terrain(terrain_id(1, MapSize::S)),
+            terrain(terrain_id(1, MapSize::L)),
+        );
+        assert_eq!(l.size(), MapSize::L);
+        let (far_x, far_z) = grid_to_world(250.0, 250.0);
+        assert!(l.on_map(far_x, far_z) && !s.on_map(far_x, far_z));
+        assert!(!l.on_map(far_x, far_z + 20.0));
+        assert!(
+            l.ruins().len() > s.ruins().len() * 2,
+            "about four times as many"
+        );
+        // A random point can be anywhere on it, and is often out of reach of a smaller map.
+        let mut random = 7;
+        let beyond = (0..100)
+            .map(|_| l.random_point(&mut random))
+            .filter(|&(x, z)| !s.on_map(x, z))
+            .count();
+        assert!(beyond > 40, "{beyond}");
+    }
+
+    #[test]
+    fn size_s_is_the_map_as_it_always_was_and_a_bigger_one_begins_with_the_same_land() {
+        let (s, m) = (terrain(2), terrain(terrain_id(2, MapSize::M)));
+        assert_eq!(terrain_id(2, MapSize::S), 2);
+        assert_eq!(s.size(), MapSize::S);
+        // Land forced for start areas lies elsewhere on the two, so look near the north corner.
+        for (u, v) in [(3, 3), (10, 2), (2, 12)] {
+            assert_eq!(s.is_ground(u, v), m.is_ground(u, v));
+        }
+    }
+
+    #[test]
+    fn the_camera_is_kept_on_a_map_of_its_size_and_starts_in_its_middle() {
+        let mut camera = Camera::centered_on(MapSize::L);
+        assert_eq!(camera.z, MapSize::L.middle_z());
+        assert_eq!(MapSize::L.middle_z(), MAP_MIDDLE_Z * 2.0);
+        camera.look_at(0.0, 1000.0);
+        let (u, v) = world_to_grid(camera.x, camera.z);
+        assert!((u - 256.0).abs() < 0.01 && (v - 256.0).abs() < 0.01);
+        let mut small = Camera::centered();
+        small.look_at(0.0, 1000.0);
+        assert!(small.z < camera.z);
+    }
+
+    #[test]
+    fn the_minimap_shows_all_of_a_map_of_any_size() {
+        let rect = (0.0, 0.0, 200.0);
+        for size in MapSize::ALL {
+            let (x, z) = grid_to_world(size.cells() as f32, size.cells() as f32);
+            let (px, py) = world_to_minimap(rect, size.middle_z(), x, z);
+            assert!(
+                (px - 100.0).abs() < 0.01 && (py - 200.0).abs() < 0.01,
+                "{size:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_route_can_be_found_right_across_a_big_map() {
+        let terrain = terrain(terrain_id(0, MapSize::L));
+        let from = terrain.nearest_walkable(grid_to_world(20.0, 20.0)).unwrap();
+        let to = terrain
+            .nearest_walkable(grid_to_world(236.0, 236.0))
+            .unwrap();
+        assert!(terrain.next_on_route(from, to).is_some());
     }
 
     #[test]

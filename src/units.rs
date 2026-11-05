@@ -309,6 +309,22 @@ impl Role {
         }
     }
 
+    /// How long it takes its building to make it, in seconds.
+    pub fn build_seconds(self) -> f32 {
+        match self {
+            Role::Scout => 3.0,
+            Role::LightInfantry | Role::Engineer => 4.0,
+            Role::FlameInfantry | Role::GasInfantry => 5.0,
+            Role::Sniper | Role::KInfantry => 6.0,
+            Role::RepairVehicle => 7.0,
+            Role::Tank | Role::Catapult | Role::Strider | Role::AirDrone => 9.0,
+            Role::RocketLauncher | Role::Ornithopter | Role::AirDefensePlatform => 11.0,
+            Role::AdvancedCarryall => 12.0,
+            Role::HeavyStrider => 15.0,
+            Role::Tower | Role::FlameTower | Role::Barracks | Role::Factory | Role::Hangar => 0.0,
+        }
+    }
+
     /// Whether it sits on the ground when it has nowhere to go.
     pub fn lands(self) -> bool {
         self == Role::Ornithopter
@@ -436,6 +452,8 @@ pub struct Unit {
     pub second_tube: bool,
     /// How far a missile tower's tubes are raised, in radians: below level if negative.
     pub tube_pitch: f32,
+    /// What a building is making and the seconds left: one thing at a time.
+    pub making: Option<(Role, f32)>,
     /// Where a building that makes units sends them, if the player has said.
     pub gathering: Option<(f32, f32)>,
     /// How many shots of its salvo have gone: they stay gone until it has reloaded.
@@ -733,6 +751,7 @@ impl Unit {
             alive: true,
             second_tube: false,
             tube_pitch: 0.0,
+            making: None,
             gathering: None,
             salvo_fired: 0,
             recoil: [0.0; 4],
@@ -853,6 +872,7 @@ fn place_unit(
         alive: true,
         second_tube: false,
         tube_pitch: 0.0,
+        making: None,
         gathering: None,
         salvo_fired: 0,
         recoil: [0.0; 4],
@@ -897,16 +917,64 @@ pub fn maker_of(units: &[Unit], role: Role, owner: usize) -> Option<&Unit> {
 /// Adds a new unit for an owner, if they have the building that makes it and there is a free
 /// spot by its door, on its south side. Returns whether it did. Infantry and aircraft appear
 /// at that spot, and a vehicle comes out of the door and drives there.
-pub fn produce(
-    units: &mut Vec<Unit>,
-    terrain: &Terrain,
-    role: Role,
-    owner: usize,
-    id: u32,
-) -> bool {
+#[cfg(test)]
+fn produce(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, owner: usize, id: u32) -> bool {
     let Some(&maker) = maker_of(units, role, owner) else {
         return false;
     };
+    produce_at(units, terrain, role, &maker, id)
+}
+
+/// Starts an owner's free building on a role. Returns whether one could take it.
+pub fn start_making(units: &mut [Unit], role: Role, owner: usize) -> bool {
+    let Some(made_in) = role.made_in() else {
+        return false;
+    };
+    let free = units
+        .iter_mut()
+        .find(|u| u.alive && u.owner == owner && u.role == made_in && u.making.is_none());
+    match free {
+        Some(building) => {
+            building.making = Some((role, role.build_seconds()));
+            true
+        }
+        None => false,
+    }
+}
+
+/// Counts down what every building is making. Returns the buildings done with theirs.
+pub fn work_on_making(units: &mut [Unit], dt: f32) -> Vec<usize> {
+    let mut done = Vec::new();
+    for (i, unit) in units.iter_mut().enumerate().filter(|(_, u)| u.alive) {
+        if let Some((_, left)) = &mut unit.making {
+            *left = (*left - dt).max(0.0);
+            if *left <= 0.0 {
+                done.push(i);
+            }
+        }
+    }
+    done
+}
+
+/// Lets a building's finished unit out. Returns the new unit's index, or nothing if there is no
+/// room for it yet, in which case it stays finished and tries again.
+pub fn finish_making(
+    units: &mut Vec<Unit>,
+    terrain: &Terrain,
+    index: usize,
+    id: u32,
+) -> Option<usize> {
+    let maker = units[index];
+    let (role, _) = maker.making?;
+    if !produce_at(units, terrain, role, &maker, id) {
+        return None;
+    }
+    units[index].making = None;
+    Some(units.len() - 1)
+}
+
+fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit, id: u32) -> bool {
+    let owner = maker.owner;
     let door = (
         maker.x,
         maker.z + maker.kind.radius() + role.kind().radius() + DOOR_MARGIN,
@@ -1298,6 +1366,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                             (units[i].owner, units[i].color);
                         units[other_index].selected = false;
                         units[other_index].gathering = None;
+                        units[other_index].making = None;
                         units[i].stand_down();
                     } else {
                         units[i].destination = (other.x, other.z);
@@ -3398,6 +3467,44 @@ mod tests {
             away > barracks.kind.radius() + UnitKind::Vehicle.radius(),
             "{away}"
         );
+    }
+
+    #[test]
+    fn a_building_makes_one_thing_at_a_time_and_lets_it_out_when_it_is_done() {
+        let mut units = base_of(0);
+        let barracks = units.iter().position(|u| u.role == Role::Barracks).unwrap();
+        let known = units.len();
+        assert!(start_making(&mut units, Role::Scout, 0));
+        assert!(!start_making(&mut units, Role::Sniper, 0), "it is busy");
+        assert!(
+            start_making(&mut units, Role::Tank, 0),
+            "the factory is not"
+        );
+        assert_eq!(units.len(), known, "nothing appears yet");
+        assert_eq!(units[barracks].making.unwrap().0, Role::Scout);
+
+        let seconds = Role::Scout.build_seconds();
+        assert!(work_on_making(&mut units, seconds / 2.0).is_empty());
+        assert_eq!(work_on_making(&mut units, seconds / 2.0), [barracks]);
+        let new = finish_making(&mut units, open_ground(), barracks, 50).unwrap();
+        assert_eq!(units[new].role, Role::Scout);
+        assert_eq!(units[barracks].making, None);
+        assert!(start_making(&mut units, Role::Sniper, 0), "free again");
+    }
+
+    #[test]
+    fn every_role_a_building_makes_takes_time_and_a_heavy_one_takes_longer() {
+        for role in [
+            Role::Scout,
+            Role::LightInfantry,
+            Role::Tank,
+            Role::AirDrone,
+            Role::AdvancedCarryall,
+        ] {
+            assert!(role.build_seconds() > 0.0, "{role:?}");
+        }
+        assert!(Role::HeavyStrider.build_seconds() > Role::Tank.build_seconds());
+        assert!(Role::Tank.build_seconds() > Role::Scout.build_seconds());
     }
 
     #[test]

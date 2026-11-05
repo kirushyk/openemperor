@@ -33,6 +33,7 @@ const WING_BEATS: f32 = 30.0;
 const PLATFORM_BLOCK_SIDE: f32 = 0.27;
 const BUILDING_DOOR: [f32; 3] = [0.05, 0.05, 0.06];
 const SMOKE: [f32; 3] = [0.16, 0.15, 0.14];
+pub const MAKING_DIM: Color = [0.0, 0.0, 0.0, 0.62];
 const CABLE: Color = [0.1, 0.1, 0.1, 1.0];
 const QUIET: Color = [0.55, 0.53, 0.48, 1.0];
 const GOLD: Color = [0.95, 0.76, 0.32, 1.0];
@@ -2139,6 +2140,11 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
                 QUIET
             },
         );
+        if let Some(progress) = makes.and_then(|role| game.making_progress(role)) {
+            for wedge in making_dim_wedges((cell.x, cell.y, cell.w, cell.h), progress) {
+                canvas.triangle(wedge, MAKING_DIM);
+            }
+        }
     }
     for tab in hud::build_tabs(game.width, game.height) {
         let Action::BuildTab(kind) = tab.action else {
@@ -2201,6 +2207,33 @@ fn short_name(role: Role) -> &'static str {
 
 fn chat_px(game: &Game) -> f32 {
     hud::chat_text_px(game.height)
+}
+
+/// The part of a button still dimmed while its unit is made: all of it at first, then less as
+/// a clear sector grows clockwise from twelve o'clock.
+pub fn making_dim_wedges(
+    (x, y, w, h): (f32, f32, f32, f32),
+    progress: f32,
+) -> Vec<[(f32, f32); 3]> {
+    const WEDGES: usize = 48;
+    let middle = (x + w / 2.0, y + h / 2.0);
+    // The button's edge straight out from its middle, clockwise from straight up.
+    let edge = |turn: f32| {
+        let (sin, cos) = (turn * TAU).sin_cos();
+        let reach = (w / 2.0 / sin.abs().max(0.0001)).min(h / 2.0 / cos.abs().max(0.0001));
+        (middle.0 + sin * reach, middle.1 - cos * reach)
+    };
+    let start = progress.clamp(0.0, 1.0);
+    if start >= 1.0 {
+        return Vec::new();
+    }
+    let step = (1.0 - start) / WEDGES as f32;
+    (0..WEDGES)
+        .map(|i| {
+            let from = start + step * i as f32;
+            [middle, edge(from), edge(from + step)]
+        })
+        .collect()
 }
 
 /// Small vector pictures built from the same triangles as everything else.

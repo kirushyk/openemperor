@@ -1465,8 +1465,8 @@ impl Game {
         }
     }
 
-    /// Every so often each opponent builds something it can at random and sends it to a random
-    /// place on the map. That is all the strategy they have for now.
+    /// Every so often each opponent starts building something it can at random, and sends it
+    /// to a random place on the map when it is done. That is all the strategy they have for now.
     fn run_opponents(&mut self, dt: f32) {
         self.opponents_build_in -= dt;
         if self.opponents_build_in > 0.0 {
@@ -1484,28 +1484,56 @@ impl Game {
             let Some(&role) = can_build.get(which % can_build.len().max(1)) else {
                 continue;
             };
-            if units::produce(&mut self.units, terrain, role, owner, self.next_unit_id) {
-                self.next_unit_id += 1;
+            units::start_making(&mut self.units, role, owner);
+        }
+    }
+
+    /// Moves along what every building is making, and lets out what is done.
+    fn work_on_making(&mut self, dt: f32) {
+        let terrain = battlefield::terrain(self.battle_map);
+        for maker in units::work_on_making(&mut self.units, dt) {
+            let id = self.next_unit_id;
+            let Some(new) = units::finish_making(&mut self.units, terrain, maker, id) else {
+                continue;
+            };
+            self.next_unit_id += 1;
+            if self.units[new].owner == 0 {
+                self.post_chat(format!("{} ready", self.units[new].name()));
+            } else {
                 let point = terrain.random_point(&mut self.opponent_random);
-                let new = self.units.len() - 1;
                 units::send_to_spot(&mut self.units, new, point, terrain);
             }
         }
     }
 
+    /// How much of this role the player's building has made so far, from 0 to 1, if it is
+    /// making one.
+    pub fn making_progress(&self, role: Role) -> Option<f32> {
+        self.units
+            .iter()
+            .filter(|u| u.alive && u.owner == 0)
+            .find_map(|u| match u.making {
+                Some((making, left)) if making == role => {
+                    Some(1.0 - left / role.build_seconds().max(0.001))
+                }
+                _ => None,
+            })
+    }
+
+    /// Lets everything being made come out at once.
+    #[cfg(test)]
+    fn finish_all_making(&mut self) {
+        for unit in &mut self.units {
+            if let Some((_, left)) = &mut unit.making {
+                *left = 0.0;
+            }
+        }
+        self.work_on_making(0.0);
+    }
+
     /// Whether the player has the building that makes this.
     pub fn can_produce(&self, role: Role) -> bool {
         units::maker_of(&self.units, role, 0).is_some()
-    }
-
-    /// Adds a unit of the player's by the building that makes it, if they have one. There is
-    /// no cost or waiting yet.
-    fn produce(&mut self, role: Role) {
-        let terrain = battlefield::terrain(self.battle_map);
-        if units::produce(&mut self.units, terrain, role, 0, self.next_unit_id) {
-            self.next_unit_id += 1;
-            self.post_chat(format!("{} ready", role.name()));
-        }
     }
 
     /// The tip text for what the cursor is over: a button making something, or a unit.
@@ -2142,6 +2170,7 @@ impl Game {
                 self.settle_casualties();
                 if self.outcome.is_none() {
                     self.run_opponents(dt);
+                    self.work_on_making(dt);
                 }
             }
             self.update_fog();
@@ -2332,7 +2361,8 @@ impl Game {
     /// Makes what the cell makes, or gets the superweapon ready to aim.
     fn activate_build_cell(&mut self, cell: usize) {
         if let Some(role) = Game::build_role(self.build_tab, cell) {
-            self.produce(role);
+            // There is no cost yet. A building already busy takes no more.
+            units::start_making(&mut self.units, role, 0);
         } else if self.build_tab == BuildTab::Vehicles
             && cell == SUPERWEAPON_CELL
             && self.superweapon_allowed()
@@ -3503,6 +3533,9 @@ mod tests {
             .find(|b| b.action == action)
             .unwrap();
         click_at(game, b.x + b.w / 2.0, b.y + b.h / 2.0);
+        if matches!(action, Action::BuildCell(_)) {
+            game.finish_all_making();
+        }
     }
 
     #[test]
@@ -4492,6 +4525,8 @@ mod tests {
         assert_eq!(of(&game, 1), before[0], "not yet");
         let known = game.units.len();
         game.run_opponents(OPPONENT_BUILD_SECONDS);
+        assert_eq!(game.units.len(), known, "it takes time");
+        game.finish_all_making();
         for (owner, before) in owners.zip(before) {
             assert_eq!(of(&game, owner), before + 1, "owner {owner}");
         }
@@ -4520,6 +4555,7 @@ mod tests {
         let known = game.units.len();
         for _ in 0..4 {
             game.run_opponents(OPPONENT_BUILD_SECONDS);
+            game.finish_all_making();
         }
         assert_eq!(game.units.len(), known);
 
@@ -4529,6 +4565,7 @@ mod tests {
         let known = game.units.len();
         for _ in 0..4 {
             game.run_opponents(OPPONENT_BUILD_SECONDS);
+            game.finish_all_making();
         }
         assert!(game.units.len() > known);
         assert!(
@@ -4536,6 +4573,67 @@ mod tests {
                 .iter()
                 .all(|u| u.kind == UnitKind::Infantry)
         );
+    }
+
+    #[test]
+    fn a_click_starts_a_unit_that_appears_when_done_and_the_button_shows_how_far_it_is() {
+        let mut game = in_battle();
+        let cell = hud::grid_cells(W, H)[1];
+        let known = game.units.len();
+        assert_eq!(game.making_progress(Role::LightInfantry), None);
+        click_at(&mut game, cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
+        assert_eq!(game.units.len(), known, "not at once");
+        assert_eq!(game.making_progress(Role::LightInfantry), Some(0.0));
+        let dim = crate::render::MAKING_DIM;
+        assert!(line_vertices(&game, dim) > 0, "the button goes dim");
+
+        let seconds = Role::LightInfantry.build_seconds();
+        game.update(seconds / 2.0);
+        let progress = game.making_progress(Role::LightInfantry).unwrap();
+        assert!((progress - 0.5).abs() < 0.01, "{progress}");
+        assert_eq!(game.units.len(), known);
+        let half_dim = line_vertices(&game, dim);
+
+        // A second click on any infantry while it is busy starts nothing.
+        click_at(&mut game, cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
+        assert!(game.making_progress(Role::LightInfantry).unwrap() > 0.4);
+
+        game.update(seconds / 2.0 + 0.01);
+        assert_eq!(game.making_progress(Role::LightInfantry), None);
+        assert_eq!(game.units.len(), known + 1);
+        assert_eq!(game.units[known].name(), "Light Infantry");
+        assert!(game.chat.iter().any(|l| l.text == "Light Infantry ready"));
+        assert!(half_dim > 0);
+        assert_eq!(line_vertices(&game, dim), 0, "the button is back");
+    }
+
+    #[test]
+    fn the_dim_part_shrinks_clockwise_from_twelve_oclock() {
+        use crate::render::making_dim_wedges;
+        let square = (0.0, 0.0, 100.0, 100.0);
+        // At the start it covers everything.
+        let full = making_dim_wedges(square, 0.0);
+        assert!(
+            full.iter()
+                .any(|w| w.iter().any(|p| p.0 < 1.0 && p.1 > 50.0))
+        );
+        // A quarter through, the upper right is clear and the rest is not.
+        let wedges = making_dim_wedges(square, 0.25);
+        let centers = |wedge: &[(f32, f32); 3]| {
+            (
+                (wedge[0].0 + wedge[1].0 + wedge[2].0) / 3.0,
+                (wedge[0].1 + wedge[1].1 + wedge[2].1) / 3.0,
+            )
+        };
+        assert!(
+            wedges
+                .iter()
+                .map(centers)
+                .all(|c| !(c.0 > 55.0 && c.1 < 45.0))
+        );
+        assert!(wedges.iter().map(centers).any(|c| c.0 < 45.0 && c.1 < 45.0));
+        assert!(wedges.iter().map(centers).any(|c| c.0 > 55.0 && c.1 > 55.0));
+        assert!(making_dim_wedges(square, 1.0).is_empty());
     }
 
     #[test]

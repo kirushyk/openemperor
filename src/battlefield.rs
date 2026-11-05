@@ -19,6 +19,9 @@ pub const GRID_POINTS: usize = (MAP_CELLS + 1) * (MAP_CELLS + 1);
 const CELL: f32 = 0.5;
 /// How far ground rises above sand, in world units.
 const GROUND_HEIGHT: f32 = 0.7;
+/// The way to the sun, as a unit vector: high up on the screen's left and a little behind what
+/// it lights, so that shadows fall to the right and towards the camera.
+pub const SUN: [f32; 3] = [-0.50, 0.80, -0.33];
 /// Noise above this is the upper terrain, below it the lower.
 const GROUND_THRESHOLD: f32 = 0.54;
 /// More land where the lower terrain cannot be walked on.
@@ -257,7 +260,40 @@ impl Terrain {
             }
         }
         terrain.ruins = pieces;
+        terrain.light_slopes();
         terrain
+    }
+
+    /// Brightens the colors where the land turns to the sun and darkens them where it turns
+    /// away, against how flat land looks.
+    fn light_slopes(&mut self) {
+        const DARKEST: f32 = 0.45;
+        const BRIGHTEST: f32 = 1.4;
+        let step = CELL * std::f32::consts::SQRT_2;
+        let height = |u: usize, v: usize| self.vertex_height(u.min(MAP_CELLS), v.min(MAP_CELLS));
+        let mut lit = self.colors.clone();
+        for v in 0..=MAP_CELLS {
+            for u in 0..=MAP_CELLS {
+                let along_u = (height(u + 1, v) - height(u.saturating_sub(1), v)) / (2.0 * step);
+                let along_v = (height(u, v + 1) - height(u, v.saturating_sub(1))) / (2.0 * step);
+                let across = std::f32::consts::FRAC_1_SQRT_2;
+                let (slope_x, slope_z) =
+                    ((along_u - along_v) * across, (along_u + along_v) * across);
+                let length = (slope_x * slope_x + slope_z * slope_z + 1.0).sqrt();
+                let facing = (-slope_x * SUN[0] + SUN[1] - slope_z * SUN[2]) / length;
+                let light = (facing / SUN[1]).clamp(DARKEST, BRIGHTEST);
+                lit[grid_index(u, v)] = lit[grid_index(u, v)].map(|c| c * light);
+            }
+        }
+        self.colors = lit;
+    }
+
+    fn vertex_height(&self, u: usize, v: usize) -> f32 {
+        if self.is_ground(u, v) {
+            GROUND_HEIGHT
+        } else {
+            0.0
+        }
     }
 
     /// Nothing stands in water or lava, so there the whole site must be on land.

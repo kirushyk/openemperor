@@ -4075,7 +4075,7 @@ mod tests {
         let shadows = |game: &Game| {
             crate::render::build(game)
                 .iter()
-                .filter(|v| v.r == 0.0 && v.g == 0.0 && v.b == 0.0 && v.a == 0.3)
+                .filter(|v| v.r == 0.0 && v.g == 0.0 && v.b == 0.0 && v.a > 0.0 && v.a < 1.0)
                 .count()
         };
         let mut game = in_battle();

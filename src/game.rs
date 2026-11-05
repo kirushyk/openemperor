@@ -2235,6 +2235,14 @@ impl Game {
                     // Only calls off the superweapon; the selection stands.
                     self.aiming_strike = false;
                     self.selection_anchor = None;
+                } else if self.screen == Screen::InGame
+                    && !self.key_paused
+                    && let Some(Action::BuildCell(cell)) = self.hovered()
+                {
+                    // On a build button it calls off one of those, and the selection stands.
+                    if let Some(role) = Game::build_role(self.build_tab, cell) {
+                        units::cancel_making(&mut self.units, role, 0);
+                    }
                 } else if self.screen == Screen::InGame && !self.key_paused {
                     self.selection_anchor = None;
                     for unit in &mut self.units {
@@ -2303,7 +2311,7 @@ impl Game {
                 }
                 (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => {
                     for unit in &mut self.units {
-                        unit.selected = unit.is_selected_in_groups();
+                        unit.selected = unit.is_selectable() && !unit.kind.is_building();
                     }
                 }
                 (_, Key::Escape) => self.go_back(),
@@ -4109,8 +4117,9 @@ mod tests {
         assert_eq!(selected_count(&game), 1);
         assert!(game.units[tower].selected);
 
+        game.handle(Event::RightDown);
         game.handle(Event::KeyDown(Key::Char('a')));
-        assert!(game.units[tower].selected, "and by the select-all key");
+        assert!(!game.units[tower].selected, "but not by the select-all key");
     }
 
     #[test]
@@ -4201,6 +4210,7 @@ mod tests {
         assert_eq!(game.units.len(), before + 1);
         assert_eq!(game.units[before].destination, point);
 
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         game.handle(Event::RightDown);
         assert_eq!(
             line_vertices(&game, crate::render::ORDER_LINE),
@@ -4668,6 +4678,54 @@ mod tests {
     }
 
     #[test]
+    fn a_right_click_on_a_button_takes_one_of_that_type_off_and_keeps_the_selection() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        let cell = hud::grid_cells(W, H)[1];
+        let at = (cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
+        for _ in 0..3 {
+            click_at(&mut game, at.0, at.1);
+        }
+        let other = hud::grid_cells(W, H)[0];
+        click_at(&mut game, other.x + other.w / 2.0, other.y + other.h / 2.0);
+        let role = Role::LightInfantry;
+        assert_eq!(game.queue_badge(role), Some(3));
+
+        game.handle(Event::MouseMove(at.0, at.1));
+        game.handle(Event::RightDown);
+        assert_eq!(game.queue_badge(role), Some(2), "one less");
+        assert_eq!(
+            game.queue_badge(Role::Scout),
+            Some(1),
+            "the other type is untouched"
+        );
+        assert_eq!(selected_count(&game), FIRST_GROUP, "the selection stands");
+
+        game.handle(Event::RightDown);
+        assert_eq!(game.queue_badge(role), None);
+        assert!(
+            game.making_progress(role).is_some(),
+            "the one being made goes last"
+        );
+        game.handle(Event::RightDown);
+        assert_eq!(game.making_progress(role), None, "and then that goes");
+        assert!(
+            game.making_progress(Role::Scout).is_some(),
+            "so the next starts"
+        );
+        game.handle(Event::RightDown);
+        assert_eq!(
+            game.queue_badge(Role::Scout),
+            None,
+            "nothing more of this type"
+        );
+
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        game.handle(Event::RightDown);
+        assert_eq!(selected_count(&game), 0, "elsewhere it still deselects");
+    }
+
+    #[test]
     fn the_factory_and_the_hangar_keep_queues_of_their_own() {
         let mut game = in_battle();
         let cells = hud::grid_cells(W, H);
@@ -4982,7 +5040,7 @@ mod tests {
         let everyone = game
             .units
             .iter()
-            .filter(|u| u.is_selected_in_groups())
+            .filter(|u| u.is_selectable() && !u.kind.is_building())
             .count();
         assert!(everyone > FIRST_GROUP, "including the group off screen");
         game.handle(Event::KeyDown(Key::Char('a')));
@@ -4998,8 +5056,8 @@ mod tests {
             game.units
                 .iter()
                 .filter(|u| u.selected)
-                .all(|u| u.kind != UnitKind::Building),
-            "no buildings that make units"
+                .all(|u| !u.kind.is_building()),
+            "only what can move"
         );
 
         game.handle(Event::RightDown);

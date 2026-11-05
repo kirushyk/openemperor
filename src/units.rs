@@ -983,6 +983,31 @@ pub fn start_making(units: &mut [Unit], role: Role, owner: usize) -> bool {
     true
 }
 
+/// Calls off one order of a role from the owner's building with the most waiting: the last of
+/// them waiting, wherever it is in the queue, or else the one being made, and then the next
+/// one starts. Returns whether there was one.
+pub fn cancel_making(units: &mut [Unit], role: Role, owner: usize) -> bool {
+    let building = units
+        .iter_mut()
+        .filter(|u| u.alive && u.owner == owner && u.orders_for(role) > 0)
+        .max_by_key(|u| u.orders_for(role));
+    let Some(building) = building else {
+        return false;
+    };
+    match building
+        .queue
+        .iter()
+        .rposition(|&place| place == Some(role))
+    {
+        Some(place) => {
+            building.queue[place..].rotate_left(1);
+            building.queue[QUEUE_ROOM - 1] = None;
+        }
+        None => building.start_next(),
+    }
+    true
+}
+
 /// Counts down what every building is making. Returns the buildings done with theirs.
 pub fn work_on_making(units: &mut [Unit], dt: f32) -> Vec<usize> {
     let mut done = Vec::new();
@@ -3576,6 +3601,53 @@ mod tests {
             assert!(start_making(&mut units, Role::Scout, 0));
         }
         assert!(!start_making(&mut units, Role::Scout, 0), "no more room");
+    }
+
+    #[test]
+    fn cancelling_takes_one_of_that_type_from_anywhere_and_leaves_the_rest_in_order() {
+        let mut units = base_of(0);
+        let barracks = units.iter().position(|u| u.role == Role::Barracks).unwrap();
+        let order = [
+            Role::Scout,
+            Role::Sniper,
+            Role::Engineer,
+            Role::Sniper,
+            Role::Engineer,
+        ];
+        for role in order {
+            start_making(&mut units, role, 0);
+        }
+        work_on_making(&mut units, 1.0);
+        let left = units[barracks].making.unwrap().1;
+
+        // From the middle of the queue, with what is being made carrying on.
+        assert!(cancel_making(&mut units, Role::Sniper, 0));
+        assert_eq!(units[barracks].orders_for(Role::Sniper), 1);
+        assert_eq!(units[barracks].making, Some((Role::Scout, left)));
+        assert_eq!(
+            units[barracks].queue[..4],
+            [
+                Some(Role::Sniper),
+                Some(Role::Engineer),
+                Some(Role::Engineer),
+                None
+            ]
+        );
+
+        // The one being made: the next starts from the beginning.
+        assert!(cancel_making(&mut units, Role::Scout, 0));
+        assert_eq!(
+            units[barracks].making,
+            Some((Role::Sniper, Role::Sniper.build_seconds()))
+        );
+        assert_eq!(units[barracks].orders_for(Role::Scout), 0);
+
+        assert!(!cancel_making(&mut units, Role::Scout, 0), "none left");
+        assert!(cancel_making(&mut units, Role::Sniper, 0));
+        assert!(cancel_making(&mut units, Role::Engineer, 0));
+        assert!(cancel_making(&mut units, Role::Engineer, 0));
+        assert_eq!(units[barracks].making, None);
+        assert!(has_free_maker(&units, Role::Scout, 0));
     }
 
     #[test]

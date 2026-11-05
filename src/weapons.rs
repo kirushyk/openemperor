@@ -188,6 +188,11 @@ impl WeaponKind {
         )
     }
 
+    /// Whether it can harm anyone.
+    pub fn is_armed(self) -> bool {
+        !matches!(self, WeaponKind::Unarmed | WeaponKind::Repair)
+    }
+
     /// How many shots it fires in turn, and how long it then waits, if it fires salvos.
     fn salvo(self) -> Option<(usize, f32)> {
         match self {

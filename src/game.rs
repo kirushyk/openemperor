@@ -1582,10 +1582,10 @@ impl Game {
         }
     }
 
-    /// Selects everything of the player's that can move and shows on screen. If that is already
-    /// selected, or there is nothing of theirs on screen, selects it all across the map.
-    fn select_all(&mut self) {
-        let movable = |u: &Unit| u.is_selectable() && !u.kind.is_building();
+    /// Selects those of the player's wanted units that show on screen. If they are already
+    /// selected, or none are on screen, selects them all across the map.
+    fn select_among(&mut self, wanted: impl Fn(&Unit) -> bool) {
+        let wanted = |u: &Unit| u.is_selectable() && wanted(u);
         let view = self.view();
         let (width, height) = (self.width, self.height);
         let on_screen = |u: &Unit| {
@@ -1599,10 +1599,10 @@ impl Game {
         let whole_map = self
             .units
             .iter()
-            .filter(|u| movable(u) && on_screen(u))
+            .filter(|u| wanted(u) && on_screen(u))
             .all(|u| u.selected);
         for unit in &mut self.units {
-            unit.selected = movable(unit) && (whole_map || on_screen(unit));
+            unit.selected = wanted(unit) && (whole_map || on_screen(unit));
         }
     }
 
@@ -2459,7 +2459,18 @@ impl Game {
                 (Screen::InGame, Key::Char('d' | 'D')) if !self.key_paused => {
                     units::toggle_deploy(&mut self.units)
                 }
-                (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => self.select_all(),
+                (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => {
+                    self.select_among(|u| !u.kind.is_building());
+                }
+                (Screen::InGame, Key::Char('p' | 'P')) if !self.key_paused => {
+                    self.select_among(|u| !u.kind.is_building() && u.weapon.is_armed());
+                }
+                (Screen::InGame, Key::Char('t' | 'T')) if !self.key_paused => {
+                    let roles: Vec<Role> = self.selected_units().iter().map(|u| u.role).collect();
+                    if !roles.is_empty() {
+                        self.select_among(|u| u.is_selected_in_groups() && roles.contains(&u.role));
+                    }
+                }
                 (Screen::InGame, Key::Char('f' | 'F')) if !self.key_paused => {
                     self.following = match self.following {
                         Some(_) => None,
@@ -5474,6 +5485,92 @@ mod tests {
         game.handle(Event::MouseMove(x + size / 3.0, y + size / 2.0));
         game.handle(Event::MouseDown);
         assert_eq!(game.following, None);
+    }
+
+    #[test]
+    fn the_t_key_takes_the_types_selected_on_screen_then_on_the_whole_map() {
+        let mut game = in_battle();
+        let roles_of = |game: &Game| -> Vec<Role> {
+            let mut roles: Vec<Role> = game.selected_units().iter().map(|u| u.role).collect();
+            roles.dedup();
+            roles
+        };
+        let tanks = |game: &Game| {
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0 && u.role == Role::Tank)
+                .count()
+        };
+        game.handle(Event::KeyDown(Key::Char('t')));
+        assert_eq!(selected_count(&game), 0, "nothing to go by");
+
+        let tank = tank_of(&game);
+        game.units[tank].selected = true;
+        game.handle(Event::KeyDown(Key::Char('T')));
+        let on_screen = selected_count(&game);
+        assert!(on_screen > 1 && on_screen < tanks(&game), "{on_screen}");
+        assert_eq!(roles_of(&game), [Role::Tank]);
+
+        game.handle(Event::KeyDown(Key::Char('t')));
+        assert_eq!(
+            selected_count(&game),
+            tanks(&game),
+            "the second press: everywhere"
+        );
+        assert_eq!(roles_of(&game), [Role::Tank]);
+        assert!(
+            game.selected_units().iter().all(|u| u.owner == 0),
+            "not the enemy's"
+        );
+
+        // Two types selected: both of them.
+        game.handle(Event::RightDown);
+        let carryall = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::AdvancedCarryall)
+            .unwrap();
+        game.units[tank].selected = true;
+        game.units[carryall].selected = true;
+        game.handle(Event::KeyDown(Key::Char('t')));
+        assert!(
+            game.selected_units()
+                .iter()
+                .any(|u| u.role == Role::AdvancedCarryall)
+        );
+        assert!(game.selected_units().iter().any(|u| u.role == Role::Tank));
+        assert!(selected_count(&game) > 2);
+    }
+
+    #[test]
+    fn the_p_key_takes_the_armed_on_screen_then_on_the_whole_map() {
+        let mut game = in_battle();
+        let armed = |u: &Unit| u.owner == 0 && !u.kind.is_building() && u.weapon.is_armed();
+        let everyone = game.units.iter().filter(|u| armed(u)).count();
+        game.handle(Event::KeyDown(Key::Char('p')));
+        let on_screen = selected_count(&game);
+        assert!(
+            on_screen > 0 && on_screen < everyone,
+            "{on_screen} {everyone}"
+        );
+        assert!(game.selected_units().iter().all(|u| armed(u)));
+        assert!(
+            !game
+                .selected_units()
+                .iter()
+                .any(|u| u.role == Role::AdvancedCarryall),
+            "carryalls carry no weapon"
+        );
+        game.handle(Event::KeyDown(Key::Char('P')));
+        assert_eq!(selected_count(&game), everyone);
+        use crate::weapons::WeaponKind;
+        assert!(WeaponKind::Laser.is_armed());
+        assert!(!WeaponKind::Repair.is_armed() && !WeaponKind::Unarmed.is_armed());
+
+        game.handle(Event::RightDown);
+        game.handle(Event::KeyDown(Key::Pause));
+        game.handle(Event::KeyDown(Key::Char('p')));
+        assert_eq!(selected_count(&game), 0, "not while paused");
     }
 
     #[test]

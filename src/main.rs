@@ -31,6 +31,6 @@ fn main() {
         let now = Instant::now();
         game.update((now - last).as_secs_f32());
         last = now;
-        platform.draw(&render::build(&game), render::clear_color(&game));
+        platform.draw(&render::build_frame(&game), render::clear_color(&game));
     }
 }

@@ -12,7 +12,7 @@ use crate::game::{
 };
 use crate::hud;
 use crate::planet;
-use crate::platform::Vertex;
+use crate::platform::{Frame, GroundVertex, Material, Vertex};
 use crate::units::{self, Role, Target, Unit, UnitKind};
 use crate::weapons::STRIKE_RADIUS;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
@@ -113,6 +113,8 @@ fn border_px(height: f32) -> f32 {
 #[derive(Default)]
 struct Canvas {
     vertices: Vec<Vertex>,
+    /// The ground, which goes under all of `vertices`.
+    ground: Vec<GroundVertex>,
     /// While a shape is being worked out for its shadow: the world points its parts reach.
     shadow_of: Option<Vec<(f32, f32, f32)>>,
 }
@@ -384,7 +386,36 @@ pub fn clear_color(game: &Game) -> [f32; 3] {
     }
 }
 
+/// All that is drawn, as plain triangles over the ground left out.
+#[cfg(test)]
 pub fn build(game: &Game) -> Vec<Vertex> {
+    build_frame(game).over
+}
+
+/// The whole frame: the battlefield's ground, if it shows, and all that goes over it.
+pub fn build_frame(game: &Game) -> Frame {
+    let terrain = battlefield::terrain(game.battle_map);
+    let material = terrain.material();
+    let mut canvas = canvas_of(game);
+    let battle_shows = !canvas.ground.is_empty();
+    let mirror = if battle_shows && material == Material::Water {
+        draw_reflection(game)
+    } else {
+        Vec::new()
+    };
+    Frame {
+        ground: std::mem::take(&mut canvas.ground),
+        material,
+        mirror,
+        over: canvas.vertices,
+        time: game.battle_time(),
+        camera: battlefield::View::new(game.camera, game.width, game.height).position(),
+        sun: SUN,
+        flat_water: terrain.lower_color(),
+    }
+}
+
+fn canvas_of(game: &Game) -> Canvas {
     let mut canvas = Canvas::default();
     let s = ui_scale(game.height);
     let cx = game.width / 2.0;
@@ -516,7 +547,7 @@ pub fn build(game: &Game) -> Vec<Vertex> {
         CursorLook::Carry => canvas.carry_cursor(game.mouse, s),
         CursorLook::Arrow => canvas.cursor(game.mouse, s),
     }
-    canvas.vertices
+    canvas
 }
 
 /// A small label below and to the right of the cursor, kept on the screen.
@@ -682,7 +713,7 @@ fn button_circle(b: Button) -> (f32, f32, f32) {
 fn draw_battle(canvas: &mut Canvas, game: &Game) {
     let s = ui_scale(game.height);
     battlefield::draw(
-        &mut canvas.vertices,
+        &mut canvas.ground,
         battlefield::terrain(game.battle_map),
         game.fog.as_ref(),
         game.camera,
@@ -975,6 +1006,64 @@ fn draw_cast_shadows(canvas: &mut Canvas, game: &Game, view: &battlefield::View)
             (alpha, soft),
         );
     }
+}
+
+/// Mountains, ruins and units as they look reflected in water. Flat land reflects too little
+/// to be worth it.
+fn draw_reflection(game: &Game) -> Vec<Vertex> {
+    let mut canvas = Canvas::default();
+    let terrain = battlefield::terrain(game.battle_map);
+    let view = battlefield::View::new(game.camera, game.width, game.height).mirrored();
+    enum Object<'a> {
+        Unit(&'a Unit),
+        Ruin(&'a battlefield::RuinPiece),
+        Cell(&'a battlefield::RaisedCell),
+    }
+    let mut order: Vec<(f32, Object)> = game
+        .units
+        .iter()
+        .filter(|u| game.shows(u))
+        .map(|u| (u.z, Object::Unit(u)))
+        .collect();
+    order.extend(
+        terrain
+            .ruins()
+            .iter()
+            .filter(|piece| game.sight_at(piece.x, piece.z) != Sight::Unexplored)
+            .map(|piece| (piece.z, Object::Ruin(piece))),
+    );
+    order.extend(
+        terrain
+            .raised_cells()
+            .iter()
+            .map(|cell| (cell.z, Object::Cell(cell))),
+    );
+    order.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, object) in order {
+        match object {
+            Object::Unit(unit) => draw_unit_model(&mut canvas, game, &view, unit),
+            Object::Ruin(piece) => {
+                let shade = piece.shade * game.sight_at(piece.x, piece.z).shade();
+                draw_box(
+                    &mut canvas,
+                    game,
+                    &view,
+                    (piece.x, piece.z, piece.half_x, piece.half_z),
+                    (piece.y, piece.y + piece.height),
+                    RUIN_CONCRETE.map(|c| c * shade),
+                );
+            }
+            Object::Cell(cell) => battlefield::draw_cell(
+                &mut canvas.vertices,
+                terrain,
+                game.fog.as_ref(),
+                &view,
+                (cell.u, cell.v),
+                (game.width, game.height),
+            ),
+        }
+    }
+    canvas.vertices
 }
 
 /// Light thrown on the ground around a point, brightest at it. It adds to whatever is there.
@@ -2157,8 +2246,10 @@ fn draw_turned_box(
             );
         }
     }
+    // In a mirror what shows on the near side is its underside, not its top.
+    let cap = if view.is_mirrored() { base } else { top };
     face(
-        corners.map(|(px, pz)| (px, top, pz)),
+        corners.map(|(px, pz)| (px, cap, pz)),
         [0.0, 1.0, 0.0],
         false,
     );
@@ -2230,6 +2321,8 @@ fn draw_box(
 ) {
     let corner = |dx: f32, y: f32, dz: f32| view.project(x + dx, y, z + dz);
     let side = if x > game.camera.x { -half_x } else { half_x };
+    // In a mirror what shows on the near side is its underside, not its top.
+    let cap = if view.is_mirrored() { base } else { top };
     let faces = [
         (
             [
@@ -2253,10 +2346,10 @@ fn draw_box(
         ),
         (
             [
-                (-half_x, top, -half_z),
-                (half_x, top, -half_z),
-                (half_x, top, half_z),
-                (-half_x, top, half_z),
+                (-half_x, cap, -half_z),
+                (half_x, cap, -half_z),
+                (half_x, cap, half_z),
+                (-half_x, cap, half_z),
             ],
             [0.0, 1.0, 0.0],
             false,

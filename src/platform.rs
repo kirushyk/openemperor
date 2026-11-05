@@ -40,6 +40,64 @@ impl Vertex {
     }
 }
 
+/// A corner of the ground, which a shader details per pixel from where it is in the world.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundVertex {
+    pub x: f32,
+    pub y: f32,
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    /// How much of the light the fog of war lets through.
+    pub seen: f32,
+    pub world_x: f32,
+    /// Its height, in a material with water how far above the surface or below it.
+    pub level: f32,
+    pub world_z: f32,
+}
+
+/// What the ground shader makes of the ground.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Material {
+    Plain = 0,
+    Water = 1,
+    Sand = 2,
+}
+
+/// A frame of the battlefield or of anything else: the ground, then what is over it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Frame {
+    pub ground: Vec<GroundVertex>,
+    pub material: Material,
+    /// The world as seen in a mirror at the water's surface, for the water to reflect.
+    pub mirror: Vec<Vertex>,
+    pub over: Vec<Vertex>,
+    /// Seconds, to keep the water moving.
+    pub time: f32,
+    pub camera: [f32; 3],
+    pub sun: [f32; 3],
+    /// How water looks to a backend with no shader for it.
+    pub flat_water: [f32; 3],
+}
+
+impl Frame {
+    /// The frame as plain colored triangles, for a backend with no ground shader.
+    #[cfg(any(test, not(target_os = "macos")))]
+    pub fn flattened(&self) -> Vec<Vertex> {
+        let ground = self.ground.iter().map(|v| {
+            let is_water = self.material == Material::Water && v.level < 0.0;
+            let [r, g, b] = if is_water {
+                self.flat_water
+            } else {
+                [v.r, v.g, v.b]
+            };
+            Vertex::new((v.x, v.y), [r * v.seen, g * v.seen, b * v.seen, 1.0])
+        });
+        ground.chain(self.over.iter().copied()).collect()
+    }
+}
+
 #[repr(C)]
 struct RawEvent {
     kind: i32,
@@ -81,10 +139,29 @@ pub enum Event {
     Control(bool),
 }
 
+/// Mirrors `OeWorld` in `shim/oe_shim.h`.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct RawWorld {
+    ground: *const GroundVertex,
+    ground_count: u32,
+    mirror: *const Vertex,
+    mirror_count: u32,
+    over: *const Vertex,
+    over_count: u32,
+    material: i32,
+    time: f32,
+    camera: [f32; 3],
+    sun: [f32; 3],
+}
+
 unsafe extern "C" {
     fn oe_init(title: *const std::ffi::c_char, width: *mut i32, height: *mut i32) -> i32;
     fn oe_poll_event(event: *mut RawEvent) -> i32;
+    #[cfg(not(target_os = "macos"))]
     fn oe_draw(vertices: *const Vertex, count: u32, r: f32, g: f32, b: f32);
+    #[cfg(target_os = "macos")]
+    fn oe_draw_world(world: *const RawWorld, clear_r: f32, clear_g: f32, clear_b: f32);
     fn oe_shutdown();
 }
 
@@ -142,7 +219,28 @@ impl Platform {
         }
     }
 
-    pub fn draw(&mut self, vertices: &[Vertex], clear: [f32; 3]) {
+    #[cfg(target_os = "macos")]
+    pub fn draw(&mut self, frame: &Frame, clear: [f32; 3]) {
+        let world = RawWorld {
+            ground: frame.ground.as_ptr(),
+            ground_count: frame.ground.len() as u32,
+            mirror: frame.mirror.as_ptr(),
+            mirror_count: frame.mirror.len() as u32,
+            over: frame.over.as_ptr(),
+            over_count: frame.over.len() as u32,
+            material: frame.material as i32,
+            time: frame.time,
+            camera: frame.camera,
+            sun: frame.sun,
+        };
+        // SAFETY: the pointers are valid for their counts, and the shim copies them all before
+        // returning.
+        unsafe { oe_draw_world(&raw const world, clear[0], clear[1], clear[2]) }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn draw(&mut self, frame: &Frame, clear: [f32; 3]) {
+        let vertices = frame.flattened();
         // SAFETY: the shim copies the slice before returning.
         unsafe {
             oe_draw(
@@ -166,6 +264,37 @@ impl Drop for Platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flattened_frame_has_the_ground_under_the_rest_and_water_in_its_flat_color() {
+        let corner = |level: f32| GroundVertex {
+            x: 1.0,
+            y: 2.0,
+            r: 0.5,
+            g: 0.5,
+            b: 0.5,
+            seen: 0.5,
+            world_x: 0.0,
+            level,
+            world_z: 0.0,
+        };
+        let over = Vertex::new((3.0, 4.0), [1.0, 1.0, 1.0, 1.0]);
+        let frame = Frame {
+            ground: vec![corner(-1.0), corner(1.0)],
+            material: Material::Water,
+            mirror: Vec::new(),
+            over: vec![over],
+            time: 0.0,
+            camera: [0.0; 3],
+            sun: [0.0; 3],
+            flat_water: [0.0, 0.0, 1.0],
+        };
+        let flat = frame.flattened();
+        assert_eq!(flat.len(), 3);
+        assert_eq!([flat[0].r, flat[0].b, flat[0].a], [0.0, 0.5, 1.0]);
+        assert_eq!([flat[1].r, flat[1].b], [0.25, 0.25]);
+        assert_eq!(flat[2], over);
+    }
 
     #[test]
     fn a_vertex_carries_its_color_multiplied_by_its_alpha_and_light_covers_nothing() {

@@ -9,7 +9,7 @@
 
 use crate::fog::Fog;
 use crate::planet::fractal_noise;
-use crate::platform::Vertex;
+use crate::platform::{GroundVertex, Material, Vertex};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::OnceLock;
@@ -125,7 +125,7 @@ const MOUNTAIN_COUNT: usize = 9;
 const PIT_COUNT: usize = 8;
 /// Past this much rise or fall from the land, nothing can walk.
 const STEEPEST_WALK: f32 = 0.25;
-/// A cell with a corner this high is drawn in turn with what stands on the map.
+/// A cell with all corners this high is drawn in turn with what stands on the map.
 const RAISED: f32 = 0.2;
 
 /// One block of a destroyed building: a stretch of broken wall, or rubble.
@@ -147,6 +147,8 @@ pub struct Terrain {
     is_ground: Vec<bool>,
     /// How far mountains rise from the land, or pits sink into it, at each grid point.
     relief: Vec<f32>,
+    /// How far the lower terrain lies under its noise's threshold, at each grid point.
+    deep: Vec<f32>,
     colors: Vec<[f32; 3]>,
     ruins: Vec<RuinPiece>,
     /// The cells that stick up out of the ground, nearest the far side first. Things can stand
@@ -231,6 +233,7 @@ impl Terrain {
     fn generate(map: usize) -> Self {
         let mut is_ground = Vec::with_capacity(GRID_POINTS);
         let mut colors = Vec::with_capacity(GRID_POINTS);
+        let mut deep = Vec::with_capacity(GRID_POINTS);
         let seed = 101 + map as u32 * 13;
         let planet = MAP_PLANETS[map];
         let threshold = if planet.lower_is_solid() {
@@ -252,6 +255,7 @@ impl Terrain {
                     planet.lower_color()
                 };
                 is_ground.push(ground);
+                deep.push((threshold - height).max(0.0));
                 colors.push(base.map(|c| c * (1.0 + grain * 2.0 * GRAIN)));
             }
         }
@@ -259,6 +263,7 @@ impl Terrain {
             planet,
             is_ground,
             relief: vec![0.0; GRID_POINTS],
+            deep,
             colors,
             ruins: Vec::new(),
             raised_cells: Vec::new(),
@@ -294,9 +299,11 @@ impl Terrain {
     /// Brightens the colors where the land turns to the sun and darkens them where it turns
     /// away, against how flat land looks.
     fn light_slopes(&mut self) {
-        const DARKEST: f32 = 0.45;
-        const BRIGHTEST: f32 = 1.4;
-        const IN_SHADOW: f32 = 0.58;
+        const DARKEST: f32 = 0.6;
+        /// A low bank only dims, or the coarse grid would show as teeth along it.
+        const DARKEST_BANK: f32 = 0.8;
+        const BRIGHTEST: f32 = 1.2;
+        const IN_SHADOW: f32 = 0.72;
         let step = CELL * std::f32::consts::SQRT_2;
         let height = |u: usize, v: usize| self.vertex_height(u.min(MAP_CELLS), v.min(MAP_CELLS));
         let mut lit = self.colors.clone();
@@ -309,7 +316,12 @@ impl Terrain {
                     ((along_u - along_v) * across, (along_u + along_v) * across);
                 let length = (slope_x * slope_x + slope_z * slope_z + 1.0).sqrt();
                 let facing = (-slope_x * SUN[0] + SUN[1] - slope_z * SUN[2]) / length;
-                let mut light = (facing / SUN[1]).clamp(DARKEST, BRIGHTEST);
+                let darkest = if self.relief[grid_index(u, v)] == 0.0 {
+                    DARKEST_BANK
+                } else {
+                    DARKEST
+                };
+                let mut light = (facing / SUN[1]).clamp(darkest, BRIGHTEST);
                 if self.sun_is_blocked(u, v) {
                     light = light.min(1.0) * IN_SHADOW;
                 }
@@ -324,8 +336,9 @@ impl Terrain {
         /// Far enough for the shadow of the tallest mountain.
         const REACH: f32 = 9.0;
         const STEP: f32 = 0.2;
-        /// So that a slope does not shade itself.
-        const LIFT: f32 = 0.08;
+        /// So that a slope does not shade itself, nor a low bank what is at its foot, which
+        /// the grid is too coarse to show as anything but teeth.
+        const LIFT: f32 = 0.8;
         let (x, z) = grid_to_world(u as f32, v as f32);
         let y = self.vertex_height(u, v) + LIFT;
         (1..=(REACH / STEP) as usize).any(|i| {
@@ -364,7 +377,7 @@ impl Terrain {
                 );
                 let (x, z) = grid_to_world(u, v);
                 let radius = if is_mountain {
-                    3.0 + next_random(random) * 4.0
+                    2.6 + next_random(random) * 3.4
                 } else {
                     1.8 + next_random(random) * 2.4
                 };
@@ -416,10 +429,11 @@ impl Terrain {
         is_mountain: bool,
         seed: u32,
     ) {
-        const PEAK: f32 = 4.0;
+        const PEAK: f32 = 5.0;
         const PIT_DEPTH: f32 = 1.6;
-        const ROCK: [f32; 3] = [0.40, 0.36, 0.33];
-        const SNOW: [f32; 3] = [0.92, 0.93, 0.96];
+        const ROCK: [f32; 3] = [0.56, 0.50, 0.45];
+        const SNOW: [f32; 3] = [0.86, 0.87, 0.90];
+        const DARK_ROCK: [f32; 3] = [0.38, 0.33, 0.30];
         const FLOOR: [f32; 3] = [0.05, 0.04, 0.04];
         let reach = radius + 1.0;
         for v in 0..=MAP_CELLS {
@@ -437,14 +451,18 @@ impl Terrain {
                     continue;
                 }
                 if is_mountain {
-                    let noise = fractal_noise([fu * 40.0, fv * 40.0, 6.5], seed + 1);
+                    let noise = fractal_noise([fu * 26.0, fv * 26.0, 6.5], seed + 1);
                     let ridge = 1.0 - (noise * 2.0 - 1.0).abs();
-                    let rise = inside * inside * (3.0 - 2.0 * inside);
-                    let share = (rise * (0.55 + 0.9 * ridge)).min(1.0);
+                    let fine = fractal_noise([fu * 70.0, fv * 70.0, 8.5], seed + 2);
+                    let rise = inside * inside.sqrt();
+                    let share = (rise * (0.25 + 1.1 * ridge * ridge + 0.3 * fine)).min(1.0);
                     self.relief[index] = self.relief[index].max(share * PEAK * size);
                     let grain = self.colors[index][0] / self.base_of(index)[0].max(0.01);
-                    let rock = mix(self.base_of(index), ROCK, (share * 3.5).min(1.0));
-                    let snowy = ((share - 0.62) * 8.0).clamp(0.0, 1.0);
+                    // Bands of rock as it climbs, all of it rock past the very foot.
+                    let band = fractal_noise([share * 9.0, fine * 2.0, 3.5], seed + 3);
+                    let stone = mix(DARK_ROCK, ROCK, band * 1.5);
+                    let rock = mix(self.base_of(index), stone, (share * 30.0).min(1.0));
+                    let snowy = ((share - 0.78 + (fine - 0.5) * 0.25) * 9.0).clamp(0.0, 1.0);
                     let color = mix(rock, SNOW, snowy);
                     self.colors[index] = color.map(|c| c * grain);
                 } else {
@@ -523,6 +541,7 @@ impl Terrain {
             planet: Planet::A,
             is_ground: vec![false; GRID_POINTS],
             relief: vec![0.0; GRID_POINTS],
+            deep: vec![0.0; GRID_POINTS],
             colors: vec![SAND; GRID_POINTS],
             ruins,
             raised_cells: Vec::new(),
@@ -556,7 +575,16 @@ impl Terrain {
     fn is_raised_cell(&self, u: usize, v: usize) -> bool {
         [(u, v), (u + 1, v), (u + 1, v + 1), (u, v + 1)]
             .iter()
-            .any(|&(u, v)| self.relief[grid_index(u, v)] > RAISED)
+            .all(|&(u, v)| self.relief[grid_index(u, v)] > RAISED)
+    }
+
+    /// What the ground shader makes of this map.
+    pub fn material(&self) -> Material {
+        match self.planet {
+            Planet::A => Material::Sand,
+            Planet::C => Material::Water,
+            Planet::D | Planet::G | Planet::S | Planet::T => Material::Plain,
+        }
     }
 
     pub fn raised_cells(&self) -> &[RaisedCell] {
@@ -875,6 +903,8 @@ pub struct View {
     up: [f32; 2],
     focal: f32,
     center: (f32, f32),
+    /// Seeing everything as it looks in a mirror lying on the ground at height 0.
+    mirrored: bool,
 }
 
 impl View {
@@ -889,7 +919,22 @@ impl View {
             up: [cos, -sin],
             focal: height / (2.0 * HALF_FOV_TAN) * camera.lens(),
             center: (width / 2.0, height / 2.0),
+            mirrored: false,
         }
+    }
+
+    /// The same view of everything as it looks in a mirror lying at height 0.
+    pub fn mirrored(mut self) -> Self {
+        self.mirrored = true;
+        self
+    }
+
+    pub fn is_mirrored(&self) -> bool {
+        self.mirrored
+    }
+
+    pub fn position(&self) -> [f32; 3] {
+        self.position
     }
 
     /// Where the camera is in the world, as (x, z).
@@ -900,6 +945,7 @@ impl View {
     /// A world point seen from the camera: how far to the side, how far up, and how deep.
     fn relative(&self, x: f32, y: f32, z: f32) -> (f32, f32, f32) {
         let [px, py, pz] = self.position;
+        let y = if self.mirrored { -y } else { y };
         let (side, rel_y, rel_z) = (x - px, y - py, z - pz);
         let up = rel_y * self.up[0] + rel_z * self.up[1];
         (side, up, rel_y * self.forward[0] + rel_z * self.forward[1])
@@ -1080,18 +1126,61 @@ pub fn edge_direction(mouse: (f32, f32), width: f32, height: f32) -> (f32, f32) 
 /// Appends the visible terrain, farthest first. Both grid axes point towards the camera,
 /// so plain nested loops give that order.
 pub fn draw(
-    out: &mut Vec<Vertex>,
+    out: &mut Vec<GroundVertex>,
     terrain: &Terrain,
     fog: Option<&Fog>,
     camera: Camera,
     width: f32,
     height: f32,
 ) {
+    /// Under the water's surface along the shore, however shallow the bottom is there.
+    const SHORE: f32 = 0.12;
+    /// How far down the water goes for how far under the threshold its noise is.
+    const DEPTH: f32 = 6.0;
+    /// What the land is made of right at the water, so its color does not run blue.
+    const BEACH: [f32; 3] = [0.74, 0.68, 0.48];
+    let has_water = terrain.material() == Material::Water;
     let view = View::new(camera, width, height);
+    let point = |u: usize, v: usize| {
+        let (x, z) = grid_to_world(u as f32, v as f32);
+        let index = grid_index(u, v);
+        let is_water = has_water && !terrain.is_ground[index];
+        let ([r, g, b], level) = if is_water {
+            (BEACH, -(SHORE + terrain.deep[index] * DEPTH))
+        } else {
+            // A pit in the land stays dry, however far down it goes.
+            let height = terrain.vertex_height(u, v);
+            let level = if has_water { height.max(0.001) } else { height };
+            (terrain.colors[index], level)
+        };
+        view.project(x, terrain.vertex_height(u, v), z)
+            .map(|(px, py)| GroundVertex {
+                x: px,
+                y: py,
+                r,
+                g,
+                b,
+                seen: fog.map_or(1.0, |fog| fog.at_grid(u, v).shade()),
+                world_x: x,
+                level,
+                world_z: z,
+            })
+    };
     for u in 0..MAP_CELLS {
         for v in 0..MAP_CELLS {
-            if !terrain.is_raised_cell(u, v) {
-                draw_cell(out, terrain, fog, &view, (u, v), (width, height));
+            if terrain.is_raised_cell(u, v) {
+                continue;
+            }
+            let corners = [
+                point(u, v),
+                point(u + 1, v),
+                point(u + 1, v + 1),
+                point(u, v + 1),
+            ];
+            if let [Some(a), Some(b), Some(c), Some(d)] = corners
+                && !all_off_screen(&[a, b, c, d].map(|p| (p.x, p.y)), width, height)
+            {
+                out.extend([a, b, c, a, c, d]);
             }
         }
     }
@@ -1772,16 +1861,56 @@ mod tests {
 
     #[test]
     fn a_mountain_shades_the_ground_on_its_far_side_from_the_sun_only() {
-        let (x, z) = (0.0, 40.0);
-        let terrain = Terrain::open_with_mountain(x, z, 5.0);
-        let at = |px: f32, pz: f32| {
-            let (u, v) = world_to_grid(px, pz);
+        let mut terrain = Terrain::open_with_ruins(Vec::new());
+        let (peak_u, peak_v) = (64, 64);
+        terrain.relief[grid_index(peak_u, peak_v)] = 5.0;
+        let (x, z) = grid_to_world(peak_u as f32, peak_v as f32);
+        let at = |reach: f32| {
+            let (u, v) = world_to_grid(x + SUN[0] * reach, z + SUN[2] * reach);
             terrain.sun_is_blocked(u.round() as usize, v.round() as usize)
         };
-        // Away from the sun, just past the foot of the mountain.
-        assert!(at(x - SUN[0] * 6.0, z - SUN[2] * 6.0));
-        assert!(!at(x + SUN[0] * 6.0, z + SUN[2] * 6.0));
-        assert!(!at(x + 20.0, z));
+        assert!(at(-2.0), "away from the sun");
+        assert!(!at(2.0), "on the side towards it");
+        assert!(!at(-8.0), "out of its reach");
+    }
+
+    #[test]
+    fn each_map_gets_the_material_of_its_planet() {
+        assert_eq!(terrain(map_on(Planet::A)).material(), Material::Sand);
+        assert_eq!(terrain(map_on(Planet::C)).material(), Material::Water);
+        assert_eq!(terrain(map_on(Planet::D)).material(), Material::Plain);
+    }
+
+    #[test]
+    fn water_lies_below_its_surface_and_the_land_above_it_for_the_ground_shader() {
+        let map = map_on(Planet::C);
+        let terrain = terrain(map);
+        let mut out = Vec::new();
+        for (x, z) in [(0.0, 64.0), (-20.0, 40.0), (20.0, 90.0)] {
+            let mut camera = Camera::centered();
+            camera.x = x;
+            camera.z = z;
+            draw(&mut out, terrain, None, camera, W, H);
+        }
+        assert!(!out.is_empty());
+        let (water, land): (Vec<GroundVertex>, Vec<GroundVertex>) =
+            out.iter().partition(|v| v.level < 0.0);
+        assert!(!water.is_empty() && !land.is_empty());
+        for vertex in water {
+            let (u, v) = world_to_grid(vertex.world_x, vertex.world_z);
+            assert!(!terrain.is_ground(u.round() as usize, v.round() as usize));
+        }
+    }
+
+    #[test]
+    fn a_mirrored_view_shows_what_is_above_it_lower_on_the_screen() {
+        let view = View::new(Camera::centered(), W, H);
+        let mirror = View::new(Camera::centered(), W, H).mirrored();
+        let (x, z) = grid_to_world(64.0, 64.0);
+        let above = view.project(x, 2.0, z).unwrap();
+        let reflected = mirror.project(x, 2.0, z).unwrap();
+        assert!(reflected.1 > above.1);
+        assert_eq!(view.project(x, 0.0, z), mirror.project(x, 0.0, z));
     }
 
     #[test]

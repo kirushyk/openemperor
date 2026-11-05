@@ -48,6 +48,31 @@ int32_t oe_poll_event(OeEvent *event);
 /* Draws a triangle list and presents. Blocks for vsync. */
 void oe_draw(const OeVertex *vertices, uint32_t count, float r, float g, float b);
 
+/* A corner of the ground, which a shader details per pixel. */
+typedef struct {
+    float x, y;
+    float r, g, b;
+    float seen;
+    float world_x, level, world_z;
+} OeGroundVertex;
+
+/* A frame of the battlefield. Backends without a ground shader get oe_draw instead. */
+typedef struct {
+    const OeGroundVertex *ground;
+    uint32_t ground_count;
+    const OeVertex *mirror;
+    uint32_t mirror_count;
+    const OeVertex *over;
+    uint32_t over_count;
+    int32_t material; /* 0 plain, 1 water, 2 sand */
+    float time;
+    float camera[3];
+    float sun[3];
+} OeWorld;
+
+/* Draws the ground, then what is over it, and presents. Blocks for vsync. macOS only so far. */
+void oe_draw_world(const OeWorld *world, float r, float g, float b);
+
 void oe_shutdown(void);
 
 #endif

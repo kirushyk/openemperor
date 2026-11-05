@@ -55,6 +55,7 @@ typedef struct {
     float r, g, b;
     float seen;
     float level;
+    float stain[3]; /* where on its unit it is, and how black it goes */
 } OeWorldVertex;
 
 /* A corner of something see-through: on the screen, with a depth to test. Premultiplied. */

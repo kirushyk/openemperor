@@ -125,6 +125,20 @@ impl UnitKind {
 }
 
 const BUILDING_RADIUS: f32 = 1.2;
+/// How high the deck of a landing pad is, which is where a machine on it sits.
+pub const PAD_TOP: f32 = 0.14;
+/// How long a landing pad takes to load one rocket, in seconds.
+const RELOAD_SECONDS: f32 = 1.2;
+/// How far from its pad a machine with rockets left no longer counts as using it.
+const LEAVES_PAD: f32 = 1.5;
+/// How close above its pad a machine has come to settle on it.
+const OVER_PAD: f32 = 0.5;
+/// How far along the row of a group's buildings its landing pad stands, past the hangar.
+const PAD_ALONG: f32 = -5.5;
+/// How much of its health something must have lost to smoke, to show black stains, and to burn.
+pub const SMOKES_PAST: f32 = 0.25;
+pub const STAINS_PAST: f32 = 0.4;
+pub const BURNS_PAST: f32 = 0.7;
 /// How many units a building can have waiting behind the one it is making.
 const QUEUE_ROOM: usize = 30;
 /// How far beyond its side the door of a building is.
@@ -194,6 +208,8 @@ pub enum Role {
     AirDrone,
     /// Sits on the ground until sent somewhere: it goes up, turns, flies there and sits again.
     Ornithopter,
+    /// A heavier, slower ornithopter whose rockets do far more harm.
+    Destroyer,
     /// Sprays fire at the ground in front of it.
     FlameInfantry,
     /// Sprays green gas at the ground in front of it.
@@ -207,6 +223,8 @@ pub enum Role {
     Factory,
     /// Makes aircraft.
     Hangar,
+    /// A deck where one ornithopter at a time lands to load rockets.
+    LandingPad,
 }
 
 impl Role {
@@ -228,9 +246,10 @@ impl Role {
             Role::AdvancedCarryall
             | Role::AirDefensePlatform
             | Role::AirDrone
-            | Role::Ornithopter => UnitKind::Aircraft,
+            | Role::Ornithopter
+            | Role::Destroyer => UnitKind::Aircraft,
             Role::Tower | Role::FlameTower => UnitKind::Tower,
-            Role::Barracks | Role::Factory | Role::Hangar => UnitKind::Building,
+            Role::Barracks | Role::Factory | Role::Hangar | Role::LandingPad => UnitKind::Building,
         }
     }
 
@@ -251,6 +270,7 @@ impl Role {
             Role::AirDefensePlatform => "Air Defense Platform",
             Role::AirDrone => "Air Drone",
             Role::Ornithopter => "Ornithopter",
+            Role::Destroyer => "Destroyer",
             Role::FlameInfantry => "Flame Infantry",
             Role::GasInfantry => "Gas Infantry",
             Role::Tower => "Tower",
@@ -258,19 +278,23 @@ impl Role {
             Role::Barracks => "Barracks",
             Role::Factory => "Factory",
             Role::Hangar => "Hangar",
+            Role::LandingPad => "Landing Pad",
         }
     }
 
     fn weapon(self) -> WeaponKind {
         match self {
             Role::LightInfantry => WeaponKind::Bullet,
-            Role::Scout | Role::Barracks | Role::Factory | Role::Hangar => WeaponKind::Unarmed,
+            Role::Scout | Role::Barracks | Role::Factory | Role::Hangar | Role::LandingPad => {
+                WeaponKind::Unarmed
+            }
             Role::Sniper => WeaponKind::Sniper,
             Role::Engineer | Role::KInfantry => WeaponKind::Pistol,
             Role::Tank => WeaponKind::Cannon,
             Role::RepairVehicle => WeaponKind::Repair,
             Role::Catapult => WeaponKind::Mortar,
             Role::RocketLauncher | Role::Ornithopter => WeaponKind::Rockets,
+            Role::Destroyer => WeaponKind::HeavyRockets,
             Role::Tower | Role::Strider => WeaponKind::Missile,
             Role::HeavyStrider => WeaponKind::Bombard,
             Role::AdvancedCarryall => WeaponKind::Unarmed,
@@ -293,6 +317,8 @@ impl Role {
             Role::HeavyStrider => 450.0,
             Role::AirDefensePlatform => 200.0,
             Role::AirDrone => 80.0,
+            Role::Destroyer => 320.0,
+            Role::LandingPad => 400.0,
             Role::FlameTower => 500.0,
             _ => self.kind().max_health(),
         }
@@ -307,6 +333,7 @@ impl Role {
             Role::AirDefensePlatform => 3.0,
             Role::AirDrone => 8.0,
             Role::Ornithopter => 5.5,
+            Role::Destroyer => 3.2,
             _ => self.kind().speed(),
         }
     }
@@ -322,7 +349,8 @@ impl Role {
             Role::Tank | Role::Catapult | Role::Strider | Role::AirDrone => 9.0,
             Role::RocketLauncher | Role::Ornithopter | Role::AirDefensePlatform => 11.0,
             Role::AdvancedCarryall => 12.0,
-            Role::HeavyStrider => 15.0,
+            Role::HeavyStrider | Role::Destroyer => 15.0,
+            Role::LandingPad => 10.0,
             Role::Barracks => 15.0,
             Role::Factory | Role::Hangar => 20.0,
             Role::Tower | Role::FlameTower => 0.0,
@@ -331,7 +359,16 @@ impl Role {
 
     /// Whether it sits on the ground when it has nowhere to go.
     pub fn lands(self) -> bool {
-        self == Role::Ornithopter
+        matches!(self, Role::Ornithopter | Role::Destroyer)
+    }
+
+    /// How many rockets it can carry, if it must go back to a landing pad for more.
+    pub fn rocket_load(self) -> Option<u8> {
+        match self {
+            Role::Ornithopter => Some(12),
+            Role::Destroyer => Some(6),
+            _ => None,
+        }
     }
 
     /// Whether it must keep flying forward, unable to hang in the air.
@@ -481,6 +518,12 @@ pub struct Unit {
     best_remaining: f32,
     /// Where it heads for first, to get around what lies between it and its destination.
     way: Option<Way>,
+    /// How many of the rockets it carries are gone.
+    pub rockets_fired: u8,
+    /// The landing pad it is going to or sitting on.
+    pad: Option<Pad>,
+    /// How far along a pad is with loading its next rocket, in seconds.
+    reloading: f32,
 }
 
 impl Unit {
@@ -518,6 +561,7 @@ impl Unit {
         self.alive
             && self.role.lands()
             && self.altitude > 0.0
+            && !self.is_on_pad()
             && !self.has_a_fight()
             && !self.is_moving()
     }
@@ -610,9 +654,39 @@ impl Unit {
         self.best_remaining = f32::INFINITY;
     }
 
+    /// Whether it has something to fire: everything does but a machine that has run out of the
+    /// rockets it carries.
+    pub fn has_rockets(&self) -> bool {
+        self.rockets_left().is_none_or(|left| left > 0)
+    }
+
+    /// How many rockets it has left, if it is the kind that runs out.
+    pub fn rockets_left(&self) -> Option<u8> {
+        let load = self.role.rocket_load()?;
+        Some(load.saturating_sub(self.rockets_fired))
+    }
+
+    /// Whether it is sitting on its landing pad.
+    fn is_on_pad(&self) -> bool {
+        self.pad.is_some_and(|pad| {
+            (pad.x - self.x).hypot(pad.z - self.z) < OVER_PAD && self.altitude <= PAD_TOP + 0.01
+        })
+    }
+
+    /// How much of its health it has lost, if it is the kind to show that: a vehicle, an
+    /// aircraft or a building. Otherwise 0.
+    pub fn wear(&self) -> f32 {
+        if self.kind == UnitKind::Infantry || !self.alive {
+            0.0
+        } else {
+            (1.0 - self.health / self.max_health()).clamp(0.0, 1.0)
+        }
+    }
+
     /// Whether it can be forced to fire on another unit, whoever that is.
     pub fn can_fire_on(&self, other: &Unit) -> bool {
-        self.alive
+        self.has_rockets()
+            && self.alive
             && other.alive
             && self.id != other.id
             && self.weapon.can_target(other.kind, other.altitude)
@@ -662,6 +736,7 @@ impl Unit {
     pub fn can_attack(&self, other: &Unit, teams: &[usize]) -> bool {
         self.alive
             && other.alive
+            && self.has_rockets()
             && are_enemies(teams, self.owner, other.owner)
             && self.weapon.can_target(other.kind, other.altitude)
     }
@@ -791,6 +866,9 @@ impl Unit {
             blocked_for: 0.0,
             best_remaining: f32::INFINITY,
             way: None,
+            rockets_fired: 0,
+            pad: None,
+            reloading: 0.0,
         }
     }
 }
@@ -914,6 +992,9 @@ fn place_unit(
         blocked_for: 0.0,
         best_remaining: f32::INFINITY,
         way: None,
+        rockets_fired: 0,
+        pad: None,
+        reloading: 0.0,
     });
 }
 
@@ -1165,6 +1246,11 @@ fn place_base(
         );
         place_building(units, terrain, at, role, side);
     }
+    let pad = (
+        center.0 + behind.0 * BUILDINGS_BEHIND + across_x * PAD_ALONG,
+        center.1 + behind.1 * BUILDINGS_BEHIND + across_z * PAD_ALONG,
+    );
+    place_building(units, terrain, pad, Role::LandingPad, side);
 }
 
 /// Switches every selected K Infantry between its pistol and, standing still, its cannon.
@@ -1261,7 +1347,7 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
 /// Whether a point lies where a group can start, which must be land even on a planet whose
 /// lower terrain is water or lava. Opponents spread around the whole ring.
 pub fn needs_land(x: f32, z: f32) -> bool {
-    const REACH: f32 = 6.5;
+    const REACH: f32 = 7.3;
     let from_middle = x.hypot(z - MAP_MIDDLE_Z);
     let from_second_group = (x - SECOND_GROUP_X).hypot(z - MAP_MIDDLE_Z);
     from_middle < REACH || from_second_group < REACH || (from_middle - OPPONENT_RING).abs() < REACH
@@ -1274,6 +1360,15 @@ pub fn keeps_clear(x: f32, z: f32) -> bool {
     from_middle > CLEARANCE
         && from_second_group > CLEARANCE
         && (from_middle - OPPONENT_RING).abs() > CLEARANCE * 0.8
+}
+
+/// Whether a ruin may stand here: further off than other map objects, as its walls reach out
+/// from where it stands, past a group's buildings to its landing pad.
+pub fn keeps_clear_for_ruin(x: f32, z: f32) -> bool {
+    let from_middle = x.hypot(z - MAP_MIDDLE_Z);
+    let from_second_group = (x - SECOND_GROUP_X).hypot(z - MAP_MIDDLE_Z);
+    let room = CLEARANCE + 1.0;
+    from_middle > room && from_second_group > room && (from_middle - OPPONENT_RING).abs() > room
 }
 
 /// Up to `count` free spots near a point, nearest first, each far enough from the others
@@ -1404,7 +1499,7 @@ fn order_layer(
 pub fn set_gathering(units: &mut [Unit], point: (f32, f32)) {
     for unit in units
         .iter_mut()
-        .filter(|u| u.selected && u.kind == UnitKind::Building)
+        .filter(|u| u.selected && u.kind == UnitKind::Building && u.role != Role::LandingPad)
     {
         unit.gathering = Some(point);
     }
@@ -1656,6 +1751,14 @@ fn push_out_of_ruins(unit: &mut Unit, terrain: &Terrain) -> bool {
     touched
 }
 
+/// A landing pad, and where it stands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pad {
+    id: u32,
+    x: f32,
+    z: f32,
+}
+
 /// A point to pass through, and the destination it was found for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Way {
@@ -1852,7 +1955,11 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
 fn settle(unit: &mut Unit, terrain: &Terrain, dt: f32) {
     let spot = (unit.x, unit.z);
     if terrain.can_walk(spot.0, spot.1) && clear_of_ruins(terrain, spot) {
-        unit.altitude = (unit.altitude - CLIMB_SPEED * dt).max(0.0);
+        let is_over_pad = unit
+            .pad
+            .is_some_and(|pad| (pad.x - unit.x).hypot(pad.z - unit.z) < OVER_PAD);
+        let lowest = if is_over_pad { PAD_TOP } else { 0.0 };
+        unit.altitude = (unit.altitude - CLIMB_SPEED * dt).max(lowest);
     }
 }
 
@@ -2001,16 +2108,88 @@ fn alert_landers(units: &mut [Unit], teams: &[usize]) {
             lander.y + CRUISE_ALTITUDE + lander.kind.radius(),
             lander.z,
         );
-        units[i].alerted = units.iter().any(|other| {
-            lander.can_attack(other, teams)
-                && other.kind != UnitKind::Building
-                && distance(up_there, other.center()) <= lander.weapon.range()
-        });
+        // What is being loaded stays down until it is done, unless told otherwise.
+        let is_loading = lander.is_on_pad() && lander.rockets_fired > 0;
+        units[i].alerted = !is_loading
+            && units.iter().any(|other| {
+                lander.can_attack(other, teams)
+                    && other.kind != UnitKind::Building
+                    && distance(up_there, other.center()) <= lander.weapon.range()
+            });
+    }
+}
+
+/// Sends machines out of rockets to a free landing pad of their owner's, loads those sitting on
+/// one, and lets go of a pad once they have left it with rockets on board. One out of rockets
+/// that has been sent elsewhere goes there first, then back. With no pad free it waits.
+fn tend_pads(units: &mut [Unit], dt: f32) {
+    let is_pad_of =
+        |u: &Unit, owner: usize| u.alive && u.role == Role::LandingPad && u.owner == owner;
+    for i in 0..units.len() {
+        if !units[i].alive || !units[i].role.lands() {
+            continue;
+        }
+        let unit = units[i];
+        let out = !unit.has_rockets();
+        let idle = !unit.is_moving() && unit.target.is_none();
+        match unit.pad {
+            Some(pad)
+                if !units
+                    .iter()
+                    .any(|u| u.id == pad.id && is_pad_of(u, unit.owner)) =>
+            {
+                units[i].pad = None;
+            }
+            Some(_) if unit.is_on_pad() => {
+                if unit.rockets_fired > 0 {
+                    units[i].reloading += dt;
+                    if units[i].reloading >= RELOAD_SECONDS {
+                        units[i].reloading = 0.0;
+                        units[i].rockets_fired -= 1;
+                    }
+                }
+            }
+            Some(pad) if !out => {
+                if (pad.x - unit.x).hypot(pad.z - unit.z) > LEAVES_PAD {
+                    units[i].pad = None;
+                }
+            }
+            Some(pad) => {
+                if idle {
+                    units[i].destination = (pad.x, pad.z);
+                    units[i].reset_progress();
+                }
+            }
+            None if out && idle => {
+                let taken = |id: u32| {
+                    units
+                        .iter()
+                        .any(|u| u.alive && u.pad.is_some_and(|pad| pad.id == id))
+                };
+                let away = |u: &Unit| (u.x - unit.x).hypot(u.z - unit.z);
+                let nearest = units
+                    .iter()
+                    .filter(|u| is_pad_of(u, unit.owner) && !taken(u.id))
+                    .min_by(|a, b| away(a).total_cmp(&away(b)))
+                    .map(|u| Pad {
+                        id: u.id,
+                        x: u.x,
+                        z: u.z,
+                    });
+                if let Some(pad) = nearest {
+                    units[i].pad = Some(pad);
+                    units[i].destination = (pad.x, pad.z);
+                    units[i].reset_progress();
+                }
+            }
+            None => {}
+        }
     }
 }
 
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
+    tend_pads(units, dt);
     alert_landers(units, teams);
     chase_targets(units, terrain, teams);
     // Spheres only start to overlap when something moves.
@@ -2667,6 +2846,7 @@ mod tests {
             ),
             (Role::AirDrone, WeaponKind::AirMissile, "Air Drone"),
             (Role::Ornithopter, WeaponKind::Rockets, "Ornithopter"),
+            (Role::Destroyer, WeaponKind::HeavyRockets, "Destroyer"),
             (Role::FlameInfantry, WeaponKind::Flame, "Flame Infantry"),
             (Role::GasInfantry, WeaponKind::Gas, "Gas Infantry"),
         ];
@@ -3530,9 +3710,14 @@ mod tests {
         let terrain = terrain(0);
         let units = spawn(terrain, &COLORS);
         for owner in 0..COLORS.len() {
-            for role in [Role::Barracks, Role::Factory, Role::Hangar] {
+            for role in [
+                Role::Barracks,
+                Role::Factory,
+                Role::Hangar,
+                Role::LandingPad,
+            ] {
                 let building = units.iter().find(|u| u.owner == owner && u.role == role);
-                let building = building.expect("all three");
+                let building = building.expect("all four");
                 assert!(terrain.can_walk(building.x, building.z));
                 assert_eq!(building.weapon, WeaponKind::Unarmed);
                 assert_eq!(building.is_selectable(), owner == 0);
@@ -4278,6 +4463,161 @@ mod tests {
             "it got there: {:?}",
             units[0]
         );
+    }
+
+    /// A flat map with a pad at its middle and a machine out of rockets some way off.
+    fn machine_and_pad(role: Role) -> [Unit; 2] {
+        let mut machine = unit_at(0.0, 50.0, UnitKind::Aircraft);
+        machine.role = role;
+        machine.weapon = role.weapon();
+        machine.id = 1;
+        machine.altitude = CRUISE_ALTITUDE;
+        machine.rockets_fired = role.rocket_load().unwrap();
+        let mut pad = unit_at(8.0, 50.0, UnitKind::Building);
+        pad.role = Role::LandingPad;
+        pad.weapon = WeaponKind::Unarmed;
+        pad.id = 2;
+        [machine, pad]
+    }
+
+    fn open_map() -> Terrain {
+        Terrain::open_with_ruins(Vec::new())
+    }
+
+    #[test]
+    fn a_machine_out_of_rockets_flies_to_a_pad_lands_on_its_deck_and_loads_up_again() {
+        let terrain = open_map();
+        let mut units = machine_and_pad(Role::Ornithopter);
+        assert!(!units[0].has_rockets());
+        for _ in 0..1000 {
+            advance(&mut units, &terrain, &[0], 0.05);
+            if units[0].rockets_fired == 0 {
+                break;
+            }
+        }
+        assert_eq!(units[0].rockets_fired, 0, "loaded: {:?}", units[0]);
+        assert!((units[0].x - 8.0).hypot(units[0].z - 50.0) < OVER_PAD);
+        assert_eq!(units[0].altitude, PAD_TOP, "sitting on the deck");
+        assert!(units[0].has_rockets());
+    }
+
+    #[test]
+    fn a_pad_takes_one_machine_and_the_other_waits_for_it_to_be_free() {
+        let terrain = open_map();
+        let [first, pad] = machine_and_pad(Role::Ornithopter);
+        let mut second = first;
+        second.id = 3;
+        second.z = 53.0;
+        second.destination = (0.0, 53.0);
+        let mut units = [first, pad, second];
+        advance(&mut units, &terrain, &[0], 0.05);
+        let using = units.iter().filter(|u| u.pad.is_some()).count();
+        assert_eq!(using, 1, "only one goes for it");
+        let waiting = units
+            .iter()
+            .find(|u| u.role.lands() && u.pad.is_none())
+            .unwrap();
+        assert!(!waiting.is_moving());
+    }
+
+    #[test]
+    fn a_machine_out_of_rockets_with_no_pad_sits_down_and_cannot_be_sent_to_attack() {
+        let terrain = open_map();
+        let [machine, _] = machine_and_pad(Role::Destroyer);
+        let mut enemy = unit_at(3.0, 50.0, UnitKind::Vehicle);
+        enemy.owner = 1;
+        enemy.id = 9;
+        let mut units = [machine, enemy];
+        units[0].selected = true;
+        order_attack(&mut units, 1, &[0, 1]);
+        assert_eq!(units[0].target, None);
+        for _ in 0..200 {
+            advance(&mut units, &terrain, &[0, 1], 0.05);
+        }
+        assert_eq!(units[0].altitude, 0.0, "it sat down");
+    }
+
+    #[test]
+    fn a_pad_of_someone_else_or_destroyed_is_no_use() {
+        let terrain = open_map();
+        let mut units = machine_and_pad(Role::Ornithopter);
+        units[1].owner = 1;
+        advance(&mut units, &terrain, &[0, 1], 0.05);
+        assert_eq!(units[0].pad, None);
+
+        let mut units = machine_and_pad(Role::Ornithopter);
+        advance(&mut units, &terrain, &[0], 0.05);
+        assert!(units[0].pad.is_some());
+        units[1].alive = false;
+        advance(&mut units, &terrain, &[0], 0.05);
+        assert_eq!(units[0].pad, None);
+    }
+
+    #[test]
+    fn a_machine_ordered_elsewhere_while_out_of_rockets_obeys_then_goes_back_for_more() {
+        let terrain = open_map();
+        let mut units = machine_and_pad(Role::Ornithopter);
+        advance(&mut units, &terrain, &[0], 0.05);
+        units[0].destination = (-10.0, 50.0);
+        let mut went_there = false;
+        for _ in 0..200 {
+            advance(&mut units, &terrain, &[0], 0.05);
+            went_there |= units[0].x < -9.0;
+        }
+        assert!(went_there, "it went where it was told first");
+        for _ in 0..1000 {
+            advance(&mut units, &terrain, &[0], 0.05);
+        }
+        assert_eq!(units[0].rockets_fired, 0, "then loaded up: {:?}", units[0]);
+    }
+
+    #[test]
+    fn a_machine_that_leaves_its_pad_with_rockets_gives_it_up_and_does_not_rise_until_loaded() {
+        let terrain = open_map();
+        let mut units = machine_and_pad(Role::Ornithopter);
+        for _ in 0..400 {
+            advance(&mut units, &terrain, &[0], 0.05);
+            if units[0].is_on_pad() {
+                break;
+            }
+        }
+        assert!(units[0].is_on_pad());
+        let mut enemy = unit_at(9.0, 52.0, UnitKind::Vehicle);
+        enemy.owner = 1;
+        enemy.id = 9;
+        let mut with_enemy = [units[0], units[1], enemy];
+        for _ in 0..5 {
+            advance(&mut with_enemy, &terrain, &[0, 1], 0.05);
+        }
+        assert!(with_enemy[0].is_on_pad(), "it stays to load");
+        with_enemy[0].rockets_fired = 1;
+        with_enemy[0].destination = (-10.0, 50.0);
+        for _ in 0..200 {
+            advance(&mut with_enemy, &terrain, &[0, 1], 0.05);
+        }
+        assert_eq!(with_enemy[0].pad, None);
+    }
+
+    #[test]
+    fn a_destroyer_is_heavier_and_slower_and_carries_fewer_rockets_than_an_ornithopter() {
+        let (d, o) = (Role::Destroyer, Role::Ornithopter);
+        assert!(d.max_health() > o.max_health());
+        assert!(d.speed() < o.speed());
+        assert!(d.rocket_load() < o.rocket_load());
+        assert!(d.lands());
+        assert_eq!(d.made_in(), Some(Role::Hangar));
+        assert_eq!(Role::Tank.rocket_load(), None);
+    }
+
+    #[test]
+    fn only_what_is_not_infantry_shows_wear_and_it_grows_with_what_it_lost() {
+        let mut tank = unit_at(0.0, 50.0, UnitKind::Vehicle);
+        assert_eq!(tank.wear(), 0.0);
+        tank.health = tank.max_health() * 0.25;
+        assert!((tank.wear() - 0.75).abs() < 0.001);
+        let mut soldier = unit_at(0.0, 50.0, UnitKind::Infantry);
+        soldier.health = 1.0;
+        assert_eq!(soldier.wear(), 0.0);
     }
 
     #[test]

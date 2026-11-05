@@ -56,6 +56,8 @@ pub struct WorldVertex {
     pub seen: f32,
     /// On the ground, its height; where a liquid lies, how far under its surface it is, below 0.
     pub level: f32,
+    /// Where on its unit it is, for the backend to lay black stains by, and how black they go.
+    pub stain: [f32; 3],
 }
 
 impl WorldVertex {
@@ -71,6 +73,7 @@ impl WorldVertex {
             b,
             seen: 1.0,
             level: 1.0,
+            stain: [0.0; 3],
         }
     }
 }

@@ -45,12 +45,14 @@ const BOTTOM_VEHICLE_BUILDS: [Role; 3] =
 const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
 /// The Vehicles menu's cell for the Advanced Carryall, just above the bottom row.
 const CARRYALL_CELL: usize = BOTTOM_ROW_START - hud::GRID_COLUMNS;
+/// The Vehicles menu's cell for the Destroyer, just above the Ornithopter.
+const DESTROYER_CELL: usize = BOTTOM_ROW_START - 1;
 /// Seconds of battle before the superweapon can fire again.
 pub const SUPERWEAPON_RECHARGE: f32 = 60.0;
 
 /// What opponents build, one at random whenever they get to. They leave out what only helps
 /// others, since they have no plan for it yet.
-const OPPONENT_BUILDS: [Role; 13] = [
+const OPPONENT_BUILDS: [Role; 14] = [
     Role::LightInfantry,
     Role::Sniper,
     Role::KInfantry,
@@ -64,9 +66,15 @@ const OPPONENT_BUILDS: [Role; 13] = [
     Role::AirDefensePlatform,
     Role::AirDrone,
     Role::Ornithopter,
+    Role::Destroyer,
 ];
 /// What the Buildings menu makes, in order.
-const BUILDING_BUILDS: [Role; 3] = [Role::Barracks, Role::Factory, Role::Hangar];
+const BUILDING_BUILDS: [Role; 4] = [
+    Role::Barracks,
+    Role::Factory,
+    Role::Hangar,
+    Role::LandingPad,
+];
 /// Where the H key sends the selected: a fixed place for now, where the player's base starts.
 const HOME: (f32, f32) = (0.0, battlefield::MAP_MIDDLE_Z);
 /// How often each opponent builds something, in seconds of battle.
@@ -1483,6 +1491,7 @@ impl Game {
         match tab {
             BuildTab::Infantry => INFANTRY_BUILDS.get(cell).copied(),
             BuildTab::Vehicles if cell == CARRYALL_CELL => Some(Role::AdvancedCarryall),
+            BuildTab::Vehicles if cell == DESTROYER_CELL => Some(Role::Destroyer),
             BuildTab::Vehicles => VEHICLE_BUILDS
                 .get(cell)
                 .or_else(|| BOTTOM_VEHICLE_BUILDS.get(cell.checked_sub(BOTTOM_ROW_START)?))
@@ -4119,6 +4128,84 @@ mod tests {
     }
 
     #[test]
+    fn a_landing_pad_is_built_from_the_buildings_menu_and_every_side_starts_with_one() {
+        let mut game = in_battle();
+        assert_eq!(
+            Game::build_role(BuildTab::Buildings, 3),
+            Some(Role::LandingPad)
+        );
+        for owner in 0..game.teams.len() {
+            assert!(
+                game.units
+                    .iter()
+                    .any(|u| u.owner == owner && u.role == Role::LandingPad),
+                "owner {owner}"
+            );
+        }
+        let pad = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::LandingPad)
+            .unwrap();
+        game.units[pad].selected = true;
+        units::set_gathering(&mut game.units, (0.0, 40.0));
+        assert_eq!(game.units[pad].gathering, None, "it makes nothing to send");
+    }
+
+    #[test]
+    fn damage_stains_what_is_worn_and_burning_gives_a_light_and_flames() {
+        let mut game = in_battle();
+        game.fog = None;
+        let stained = |game: &Game| {
+            crate::render::build_frame(game)
+                .objects
+                .iter()
+                .filter(|v| v.stain[2] > 0.0)
+                .count()
+        };
+        assert_eq!(stained(&game), 0);
+        let before = crate::render::build_frame(&game);
+        assert!(before.lights.is_empty());
+        let tank = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Vehicle)
+            .unwrap();
+        game.units[tank].health = game.units[tank].max_health() * 0.5;
+        assert!(stained(&game) > 0, "black stains");
+        assert!(
+            crate::render::build_frame(&game).lights.is_empty(),
+            "not burning yet"
+        );
+        game.units[tank].health = game.units[tank].max_health() * 0.2;
+        let burning = crate::render::build_frame(&game);
+        assert_eq!(burning.lights.len(), 1);
+        assert!(burning.effects.len() > before.effects.len(), "flames");
+    }
+
+    #[test]
+    fn a_machine_short_of_rockets_shows_what_it_has_left_and_a_full_one_does_not() {
+        let mut game = in_battle();
+        game.units
+            .retain(|u| u.owner != 0 || u.kind != UnitKind::Aircraft);
+        let id = game.next_unit_id;
+        let terrain = battlefield::terrain(game.battle_map);
+        let side = (0, game.stats_rows()[0].color);
+        let mut machine = units::new_building(
+            terrain,
+            (0.0, battlefield::MAP_MIDDLE_Z),
+            Role::Ornithopter,
+            side,
+            id,
+        );
+        machine.selected = true;
+        game.units.push(machine);
+        let full = crate::render::build(&game).len();
+        game.units.last_mut().unwrap().rockets_fired = 3;
+        assert!(crate::render::build(&game).len() > full);
+    }
+
+    #[test]
     fn nothing_of_the_world_is_drawn_outside_a_battle() {
         let game = Game::new(W, H);
         let frame = crate::render::build_frame(&game);
@@ -4620,8 +4707,9 @@ mod tests {
                 .count()
         };
         let mut game = in_battle();
-        // Rocket engines are lit too, in orange.
-        game.units.retain(|u| !u.kind.flies());
+        // Rocket engines are lit too, in orange, and landing pads have searchlights.
+        game.units
+            .retain(|u| !u.kind.flies() && u.role != Role::LandingPad);
         let vehicles = |game: &Game| {
             let is_vehicle = |u: &&Unit| u.alive && u.kind == UnitKind::Vehicle;
             game.units.iter().filter(is_vehicle).count()
@@ -4643,6 +4731,7 @@ mod tests {
         let mut game = in_battle();
         game.units
             .retain(|u| matches!(u.kind, UnitKind::Infantry | UnitKind::Building));
+        game.units.retain(|u| u.role != Role::LandingPad);
         assert_eq!(lit(&game), 0);
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START));
@@ -5302,6 +5391,7 @@ mod tests {
             (12, "Air Defense Platform"),
             (13, "Air Drone"),
             (14, "Ornithopter"),
+            (11, "Destroyer"),
         ] {
             let before = game.units.len();
             click_hud(&mut game, Action::BuildCell(cell));

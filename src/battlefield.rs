@@ -279,7 +279,9 @@ impl Terrain {
             let u = inset + next_random(&mut random) * span;
             let v = inset + next_random(&mut random) * span;
             let (x, z) = grid_to_world(u, v);
-            if placed < RUIN_COUNT && crate::units::keeps_clear(x, z) && terrain.can_hold_ruin(x, z)
+            if placed < RUIN_COUNT
+                && crate::units::keeps_clear_for_ruin(x, z)
+                && terrain.can_hold_ruin(x, z)
             {
                 add_ruin(&mut pieces, &terrain, x, z, &mut random);
                 placed += 1;
@@ -1241,6 +1243,7 @@ pub fn draw(
             b,
             seen: fog.map_or(1.0, |fog| fog.at_grid(u, v).shade()),
             level,
+            stain: [0.0; 3],
         }
     };
     let area = view.ground_seen(width, height);

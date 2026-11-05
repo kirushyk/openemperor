@@ -37,6 +37,8 @@ pub const MAKING_DIM: Color = [0.0, 0.0, 0.0, 0.62];
 const PLACE_OK: [f32; 3] = [0.3, 1.0, 0.4];
 const PLACE_NOT: [f32; 3] = [1.0, 0.25, 0.2];
 const CABLE: [f32; 3] = [0.1, 0.1, 0.1];
+const ROCKET_PIP: Color = [0.95, 0.8, 0.25, 1.0];
+const ROCKET_PIP_GONE: Color = [0.1, 0.1, 0.1, 0.8];
 const QUIET: Color = [0.55, 0.53, 0.48, 1.0];
 const GOLD: Color = [0.95, 0.76, 0.32, 1.0];
 const GOLD_DIM: Color = [0.62, 0.50, 0.24, 1.0];
@@ -577,7 +579,24 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
                 unused: 0.0,
             }
         });
-    eruptions.chain(blasts).take(MAX_LIGHTS).collect()
+    let fires = game
+        .units
+        .iter()
+        .filter(|unit| unit.wear() > units::BURNS_PAST && game.shows(unit))
+        .map(|unit| {
+            let flicker = 0.8 + 0.2 * (game.battle_time() * 17.0 + unit.id as f32).sin();
+            PointLight {
+                place: [unit.x, unit.pick_height() + 0.5, unit.z],
+                radius: 3.0 + unit.kind.radius() * 2.0,
+                color: [0.9 * flicker, 0.42 * flicker, 0.1 * flicker],
+                unused: 0.0,
+            }
+        });
+    eruptions
+        .chain(blasts)
+        .chain(fires)
+        .take(MAX_LIGHTS)
+        .collect()
 }
 
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -968,6 +987,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
                 }
                 draw_unit(canvas, game, &view, unit);
                 draw_health_bar(canvas, game, &view, unit);
+                draw_rockets_left(canvas, game, &view, unit);
                 draw_medals(canvas, game, &view, unit);
             }
             Object::Ruin(piece) => {
@@ -995,6 +1015,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         draw_carried(canvas, game, &view, unit);
         draw_unit(canvas, game, &view, unit);
         draw_health_bar(canvas, game, &view, unit);
+        draw_rockets_left(canvas, game, &view, unit);
         draw_medals(canvas, game, &view, unit);
     }
 }
@@ -1252,7 +1273,7 @@ fn draw_eruption(
     }
 }
 
-/// A small diamond: a spark adds its light and shrinks as it cools, and smoke covers what is
+/// A soft round puff: a spark adds its light and shrinks as it cools, and smoke covers what is
 /// behind it and spreads as it fades.
 fn draw_particle(
     canvas: &mut Canvas,
@@ -1271,21 +1292,27 @@ fn draw_particle(
     else {
         return;
     };
+    const WEDGES: usize = 8;
     let reach = (my - above.1).abs().max(1.0);
-    let (left, right) = ((mx - reach, my), (mx + reach, my));
-    let (top, bottom) = ((mx, my - reach), (mx, my + reach));
-    let mark = canvas.vertices.len();
-    if particle.smoke {
-        let color = with_alpha(SMOKE, 0.5 * life);
-        canvas.triangle([left, top, right], color);
-        canvas.triangle([left, right, bottom], color);
-    } else {
-        let glow = [life, life * (0.3 + 0.6 * life), 0.3 * life * life];
-        canvas.vertices.extend(
-            [left, top, right, left, right, bottom].map(|corner| Vertex::light(corner, glow)),
-        );
+    let rim = |i: usize| {
+        let (sin, cos) = (i as f32 / WEDGES as f32 * TAU).sin_cos();
+        (mx + reach * cos, my + reach * sin)
+    };
+    for i in 0..WEDGES {
+        let corners = [(mx, my), rim(i), rim(i + 1)];
+        let (middle, edge) = if particle.smoke {
+            let dark = Vertex::new(corners[0], with_alpha(SMOKE, 0.85 * life));
+            (dark, with_alpha(SMOKE, 0.0))
+        } else {
+            let glow = [life, life * (0.3 + 0.6 * life), 0.3 * life * life];
+            (Vertex::light(corners[0], glow), [0.0; 4])
+        };
+        canvas.effects.extend([
+            EffectVertex::of(middle, depth),
+            EffectVertex::of(Vertex::new(corners[1], edge), depth),
+            EffectVertex::of(Vertex::new(corners[2], edge), depth),
+        ]);
     }
-    canvas.deepen(mark, depth);
 }
 
 /// A cone of fire or gas, solid where it leaves the nozzle and fading towards its far edge,
@@ -1356,6 +1383,33 @@ fn draw_health_bar(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
     let share = (unit.health / unit.max_health()).clamp(0.0, 1.0);
     canvas.rect(x - width / 2.0, y, width, height, HEALTH_BAD);
     canvas.rect(x - width / 2.0, y, width * share, height, HEALTH_GOOD);
+}
+
+/// A row of pips under where a health bar goes, for a machine short of rockets: lit for those
+/// it has left, dark for those it has fired.
+fn draw_rockets_left(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    let (Some(left), Some(load)) = (unit.rockets_left(), unit.role.rocket_load()) else {
+        return;
+    };
+    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else {
+        return;
+    };
+    if left == load {
+        return;
+    }
+    let s = ui_scale(game.height);
+    let (pip, gap) = ((3.0 * s).max(2.0), (1.5 * s).max(1.0));
+    let width = f32::from(load) * (pip + gap) - gap;
+    let top = y + (7.0 * s).max(4.0);
+    for i in 0..load {
+        let color = if i < left {
+            ROCKET_PIP
+        } else {
+            ROCKET_PIP_GONE
+        };
+        let px = x - width / 2.0 + f32::from(i) * (pip + gap);
+        canvas.rect(px, top, pip, pip, color);
+    }
 }
 
 /// One gold V for each rank above the first, stacked above where a health bar goes.
@@ -1562,6 +1616,62 @@ fn draw_ornithopter(canvas: &mut Canvas, game: &Game, unit: &Unit, color: [f32; 
     draw_turned_box(canvas, body, (base + 0.04, base + 0.2), color);
 }
 
+/// An ornithopter's big brother: a broad armored body, heavy wings beating slower, and a fat
+/// rocket pod on each side.
+fn draw_destroyer(canvas: &mut Canvas, game: &Game, unit: &Unit, color: [f32; 3]) {
+    const WING_ROOT: f32 = 0.2;
+    let wing_color = color.map(|c| c * 0.55 + 0.2);
+    let beat = |phase: f32| {
+        if unit.altitude > 0.0 {
+            0.2 + 0.24 * (game.battle_time() * WING_BEATS * 0.6 + phase).sin()
+        } else {
+            0.14
+        }
+    };
+    for (along, reach, phase) in [(0.26, 0.8, 0.0), (-0.2, 0.68, PI)] {
+        for side in [-1.0, 1.0] {
+            let tip_height = beat(phase);
+            let root_near = (along - 0.1, side * WING_ROOT, 0.3);
+            let root_far = (along + 0.1, side * WING_ROOT, 0.3);
+            let tip_near = (along - 0.11, side * reach, tip_height);
+            let tip_far = (along + 0.11, side * reach, tip_height);
+            body_triangle(canvas, unit, [root_near, root_far, tip_far], wing_color);
+            body_triangle(canvas, unit, [root_near, tip_far, tip_near], wing_color);
+        }
+    }
+    let base = unit.y + unit.altitude;
+    let (sin, cos) = unit.heading.sin_cos();
+    let at = |by: f32, side: f32| {
+        (
+            unit.x + cos * by - sin * side,
+            unit.z + sin * by + cos * side,
+        )
+    };
+    let (tail_x, tail_z) = at(-0.5, 0.0);
+    let tail = (tail_x, tail_z, 0.28, 0.05, unit.heading);
+    draw_turned_box(
+        canvas,
+        tail,
+        (base + 0.14, base + 0.22),
+        color.map(|c| c * 0.5),
+    );
+    let body = (unit.x, unit.z, 0.34, 0.17, unit.heading);
+    draw_turned_box(canvas, body, (base + 0.04, base + 0.3), color);
+    let (nose_x, nose_z) = at(0.36, 0.0);
+    let nose = (nose_x, nose_z, 0.08, 0.1, unit.heading);
+    draw_turned_box(
+        canvas,
+        nose,
+        (base + 0.08, base + 0.22),
+        color.map(|c| c * 0.4),
+    );
+    for side in [-0.25, 0.25] {
+        let (pod_x, pod_z) = at(0.08, side);
+        let pod = (pod_x, pod_z, 0.22, 0.07, unit.heading);
+        draw_turned_box(canvas, pod, (base + 0.06, base + 0.18), [0.28, 0.28, 0.3]);
+    }
+}
+
 /// A beam of light from a unit up in the air down to the ground ahead of it, fading with
 /// distance. Each end is given as how far ahead, how far to the side and how wide to each side.
 fn draw_beam(
@@ -1649,7 +1759,152 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
         // A huge single lamp under its nose.
         draw_beam(canvas, game, view, unit, (0.4, 0.0, 0.25), (8.0, 0.0, 3.5));
     }
+    if unit.role == Role::LandingPad {
+        draw_searchlight(canvas, game, view, unit);
+    }
+    let drawn = canvas.objects.len();
     draw_unit_model(canvas, game, view, unit);
+    stain_model(canvas, drawn, unit);
+    if unit.wear() > units::BURNS_PAST {
+        draw_flames(canvas, game, view, unit);
+    }
+}
+
+/// Marks what was just drawn of a unit with how black it has gone, and where on the unit each
+/// corner is, so that the stains stay put on it as it moves and turns.
+fn stain_model(canvas: &mut Canvas, drawn: usize, unit: &Unit) {
+    let amount = (unit.wear() - units::STAINS_PAST) / (1.0 - units::STAINS_PAST);
+    if amount <= 0.0 {
+        return;
+    }
+    let (sin, cos) = unit.heading.sin_cos();
+    // Each unit has its own stains, from a small number that keeps the noise precise.
+    let own = (unit.id % 23) as f32 * 3.7;
+    for vertex in &mut canvas.objects[drawn..] {
+        let (dx, dy, dz) = (vertex.x - unit.x, vertex.y - unit.y, vertex.z - unit.z);
+        vertex.stain = [
+            dx * cos + dz * sin + dy * 0.7 + own,
+            dz * cos - dx * sin - dy * 0.6,
+            amount,
+        ];
+    }
+}
+
+/// Flames standing on what is badly damaged: blades of light licking up from it, more of them
+/// on what is bigger.
+fn draw_flames(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    let size = unit.kind.radius().max(0.4);
+    let count = (size * 4.0) as usize + 2;
+    let time = game.battle_time();
+    let top = unit.pick_height();
+    for i in 0..count {
+        // Spread out over the unit by the golden angle, each flickering in its own time.
+        let seed = i as f32 * 2.4 + unit.id as f32;
+        let (sin, cos) = seed.sin_cos();
+        let out = size * 0.55 * ((i as f32 + 0.5) / count as f32).sqrt();
+        let (x, z) = (unit.x + cos * out, unit.z + sin * out);
+        let tall = (0.35 + 0.25 * (time * 11.0 + seed).sin()) * (0.7 + size * 0.5);
+        let half = 0.09 + 0.05 * size;
+        let tip = (x + 0.06 * (time * 7.0 + seed).sin(), top + tall, z);
+        let hot = [0.75, 0.32, 0.05];
+        canvas.deep_light(
+            view,
+            [
+                ((x - half, top - 0.1, z), hot),
+                ((x + half, top - 0.1, z), hot),
+                (tip, [0.0; 3]),
+            ],
+        );
+        canvas.deep_light(
+            view,
+            [
+                ((x, top - 0.1, z - half), hot),
+                ((x, top - 0.1, z + half), hot),
+                (tip, [0.0; 3]),
+            ],
+        );
+    }
+}
+
+/// Where a landing pad's searchlight is, relative to the pad's middle, and how high.
+const SEARCHLIGHT: (f32, f32, f32) = (0.72, 1.28, -0.72);
+
+/// A beam going up into the sky from a landing pad's mast, slowly sweeping around.
+fn draw_searchlight(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    const HEIGHT: f32 = 9.0;
+    const SWEEP: f32 = 3.5;
+    let (dx, dy, dz) = SEARCHLIGHT;
+    let lamp = (unit.x + dx, unit.y + dy, unit.z + dz);
+    let angle = game.battle_time() * 0.5 + unit.id as f32;
+    let (sin, cos) = angle.sin_cos();
+    let far = (lamp.0 + cos * SWEEP, lamp.1 + HEIGHT, lamp.2 + sin * SWEEP);
+    // Across the way it points, as the camera sees it, so that it shows as a broad beam.
+    let (across_x, across_z) = (0.75, 0.0);
+    let near_half = 0.08;
+    let bright = [0.55, 0.55, 0.5];
+    let corner = |at: Point, by: f32| (at.0 + across_x * by, at.1, at.2 + across_z * by);
+    let (a, b) = (corner(lamp, -near_half), corner(lamp, near_half));
+    let (c, d) = (corner(far, 1.0), corner(far, -1.0));
+    canvas.deep_light(view, [(a, bright), (b, bright), (c, [0.0; 3])]);
+    canvas.deep_light(view, [(a, bright), (c, [0.0; 3]), (d, [0.0; 3])]);
+}
+
+/// A low deck with a landing mark, just big enough for one machine, and a mast with a
+/// searchlight at one corner.
+fn draw_landing_pad(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
+    const DECK: [f32; 3] = [0.24, 0.24, 0.26];
+    const MARK: [f32; 3] = [0.92, 0.92, 0.88];
+    const RING: [f32; 3] = [0.9, 0.72, 0.16];
+    const RING_SIDES: usize = 16;
+    let (x, z, y) = (unit.x, unit.z, unit.y);
+    let top = y + units::PAD_TOP;
+    let flat = |canvas: &mut Canvas, footprint: (f32, f32, f32, f32), heights, color| {
+        let (px, pz, half_x, half_z) = footprint;
+        draw_turned_box(canvas, (px, pz, half_x, half_z, 0.0), heights, color);
+    };
+    flat(
+        canvas,
+        (x, z, 0.95, 0.95),
+        (y, y + 0.07),
+        color.map(|c| c * 0.6),
+    );
+    flat(canvas, (x, z, 0.85, 0.85), (y + 0.07, top), DECK);
+    // The H, thin on the deck.
+    let mark = (top, top + 0.012);
+    flat(canvas, (x - 0.22, z, 0.06, 0.32), mark, MARK);
+    flat(canvas, (x + 0.22, z, 0.06, 0.32), mark, MARK);
+    flat(canvas, (x, z, 0.2, 0.05), mark, MARK);
+    // The ring around it.
+    let ring = |i: usize| {
+        let (sin, cos) = (i as f32 / RING_SIDES as f32 * TAU).sin_cos();
+        (x + 0.62 * cos, top + 0.012, z + 0.62 * sin)
+    };
+    for i in 0..RING_SIDES {
+        let (a, b) = (ring(i), ring(i + 1));
+        let way = unit_vector([b.0 - a.0, 0.0, b.2 - a.2]);
+        canvas.solid_bar(a, b, 0.018, [-way[2], 0.0, way[0]], RING);
+    }
+    // The mast, with the lamp on top of it tilted up.
+    let (dx, dy, dz) = SEARCHLIGHT;
+    let (lamp_x, lamp_z) = (x + dx, z + dz);
+    flat(
+        canvas,
+        (lamp_x, lamp_z, 0.05, 0.05),
+        (y, y + dy - 0.1),
+        color.map(|c| c * 0.5),
+    );
+    flat(
+        canvas,
+        (lamp_x, lamp_z, 0.11, 0.11),
+        (y + dy - 0.1, y + dy),
+        [0.3, 0.3, 0.32],
+    );
+    flat(
+        canvas,
+        (lamp_x, lamp_z, 0.07, 0.07),
+        (y + dy, y + dy + 0.02),
+        [1.0, 0.98, 0.8],
+    );
 }
 
 fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
@@ -1793,6 +2048,9 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
         UnitKind::Aircraft if unit.role == Role::Ornithopter => {
             draw_ornithopter(canvas, game, unit, color);
         }
+        UnitKind::Aircraft if unit.role == Role::Destroyer => {
+            draw_destroyer(canvas, game, unit, color);
+        }
         UnitKind::Aircraft => {
             // A long open frame, with an engine pod on each side and a big lamp at its nose.
             let base = unit.y + unit.altitude;
@@ -1809,6 +2067,9 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
             let (lamp_x, lamp_z) = ahead(0.52);
             let lamp = (lamp_x, lamp_z, 0.05, 0.12, unit.heading);
             part(lamp, (base + 0.02, base + 0.12), [1.0, 0.98, 0.85]);
+        }
+        UnitKind::Building if unit.role == Role::LandingPad => {
+            draw_landing_pad(canvas, unit, color);
         }
         UnitKind::Building => draw_building(canvas, unit, color),
         UnitKind::Tower => {
@@ -2366,6 +2627,8 @@ fn short_name(role: Role) -> &'static str {
         Role::AirDefensePlatform => "AirDef",
         Role::AirDrone => "Drone",
         Role::Ornithopter => "Ornith",
+        Role::Destroyer => "Destroy",
+        Role::LandingPad => "Pad",
         Role::FlameInfantry => "Flame",
         Role::GasInfantry => "Gas",
         _ => role.name(),

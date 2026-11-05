@@ -8,8 +8,8 @@ use crate::battlefield::{Terrain, next_random};
 use std::f32::consts::TAU;
 
 use crate::units::{
-    CANNON_SIDES, Point, ROCKET_SIDES, Role, TUBE_HEIGHT, Target, Unit, UnitKind, are_enemies,
-    are_friends, distance, substeps, turn_between,
+    BURNS_PAST, CANNON_SIDES, Point, ROCKET_SIDES, Role, SMOKES_PAST, TUBE_HEIGHT, Target, Unit,
+    UnitKind, are_enemies, are_friends, distance, substeps, turn_between,
 };
 
 /// A unit with nothing in range looks again this often, in seconds.
@@ -82,6 +82,9 @@ const PARTICLES_AT_MOST: usize = 80;
 const PARTICLES_ALIVE_AT_MOST: usize = 800;
 const PARTICLE_SECONDS: f32 = 0.9;
 const PARTICLE_GRAVITY: f32 = 7.0;
+const HEAVY_BLAST_RADIUS: f32 = 1.5;
+/// What is damaged leaves this many of them free for explosions.
+const WEAR_PARTICLES_AT_MOST: usize = 600;
 /// Eruptions leave this many of them free for explosions.
 const ERUPTION_PARTICLES_AT_MOST: usize = 500;
 const ERUPTION_PARTICLES_PER_SECOND: f32 = 170.0;
@@ -112,6 +115,8 @@ pub enum WeaponKind {
     Mortar,
     /// Flies like a missile, one after another in a salvo, each weaker than a missile.
     Rockets,
+    /// A destroyer's: few and slow, and they hurt what is around their target too.
+    HeavyRockets,
     /// Like a mortar, but a smaller white shell that hits harder, from four cannons in turn.
     Bombard,
     /// Like a bullet, but slower and from farther away, and hits harder.
@@ -141,7 +146,7 @@ impl WeaponKind {
             WeaponKind::Missile => 12.0,
             WeaponKind::Laser => 9.0,
             WeaponKind::Mortar => 16.0,
-            WeaponKind::Rockets => 13.0,
+            WeaponKind::Rockets | WeaponKind::HeavyRockets => 13.0,
             WeaponKind::Bombard => 14.0,
             WeaponKind::Sniper => 14.0,
             WeaponKind::Pistol => 5.0,
@@ -204,6 +209,7 @@ impl WeaponKind {
     fn salvo(self) -> Option<(usize, f32)> {
         match self {
             WeaponKind::Rockets => Some((ROCKET_SIDES.len(), ROCKET_RELOAD_SECONDS)),
+            WeaponKind::HeavyRockets => Some((2, ROCKET_RELOAD_SECONDS)),
             WeaponKind::Bombard => Some((CANNON_SIDES.len(), BOMBARD_CALM_SECONDS)),
             _ => None,
         }
@@ -225,6 +231,7 @@ impl WeaponKind {
             WeaponKind::Laser => 1.2,
             WeaponKind::Mortar => 4.0,
             WeaponKind::Rockets => 0.3,
+            WeaponKind::HeavyRockets => 0.6,
             WeaponKind::Bombard => 0.5,
             WeaponKind::Sniper => 3.5,
             WeaponKind::Pistol => 1.5,
@@ -244,6 +251,7 @@ impl WeaponKind {
             WeaponKind::Laser => 25.0,
             WeaponKind::Mortar => 70.0,
             WeaponKind::Rockets => 35.0,
+            WeaponKind::HeavyRockets => 130.0,
             WeaponKind::Bombard => 90.0,
             WeaponKind::Sniper => 90.0,
             WeaponKind::Pistol => 8.0,
@@ -428,6 +436,8 @@ pub struct Particle {
     pub size: f32,
     /// Smoke drifts up and darkens; a spark glows and falls.
     pub smoke: bool,
+    /// A flame glows like a spark, but rises.
+    flame: bool,
     /// From 1 when it is thrown out down to 0.
     pub life: f32,
     /// How much life it loses each second.
@@ -503,6 +513,7 @@ impl Combat {
                 velocity: (angle.cos() * speed, up, angle.sin() * speed),
                 size: (0.5 + next()) * if smoke { 0.22 } else { 0.08 },
                 smoke,
+                flame: false,
                 life: 1.0,
                 fade: 1.0 / (PARTICLE_SECONDS * (0.5 + next())),
             });
@@ -565,6 +576,7 @@ impl Combat {
                     velocity: (angle.cos() * out, up, angle.sin() * out),
                     size: (0.5 + next()) * if smoke { 0.7 } else { 0.22 },
                     smoke,
+                    flame: false,
                     life: 1.0,
                     fade: 1.0 / (LAVA_PARTICLE_SECONDS * (0.5 + next())),
                 });
@@ -578,7 +590,7 @@ impl Combat {
     /// Moves sparks and smoke along, stopping them at the ground, and drops the spent ones.
     fn fly_particles(&mut self, terrain: &Terrain, dt: f32) {
         for particle in &mut self.particles {
-            if !particle.smoke {
+            if !particle.smoke && !particle.flame {
                 particle.velocity.1 -= PARTICLE_GRAVITY * dt;
             }
             let (x, y, z) = particle.position;
@@ -603,6 +615,57 @@ impl Combat {
             self.step(units, teams, terrain, step_seconds);
         }
         self.work_vents(terrain, dt);
+        self.show_wear(units, dt);
+    }
+
+    /// What has lost enough of its health smokes, more the worse it is, and past that burns.
+    fn show_wear(&mut self, units: &[Unit], dt: f32) {
+        const SMOKE_PER_SECOND: f32 = 9.0;
+        const FLAMES_PER_SECOND: f32 = 26.0;
+        if units.iter().all(|u| u.wear() <= SMOKES_PAST) {
+            return;
+        }
+        let mut random = self.random | 1;
+        for unit in units.iter().filter(|u| u.wear() > SMOKES_PAST) {
+            let wear = unit.wear();
+            // Bigger things show it in more places at once.
+            let size = unit.kind.radius().max(0.4);
+            let smokes = SMOKE_PER_SECOND * wear * size * dt;
+            let flames = if wear > BURNS_PAST {
+                FLAMES_PER_SECOND * size * dt
+            } else {
+                0.0
+            };
+            for (chance, is_flame) in [(smokes, false), (flames, true)] {
+                let mut left = chance;
+                while left > 0.0 {
+                    let mut next = || next_random(&mut random);
+                    let throws = next() < left;
+                    left -= 1.0;
+                    if !throws || self.particles.len() >= WEAR_PARTICLES_AT_MOST {
+                        continue;
+                    }
+                    let angle = next() * TAU;
+                    let (sin, cos) = angle.sin_cos();
+                    let out = next() * size * 0.5;
+                    let (rise, width, lasts) = if is_flame {
+                        (1.2 + next(), 0.13, 0.55)
+                    } else {
+                        (0.7 + next() * 0.7, 0.42, 1.9)
+                    };
+                    self.particles.push(Particle {
+                        position: (unit.x + cos * out, unit.pick_height(), unit.z + sin * out),
+                        velocity: (cos * 0.15, rise, sin * 0.15),
+                        size: (0.6 + next()) * width,
+                        smoke: !is_flame,
+                        flame: is_flame,
+                        life: 1.0,
+                        fade: 1.0 / (lasts * (0.6 + next() * 0.8)),
+                    });
+                }
+            }
+        }
+        self.random = random;
     }
 
     fn step(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
@@ -634,7 +697,9 @@ impl Combat {
             if units[i].cooldown <= 0.0 && salvo_over(&units[i]) {
                 units[i].salvo_fired = 0;
             }
-            if !units[i].can_launch() || (units[i].is_moving() && !units[i].weapon.fires_on_move())
+            if !units[i].has_rockets()
+                || !units[i].can_launch()
+                || (units[i].is_moving() && !units[i].weapon.fires_on_move())
             {
                 continue;
             }
@@ -661,6 +726,9 @@ impl Combat {
     fn shoot(&mut self, units: &mut [Unit], i: usize, aim: Aim, teams: &[usize]) {
         let weapon = units[i].weapon;
         units[i].cooldown = weapon.cooldown();
+        if units[i].role.rocket_load().is_some() {
+            units[i].rockets_fired += 1;
+        }
         let from = units[i].muzzle();
         let shooter = Shooter::of(&units[i]);
         let (to, target) = match aim {
@@ -705,7 +773,10 @@ impl Combat {
                 }
             }
             WeaponKind::Unarmed => {}
-            WeaponKind::Missile | WeaponKind::AirMissile | WeaponKind::Rockets => {
+            WeaponKind::Missile
+            | WeaponKind::AirMissile
+            | WeaponKind::Rockets
+            | WeaponKind::HeavyRockets => {
                 // From the ground it is launched upward, so that it visibly rises and turns
                 // towards its target. From the air it has a clear shot.
                 let (dx, dz) = (to.0 - from.0, to.2 - from.2);
@@ -845,7 +916,22 @@ impl Combat {
                 self.explode(missile.position, MISSILE_BLAST_RADIUS);
             } else if let Some(t) = reached {
                 hit(units, t, missile.weapon, missile.shooter, teams);
-                self.explode(missile.position, MISSILE_BLAST_RADIUS);
+                if missile.weapon == WeaponKind::HeavyRockets {
+                    // It hurts the shooter's enemies around its target as well, by half.
+                    let damage = missile.weapon.damage() * missile.shooter.power * 0.5;
+                    for index in (0..units.len()).filter(|&index| index != t) {
+                        let reach = HEAVY_BLAST_RADIUS + units[index].kind.radius();
+                        if units[index].alive
+                            && are_enemies(teams, missile.shooter.owner, units[index].owner)
+                            && distance(missile.position, units[index].center()) <= reach
+                        {
+                            harm(units, index, damage, missile.shooter, teams);
+                        }
+                    }
+                    self.explode(missile.position, HEAVY_BLAST_RADIUS);
+                } else {
+                    self.explode(missile.position, MISSILE_BLAST_RADIUS);
+                }
             } else if y <= terrain.height_at(x, z) || missile.fuel <= 0.0 {
                 // A miss: it hits the ground or burns out, harming nobody.
                 self.explode(missile.position, MISSILE_BLAST_RADIUS * 0.6);
@@ -1035,6 +1121,7 @@ fn must_turn_to_fire(unit: &Unit) -> bool {
                     | Role::Catapult
                     | Role::RocketLauncher
                     | Role::Ornithopter
+                    | Role::Destroyer
                     | Role::HeavyStrider
             ))
 }
@@ -1330,6 +1417,106 @@ mod tests {
         let by_friend = Shooter::of(&friend[0]);
         hit(&mut friend, 1, WeaponKind::Rockets, by_friend, &TEAMS);
         assert_eq!(friend[1].target, None);
+    }
+
+    #[test]
+    fn a_machine_spends_its_rockets_and_stops_firing_when_they_are_gone() {
+        let mut machine = Unit::for_test(0.0, 60.0, UnitKind::Aircraft);
+        machine.role = Role::Destroyer;
+        machine.weapon = WeaponKind::HeavyRockets;
+        machine.id = 1;
+        machine.heading = 0.0;
+        let mut units = [machine, target_at(5.0, 60.0)];
+        units[1].health = 100_000.0;
+        let mut combat = Combat::default();
+        let load = Role::Destroyer.rocket_load().unwrap();
+        for _ in 0..1200 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert_eq!(units[0].rockets_fired, load, "all gone and no more");
+        assert_eq!(units[0].rockets_left(), Some(0));
+        assert!(!units[0].has_rockets());
+    }
+
+    #[test]
+    fn heavy_rockets_hit_far_harder_and_hurt_enemies_around_the_target_but_not_friends() {
+        assert!(WeaponKind::HeavyRockets.damage() > WeaponKind::Rockets.damage() * 3.0);
+        let mut machine = Unit::for_test(0.0, 60.0, UnitKind::Aircraft);
+        machine.role = Role::Destroyer;
+        machine.weapon = WeaponKind::HeavyRockets;
+        machine.id = 1;
+        machine.heading = 0.0;
+        let mut target = target_at(4.0, 60.0);
+        target.health = 1000.0;
+        let mut beside = target_at(4.0, 60.6);
+        beside.id = 3;
+        beside.health = 1000.0;
+        let mut friend = Unit::for_test(4.0, 59.4, UnitKind::Infantry);
+        friend.id = 4;
+        friend.cooldown = 1000.0;
+        let friend_health = friend.health;
+        let mut units = [machine, target, beside, friend];
+        let mut combat = Combat::default();
+        for _ in 0..60 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            units[0].rockets_fired = units[0].rockets_fired.min(1);
+            units[0].cooldown = units[0]
+                .cooldown
+                .max(1000.0 * f32::from(u8::from(!combat.missiles.is_empty())));
+        }
+        assert!(units[1].health < 1000.0, "the target");
+        assert!(units[2].health < 1000.0, "beside it");
+        assert!(units[1].health < units[2].health, "the target worst");
+        assert_eq!(units[3].health, friend_health, "not a friend");
+    }
+
+    #[test]
+    fn what_is_damaged_smokes_past_a_point_and_burns_past_another_and_infantry_never() {
+        let run_on = |kind: UnitKind, share: f32| {
+            let mut unit = Unit::for_test(0.0, 60.0, kind);
+            unit.weapon = WeaponKind::Unarmed;
+            unit.health = unit.max_health() * share;
+            let mut combat = Combat::default();
+            let mut units = [unit];
+            let (mut smoke, mut flames) = (false, false);
+            for _ in 0..200 {
+                combat.advance(&mut units, &TEAMS, flat(), 0.05);
+                smoke |= combat.particles.iter().any(|p| p.smoke);
+                flames |= combat.particles.iter().any(|p| p.flame);
+            }
+            (smoke, flames)
+        };
+        assert_eq!(run_on(UnitKind::Vehicle, 1.0), (false, false));
+        assert_eq!(run_on(UnitKind::Vehicle, 0.5), (true, false));
+        assert_eq!(run_on(UnitKind::Vehicle, 0.2), (true, true));
+        assert_eq!(run_on(UnitKind::Building, 0.2), (true, true));
+        assert_eq!(run_on(UnitKind::Infantry, 0.1), (false, false));
+    }
+
+    #[test]
+    fn flames_rise_and_keep_room_for_explosions() {
+        let mut units: Vec<Unit> = (0..60)
+            .map(|i| {
+                let mut unit = Unit::for_test(i as f32, 60.0, UnitKind::Building);
+                unit.weapon = WeaponKind::Unarmed;
+                unit.health = 1.0;
+                unit
+            })
+            .collect();
+        let mut combat = Combat::default();
+        for _ in 0..200 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            assert!(combat.particles.len() <= WEAR_PARTICLES_AT_MOST);
+        }
+        assert!(
+            combat
+                .particles
+                .iter()
+                .any(|p| p.flame && p.velocity.1 > 0.0)
+        );
+        let before = combat.particles.len();
+        combat.explode((0.0, 0.0, 60.0), 1.0);
+        assert!(combat.particles.len() > before);
     }
 
     fn lava_map() -> &'static Terrain {

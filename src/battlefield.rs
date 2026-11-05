@@ -10,6 +10,8 @@
 use crate::fog::Fog;
 use crate::planet::fractal_noise;
 use crate::platform::Vertex;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::sync::OnceLock;
 
 pub const MAP_CELLS: usize = 128;
@@ -119,6 +121,12 @@ pub const MAP_MIDDLE_Z: f32 = MAP_CELLS as f32 * CELL;
 
 /// How many destroyed buildings each map tries to place.
 const RUIN_COUNT: usize = 24;
+const MOUNTAIN_COUNT: usize = 9;
+const PIT_COUNT: usize = 8;
+/// Past this much rise or fall from the land, nothing can walk.
+const STEEPEST_WALK: f32 = 0.25;
+/// A cell with a corner this high is drawn in turn with what stands on the map.
+const RAISED: f32 = 0.2;
 
 /// One block of a destroyed building: a stretch of broken wall, or rubble.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -137,8 +145,23 @@ pub struct RuinPiece {
 pub struct Terrain {
     planet: Planet,
     is_ground: Vec<bool>,
+    /// How far mountains rise from the land, or pits sink into it, at each grid point.
+    relief: Vec<f32>,
     colors: Vec<[f32; 3]>,
     ruins: Vec<RuinPiece>,
+    /// The cells that stick up out of the ground, nearest the far side first. Things can stand
+    /// behind those, so they are drawn in turn with what stands on the map.
+    raised_cells: Vec<RaisedCell>,
+    /// Which grid points can be walked on, worked out the first time a route is looked for.
+    walkable: OnceLock<Vec<bool>>,
+}
+
+/// A grid cell of a mountain, and how far along towards the camera it lies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RaisedCell {
+    pub u: usize,
+    pub v: usize,
+    pub z: f32,
 }
 
 /// Xorshift: repeatable, and it needs no dependency.
@@ -235,10 +258,14 @@ impl Terrain {
         let mut terrain = Terrain {
             planet,
             is_ground,
+            relief: vec![0.0; GRID_POINTS],
             colors,
             ruins: Vec::new(),
+            raised_cells: Vec::new(),
+            walkable: OnceLock::new(),
         };
         let mut random = (seed + 1).wrapping_mul(0x9E37_79B1) | 1;
+        terrain.raise_relief(seed, &mut random);
         let mut pieces = Vec::new();
         // Inset from the map's edges, so that no ruin hangs over them.
         let (inset, span) = (8.0, MAP_CELLS as f32 - 16.0);
@@ -269,6 +296,7 @@ impl Terrain {
     fn light_slopes(&mut self) {
         const DARKEST: f32 = 0.45;
         const BRIGHTEST: f32 = 1.4;
+        const IN_SHADOW: f32 = 0.58;
         let step = CELL * std::f32::consts::SQRT_2;
         let height = |u: usize, v: usize| self.vertex_height(u.min(MAP_CELLS), v.min(MAP_CELLS));
         let mut lit = self.colors.clone();
@@ -281,38 +309,191 @@ impl Terrain {
                     ((along_u - along_v) * across, (along_u + along_v) * across);
                 let length = (slope_x * slope_x + slope_z * slope_z + 1.0).sqrt();
                 let facing = (-slope_x * SUN[0] + SUN[1] - slope_z * SUN[2]) / length;
-                let light = (facing / SUN[1]).clamp(DARKEST, BRIGHTEST);
+                let mut light = (facing / SUN[1]).clamp(DARKEST, BRIGHTEST);
+                if self.sun_is_blocked(u, v) {
+                    light = light.min(1.0) * IN_SHADOW;
+                }
                 lit[grid_index(u, v)] = lit[grid_index(u, v)].map(|c| c * light);
             }
         }
         self.colors = lit;
     }
 
+    /// Whether the land between this grid point and the sun stands in the way.
+    fn sun_is_blocked(&self, u: usize, v: usize) -> bool {
+        /// Far enough for the shadow of the tallest mountain.
+        const REACH: f32 = 9.0;
+        const STEP: f32 = 0.2;
+        /// So that a slope does not shade itself.
+        const LIFT: f32 = 0.08;
+        let (x, z) = grid_to_world(u as f32, v as f32);
+        let y = self.vertex_height(u, v) + LIFT;
+        (1..=(REACH / STEP) as usize).any(|i| {
+            let t = i as f32 * STEP;
+            let (px, pz) = (x + SUN[0] * t, z + SUN[2] * t);
+            self.on_map(px, pz) && self.height_at(px, pz) > y + SUN[1] * t
+        })
+    }
+
     fn vertex_height(&self, u: usize, v: usize) -> f32 {
-        if self.is_ground(u, v) {
+        let base = if self.is_ground(u, v) {
             GROUND_HEIGHT
         } else {
             0.0
+        };
+        base + self.relief[grid_index(u, v)]
+    }
+
+    /// Puts up the mountains and digs the pits, well away from wherever a group can start.
+    fn raise_relief(&mut self, seed: u32, random: &mut u32) {
+        // Where a planet has little land, it takes longer to find room for them.
+        let tries = if self.planet.lower_is_solid() {
+            30
+        } else {
+            240
+        };
+        for (count, is_mountain) in [(MOUNTAIN_COUNT, true), (PIT_COUNT, false)] {
+            let mut placed = 0;
+            for _ in 0..tries * count / 8 {
+                if placed == count {
+                    break;
+                }
+                let (u, v) = (
+                    8.0 + next_random(random) * (GRID_LAST - 16.0),
+                    8.0 + next_random(random) * (GRID_LAST - 16.0),
+                );
+                let (x, z) = grid_to_world(u, v);
+                let radius = if is_mountain {
+                    3.0 + next_random(random) * 4.0
+                } else {
+                    1.8 + next_random(random) * 2.4
+                };
+                if self.has_room_for_relief(x, z, radius) {
+                    let size = 0.7 + next_random(random) * 0.6;
+                    self.add_relief(
+                        (x, z),
+                        radius,
+                        size,
+                        is_mountain,
+                        seed + 900 + placed as u32,
+                    );
+                    placed += 1;
+                }
+            }
+        }
+        self.raised_cells = (0..MAP_CELLS)
+            .flat_map(|u| (0..MAP_CELLS).map(move |v| (u, v)))
+            .filter(|&(u, v)| self.is_raised_cell(u, v))
+            .map(|(u, v)| RaisedCell {
+                u,
+                v,
+                z: (u + v + 1) as f32 * CELL,
+            })
+            .collect();
+    }
+
+    /// Whether a mountain or pit could go here: clear of starts and of other relief, with a
+    /// way around it, and on land throughout where the lower terrain cannot be stood on.
+    fn has_room_for_relief(&self, x: f32, z: f32, radius: f32) -> bool {
+        const AROUND: f32 = 2.0;
+        (0..16).all(|i| {
+            let (sin, cos) = (i as f32 / 16.0 * std::f32::consts::TAU).sin_cos();
+            [radius, radius + AROUND].iter().all(|reach| {
+                let (px, pz) = (x + cos * reach, z + sin * reach);
+                crate::units::keeps_clear(px, pz)
+                    && self.can_walk(px, pz)
+                    && self.can_walk(x + cos * reach * 0.5, z + sin * reach * 0.5)
+            })
+        }) && self.can_walk(x, z)
+    }
+
+    /// A mountain with ridges down its sides, or a pit with steep walls and a dark floor.
+    fn add_relief(
+        &mut self,
+        (x, z): (f32, f32),
+        radius: f32,
+        size: f32,
+        is_mountain: bool,
+        seed: u32,
+    ) {
+        const PEAK: f32 = 4.0;
+        const PIT_DEPTH: f32 = 1.6;
+        const ROCK: [f32; 3] = [0.40, 0.36, 0.33];
+        const SNOW: [f32; 3] = [0.92, 0.93, 0.96];
+        const FLOOR: [f32; 3] = [0.05, 0.04, 0.04];
+        let reach = radius + 1.0;
+        for v in 0..=MAP_CELLS {
+            for u in 0..=MAP_CELLS {
+                let (px, pz) = grid_to_world(u as f32, v as f32);
+                if (px - x).abs() > reach || (pz - z).abs() > reach {
+                    continue;
+                }
+                let (fu, fv) = (u as f32 / MAP_CELLS as f32, v as f32 / MAP_CELLS as f32);
+                let warp = fractal_noise([fu * 14.0, fv * 14.0, 4.5], seed) - 0.5;
+                let distance = (px - x).hypot(pz - z) / radius + warp * 0.5;
+                let inside = (1.0 - distance).clamp(0.0, 1.0);
+                let index = grid_index(u, v);
+                if inside <= 0.0 || !self.is_ground[index] && !self.planet.lower_is_solid() {
+                    continue;
+                }
+                if is_mountain {
+                    let noise = fractal_noise([fu * 40.0, fv * 40.0, 6.5], seed + 1);
+                    let ridge = 1.0 - (noise * 2.0 - 1.0).abs();
+                    let rise = inside * inside * (3.0 - 2.0 * inside);
+                    let share = (rise * (0.55 + 0.9 * ridge)).min(1.0);
+                    self.relief[index] = self.relief[index].max(share * PEAK * size);
+                    let grain = self.colors[index][0] / self.base_of(index)[0].max(0.01);
+                    let rock = mix(self.base_of(index), ROCK, (share * 3.5).min(1.0));
+                    let snowy = ((share - 0.62) * 8.0).clamp(0.0, 1.0);
+                    let color = mix(rock, SNOW, snowy);
+                    self.colors[index] = color.map(|c| c * grain);
+                } else {
+                    // Steep walls down to a floor that is flat, and dark for how little sun
+                    // gets down there.
+                    let wall = (inside * 3.0).min(1.0);
+                    let fall = wall * wall * (3.0 - 2.0 * wall);
+                    self.relief[index] = self.relief[index].min(-fall * PIT_DEPTH * size);
+                    self.colors[index] = mix(self.colors[index], FLOOR, fall * 0.9);
+                }
+            }
+        }
+    }
+
+    fn base_of(&self, index: usize) -> [f32; 3] {
+        if self.is_ground[index] {
+            self.planet.upper_color()
+        } else {
+            self.planet.lower_color()
         }
     }
 
     /// Nothing stands in water or lava, so there the whole site must be on land.
     fn can_hold_ruin(&self, x: f32, z: f32) -> bool {
         const SITE: f32 = 2.4;
-        self.planet.lower_is_solid()
-            || [
-                (-SITE, -SITE),
-                (SITE, -SITE),
-                (SITE, SITE),
-                (-SITE, SITE),
-                (0.0, -SITE),
-                (SITE, 0.0),
-                (0.0, SITE),
-                (-SITE, 0.0),
-                (0.0, 0.0),
-            ]
-            .iter()
-            .all(|(dx, dz)| self.height_at(x + dx, z + dz) >= GROUND_HEIGHT - 0.001)
+        let site_is_flat = [
+            (-SITE, -SITE),
+            (SITE, -SITE),
+            (SITE, SITE),
+            (-SITE, SITE),
+            (0.0, 0.0),
+        ]
+        .iter()
+        .all(|(dx, dz)| self.relief_at(x + dx, z + dz) == 0.0);
+        site_is_flat && self.planet.lower_is_solid()
+            || site_is_flat
+                && [
+                    (-SITE, -SITE),
+                    (SITE, -SITE),
+                    (SITE, SITE),
+                    (-SITE, SITE),
+                    (0.0, -SITE),
+                    (SITE, 0.0),
+                    (0.0, SITE),
+                    (-SITE, 0.0),
+                    (0.0, 0.0),
+                ]
+                .iter()
+                .all(|(dx, dz)| self.height_at(x + dx, z + dz) >= GROUND_HEIGHT - 0.001)
     }
 
     pub fn lower_color(&self) -> [f32; 3] {
@@ -326,6 +507,7 @@ impl Terrain {
     /// Whether a unit may stand here: on the map, and not in water or lava.
     pub fn can_walk(&self, x: f32, z: f32) -> bool {
         self.on_map(x, z)
+            && self.relief_at(x, z).abs() < STEEPEST_WALK
             && (self.planet.lower_is_solid() || self.height_at(x, z) >= GROUND_HEIGHT * 0.5)
     }
 
@@ -340,9 +522,20 @@ impl Terrain {
         Terrain {
             planet: Planet::A,
             is_ground: vec![false; GRID_POINTS],
+            relief: vec![0.0; GRID_POINTS],
             colors: vec![SAND; GRID_POINTS],
             ruins,
+            raised_cells: Vec::new(),
+            walkable: OnceLock::new(),
         }
+    }
+
+    /// Flat sand with a mountain in the way, for testing how units get around it.
+    #[cfg(test)]
+    pub fn open_with_mountain(x: f32, z: f32, radius: f32) -> Self {
+        let mut terrain = Self::open_with_ruins(Vec::new());
+        terrain.add_relief((x, z), radius, 1.0, true, 7);
+        terrain
     }
 
     /// The destroyed buildings on this map.
@@ -360,8 +553,169 @@ impl Terrain {
         self.is_ground[grid_index(u, v)]
     }
 
-    /// The terrain's height under a world point, following its slopes.
-    pub fn height_at(&self, x: f32, z: f32) -> f32 {
+    fn is_raised_cell(&self, u: usize, v: usize) -> bool {
+        [(u, v), (u + 1, v), (u + 1, v + 1), (u, v + 1)]
+            .iter()
+            .any(|&(u, v)| self.relief[grid_index(u, v)] > RAISED)
+    }
+
+    pub fn raised_cells(&self) -> &[RaisedCell] {
+        &self.raised_cells
+    }
+
+    /// Whether this grid point is on a mountain or in a pit that nothing can walk on.
+    pub fn is_relief(&self, u: usize, v: usize) -> bool {
+        self.relief[grid_index(u, v)].abs() >= STEEPEST_WALK
+    }
+
+    /// The color of a grid point, with its slope lit.
+    pub fn color_at(&self, u: usize, v: usize) -> [f32; 3] {
+        self.colors[grid_index(u, v)]
+    }
+
+    /// Whether someone could walk straight from one point to the other.
+    pub fn line_is_clear(&self, from: (f32, f32), to: (f32, f32)) -> bool {
+        const STEP: f32 = 0.2;
+        let length = (to.0 - from.0).hypot(to.1 - from.1);
+        let steps = (length / STEP).ceil().max(1.0) as usize;
+        (1..=steps).all(|i| {
+            let t = i as f32 / steps as f32;
+            self.can_walk(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+        })
+    }
+
+    /// The nearest point to this one that can be walked on, if any is near enough to matter.
+    pub fn nearest_walkable(&self, (x, z): (f32, f32)) -> Option<(f32, f32)> {
+        const RINGS: usize = 40;
+        const PER_RING: usize = 24;
+        if self.can_walk(x, z) {
+            return Some((x, z));
+        }
+        (1..=RINGS).find_map(|ring| {
+            let reach = ring as f32 * CELL;
+            (0..PER_RING).find_map(|i| {
+                let (sin, cos) = (i as f32 / PER_RING as f32 * std::f32::consts::TAU).sin_cos();
+                let spot = (x + cos * reach, z + sin * reach);
+                self.can_walk(spot.0, spot.1).then_some(spot)
+            })
+        })
+    }
+
+    /// The first place to head for on the way around whatever lies between two points: as far
+    /// along the shortest route as can be reached in a straight line. `None` if there is no
+    /// way there at all.
+    pub fn next_on_route(&self, from: (f32, f32), to: (f32, f32)) -> Option<(f32, f32)> {
+        const STRAIGHT: u32 = 10;
+        const DIAGONAL: u32 = 14;
+        const NOWHERE: usize = usize::MAX;
+        let grid_walkable = self.walkable.get_or_init(|| {
+            (0..GRID_POINTS)
+                .map(|index| {
+                    let (u, v) = (index % (MAP_CELLS + 1), index / (MAP_CELLS + 1));
+                    let (x, z) = grid_to_world(u as f32, v as f32);
+                    self.can_walk(x, z)
+                })
+                .collect()
+        });
+        let walkable = |index: usize| grid_walkable[index];
+        // The walkable grid point nearest a world point.
+        let snap = |(x, z): (f32, f32)| -> Option<usize> {
+            let (u, v) = world_to_grid(x, z);
+            let (u, v) = (u.round() as i32, v.round() as i32);
+            let last = MAP_CELLS as i32;
+            (0..=4).find_map(|reach: i32| {
+                (-reach..=reach)
+                    .flat_map(|du| (-reach..=reach).map(move |dv| (u + du, v + dv)))
+                    .filter(|&(u, v)| u >= 0 && v >= 0 && u <= last && v <= last)
+                    .map(|(u, v)| grid_index(u as usize, v as usize))
+                    .find(|&index| walkable(index))
+            })
+        };
+        let (start, goal) = (snap(from)?, snap(to)?);
+        let grid = |index: usize| {
+            (
+                (index % (MAP_CELLS + 1)) as i32,
+                (index / (MAP_CELLS + 1)) as i32,
+            )
+        };
+        let (goal_u, goal_v) = grid(goal);
+        let estimate = |index: usize| {
+            let (u, v) = grid(index);
+            let (du, dv) = ((u - goal_u).unsigned_abs(), (v - goal_v).unsigned_abs());
+            STRAIGHT * du.max(dv) + (DIAGONAL - STRAIGHT) * du.min(dv)
+        };
+        let mut cost = vec![u32::MAX; GRID_POINTS];
+        let mut came_from = vec![NOWHERE; GRID_POINTS];
+        let mut open = BinaryHeap::new();
+        cost[start] = 0;
+        open.push((Reverse(estimate(start)), start));
+        while let Some((_, index)) = open.pop() {
+            if index == goal {
+                break;
+            }
+            let (u, v) = grid(index);
+            for (du, dv) in [
+                (1, 0),
+                (-1, 0),
+                (0, 1),
+                (0, -1),
+                (1, 1),
+                (1, -1),
+                (-1, 1),
+                (-1, -1),
+            ] {
+                let (nu, nv) = (u + du, v + dv);
+                let last = MAP_CELLS as i32;
+                if nu < 0 || nv < 0 || nu > last || nv > last {
+                    continue;
+                }
+                let next = grid_index(nu as usize, nv as usize);
+                // No cutting a corner that cannot be walked on.
+                let diagonal = du != 0 && dv != 0;
+                if !walkable(next)
+                    || diagonal
+                        && (!walkable(grid_index(nu as usize, v as usize))
+                            || !walkable(grid_index(u as usize, nv as usize)))
+                {
+                    continue;
+                }
+                let step = if diagonal { DIAGONAL } else { STRAIGHT };
+                let reached = cost[index] + step;
+                if reached < cost[next] {
+                    cost[next] = reached;
+                    came_from[next] = index;
+                    open.push((Reverse(reached + estimate(next)), next));
+                }
+            }
+        }
+        if came_from[goal] == NOWHERE && goal != start {
+            return None;
+        }
+        let mut route = vec![goal];
+        while let Some(&last) = route.last() {
+            match came_from[last] {
+                NOWHERE => break,
+                earlier => route.push(earlier),
+            }
+        }
+        let point = |index: usize| {
+            let (u, v) = grid(index);
+            grid_to_world(u as f32, v as f32)
+        };
+        // The route runs from the goal back to here, so the first clear point is the farthest.
+        route
+            .iter()
+            .map(|&index| point(index))
+            .find(|&spot| self.line_is_clear(from, spot))
+            .or_else(|| route.iter().rev().nth(1).map(|&index| point(index)))
+    }
+
+    /// How far relief lifts or sinks a point, following its slopes.
+    fn relief_at(&self, x: f32, z: f32) -> f32 {
+        self.blend_at(x, z, |terrain, u, v| terrain.relief[grid_index(u, v)])
+    }
+
+    fn blend_at(&self, x: f32, z: f32, value: impl Fn(&Self, usize, usize) -> f32) -> f32 {
         let (u, v) = world_to_grid(x, z);
         let (u, v) = (u.clamp(0.0, GRID_LAST), v.clamp(0.0, GRID_LAST));
         let (u0, v0) = (
@@ -369,14 +723,20 @@ impl Terrain {
             v.floor().min(GRID_LAST - 1.0),
         );
         let (tu, tv) = (u - u0, v - v0);
-        let at = |du: usize, dv: usize| {
-            let raised = self.is_ground(u0 as usize + du, v0 as usize + dv);
-            if raised { GROUND_HEIGHT } else { 0.0 }
-        };
+        let at = |du: usize, dv: usize| value(self, u0 as usize + du, v0 as usize + dv);
         let near = at(0, 0) * (1.0 - tu) + at(1, 0) * tu;
         let far = at(0, 1) * (1.0 - tu) + at(1, 1) * tu;
         near * (1.0 - tv) + far * tv
     }
+
+    /// The terrain's height under a world point, following its slopes.
+    pub fn height_at(&self, x: f32, z: f32) -> f32 {
+        self.blend_at(x, z, Self::vertex_height)
+    }
+}
+
+fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
 }
 
 /// The terrain of one map, generated the first time it is needed.
@@ -728,34 +1088,41 @@ pub fn draw(
     height: f32,
 ) {
     let view = View::new(camera, width, height);
-    let point = |u: usize, v: usize| {
-        let index = grid_index(u, v);
-        let (x, z) = grid_to_world(u as f32, v as f32);
-        let y = if terrain.is_ground[index] {
-            GROUND_HEIGHT
-        } else {
-            0.0
-        };
-        let shade = fog.map_or(1.0, |fog| fog.at_grid(u, v).shade());
-        let [r, g, b] = terrain.colors[index].map(|channel| channel * shade);
-        view.project(x, y, z)
-            .map(|point| Vertex::new(point, [r, g, b, 1.0]))
-    };
     for u in 0..MAP_CELLS {
         for v in 0..MAP_CELLS {
-            let corners = [
-                point(u, v),
-                point(u + 1, v),
-                point(u + 1, v + 1),
-                point(u, v + 1),
-            ];
-            let [Some(a), Some(b), Some(c), Some(d)] = corners else {
-                continue;
-            };
-            if !all_off_screen(&[a, b, c, d].map(|p| (p.x, p.y)), width, height) {
-                out.extend([a, b, c, a, c, d]);
+            if !terrain.is_raised_cell(u, v) {
+                draw_cell(out, terrain, fog, &view, (u, v), (width, height));
             }
         }
+    }
+}
+
+/// Appends one cell of the terrain, unless it is off the screen.
+pub fn draw_cell(
+    out: &mut Vec<Vertex>,
+    terrain: &Terrain,
+    fog: Option<&Fog>,
+    view: &View,
+    (u, v): (usize, usize),
+    (width, height): (f32, f32),
+) {
+    let point = |u: usize, v: usize| {
+        let (x, z) = grid_to_world(u as f32, v as f32);
+        let shade = fog.map_or(1.0, |fog| fog.at_grid(u, v).shade());
+        let [r, g, b] = terrain.colors[grid_index(u, v)].map(|channel| channel * shade);
+        view.project(x, terrain.vertex_height(u, v), z)
+            .map(|point| Vertex::new(point, [r, g, b, 1.0]))
+    };
+    let corners = [
+        point(u, v),
+        point(u + 1, v),
+        point(u + 1, v + 1),
+        point(u, v + 1),
+    ];
+    if let [Some(a), Some(b), Some(c), Some(d)] = corners
+        && !all_off_screen(&[a, b, c, d].map(|p| (p.x, p.y)), width, height)
+    {
+        out.extend([a, b, c, a, c, d]);
     }
 }
 
@@ -1373,15 +1740,76 @@ mod tests {
     }
 
     #[test]
+    fn every_map_has_mountains_and_pits_that_cannot_be_walked_on_and_rise_and_sink_as_they_should()
+    {
+        for map in 0..crate::game::MAPS.len() {
+            let terrain = terrain(map);
+            let highest = terrain.relief.iter().copied().fold(0.0, f32::max);
+            let deepest = terrain.relief.iter().copied().fold(0.0, f32::min);
+            assert!(highest > 1.5, "map {map} has mountains: {highest}");
+            assert!(deepest < -0.7, "map {map} has pits: {deepest}");
+            let mut blocked = 0;
+            for v in 0..=MAP_CELLS {
+                for u in 0..=MAP_CELLS {
+                    let (x, z) = grid_to_world(u as f32, v as f32);
+                    if terrain.is_relief(u, v) {
+                        assert!(!terrain.can_walk(x, z), "map {map} at {u},{v}");
+                        blocked += 1;
+                    }
+                    if terrain.relief[grid_index(u, v)].abs() > 0.0 {
+                        assert!(crate::units::keeps_clear(x, z), "map {map} near a start");
+                    }
+                }
+            }
+            assert!(blocked > 0);
+            assert!(
+                blocked < GRID_POINTS / 5,
+                "map {map} is not all rock: {blocked}"
+            );
+            assert!(!terrain.raised_cells().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_mountain_shades_the_ground_on_its_far_side_from_the_sun_only() {
+        let (x, z) = (0.0, 40.0);
+        let terrain = Terrain::open_with_mountain(x, z, 5.0);
+        let at = |px: f32, pz: f32| {
+            let (u, v) = world_to_grid(px, pz);
+            terrain.sun_is_blocked(u.round() as usize, v.round() as usize)
+        };
+        // Away from the sun, just past the foot of the mountain.
+        assert!(at(x - SUN[0] * 6.0, z - SUN[2] * 6.0));
+        assert!(!at(x + SUN[0] * 6.0, z + SUN[2] * 6.0));
+        assert!(!at(x + 20.0, z));
+    }
+
+    #[test]
+    fn a_route_goes_around_a_mountain_and_there_is_none_into_a_walled_off_place() {
+        let (x, z) = (0.0, 40.0);
+        let terrain = Terrain::open_with_mountain(x, z, 5.0);
+        let (from, to) = ((x, z - 9.0), (x, z + 9.0));
+        assert!(!terrain.line_is_clear(from, to));
+        let next = terrain.next_on_route(from, to).expect("a way around");
+        assert!(terrain.line_is_clear(from, next));
+        assert!(
+            next != to && next.0.abs() > 1.0,
+            "off to one side: {next:?}"
+        );
+
+        let clear = terrain.nearest_walkable((x, z)).expect("land nearby");
+        assert!(terrain.can_walk(clear.0, clear.1));
+        assert_eq!(terrain.nearest_walkable(from), Some(from));
+        let open = Terrain::open_with_ruins(Vec::new());
+        assert_eq!(open.next_on_route(from, to).map(|_| ()), Some(()));
+    }
+
+    #[test]
     fn height_follows_the_terrain() {
         let terrain = terrain(0);
         for (u, v) in [(10, 10), (64, 64), (100, 30)] {
             let (x, z) = grid_to_world(u as f32, v as f32);
-            let expected = if terrain.is_ground(u, v) {
-                GROUND_HEIGHT
-            } else {
-                0.0
-            };
+            let expected = terrain.vertex_height(u, v);
             assert!((terrain.height_at(x, z) - expected).abs() < 1e-4);
         }
     }

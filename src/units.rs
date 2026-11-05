@@ -479,6 +479,8 @@ pub struct Unit {
     blocked_for: f32,
     /// Its nearest approach to the destination since it set off.
     best_remaining: f32,
+    /// Where it heads for first, to get around what lies between it and its destination.
+    way: Option<Way>,
 }
 
 impl Unit {
@@ -788,6 +790,7 @@ impl Unit {
             unloading: false,
             blocked_for: 0.0,
             best_remaining: f32::INFINITY,
+            way: None,
         }
     }
 }
@@ -910,6 +913,7 @@ fn place_unit(
         unloading: false,
         blocked_for: 0.0,
         best_remaining: f32::INFINITY,
+        way: None,
     });
 }
 
@@ -1282,6 +1286,12 @@ fn find_slots(
     taken: &[(f32, f32)],
     flying: bool,
 ) -> Vec<(f32, f32)> {
+    // Sent into a mountain or a pit, they go to the edge of it.
+    let target = if flying {
+        target
+    } else {
+        terrain.nearest_walkable(target).unwrap_or(target)
+    };
     let mut offsets = Vec::new();
     for j in -SLOT_SEARCH_RINGS..=SLOT_SEARCH_RINGS {
         for i in -SLOT_SEARCH_RINGS..=SLOT_SEARCH_RINGS {
@@ -1536,7 +1546,8 @@ fn prey_direction(
 /// ground ignore each other, and aircraft pass over ruins.
 fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) -> (f32, f32) {
     let unit = &units[index];
-    let (to_x, to_z) = (unit.destination.0 - unit.x, unit.destination.1 - unit.z);
+    let goal = unit.way.map_or(unit.destination, |way| way.through);
+    let (to_x, to_z) = (goal.0 - unit.x, goal.1 - unit.z);
     let length = to_x.hypot(to_z).max(0.0001);
     let toward_destination = (to_x / length, to_z / length);
     let (want_x, want_z) =
@@ -1645,6 +1656,13 @@ fn push_out_of_ruins(unit: &mut Unit, terrain: &Terrain) -> bool {
     touched
 }
 
+/// A point to pass through, and the destination it was found for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Way {
+    through: (f32, f32),
+    to: (f32, f32),
+}
+
 /// Heavy units on the move kill enemy infantry whose spheres they touch.
 fn squash(units: &mut [Unit], teams: &[usize]) {
     for a in 0..units.len() {
@@ -1717,7 +1735,43 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
     }
 }
 
+/// Finds a way around what stands between a unit on the ground and where it is going, unless
+/// it has one or goes straight there. With no way at all it keeps heading straight, which ends
+/// with it giving up against whatever blocks it. Returns whether it had to look for a route.
+fn plan_way(unit: &mut Unit, terrain: &Terrain, may_search: bool) -> bool {
+    /// Close enough to a point on its way to go on to the next.
+    const THROUGH: f32 = 0.4;
+    /// How far a destination may have moved for a route to it to still be good.
+    const STILL_GOOD: f32 = 1.0;
+    let here = (unit.x, unit.z);
+    if let Some(way) = unit.way {
+        let moved = (way.to.0 - unit.destination.0).hypot(way.to.1 - unit.destination.1);
+        let there = (way.through.0 - unit.x).hypot(way.through.1 - unit.z) < THROUGH;
+        if there {
+            unit.blocked_for = 0.0;
+        }
+        if !there && moved < STILL_GOOD {
+            return false;
+        }
+        unit.way = None;
+    }
+    if !may_search || terrain.line_is_clear(here, unit.destination) {
+        return false;
+    }
+    let through = terrain
+        .next_on_route(here, unit.destination)
+        .unwrap_or(unit.destination);
+    unit.way = Some(Way {
+        through,
+        to: unit.destination,
+    });
+    true
+}
+
 fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
+    /// Routes looked for per step, so that a big order is spread over a few frames.
+    const SEARCHES: usize = 6;
+    let mut searches = SEARCHES;
     let mut held_back = vec![false; units.len()];
     let started_at: Vec<(f32, f32)> = units.iter().map(|u| (u.x, u.z)).collect();
     for i in 0..units.len() {
@@ -1727,11 +1781,15 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
             units[i].altitude = (units[i].altitude + CLIMB_SPEED * dt).min(CRUISE_ALTITUDE);
         }
         if !units[i].is_moving() {
+            units[i].way = None;
             continue;
         }
         if units[i].role.never_stops() {
             fly_on(&mut units[i], terrain, dt);
             continue;
+        }
+        if !units[i].kind.flies() && plan_way(&mut units[i], terrain, searches > 0) {
+            searches -= 1;
         }
         let (dir_x, dir_z) = steering(units, i, terrain, teams);
         let way = dir_z.atan2(dir_x);
@@ -1782,6 +1840,10 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
         unit.stride += moved;
         held_back[i] |= unit.target.is_some() && moved < unit.speed() * dt * WEDGED_SHARE;
         unit.y = terrain.height_at(unit.x, unit.z);
+        if unit.kind.flies() {
+            // What flies keeps above the land's level over a pit.
+            unit.y = unit.y.max(0.0);
+        }
         give_up_if_stuck(unit, held_back[i], dt);
     }
 }
@@ -4193,6 +4255,40 @@ mod tests {
         let mut units = [unit];
         order_move(&mut units, water, terrain, &[]);
         assert!(terrain.can_walk(units[0].destination.0, units[0].destination.1));
+    }
+
+    #[test]
+    fn units_walk_around_a_mountain_and_aircraft_go_straight_over_it() {
+        let terrain = &Terrain::open_with_mountain(0.0, 40.0, 5.0);
+        let mut tank = unit_at(0.0, 31.0, UnitKind::Vehicle);
+        tank.destination = (0.0, 49.0);
+        let mut plane = unit_at(1.0, 31.0, UnitKind::Aircraft);
+        plane.altitude = 2.0;
+        plane.destination = (1.0, 49.0);
+        let mut units = [tank, plane];
+        let mut plane_crossed = false;
+        for _ in 0..4000 {
+            advance(&mut units, terrain, &[0], 0.02);
+            assert!(terrain.can_walk(units[0].x, units[0].z), "{:?}", units[0]);
+            plane_crossed |= (units[1].z - 40.0).abs() < 0.5 && units[1].x.abs() < 1.5;
+        }
+        assert!(plane_crossed, "right over it: {:?}", units[1]);
+        assert!(
+            (units[0].x - 0.0).hypot(units[0].z - 49.0) < 0.5,
+            "it got there: {:?}",
+            units[0]
+        );
+    }
+
+    #[test]
+    fn an_order_into_a_mountain_goes_to_its_edge() {
+        let terrain = &Terrain::open_with_mountain(0.0, 40.0, 5.0);
+        let mut tank = unit_at(0.0, 30.0, UnitKind::Vehicle);
+        tank.selected = true;
+        let mut units = [tank];
+        order_move(&mut units, (0.0, 40.0), terrain, &[]);
+        let spot = units[0].destination;
+        assert!(terrain.can_walk(spot.0, spot.1), "{spot:?}");
     }
 
     #[test]

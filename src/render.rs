@@ -717,11 +717,14 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     enum Object<'a> {
         Unit(&'a Unit),
         Ruin(&'a battlefield::RuinPiece),
+        Cell(&'a battlefield::RaisedCell),
     }
     let z_of = |object: &Object| match object {
         Object::Unit(unit) => unit.z,
         Object::Ruin(piece) => piece.z,
+        Object::Cell(cell) => cell.z,
     };
+    let terrain = battlefield::terrain(game.battle_map);
     let view = battlefield::View::new(game.camera, game.width, game.height);
     draw_poison(canvas, game, &view);
     draw_cast_shadows(canvas, game, &view);
@@ -751,6 +754,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             .filter(|piece| game.sight_at(piece.x, piece.z) != Sight::Unexplored)
             .map(Object::Ruin),
     );
+    order.extend(terrain.raised_cells().iter().map(Object::Cell));
     order.sort_by(|a, b| z_of(a).total_cmp(&z_of(b)));
     for object in order {
         match object {
@@ -775,6 +779,14 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
                     color,
                 );
             }
+            Object::Cell(cell) => battlefield::draw_cell(
+                &mut canvas.vertices,
+                terrain,
+                game.fog.as_ref(),
+                &view,
+                (cell.u, cell.v),
+                (game.width, game.height),
+            ),
         }
     }
     if let Some((building, can)) = game.placing_preview() {
@@ -2980,7 +2992,9 @@ fn draw_map_diamond(
     };
     for v in (0..MAP_CELLS).step_by(STEP) {
         for u in (0..MAP_CELLS).step_by(STEP) {
-            let base = if terrain.is_ground(u + STEP / 2, v + STEP / 2) {
+            let base = if terrain.is_relief(u + STEP / 2, v + STEP / 2) {
+                terrain.color_at(u + STEP / 2, v + STEP / 2)
+            } else if terrain.is_ground(u + STEP / 2, v + STEP / 2) {
                 terrain.upper_color()
             } else {
                 terrain.lower_color()

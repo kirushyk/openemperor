@@ -870,6 +870,28 @@ fn harm(units: &mut [Unit], victim: usize, damage: f32, shooter: Shooter, teams:
             killer.gain_experience(value);
         }
     }
+    answer_attacker(units, victim, shooter.id, teams);
+}
+
+/// Whoever is shot at by an enemy goes after it, if it can hurt it and has nothing else to do.
+/// The player's units on their way somewhere stay on their way, as they were told to; an
+/// opponent's are only wandering. What cannot move has only its range to go by.
+fn answer_attacker(units: &mut [Unit], victim: usize, attacker_id: u32, teams: &[usize]) {
+    let unit = units[victim];
+    let is_free = unit.target.is_none()
+        && !unit.deployed
+        && !unit.kind.is_building()
+        && (!unit.is_moving() || unit.owner != 0);
+    if !is_free {
+        return;
+    }
+    let can_answer = units
+        .iter()
+        .find(|u| u.id == attacker_id)
+        .is_some_and(|attacker| unit.can_attack(attacker, teams));
+    if can_answer {
+        units[victim].target = Some(Target::Unit(attacker_id));
+    }
 }
 
 /// Cannons that have recoiled come forward again.
@@ -1111,6 +1133,97 @@ mod tests {
         // Unable to shoot back during the test.
         unit.cooldown = 1000.0;
         unit
+    }
+
+    /// A tank of the opponent's being shot by a rocket launcher, the one out of the other's reach.
+    fn tank_under_fire(owner: usize) -> (Unit, Unit) {
+        let mut launcher = shooter(WeaponKind::Rockets);
+        launcher.owner = 1 - owner;
+        let mut tank = target_at(12.5, 60.0);
+        tank.owner = owner;
+        tank.weapon = WeaponKind::Cannon;
+        (launcher, tank)
+    }
+
+    #[test]
+    fn a_tank_hit_from_beyond_its_reach_goes_after_whoever_did_it_and_reaches_it() {
+        let (launcher, tank) = tank_under_fire(1);
+        let mut units = [launcher, tank];
+        let attacker = Shooter::of(&units[0]);
+        assert!(units[0].weapon.range() > 12.5 && units[1].weapon.range() < 12.5);
+        hit(&mut units, 1, WeaponKind::Rockets, attacker, &TEAMS);
+        assert_eq!(units[1].target, Some(Target::Unit(units[0].id)));
+        units[0].weapon = WeaponKind::Unarmed;
+        for _ in 0..600 {
+            crate::units::advance(&mut units, flat(), &TEAMS, 0.05);
+        }
+        let away = distance(units[0].center(), units[1].center());
+        assert!(
+            away <= WeaponKind::Cannon.range(),
+            "came within reach: {away}"
+        );
+    }
+
+    #[test]
+    fn the_players_unit_on_an_order_carries_on_when_shot_but_an_idle_one_answers() {
+        let (launcher, tank) = tank_under_fire(0);
+        let mut units = [launcher, tank];
+        units[1].destination = (12.5, 90.0);
+        let attacker = Shooter::of(&units[0]);
+        hit(&mut units, 1, WeaponKind::Rockets, attacker, &TEAMS);
+        assert_eq!(units[1].target, None, "it was told to go there");
+
+        units[1].destination = (units[1].x, units[1].z);
+        hit(&mut units, 1, WeaponKind::Rockets, attacker, &TEAMS);
+        assert_eq!(units[1].target, Some(Target::Unit(units[0].id)));
+    }
+
+    #[test]
+    fn an_opponent_on_its_way_somewhere_turns_on_whoever_shoots_it() {
+        let (launcher, tank) = tank_under_fire(1);
+        let mut units = [launcher, tank];
+        units[1].destination = (12.5, 90.0);
+        let attacker = Shooter::of(&units[0]);
+        hit(&mut units, 1, WeaponKind::Rockets, attacker, &TEAMS);
+        assert_eq!(units[1].target, Some(Target::Unit(units[0].id)));
+    }
+
+    #[test]
+    fn being_shot_does_not_change_a_target_nor_stir_those_that_cannot_answer_or_move() {
+        let (launcher, tank) = tank_under_fire(1);
+        let attacker = Shooter::of(&launcher);
+
+        let mut busy = [launcher, tank];
+        busy[1].target = Some(Target::Unit(99));
+        hit(&mut busy, 1, WeaponKind::Rockets, attacker, &TEAMS);
+        assert_eq!(
+            busy[1].target,
+            Some(Target::Unit(99)),
+            "it keeps its target"
+        );
+
+        // Cannons do not reach what is up in the air.
+        let mut high = [launcher, tank];
+        high[0].altitude = 2.0;
+        hit(&mut high, 1, WeaponKind::Rockets, attacker, &TEAMS);
+        assert_eq!(high[1].target, None);
+
+        let mut unarmed = [launcher, tank];
+        unarmed[1].weapon = WeaponKind::Unarmed;
+        hit(&mut unarmed, 1, WeaponKind::Rockets, attacker, &TEAMS);
+        assert_eq!(unarmed[1].target, None);
+
+        let mut tower = [launcher, tank];
+        tower[1].kind = UnitKind::Tower;
+        hit(&mut tower, 1, WeaponKind::Rockets, attacker, &TEAMS);
+        assert_eq!(tower[1].target, None);
+
+        // A friend firing by order is not an enemy to go after.
+        let mut friend = [launcher, tank];
+        friend[0].owner = 1;
+        let by_friend = Shooter::of(&friend[0]);
+        hit(&mut friend, 1, WeaponKind::Rockets, by_friend, &TEAMS);
+        assert_eq!(friend[1].target, None);
     }
 
     fn run(combat: &mut Combat, units: &mut [Unit], seconds: f32) {

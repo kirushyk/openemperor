@@ -1,6 +1,6 @@
 //! Game flow and menu logic. No OS or GPU code, so it runs under `cargo test`.
 
-use crate::battlefield::{self, Camera, MapSize};
+use crate::battlefield::{self, Camera};
 use crate::fog::{Fog, Sight};
 use crate::hud::{self, DEPLOY_BUTTON};
 use crate::platform::{Event, Key};
@@ -319,17 +319,29 @@ pub struct Opponent {
 
 pub const OPPONENT_SLOTS: usize = 7;
 /// Named after the planet each is on; `battlefield::MAP_PLANETS` lists those.
-pub const MAPS: [&str; 10] = [
-    "A - Map 1",
-    "A - Map 2",
-    "A - Map 3",
-    "A - Map 4",
-    "A - Map 5",
-    "C - Map 1",
-    "D - Map 1",
-    "G - Map 1",
-    "S - Map 1",
-    "T - Map 1",
+pub const MAPS: [&str; 22] = [
+    "A Map 1 (S)",
+    "A Map 2 (S)",
+    "A Map 3 (S)",
+    "A Map 4 (S)",
+    "A Map 5 (S)",
+    "C Map 1 (S)",
+    "D Map 1 (S)",
+    "G Map 1 (S)",
+    "S Map 1 (S)",
+    "T Map 1 (S)",
+    "A Map 6 (M)",
+    "C Map 2 (M)",
+    "D Map 2 (M)",
+    "G Map 2 (M)",
+    "S Map 2 (M)",
+    "T Map 2 (M)",
+    "A Map 7 (L)",
+    "C Map 3 (L)",
+    "D Map 3 (L)",
+    "G Map 3 (L)",
+    "S Map 3 (L)",
+    "T Map 3 (L)",
 ];
 pub const COMMANDER_NAME_MAX: usize = 16;
 
@@ -345,7 +357,6 @@ pub struct SkirmishConfig {
     pub opponents: [Opponent; OPPONENT_SLOTS],
     /// Index into `MAPS`.
     pub map: usize,
-    pub map_size: MapSize,
     pub difficulty: Difficulty,
     pub ai_players: i32,
     pub money: i32,
@@ -402,7 +413,6 @@ impl Default for SkirmishConfig {
             allies: [Ally::None; 2],
             opponents,
             map: 0,
-            map_size: MapSize::S,
             difficulty: Difficulty::Normal,
             ai_players: 3,
             money: 10000,
@@ -534,7 +544,6 @@ pub enum Action {
     BuildTab(BuildTab),
     NameField,
     MapDropdown,
-    SetMapSize(MapSize),
     SelectMap(usize),
     SetDifficulty(Difficulty),
     CycleFaction,
@@ -922,9 +931,6 @@ pub fn opponent_widgets(count: usize, width: f32, height: f32) -> Vec<Button> {
 }
 
 /// Name field, map dropdown, difficulty radios, faction and ally circles, color bar, Play.
-/// How wide each map size's button is.
-const MAP_SIZE_W: f32 = 52.0;
-
 pub fn setup_widgets(width: f32, height: f32) -> Vec<Button> {
     const FACTION_CY: f32 = 430.0;
     const FACTION_R: f32 = 100.0;
@@ -949,15 +955,6 @@ pub fn setup_widgets(width: f32, height: f32) -> Vec<Button> {
         y: 420.0 * s,
         w: rw / 3.0,
         h: 44.0 * s,
-    };
-    // On the map's row, as far right as they go, from the last of them.
-    let size_button = |from_right: f32, size, label| Button {
-        action: Action::SetMapSize(size),
-        label,
-        x: rx + rw - (from_right + 1.0) * MAP_SIZE_W * s,
-        y: 352.0 * s,
-        w: MAP_SIZE_W * s,
-        h: 52.0 * s,
     };
     let (bar_x, bar_y, bar_w, bar_h) = color_bar_rect(width, height);
     vec![
@@ -993,29 +990,30 @@ pub fn setup_widgets(width: f32, height: f32) -> Vec<Button> {
             label: "Map",
             x: rx,
             y: 352.0 * s,
-            w: rw - (MAP_SIZE_W * 3.0 + 8.0) * s,
+            w: rw,
             h: 52.0 * s,
         },
-        size_button(2.0, MapSize::S, "S"),
-        size_button(1.0, MapSize::M, "M"),
-        size_button(0.0, MapSize::L, "L"),
         radio(0.0, Action::SetDifficulty(Difficulty::Easy), "Easy"),
         radio(1.0, Action::SetDifficulty(Difficulty::Normal), "Normal"),
         radio(2.0, Action::SetDifficulty(Difficulty::Hard), "Hard"),
     ]
 }
 
+/// How many maps the open dropdown lists in each of its columns.
+const MAP_LIST_ROWS: usize = 11;
+
 /// The open dropdown's entries, directly below it.
 pub fn map_items(width: f32, height: f32) -> Vec<Button> {
     let s = ui_scale(height);
     let (x, w) = setup_column(false, width, height);
+    let w = w / 2.0;
     MAPS.iter()
         .enumerate()
         .map(|(i, &label)| Button {
             action: Action::SelectMap(i),
             label,
-            x,
-            y: (404.0 + i as f32 * 52.0) * s,
+            x: x + (i / MAP_LIST_ROWS) as f32 * w,
+            y: (404.0 + (i % MAP_LIST_ROWS) as f32 * 52.0) * s,
             w,
             h: 52.0 * s,
         })
@@ -2599,11 +2597,7 @@ impl Game {
                 self.start_battle(0, self.confirming, BattleKind::Campaign);
             }
             Action::SkirmishBattle => self.set_screen(Screen::SkirmishSetup),
-            Action::StartBattle => {
-                let id = battlefield::terrain_id(self.skirmish.map, self.skirmish.map_size);
-                self.start_battle(id, None, BattleKind::Skirmish);
-            }
-            Action::SetMapSize(size) => self.skirmish.map_size = size,
+            Action::StartBattle => self.start_battle(self.skirmish.map, None, BattleKind::Skirmish),
             Action::NameField => self.name_focused = true,
             Action::MapDropdown => self.dropdown_open = true,
             Action::SelectMap(map) => {
@@ -4343,28 +4337,33 @@ mod tests {
     }
 
     #[test]
-    fn a_skirmish_is_fought_on_the_chosen_size_of_map_with_everything_scaled_to_it() {
+    fn a_skirmish_on_a_big_map_has_everything_scaled_to_it() {
+        use battlefield::MapSize;
+        let l = (0..MAPS.len())
+            .find(|&map| battlefield::terrain(map).size() == MapSize::L)
+            .unwrap();
         let mut game = in_setup();
-        assert_eq!(
-            game.skirmish.map_size,
-            MapSize::S,
-            "as maps have always been"
-        );
-        click_widget(&mut game, Action::SetMapSize(MapSize::L));
-        assert_eq!(game.skirmish.map_size, MapSize::L);
+        assert_eq!(battlefield::terrain(game.skirmish.map).size(), MapSize::S);
+        click_widget(&mut game, Action::MapDropdown);
+        click(&mut game, Action::SelectMap(l));
+        assert_eq!(game.skirmish.map, l);
         assert!(!crate::render::build(&game).is_empty());
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
-        assert_eq!(battlefield::terrain(game.battle_map).size(), MapSize::L);
+        assert_eq!(game.battle_map, l);
         assert_eq!(game.camera.z, MapSize::L.middle_z());
         assert_eq!(game.home(), (0.0, MapSize::L.middle_z()));
         assert!(!crate::render::build(&game).is_empty());
-        let (at_x, at_y) = (W / 2.0, H / 2.0);
-        let (x, _) = game.view().ground_at(at_x, at_y).unwrap();
-        assert!(x.abs() < 0.5);
-        // Everybody starts near the middle of the bigger map.
         let player = game.units.iter().find(|u| u.owner == 0).unwrap();
         assert!((player.z - MapSize::L.middle_z()).abs() < 15.0);
+    }
+
+    #[test]
+    fn every_map_is_named_with_its_size() {
+        for (map, name) in MAPS.iter().enumerate() {
+            let size = battlefield::terrain(map).size();
+            assert!(name.ends_with(&format!("({size:?})")), "{name}");
+        }
     }
 
     #[test]
@@ -7322,10 +7321,7 @@ mod tests {
             (5120.0, 1440.0),
         ] {
             for b in setup_widgets(w, h) {
-                let right = matches!(
-                    b.action,
-                    Action::MapDropdown | Action::SetMapSize(_) | Action::SetDifficulty(_)
-                );
+                let right = matches!(b.action, Action::MapDropdown | Action::SetDifficulty(_));
                 if right {
                     assert!(
                         b.x >= w * 2.0 / 3.0 - 0.5 && b.x + b.w <= w + 0.5,

@@ -37,8 +37,6 @@ impl MapSize {
         (on_small as f32 * self.scale() * self.scale()).round() as usize
     }
 
-    pub const ALL: [MapSize; 3] = [MapSize::S, MapSize::M, MapSize::L];
-
     pub fn cells(self) -> usize {
         match self {
             MapSize::S => MAP_CELLS,
@@ -56,20 +54,8 @@ impl MapSize {
     pub fn middle_z(self) -> f32 {
         self.cells() as f32 * CELL
     }
-
-    fn index(self) -> usize {
-        match self {
-            MapSize::S => 0,
-            MapSize::M => 1,
-            MapSize::L => 2,
-        }
-    }
 }
 
-/// What a battle's terrain is known by: which of `game::MAPS`, at which size.
-pub fn terrain_id(map: usize, size: MapSize) -> usize {
-    map + size.index() * crate::game::MAPS.len()
-}
 /// World units per grid step along each world axis.
 const CELL: f32 = 0.5;
 /// How far ground rises above sand, in world units.
@@ -142,7 +128,30 @@ pub const MAP_PLANETS: [Planet; crate::game::MAPS.len()] = [
     Planet::G,
     Planet::S,
     Planet::T,
+    Planet::A,
+    Planet::C,
+    Planet::D,
+    Planet::G,
+    Planet::S,
+    Planet::T,
+    Planet::A,
+    Planet::C,
+    Planet::D,
+    Planet::G,
+    Planet::S,
+    Planet::T,
 ];
+
+/// How big each map in `game::MAPS` is. Maps added later go at the end, so that those there
+/// already stay as they are.
+const fn map_size(map: usize) -> MapSize {
+    match map {
+        0..=9 => MapSize::S,
+        10..=15 => MapSize::M,
+        _ => MapSize::L,
+    }
+}
+
 /// How strongly the surface grain varies the color, either way.
 const GRAIN: f32 = 0.22;
 
@@ -278,11 +287,8 @@ pub fn grid_index(u: usize, v: usize) -> usize {
 }
 
 impl Terrain {
-    fn generate(id: usize) -> Self {
-        let (map, size) = (
-            id % crate::game::MAPS.len(),
-            MapSize::ALL[id / crate::game::MAPS.len()],
-        );
+    fn generate(map: usize) -> Self {
+        let size = map_size(map);
         let mut is_ground = vec![false; GRID_POINTS];
         let mut colors = vec![[0.0; 3]; GRID_POINTS];
         let mut deep = vec![0.0; GRID_POINTS];
@@ -821,8 +827,8 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 
 /// The terrain of one map, generated the first time it is needed.
 pub fn terrain(map: usize) -> &'static Terrain {
-    static TERRAINS: [OnceLock<Terrain>; crate::game::MAPS.len() * MapSize::ALL.len()] =
-        [const { OnceLock::new() }; crate::game::MAPS.len() * MapSize::ALL.len()];
+    static TERRAINS: [OnceLock<Terrain>; crate::game::MAPS.len()] =
+        [const { OnceLock::new() }; crate::game::MAPS.len()];
     TERRAINS[map].get_or_init(|| Terrain::generate(map))
 }
 
@@ -1828,9 +1834,10 @@ mod tests {
             .map(|map| {
                 let terrain = terrain(map);
                 let ground = terrain.is_ground.iter().filter(|g| **g).count();
-                let total = (MAP_CELLS + 1) * (MAP_CELLS + 1);
+                let side = terrain.size().cells() + 1;
+                let total = side * side;
                 assert!(
-                    ground > total / 8 && ground < total * 2 / 3,
+                    ground > total / 8 && ground < total * 3 / 4,
                     "map {map}: {ground} of {total}"
                 );
                 terrain.is_ground.clone()
@@ -1955,10 +1962,11 @@ mod tests {
     fn ruins_stay_on_the_map_and_stand_on_its_terrain() {
         for map in 0..crate::game::MAPS.len() {
             let terrain = terrain(map);
+            let last = terrain.size().cells() as f32;
             for piece in terrain.ruins() {
                 let (u, v) = world_to_grid(piece.x, piece.z);
                 assert!(
-                    (0.0..=LAST).contains(&u) && (0.0..=LAST).contains(&v),
+                    (0.0..=last).contains(&u) && (0.0..=last).contains(&v),
                     "{piece:?}"
                 );
                 assert!(piece.y == 0.0 || piece.y <= GROUND_HEIGHT, "{piece:?}");
@@ -1984,8 +1992,8 @@ mod tests {
             assert!(highest > 1.5, "map {map} has mountains: {highest}");
             assert!(deepest < -0.7, "map {map} has pits: {deepest}");
             let mut blocked = 0;
-            for v in 0..=MAP_CELLS {
-                for u in 0..=MAP_CELLS {
+            for v in 0..=terrain.size().cells() {
+                for u in 0..=terrain.size().cells() {
                     let (x, z) = grid_to_world(u as f32, v as f32);
                     if terrain.is_relief(u, v) {
                         assert!(!terrain.can_walk(x, z), "map {map} at {u},{v}");
@@ -1993,7 +2001,7 @@ mod tests {
                     }
                     if terrain.relief[grid_index(u, v)].abs() > 0.0 {
                         assert!(
-                            crate::units::keeps_clear(x, z, MapSize::S),
+                            crate::units::keeps_clear(x, z, terrain.size()),
                             "map {map} near a start"
                         );
                     }
@@ -2022,16 +2030,34 @@ mod tests {
         }
     }
 
+    /// The first map of this size.
+    fn map_of(size: MapSize) -> usize {
+        (0..crate::game::MAPS.len())
+            .find(|&map| map_size(map) == size)
+            .unwrap()
+    }
+
     #[test]
-    fn a_map_is_as_big_as_its_size_says_with_its_things_spread_over_it_all() {
+    fn maps_come_in_three_sizes_on_every_planet_with_their_things_spread_over_them() {
         assert_eq!(MapSize::S.cells(), MAP_CELLS);
         assert_eq!(MapSize::M.cells() * 2, MAP_CELLS * 3, "1.5 times as long");
         assert_eq!(MapSize::L.cells(), MAP_CELLS * 2, "twice as long");
-        let (s, l) = (
-            terrain(terrain_id(1, MapSize::S)),
-            terrain(terrain_id(1, MapSize::L)),
-        );
-        assert_eq!(l.size(), MapSize::L);
+        for size in [MapSize::S, MapSize::M, MapSize::L] {
+            for planet in [
+                Planet::A,
+                Planet::C,
+                Planet::D,
+                Planet::G,
+                Planet::S,
+                Planet::T,
+            ] {
+                let there = (0..crate::game::MAPS.len())
+                    .any(|map| map_size(map) == size && MAP_PLANETS[map] == planet);
+                assert!(there, "{planet:?} at {size:?}");
+            }
+        }
+        let (s, l) = (terrain(map_of(MapSize::S)), terrain(map_of(MapSize::L)));
+        assert_eq!((s.size(), l.size()), (MapSize::S, MapSize::L));
         let (far_x, far_z) = grid_to_world(250.0, 250.0);
         assert!(l.on_map(far_x, far_z) && !s.on_map(far_x, far_z));
         assert!(!l.on_map(far_x, far_z + 20.0));
@@ -2039,7 +2065,6 @@ mod tests {
             l.ruins().len() > s.ruins().len() * 2,
             "about four times as many"
         );
-        // A random point can be anywhere on it, and is often out of reach of a smaller map.
         let mut random = 7;
         let beyond = (0..100)
             .map(|_| l.random_point(&mut random))
@@ -2049,14 +2074,15 @@ mod tests {
     }
 
     #[test]
-    fn size_s_is_the_map_as_it_always_was_and_a_bigger_one_begins_with_the_same_land() {
-        let (s, m) = (terrain(2), terrain(terrain_id(2, MapSize::M)));
-        assert_eq!(terrain_id(2, MapSize::S), 2);
-        assert_eq!(s.size(), MapSize::S);
-        // Land forced for start areas lies elsewhere on the two, so look near the north corner.
-        for (u, v) in [(3, 3), (10, 2), (2, 12)] {
-            assert_eq!(s.is_ground(u, v), m.is_ground(u, v));
-        }
+    fn maps_of_one_size_are_not_copies_of_another() {
+        let first = |size: MapSize| terrain(map_of(size));
+        let ground = |terrain: &Terrain| {
+            (0..100)
+                .map(|i| terrain.is_ground(i + 5, i + 5))
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(ground(first(MapSize::S)), ground(first(MapSize::M)));
+        assert_ne!(ground(first(MapSize::S)), ground(first(MapSize::L)));
     }
 
     #[test]
@@ -2075,7 +2101,7 @@ mod tests {
     #[test]
     fn the_minimap_shows_all_of_a_map_of_any_size() {
         let rect = (0.0, 0.0, 200.0);
-        for size in MapSize::ALL {
+        for size in [MapSize::S, MapSize::M, MapSize::L] {
             let (x, z) = grid_to_world(size.cells() as f32, size.cells() as f32);
             let (px, py) = world_to_minimap(rect, size.middle_z(), x, z);
             assert!(
@@ -2087,7 +2113,7 @@ mod tests {
 
     #[test]
     fn a_route_can_be_found_right_across_a_big_map() {
-        let terrain = terrain(terrain_id(0, MapSize::L));
+        let terrain = terrain(map_of(MapSize::L));
         let from = terrain.nearest_walkable(grid_to_world(20.0, 20.0)).unwrap();
         let to = terrain
             .nearest_walkable(grid_to_world(236.0, 236.0))

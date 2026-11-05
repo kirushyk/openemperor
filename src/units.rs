@@ -4909,7 +4909,14 @@ mod tests {
     #[test]
     fn on_any_size_of_map_everyone_starts_on_the_map_on_land_and_further_apart_when_it_is_bigger() {
         let reach = |size: MapSize| {
-            let terrain = crate::battlefield::terrain(crate::battlefield::terrain_id(5, size));
+            // Land is scarcest on the water maps.
+            let map = (0..crate::game::MAPS.len())
+                .find(|&map| {
+                    let terrain = crate::battlefield::terrain(map);
+                    terrain.size() == size && terrain.material() == crate::platform::Material::Water
+                })
+                .unwrap();
+            let terrain = crate::battlefield::terrain(map);
             let units = spawn(terrain, &[TeamColor::Blue, TeamColor::Red, TeamColor::Cyan]);
             let opponent = units.iter().find(|u| u.owner == 1).unwrap();
             for unit in units.iter().filter(|u| u.altitude <= 0.0) {

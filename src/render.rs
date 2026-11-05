@@ -3039,13 +3039,6 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
                     canvas.rect(caret_x, cy - 4.0 * px, px, 8.0 * px, GOLD);
                 }
             }
-            Action::SetMapSize(size) => {
-                let chosen = setup.map_size == size;
-                let color = if chosen { GOLD } else { edge };
-                canvas.bordered_rect((b.x, b.y, b.w, b.h), border, color, BUTTON);
-                let letter = if chosen { GOLD } else { TEXT };
-                canvas.text_centered(b.label, cx, cy, px, letter);
-            }
             Action::MapDropdown => {
                 draw_field(canvas, game, b);
                 canvas.text_left(MAPS[setup.map], b.x + 16.0 * s, cy, px, TEXT);
@@ -3132,8 +3125,7 @@ fn draw_minimap(canvas: &mut Canvas, game: &Game) {
     let s = ui_scale(game.height);
     let px = small_text_px(game.height);
     let (x, y, size) = minimap_rect(game.width, game.height);
-    let shown = battlefield::terrain_id(game.skirmish.map, game.skirmish.map_size);
-    draw_map_diamond(canvas, game, shown, None, (x, y, size));
+    draw_map_diamond(canvas, game, game.skirmish.map, None, (x, y, size));
 
     let (mid_x, mid_y) = (x + size / 2.0, y + size / 2.0);
     let inset = 16.0 * s;

@@ -4071,17 +4071,45 @@ mod tests {
     }
 
     #[test]
-    fn aircraft_cast_a_shadow_on_the_ground() {
-        let shadows = |game: &Game| {
-            crate::render::build(game)
-                .iter()
-                .filter(|v| v.r == 0.0 && v.g == 0.0 && v.b == 0.0 && v.a > 0.0 && v.a < 1.0)
-                .count()
-        };
+    fn the_world_goes_to_the_backend_in_3d_with_normals_and_effects_with_depth() {
         let mut game = in_battle();
-        let with_planes = shadows(&game);
+        let frame = crate::render::build_frame(&game);
+        assert!(!frame.ground.is_empty() && !frame.objects.is_empty());
+        for v in frame.ground.iter().chain(&frame.objects) {
+            let length = v.normal.iter().map(|c| c * c).sum::<f32>().sqrt();
+            assert!((length - 1.0).abs() < 0.01, "{v:?}");
+        }
+        let all_on_screen = frame.ground.len() + frame.objects.len();
         game.units.retain(|u| !u.kind.flies());
-        assert!(with_planes > shadows(&game));
+        let without_planes = crate::render::build_frame(&game);
+        assert!(without_planes.ground.len() + without_planes.objects.len() < all_on_screen);
+        assert!(!without_planes.effects.is_empty(), "headlights");
+        for v in &without_planes.effects {
+            assert!(v.depth > 0.0 && v.depth < 1.0, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_blast_gives_the_backend_a_light_and_what_is_in_the_air_casts_a_shadow() {
+        let mut game = in_battle();
+        assert!(crate::render::build_frame(&game).lights.is_empty());
+        let (x, y, z) = game.units[0].center();
+        game.combat.explode((x, y, z), 1.0);
+        let frame = crate::render::build_frame(&game);
+        assert_eq!(frame.lights.len(), 1);
+        assert_eq!(frame.lights[0].place[0], x);
+        for _ in 0..crate::platform::MAX_LIGHTS * 2 {
+            game.combat.explode((x, y, z), 1.0);
+        }
+        let many = crate::render::build_frame(&game).lights.len();
+        assert_eq!(many, crate::platform::MAX_LIGHTS);
+    }
+
+    #[test]
+    fn nothing_of_the_world_is_drawn_outside_a_battle() {
+        let game = Game::new(W, H);
+        let frame = crate::render::build_frame(&game);
+        assert!(frame.ground.is_empty() && frame.objects.is_empty() && frame.lights.is_empty());
     }
 
     #[test]

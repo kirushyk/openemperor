@@ -339,6 +339,7 @@ impl Shell {
     }
 
     /// The spot under it, for its shadow.
+    #[cfg(test)]
     pub fn landing(&self) -> Point {
         self.landing
     }

@@ -40,22 +40,81 @@ impl Vertex {
     }
 }
 
-/// A corner of the ground, which a shader details per pixel from where it is in the world.
+/// A corner of something solid in the world. The backend places it through the camera's matrix,
+/// lights it by its normal and keeps what is nearest by depth.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GroundVertex {
+pub struct WorldVertex {
     pub x: f32,
     pub y: f32,
+    pub z: f32,
+    pub normal: [f32; 3],
     pub r: f32,
     pub g: f32,
     pub b: f32,
     /// How much of the light the fog of war lets through.
     pub seen: f32,
-    pub world_x: f32,
-    /// Its height, in a material with water how far above the surface or below it.
+    /// On the ground, its height; where a liquid lies, how far under its surface it is, below 0.
     pub level: f32,
-    pub world_z: f32,
 }
+
+impl WorldVertex {
+    /// A corner of an object standing on the map.
+    pub fn solid((x, y, z): (f32, f32, f32), normal: [f32; 3], [r, g, b]: [f32; 3]) -> Self {
+        WorldVertex {
+            x,
+            y,
+            z,
+            normal,
+            r,
+            g,
+            b,
+            seen: 1.0,
+            level: 1.0,
+        }
+    }
+}
+
+/// A corner of something see-through in the world: placed on the screen already, with the depth
+/// the backend tests it against what is solid. Its color is multiplied by its alpha.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectVertex {
+    pub x: f32,
+    pub y: f32,
+    pub depth: f32,
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+impl EffectVertex {
+    pub fn of(v: Vertex, depth: f32) -> Self {
+        EffectVertex {
+            x: v.x,
+            y: v.y,
+            depth,
+            r: v.r,
+            g: v.g,
+            b: v.b,
+            a: v.a,
+        }
+    }
+}
+
+/// A light that burns for a moment somewhere on the map, for the backend to light things with.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointLight {
+    pub place: [f32; 3],
+    pub radius: f32,
+    pub color: [f32; 3],
+    pub unused: f32,
+}
+
+/// How many lights the backends take. Further ones are left out.
+pub const MAX_LIGHTS: usize = 16;
 
 /// What the ground shader makes of the ground.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,36 +124,78 @@ pub enum Material {
     Sand = 2,
 }
 
-/// A frame of the battlefield or of anything else: the ground, then what is over it.
+/// A frame: the world, for the backend to place, light and shade, then what goes on the screen.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
-    pub ground: Vec<GroundVertex>,
+    pub ground: Vec<WorldVertex>,
     pub material: Material,
-    /// The world as seen in a mirror at the water's surface, for the water to reflect.
-    pub mirror: Vec<Vertex>,
+    /// Everything solid standing on the map.
+    pub objects: Vec<WorldVertex>,
+    /// What casts a shadow without being drawn as solid.
+    pub casters: Vec<WorldVertex>,
+    pub effects: Vec<EffectVertex>,
+    /// What goes over all of it, on the screen.
     pub over: Vec<Vertex>,
-    /// Seconds, to keep the water moving.
+    pub lights: Vec<PointLight>,
+    /// Seconds, to keep the ground moving.
     pub time: f32,
+    pub view: [f32; 16],
+    /// The same view with everything seen in a mirror at height 0.
+    pub mirror: [f32; 16],
+    /// The world as the sun sees it, for shadows.
+    pub sun_view: [f32; 16],
     pub camera: [f32; 3],
     pub sun: [f32; 3],
-    /// How water looks to a backend with no shader for it.
-    pub flat_water: [f32; 3],
+    /// How a liquid looks to a backend with no shader for it.
+    pub flat_liquid: [f32; 3],
+    pub size: (f32, f32),
 }
 
 impl Frame {
-    /// The frame as plain colored triangles, for a backend with no ground shader.
+    /// The frame as plain colored triangles in the order given, placed and lit here, for a
+    /// backend with no world pipeline. It has no depth and no shadows.
     #[cfg(any(test, not(target_os = "macos")))]
     pub fn flattened(&self) -> Vec<Vertex> {
-        let ground = self.ground.iter().map(|v| {
-            let is_water = self.material == Material::Water && v.level < 0.0;
-            let [r, g, b] = if is_water {
-                self.flat_water
+        let has_liquid = self.material == Material::Water;
+        let place = |v: &WorldVertex| {
+            let m = &self.view;
+            let w = m[3] * v.x + m[7] * v.y + m[11] * v.z + m[15];
+            let x = (m[0] * v.x + m[4] * v.y + m[8] * v.z + m[12]) / w;
+            let y = (m[1] * v.x + m[5] * v.y + m[9] * v.z + m[13]) / w;
+            (w > 0.0).then_some(((x + 1.0) / 2.0 * self.size.0, (1.0 - y) / 2.0 * self.size.1))
+        };
+        let shade = |v: &WorldVertex| {
+            let facing: f32 = (0..3).map(|i| v.normal[i] * self.sun[i]).sum();
+            let light = (0.45 + 0.55 * facing.max(0.0)) * v.seen;
+            let [r, g, b] = if has_liquid && v.level < 0.0 {
+                self.flat_liquid
             } else {
                 [v.r, v.g, v.b]
             };
-            Vertex::new((v.x, v.y), [r * v.seen, g * v.seen, b * v.seen, 1.0])
-        });
-        ground.chain(self.over.iter().copied()).collect()
+            [r * light, g * light, b * light, 1.0]
+        };
+        let mut flat = Vec::new();
+        for triangle in self.ground.chunks(3).chain(self.objects.chunks(3)) {
+            let placed: Option<Vec<(f32, f32)>> = triangle.iter().map(place).collect();
+            if let Some(placed) = placed {
+                flat.extend(
+                    placed
+                        .iter()
+                        .zip(triangle)
+                        .map(|(&point, v)| Vertex::new(point, shade(v))),
+                );
+            }
+        }
+        flat.extend(self.effects.iter().map(|v| Vertex {
+            x: v.x,
+            y: v.y,
+            r: v.r,
+            g: v.g,
+            b: v.b,
+            a: v.a,
+        }));
+        flat.extend(self.over.iter().copied());
+        flat
     }
 }
 
@@ -143,14 +244,23 @@ pub enum Event {
 #[cfg(target_os = "macos")]
 #[repr(C)]
 struct RawWorld {
-    ground: *const GroundVertex,
+    ground: *const WorldVertex,
     ground_count: u32,
-    mirror: *const Vertex,
-    mirror_count: u32,
+    objects: *const WorldVertex,
+    objects_count: u32,
+    casters: *const WorldVertex,
+    casters_count: u32,
+    effects: *const EffectVertex,
+    effects_count: u32,
     over: *const Vertex,
     over_count: u32,
+    lights: *const PointLight,
+    lights_count: u32,
     material: i32,
     time: f32,
+    view: [f32; 16],
+    mirror: [f32; 16],
+    sun_view: [f32; 16],
     camera: [f32; 3],
     sun: [f32; 3],
 }
@@ -224,12 +334,21 @@ impl Platform {
         let world = RawWorld {
             ground: frame.ground.as_ptr(),
             ground_count: frame.ground.len() as u32,
-            mirror: frame.mirror.as_ptr(),
-            mirror_count: frame.mirror.len() as u32,
+            objects: frame.objects.as_ptr(),
+            objects_count: frame.objects.len() as u32,
+            casters: frame.casters.as_ptr(),
+            casters_count: frame.casters.len() as u32,
+            effects: frame.effects.as_ptr(),
+            effects_count: frame.effects.len() as u32,
             over: frame.over.as_ptr(),
             over_count: frame.over.len() as u32,
+            lights: frame.lights.as_ptr(),
+            lights_count: frame.lights.len().min(MAX_LIGHTS) as u32,
             material: frame.material as i32,
             time: frame.time,
+            view: frame.view,
+            mirror: frame.mirror,
+            sun_view: frame.sun_view,
             camera: frame.camera,
             sun: frame.sun,
         };
@@ -266,34 +385,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_flattened_frame_has_the_ground_under_the_rest_and_water_in_its_flat_color() {
-        let corner = |level: f32| GroundVertex {
-            x: 1.0,
-            y: 2.0,
-            r: 0.5,
-            g: 0.5,
-            b: 0.5,
-            seen: 0.5,
-            world_x: 0.0,
+    fn a_flattened_frame_places_the_world_under_the_rest_with_liquid_in_its_flat_color() {
+        let mut identity = [0.0; 16];
+        for i in [0, 5, 10, 15] {
+            identity[i] = 1.0;
+        }
+        let corner = |level: f32| WorldVertex {
             level,
-            world_z: 0.0,
+            ..WorldVertex::solid((0.0, 0.0, 0.0), [0.0, 1.0, 0.0], [0.5, 0.5, 0.5])
         };
         let over = Vertex::new((3.0, 4.0), [1.0, 1.0, 1.0, 1.0]);
         let frame = Frame {
-            ground: vec![corner(-1.0), corner(1.0)],
+            ground: vec![corner(-1.0), corner(-1.0), corner(1.0)],
             material: Material::Water,
-            mirror: Vec::new(),
+            objects: Vec::new(),
+            casters: Vec::new(),
+            effects: Vec::new(),
             over: vec![over],
+            lights: Vec::new(),
             time: 0.0,
+            view: identity,
+            mirror: identity,
+            sun_view: identity,
             camera: [0.0; 3],
-            sun: [0.0; 3],
-            flat_water: [0.0, 0.0, 1.0],
+            sun: [0.0, 1.0, 0.0],
+            flat_liquid: [0.0, 0.0, 1.0],
+            size: (100.0, 100.0),
         };
         let flat = frame.flattened();
-        assert_eq!(flat.len(), 3);
-        assert_eq!([flat[0].r, flat[0].b, flat[0].a], [0.0, 0.5, 1.0]);
-        assert_eq!([flat[1].r, flat[1].b], [0.25, 0.25]);
-        assert_eq!(flat[2], over);
+        assert_eq!(flat.len(), 4);
+        assert_eq!(
+            (flat[0].x, flat[0].y),
+            (50.0, 50.0),
+            "the middle of the screen"
+        );
+        assert_eq!([flat[0].r, flat[0].b], [0.0, 1.0]);
+        assert_eq!(flat[2].r, 0.5);
+        assert_eq!(flat[3], over);
     }
 
     #[test]

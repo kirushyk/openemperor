@@ -48,29 +48,56 @@ int32_t oe_poll_event(OeEvent *event);
 /* Draws a triangle list and presents. Blocks for vsync. */
 void oe_draw(const OeVertex *vertices, uint32_t count, float r, float g, float b);
 
-/* A corner of the ground, which a shader details per pixel. */
+/* A corner of something solid in the world, placed and lit by the backend. */
 typedef struct {
-    float x, y;
+    float x, y, z;
+    float normal[3];
     float r, g, b;
     float seen;
-    float world_x, level, world_z;
-} OeGroundVertex;
+    float level;
+} OeWorldVertex;
 
-/* A frame of the battlefield. Backends without a ground shader get oe_draw instead. */
+/* A corner of something see-through: on the screen, with a depth to test. Premultiplied. */
 typedef struct {
-    const OeGroundVertex *ground;
+    float x, y, depth;
+    float r, g, b, a;
+} OeEffectVertex;
+
+typedef struct {
+    float place[3];
+    float radius;
+    float color[3];
+    float unused;
+} OePointLight;
+
+enum { OE_MAX_LIGHTS = 16 };
+
+/* A frame. Backends without a world pipeline get oe_draw instead. */
+typedef struct {
+    const OeWorldVertex *ground;
     uint32_t ground_count;
-    const OeVertex *mirror;
-    uint32_t mirror_count;
+    const OeWorldVertex *objects;
+    uint32_t objects_count;
+    const OeWorldVertex *casters;
+    uint32_t casters_count;
+    const OeEffectVertex *effects;
+    uint32_t effects_count;
     const OeVertex *over;
     uint32_t over_count;
+    const OePointLight *lights;
+    uint32_t lights_count;
     int32_t material; /* 0 plain, 1 water, 2 sand */
     float time;
+    float view[16];   /* by columns */
+    float mirror[16]; /* the view as seen in a mirror at height 0 */
+    float sun_view[16];
     float camera[3];
     float sun[3];
 } OeWorld;
 
-/* Draws the ground, then what is over it, and presents. Blocks for vsync. macOS only so far. */
+/* Draws a frame and presents: the sun's shadow map, the reflection if there is water, then the
+ * ground and objects lit per pixel with a depth buffer, the effects tested against it, and what
+ * goes over it all. Blocks for vsync. macOS only so far. */
 void oe_draw_world(const OeWorld *world, float r, float g, float b);
 
 void oe_shutdown(void);

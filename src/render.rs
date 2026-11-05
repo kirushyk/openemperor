@@ -12,7 +12,7 @@ use crate::game::{
 };
 use crate::hud;
 use crate::planet;
-use crate::platform::{Frame, GroundVertex, Material, Vertex};
+use crate::platform::{EffectVertex, Frame, MAX_LIGHTS, PointLight, Vertex, WorldVertex};
 use crate::units::{self, Role, Target, Unit, UnitKind};
 use crate::weapons::STRIKE_RADIUS;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
@@ -36,7 +36,7 @@ const SMOKE: [f32; 3] = [0.16, 0.15, 0.14];
 pub const MAKING_DIM: Color = [0.0, 0.0, 0.0, 0.62];
 const PLACE_OK: [f32; 3] = [0.3, 1.0, 0.4];
 const PLACE_NOT: [f32; 3] = [1.0, 0.25, 0.2];
-const CABLE: Color = [0.1, 0.1, 0.1, 1.0];
+const CABLE: [f32; 3] = [0.1, 0.1, 0.1];
 const QUIET: Color = [0.55, 0.53, 0.48, 1.0];
 const GOLD: Color = [0.95, 0.76, 0.32, 1.0];
 const GOLD_DIM: Color = [0.62, 0.50, 0.24, 1.0];
@@ -76,7 +76,6 @@ const BLAST_COLOR: [f32; 3] = [1.0, 0.62, 0.15];
 const MISSILE_BODY: Color = [0.95, 0.95, 0.9, 1.0];
 const MISSILE_FLAME: Color = [1.0, 0.6, 0.15, 0.8];
 const SHELL_BODY: Color = [0.12, 0.12, 0.12, 1.0];
-const SHADOW: Color = [0.0, 0.0, 0.0, 0.3];
 const HEALTH_GOOD: Color = [0.3, 0.9, 0.3, 1.0];
 const HEALTH_BAD: Color = [0.9, 0.2, 0.15, 1.0];
 const DEFEAT_RED: Color = [0.92, 0.22, 0.18, 1.0];
@@ -112,14 +111,128 @@ fn border_px(height: f32) -> f32 {
 
 #[derive(Default)]
 struct Canvas {
+    /// What goes on the screen over the whole world.
     vertices: Vec<Vertex>,
-    /// The ground, which goes under all of `vertices`.
-    ground: Vec<GroundVertex>,
-    /// While a shape is being worked out for its shadow: the world points its parts reach.
-    shadow_of: Option<Vec<(f32, f32, f32)>>,
+    ground: Vec<WorldVertex>,
+    /// All that stands on the map, solid.
+    objects: Vec<WorldVertex>,
+    /// What casts a shadow without being drawn as solid.
+    casters: Vec<WorldVertex>,
+    /// What is see-through, hidden by whatever solid is in front of it.
+    effects: Vec<EffectVertex>,
 }
 
+/// A point in the world, as (x, height, z).
+type Point = (f32, f32, f32);
+
 impl Canvas {
+    /// A solid face, with its first two corners at its foot and the others at its head.
+    fn solid_quad(
+        &mut self,
+        [a, b, c, d]: [Point; 4],
+        normal: [f32; 3],
+        (foot, head): ([f32; 3], [f32; 3]),
+    ) {
+        let corner = |point: Point, color: [f32; 3]| WorldVertex::solid(point, normal, color);
+        self.objects.extend([
+            corner(a, foot),
+            corner(b, foot),
+            corner(c, head),
+            corner(a, foot),
+            corner(c, head),
+            corner(d, head),
+        ]);
+    }
+
+    /// A long square bar between two points, its flat sides along `side`, a unit vector across
+    /// the way it runs.
+    fn solid_bar(&mut self, a: Point, b: Point, half: f32, side: [f32; 3], color: [f32; 3]) {
+        let way = unit_vector([b.0 - a.0, b.1 - a.1, b.2 - a.2]);
+        let up = unit_vector(cross(way, side));
+        let at = |point: Point, s: f32, u: f32| {
+            (
+                point.0 + (side[0] * s + up[0] * u) * half,
+                point.1 + (side[1] * s + up[1] * u) * half,
+                point.2 + (side[2] * s + up[2] * u) * half,
+            )
+        };
+        for (s0, u0, s1, u1, normal) in [
+            (1.0, -1.0, 1.0, 1.0, side),
+            (-1.0, 1.0, -1.0, -1.0, side.map(|c| -c)),
+            (1.0, 1.0, -1.0, 1.0, up),
+            (-1.0, -1.0, 1.0, -1.0, up.map(|c| -c)),
+        ] {
+            self.solid_quad(
+                [at(a, s0, u0), at(a, s1, u1), at(b, s1, u1), at(b, s0, u0)],
+                normal,
+                (color, color),
+            );
+        }
+    }
+
+    /// Moves what was drawn on the screen since `mark` among the effects, all at one depth.
+    fn deepen(&mut self, mark: usize, depth: f32) {
+        self.effects.extend(
+            self.vertices
+                .drain(mark..)
+                .map(|vertex| EffectVertex::of(vertex, depth)),
+        );
+    }
+
+    /// A line in the world of a thickness in pixels, hidden by whatever solid is in front of it.
+    fn deep_line(
+        &mut self,
+        view: &battlefield::View,
+        a: Point,
+        b: Point,
+        thickness: f32,
+        c: Color,
+    ) {
+        let (Some(from), Some(to)) = (
+            view.project_deep(a.0, a.1, a.2),
+            view.project_deep(b.0, b.1, b.2),
+        ) else {
+            return;
+        };
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let length = dx.hypot(dy);
+        if length == 0.0 {
+            return;
+        }
+        let (nx, ny) = (
+            -dy / length * thickness / 2.0,
+            dx / length * thickness / 2.0,
+        );
+        let corner = |(x, y, depth): (f32, f32, f32), sign: f32| {
+            EffectVertex::of(Vertex::new((x + nx * sign, y + ny * sign), c), depth)
+        };
+        let (p, q) = (corner(from, 1.0), corner(to, 1.0));
+        let (r, t) = (corner(to, -1.0), corner(from, -1.0));
+        self.effects.extend([p, q, r, p, r, t]);
+    }
+
+    /// A see-through triangle in the world, each corner of its own color.
+    fn deep_fill(&mut self, view: &battlefield::View, corners: [(Point, Color); 3]) {
+        let placed = corners.map(|((x, y, z), color)| {
+            view.project_deep(x, y, z)
+                .map(|(px, py, depth)| EffectVertex::of(Vertex::new((px, py), color), depth))
+        });
+        if let [Some(a), Some(b), Some(c)] = placed {
+            self.effects.extend([a, b, c]);
+        }
+    }
+
+    /// A triangle of light in the world, each corner of its own brightness.
+    fn deep_light(&mut self, view: &battlefield::View, corners: [(Point, [f32; 3]); 3]) {
+        let placed = corners.map(|((x, y, z), color)| {
+            view.project_deep(x, y, z)
+                .map(|(px, py, depth)| EffectVertex::of(Vertex::light((px, py), color), depth))
+        });
+        if let [Some(a), Some(b), Some(c)] = placed {
+            self.effects.extend([a, b, c]);
+        }
+    }
+
     fn triangle(&mut self, points: [(f32, f32); 3], c: Color) {
         self.vertices
             .extend(points.map(|point| Vertex::new(point, c)));
@@ -386,33 +499,81 @@ pub fn clear_color(game: &Game) -> [f32; 3] {
     }
 }
 
-/// All that is drawn, as plain triangles over the ground left out.
+/// All that is drawn on the screen and as effects, with the solid world left out.
 #[cfg(test)]
 pub fn build(game: &Game) -> Vec<Vertex> {
-    build_frame(game).over
+    let frame = build_frame(game);
+    let effects = frame.effects.iter().map(|v| Vertex {
+        x: v.x,
+        y: v.y,
+        r: v.r,
+        g: v.g,
+        b: v.b,
+        a: v.a,
+    });
+    effects.chain(frame.over.iter().copied()).collect()
 }
 
-/// The whole frame: the battlefield's ground, if it shows, and all that goes over it.
+/// The whole frame: the battlefield, if it shows, and what goes over it.
 pub fn build_frame(game: &Game) -> Frame {
     let terrain = battlefield::terrain(game.battle_map);
-    let material = terrain.material();
-    let mut canvas = canvas_of(game);
-    let battle_shows = !canvas.ground.is_empty();
-    let mirror = if battle_shows && material == Material::Water {
-        draw_reflection(game)
-    } else {
-        Vec::new()
-    };
+    let canvas = canvas_of(game);
+    let view = battlefield::View::new(game.camera, game.width, game.height);
+    let focus = (game.camera.x, game.camera.z);
     Frame {
-        ground: std::mem::take(&mut canvas.ground),
-        material,
-        mirror,
+        lights: if canvas.ground.is_empty() {
+            Vec::new()
+        } else {
+            lights_of(game)
+        },
+        ground: canvas.ground,
+        material: terrain.material(),
+        objects: canvas.objects,
+        casters: canvas.casters,
+        effects: canvas.effects,
         over: canvas.vertices,
         time: game.battle_time(),
-        camera: battlefield::View::new(game.camera, game.width, game.height).position(),
+        view: view.matrix(),
+        mirror: view.mirror_matrix(),
+        sun_view: view.sun_matrix(focus, game.width, game.height),
+        camera: view.position(),
         sun: SUN,
-        flat_water: terrain.lower_color(),
+        flat_liquid: terrain.lower_color(),
+        size: (game.width, game.height),
     }
+}
+
+/// What burns on the map right now and lights what is around it, the newest first.
+fn lights_of(game: &Game) -> Vec<PointLight> {
+    game.combat
+        .blasts
+        .iter()
+        .rev()
+        .filter(|blast| game.sight_at(blast.at.0, blast.at.2) == Sight::Visible)
+        .take(MAX_LIGHTS)
+        .map(|blast| {
+            let light = blast.life * blast.life * 1.3;
+            PointLight {
+                place: [blast.at.0, blast.at.1 + 0.6, blast.at.2],
+                radius: blast.radius * 3.0 + 1.5,
+                color: [light, light * 0.55, light * 0.2],
+                unused: 0.0,
+            }
+        })
+        .collect()
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn unit_vector(a: [f32; 3]) -> [f32; 3] {
+    let length = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt().max(1e-6);
+    a.map(|c| c / length)
 }
 
 fn canvas_of(game: &Game) -> Canvas {
@@ -742,23 +903,19 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
     draw_chat(canvas, game);
 }
 
-/// Units and ruins as simple boxes, farthest first, shaded per face so they read as solid.
-/// Whatever flies goes over all of that, with its shadow and ring down on the ground below.
+/// Units and ruins as simple boxes, farthest first, for a backend with no depth to go by.
+/// Whatever flies goes last, with its ring down on the ground below.
 fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     enum Object<'a> {
         Unit(&'a Unit),
         Ruin(&'a battlefield::RuinPiece),
-        Cell(&'a battlefield::RaisedCell),
     }
     let z_of = |object: &Object| match object {
         Object::Unit(unit) => unit.z,
         Object::Ruin(piece) => piece.z,
-        Object::Cell(cell) => cell.z,
     };
-    let terrain = battlefield::terrain(game.battle_map);
     let view = battlefield::View::new(game.camera, game.width, game.height);
     draw_poison(canvas, game, &view);
-    draw_cast_shadows(canvas, game, &view);
     draw_order_lines(canvas, game, &view);
     let is_marked = |unit: &Unit| unit.selected || game.in_selection_drag(unit);
     let mut flying: Vec<&Unit> = game
@@ -785,7 +942,6 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             .filter(|piece| game.sight_at(piece.x, piece.z) != Sight::Unexplored)
             .map(Object::Ruin),
     );
-    order.extend(terrain.raised_cells().iter().map(Object::Cell));
     order.sort_by(|a, b| z_of(a).total_cmp(&z_of(b)));
     for object in order {
         match object {
@@ -800,32 +956,18 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             Object::Ruin(piece) => {
                 let shade = piece.shade * game.sight_at(piece.x, piece.z).shade();
                 let color = RUIN_CONCRETE.map(|c| c * shade);
-                let footprint = (piece.x, piece.z, piece.half_x, piece.half_z);
-                draw_box(
-                    canvas,
-                    game,
-                    &view,
-                    footprint,
-                    (piece.y, piece.y + piece.height),
-                    color,
-                );
+                let footprint = (piece.x, piece.z, piece.half_x, piece.half_z, 0.0);
+                draw_turned_box(canvas, footprint, (piece.y, piece.y + piece.height), color);
             }
-            Object::Cell(cell) => battlefield::draw_cell(
-                &mut canvas.vertices,
-                terrain,
-                game.fog.as_ref(),
-                &view,
-                (cell.u, cell.v),
-                (game.width, game.height),
-            ),
         }
     }
     if let Some((building, can)) = game.placing_preview() {
         let color = if can { PLACE_OK } else { PLACE_NOT };
-        draw_ground_disc(
+        draw_draped_disc(
             canvas,
+            game,
             &view,
-            (building.x, building.y, building.z),
+            (building.x, building.z),
             building.kind.radius(),
             color,
             (0.5, 0.5),
@@ -840,298 +982,78 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     }
 }
 
-/// How much a surface facing this way gets from the sun and the sky, per color channel.
-fn sunlight(normal: [f32; 3]) -> [f32; 3] {
-    const SKY: [f32; 3] = [0.42, 0.45, 0.52];
-    const SUN_COLOR: [f32; 3] = [0.62, 0.58, 0.50];
-    /// How far around its back the sun's light still reaches, softening the terminator.
-    const WRAP: f32 = 0.5;
-    let facing = normal[0] * SUN[0] + normal[1] * SUN[1] + normal[2] * SUN[2];
-    let sun = ((facing + WRAP) / (1.0 + WRAP)).max(0.0);
-    [0, 1, 2].map(|i| SKY[i] + SUN_COLOR[i] * sun)
+/// Something small in the air that shows only by its shadow on the ground.
+fn cast_only(canvas: &mut Canvas, (x, y, z): Point, half: f32) {
+    let drawn = canvas.objects.len();
+    draw_turned_box(
+        canvas,
+        (x, z, half, half, 0.0),
+        (y - half, y + half),
+        [0.0; 3],
+    );
+    let moved: Vec<WorldVertex> = canvas.objects.drain(drawn..).collect();
+    canvas.casters.extend(moved);
 }
 
-fn lit(color: [f32; 3], normal: [f32; 3]) -> [f32; 3] {
-    let light = sunlight(normal);
-    [0, 1, 2].map(|i| color[i] * light[i])
+/// How far over the ground what lies on it goes, to show over it in the depth test.
+const OVER_GROUND: f32 = 0.04;
+
+/// A flat disc at one height, seen in perspective, fading out towards its rim if asked.
+fn draw_flat_disc(
+    canvas: &mut Canvas,
+    view: &battlefield::View,
+    (x, y, z): Point,
+    radius: f32,
+    color: [f32; 3],
+    alphas: (f32, f32),
+) {
+    draw_disc(canvas, view, (x, z), radius, color, alphas, |_, _| y);
 }
 
-/// Where the sun casts a point at this height above the ground, relative to below it.
-fn shadow_offset(height: f32) -> (f32, f32) {
-    (-SUN[0] / SUN[1] * height, -SUN[2] / SUN[1] * height)
-}
-
-/// The convex outline of some points on the ground, going around it.
-fn convex_hull(mut points: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
-    points.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    points.dedup();
-    if points.len() < 3 {
-        return points;
-    }
-    let turn = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| {
-        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
-    };
-    let mut hull: Vec<(f32, f32)> = Vec::with_capacity(points.len() + 1);
-    let forward = points.iter().copied();
-    for pass in [forward.clone().collect::<Vec<_>>(), forward.rev().collect()] {
-        let floor = hull.len();
-        for point in pass {
-            while hull.len() >= floor + 2
-                && turn(hull[hull.len() - 2], hull[hull.len() - 1], point) <= 0.0
-            {
-                hull.pop();
-            }
-            hull.push(point);
-        }
-        hull.pop();
-    }
-    hull
-}
-
-/// A shadow on the ground at this height, dark inside and fading out over its soft rim.
-fn draw_soft_shadow(
+/// A disc lying on the ground, following the terrain under it.
+fn draw_draped_disc(
     canvas: &mut Canvas,
     game: &Game,
     view: &battlefield::View,
-    outline: &[(f32, f32)],
-    ground: f32,
-    (alpha, soft): (f32, f32),
-) {
-    if outline.len() < 3 {
-        return;
-    }
-    let count = outline.len() as f32;
-    let middle_x = outline.iter().map(|p| p.0).sum::<f32>() / count;
-    let middle_z = outline.iter().map(|p| p.1).sum::<f32>() / count;
-    let on_screen = |(x, z): (f32, f32)| view.project(x, ground, z);
-    let Some(middle) = on_screen((middle_x, middle_z)) else {
-        return;
-    };
-    let rim = |(x, z): (f32, f32)| {
-        let (dx, dz) = (x - middle_x, z - middle_z);
-        let length = dx.hypot(dz).max(0.0001);
-        (x + dx / length * soft, z + dz / length * soft)
-    };
-    let inner: Option<Vec<(f32, f32)>> = outline.iter().map(|&p| on_screen(p)).collect();
-    let outer: Option<Vec<(f32, f32)>> = outline.iter().map(|&p| on_screen(rim(p))).collect();
-    let (Some(inner), Some(outer)) = (inner, outer) else {
-        return;
-    };
-    if battlefield::all_off_screen(&outer, game.width, game.height) {
-        return;
-    }
-    let dark = Vertex::new((0.0, 0.0), [0.0, 0.0, 0.0, alpha]);
-    let clear = Vertex::new((0.0, 0.0), [0.0; 4]);
-    let at = |vertex: Vertex, (x, y): (f32, f32)| Vertex { x, y, ..vertex };
-    for i in 0..inner.len() {
-        let j = (i + 1) % inner.len();
-        canvas.vertices.extend([
-            at(dark, middle),
-            at(dark, inner[i]),
-            at(dark, inner[j]),
-            at(dark, inner[i]),
-            at(clear, outer[i]),
-            at(clear, outer[j]),
-            at(dark, inner[i]),
-            at(clear, outer[j]),
-            at(dark, inner[j]),
-        ]);
-    }
-}
-
-/// Where the sun casts everything that shows, all on the ground and under all of it. Ruins
-/// cast from their boxes. A unit casts the outline of all its parts, as one shadow, so that
-/// its parts do not darken one another's. What flies casts further away and more softly.
-fn draw_cast_shadows(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
-    /// How dark a shadow is, at the darkest.
-    const DARK: f32 = 0.42;
-    const SOFT: f32 = 0.05;
-    /// How much a shadow softens and fades per unit of height it was cast from.
-    const SPREAD: f32 = 0.05;
-    const FADE: f32 = 0.05;
-    let terrain = battlefield::terrain(game.battle_map);
-    for piece in terrain.ruins() {
-        if game.sight_at(piece.x, piece.z) == Sight::Unexplored {
-            continue;
-        }
-        let cast = shadow_offset(piece.height);
-        let (x, z) = (piece.x, piece.z);
-        let mut points = Vec::with_capacity(8);
-        for (dx, dz) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-            let (px, pz) = (x + dx * piece.half_x, z + dz * piece.half_z);
-            points.extend([(px, pz), (px + cast.0, pz + cast.1)]);
-        }
-        let ground = terrain.height_at(x, z);
-        draw_soft_shadow(
-            canvas,
-            game,
-            view,
-            &convex_hull(points),
-            ground,
-            (DARK, SOFT),
-        );
-    }
-    for unit in game.units.iter().filter(|u| game.shows(u)) {
-        let drawn = canvas.vertices.len();
-        canvas.shadow_of = Some(Vec::new());
-        draw_unit_model(canvas, game, view, unit);
-        let reached = canvas.shadow_of.take().unwrap_or_default();
-        canvas.vertices.truncate(drawn);
-        // Where its shadow lands decides how far down it was cast.
-        let (off_x, off_z) = shadow_offset(unit.altitude);
-        let ground = terrain.height_at(unit.x + off_x, unit.z + off_z);
-        let on_ground = |&(x, y, z): &(f32, f32, f32)| {
-            let (dx, dz) = shadow_offset((y - ground).max(0.0));
-            (x + dx, z + dz)
-        };
-        let mut points: Vec<(f32, f32)> = reached.iter().map(on_ground).collect();
-        // A part drawn with no box still takes up its unit's middle.
-        let radius = unit.kind.radius() * 0.5;
-        let middle = (unit.x, unit.y + unit.altitude, unit.z);
-        let (mx, mz) = on_ground(&middle);
-        points.extend([
-            (mx - radius, mz),
-            (mx + radius, mz),
-            (mx, mz - radius),
-            (mx, mz + radius),
-        ]);
-        let alpha = (DARK * (1.0 - unit.altitude * FADE)).max(DARK * 0.4);
-        let soft = SOFT + unit.altitude * SPREAD;
-        draw_soft_shadow(
-            canvas,
-            game,
-            view,
-            &convex_hull(points),
-            ground,
-            (alpha, soft),
-        );
-    }
-}
-
-/// Mountains, ruins and units as they look reflected in water. Flat land reflects too little
-/// to be worth it.
-fn draw_reflection(game: &Game) -> Vec<Vertex> {
-    let mut canvas = Canvas::default();
-    let terrain = battlefield::terrain(game.battle_map);
-    let view = battlefield::View::new(game.camera, game.width, game.height).mirrored();
-    enum Object<'a> {
-        Unit(&'a Unit),
-        Ruin(&'a battlefield::RuinPiece),
-        Cell(&'a battlefield::RaisedCell),
-    }
-    let mut order: Vec<(f32, Object)> = game
-        .units
-        .iter()
-        .filter(|u| game.shows(u))
-        .map(|u| (u.z, Object::Unit(u)))
-        .collect();
-    order.extend(
-        terrain
-            .ruins()
-            .iter()
-            .filter(|piece| game.sight_at(piece.x, piece.z) != Sight::Unexplored)
-            .map(|piece| (piece.z, Object::Ruin(piece))),
-    );
-    order.extend(
-        terrain
-            .raised_cells()
-            .iter()
-            .map(|cell| (cell.z, Object::Cell(cell))),
-    );
-    order.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for (_, object) in order {
-        match object {
-            Object::Unit(unit) => draw_unit_model(&mut canvas, game, &view, unit),
-            Object::Ruin(piece) => {
-                let shade = piece.shade * game.sight_at(piece.x, piece.z).shade();
-                draw_box(
-                    &mut canvas,
-                    game,
-                    &view,
-                    (piece.x, piece.z, piece.half_x, piece.half_z),
-                    (piece.y, piece.y + piece.height),
-                    RUIN_CONCRETE.map(|c| c * shade),
-                );
-            }
-            Object::Cell(cell) => battlefield::draw_cell(
-                &mut canvas.vertices,
-                terrain,
-                game.fog.as_ref(),
-                &view,
-                (cell.u, cell.v),
-                (game.width, game.height),
-            ),
-        }
-    }
-    canvas.vertices
-}
-
-/// Light thrown on the ground around a point, brightest at it. It adds to whatever is there.
-fn draw_ground_glow(
-    canvas: &mut Canvas,
-    view: &battlefield::View,
-    (x, y, z): (f32, f32, f32),
+    center: (f32, f32),
     radius: f32,
     color: [f32; 3],
+    alphas: (f32, f32),
 ) {
-    const WEDGES: usize = 20;
-    let Some(middle) = view.project(x, y, z) else {
-        return;
-    };
-    let rim = |i: usize| {
-        let (sin, cos) = (i as f32 / WEDGES as f32 * TAU).sin_cos();
-        view.project(x + radius * cos, y, z + radius * sin)
-    };
-    for i in 0..WEDGES {
-        if let (Some(a), Some(b)) = (rim(i), rim(i + 1)) {
-            canvas.vertices.extend([
-                Vertex::light(middle, color),
-                Vertex::light(a, [0.0; 3]),
-                Vertex::light(b, [0.0; 3]),
-            ]);
-        }
-    }
+    let terrain = battlefield::terrain(game.battle_map);
+    draw_disc(canvas, view, center, radius, color, alphas, |x, z| {
+        terrain.height_at(x, z).max(0.0) + OVER_GROUND
+    });
 }
 
-/// The shadow of a small thing in the air, on the ground straight below it.
-fn draw_shadow(canvas: &mut Canvas, view: &battlefield::View, below: (f32, f32, f32), radius: f32) {
-    draw_ground_disc(
-        canvas,
-        view,
-        below,
-        radius,
-        [0.0, 0.0, 0.0],
-        (SHADOW[3], SHADOW[3]),
-    );
-}
-
-/// A flat disc on the ground, seen in perspective, fading out towards its rim if asked.
-fn draw_ground_disc(
+fn draw_disc(
     canvas: &mut Canvas,
     view: &battlefield::View,
-    (x, y, z): (f32, f32, f32),
+    (x, z): (f32, f32),
     radius: f32,
     color: [f32; 3],
     (center_alpha, rim_alpha): (f32, f32),
+    height: impl Fn(f32, f32) -> f32,
 ) {
     const WEDGES: usize = 40;
-    let Some(middle) = view.project(x, y, z) else {
-        return;
-    };
     let rim = |i: usize| {
         let (sin, cos) = (i as f32 / WEDGES as f32 * TAU).sin_cos();
-        view.project(x + radius * cos, y, z + radius * sin)
+        let (px, pz) = (x + radius * cos, z + radius * sin);
+        (px, height(px, pz), pz)
     };
+    let (middle, rim_color) = (
+        with_alpha(color, center_alpha),
+        with_alpha(color, rim_alpha),
+    );
     for i in 0..WEDGES {
-        if let (Some(a), Some(b_point)) = (rim(i), rim(i + 1)) {
-            let vertex =
-                |point: (f32, f32), alpha: f32| Vertex::new(point, with_alpha(color, alpha));
-            canvas.vertices.extend([
-                vertex(middle, center_alpha),
-                vertex(a, rim_alpha),
-                vertex(b_point, rim_alpha),
-            ]);
-        }
+        canvas.deep_fill(
+            view,
+            [
+                ((x, height(x, z), z), middle),
+                (rim(i), rim_color),
+                (rim(i + 1), rim_color),
+            ],
+        );
     }
 }
 
@@ -1146,10 +1068,11 @@ fn draw_poison(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
         let fade = (zone.life / 5.0).min(1.0);
         let breath = 0.85 + 0.15 * (game.battle_time() * 2.0).sin();
         let alpha = POISON_ALPHA * fade * breath;
-        draw_ground_disc(
+        draw_draped_disc(
             canvas,
+            game,
             view,
-            (zone.x, 0.02, zone.z),
+            (zone.x, zone.z),
             STRIKE_RADIUS,
             POISON_FILL,
             (alpha, alpha * 1.4),
@@ -1157,49 +1080,34 @@ fn draw_poison(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     }
 }
 
-/// Shots in the air and explosions, drawn over everything standing on the map.
+/// Shots in the air and explosions, hidden by what is solid in front of them.
 fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     let s = ui_scale(game.height);
     // What happens where the player cannot see stays hidden.
     let seen = |(x, _, z): (f32, f32, f32)| game.sight_at(x, z) == Sight::Visible;
-    let terrain = battlefield::terrain(game.battle_map);
-    for blast in game.combat.blasts.iter().filter(|b| seen(b.at)) {
-        // It lights the ground around it, and whoever stands there, as it burns out.
-        let (x, _, z) = blast.at;
-        let light = blast.life * blast.life;
-        draw_ground_glow(
-            canvas,
-            view,
-            (x, terrain.height_at(x, z), z),
-            blast.radius * 3.0 + 0.5,
-            [0.75 * light, 0.42 * light, 0.14 * light],
-        );
-    }
     for beam in game
         .combat
         .beams
         .iter()
         .filter(|b| seen(b.from) || seen(b.to))
     {
-        let from = view.project(beam.from.0, beam.from.1, beam.from.2);
-        let to = view.project(beam.to.0, beam.to.1, beam.to.2);
-        if let (Some(a), Some(b)) = (from, to) {
-            let (glow, core) = if beam.repair {
-                (REPAIR_GLOW, REPAIR_CORE)
-            } else {
-                (LASER_GLOW, LASER_CORE)
-            };
-            canvas.line(a, b, 9.0 * s, faded(glow, beam.life));
-            canvas.line(a, b, (2.5 * s).max(1.0), faded(core, beam.life));
-        }
+        let (glow, core) = if beam.repair {
+            (REPAIR_GLOW, REPAIR_CORE)
+        } else {
+            (LASER_GLOW, LASER_CORE)
+        };
+        canvas.deep_line(view, beam.from, beam.to, 9.0 * s, faded(glow, beam.life));
+        let thin = (2.5 * s).max(1.0);
+        canvas.deep_line(view, beam.from, beam.to, thin, faded(core, beam.life));
     }
     for spray in game.combat.sprays.iter().filter(|s| seen(s.from)) {
         draw_spray(canvas, view, spray);
     }
     for flare in game.combat.flares.iter().filter(|f| seen(f.at)) {
         let (x, y, z) = flare.at;
-        if let Some((px, py)) = view.project(x, y, z) {
+        if let Some((px, py, depth)) = view.project_deep(x, y, z) {
             let size = flare.size * s;
+            let mark = canvas.vertices.len();
             canvas.star(
                 (px, py),
                 (size, size * 0.35),
@@ -1208,67 +1116,68 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
                 with_alpha(FLARE_GLOW, 0.8 * flare.life),
             );
             canvas.circle(px, py, size * 0.35, with_alpha(FLARE_CORE, flare.life));
+            canvas.deepen(mark, depth);
         }
     }
     for missile in game.combat.missiles.iter().filter(|m| seen(m.position)) {
         let (x, y, z) = missile.position;
         let (dx, dy, dz) = missile.direction;
-        let back = |by: f32| view.project(x - dx * by, y - dy * by, z - dz * by);
-        if let (Some(nose), Some(tail), Some(flame)) = (back(0.0), back(0.35), back(0.8)) {
-            canvas.line(tail, flame, (4.0 * s).max(1.0), MISSILE_FLAME);
-            canvas.line(nose, tail, (4.0 * s).max(1.0), MISSILE_BODY);
-        }
+        let back = |by: f32| (x - dx * by, y - dy * by, z - dz * by);
+        let wide = (4.0 * s).max(1.0);
+        canvas.deep_line(view, back(0.35), back(0.8), wide, MISSILE_FLAME);
+        canvas.deep_line(view, back(0.0), back(0.35), wide, MISSILE_BODY);
+        cast_only(canvas, back(0.2), 0.05);
     }
     for shell in game.combat.shells.iter().filter(|s| seen(s.position())) {
-        let (_, ground, _) = shell.landing();
         let (x, y, z) = shell.position();
         if let Some(tracer) = shell.tracer() {
-            draw_shadow(canvas, view, (x, ground, z), 0.08);
-            let project = |(x, y, z): (f32, f32, f32)| view.project(x, y, z);
+            cast_only(canvas, (x, y, z), 0.05);
             let path = std::iter::once((x, y, z)).chain(tracer);
             let next = tracer.into_iter();
             for (i, (from, to)) in path.zip(next).enumerate() {
-                if let (Some(a), Some(b)) = (project(from), project(to)) {
-                    let fade = 0.5 * (1.0 - i as f32 / tracer.len() as f32);
-                    canvas.line(a, b, (2.0 * s).max(1.0), with_alpha([1.0; 3], fade));
-                }
+                let fade = 0.5 * (1.0 - i as f32 / tracer.len() as f32);
+                let thin = (2.0 * s).max(1.0);
+                canvas.deep_line(view, from, to, thin, with_alpha([1.0; 3], fade));
             }
-            if let Some((px, py)) = project((x, y, z)) {
+            if let Some((px, py, depth)) = view.project_deep(x, y, z) {
+                let mark = canvas.vertices.len();
                 canvas.circle(px, py, (3.0 * s).max(1.5), with_alpha([1.0; 3], 1.0));
+                canvas.deepen(mark, depth);
             }
             continue;
         }
-        draw_shadow(canvas, view, (x, ground, z), 0.16);
-        if let Some((px, py)) = view.project(x, y, z) {
+        cast_only(canvas, (x, y, z), 0.1);
+        if let Some((px, py, depth)) = view.project_deep(x, y, z) {
+            let mark = canvas.vertices.len();
             canvas.circle(px, py, (5.0 * s).max(2.0), SHELL_BODY);
+            canvas.deepen(mark, depth);
         }
     }
     for strike in &game.combat.strikes {
         let height = strike.height();
         let (top, bottom) = (
-            view.project(strike.x, height + 3.0, strike.z),
-            view.project(strike.x, height, strike.z),
+            (strike.x, height + 3.0, strike.z),
+            (strike.x, height, strike.z),
         );
-        if let (Some(a), Some(b)) = (top, bottom) {
-            canvas.line(a, b, 14.0 * s, with_alpha(POISON_FILL, 0.35));
-            canvas.line(a, b, 6.0 * s, MISSILE_BODY);
-        }
-        draw_ground_disc(
+        canvas.deep_line(view, top, bottom, 14.0 * s, with_alpha(POISON_FILL, 0.35));
+        canvas.deep_line(view, top, bottom, 6.0 * s, MISSILE_BODY);
+        cast_only(canvas, (strike.x, height + 1.5, strike.z), 0.15);
+        draw_draped_disc(
             canvas,
+            game,
             view,
-            (strike.x, 0.02, strike.z),
+            (strike.x, strike.z),
             STRIKE_RADIUS,
             POISON_FILL,
             (0.0, 0.25),
         );
     }
     for blast in game.combat.blasts.iter().filter(|b| seen(b.at)) {
-        let (x, y, z) = blast.at;
         let reach = blast.radius * (1.2 - blast.life * 0.6);
-        draw_ground_disc(
+        draw_flat_disc(
             canvas,
             view,
-            (x, y, z),
+            blast.at,
             reach,
             BLAST_COLOR,
             (0.9 * blast.life, 0.1 * blast.life),
@@ -1293,12 +1202,15 @@ fn draw_particle(
     } else {
         particle.size * (0.4 + 0.6 * life)
     };
-    let (Some(middle), Some(above)) = (view.project(x, y, z), view.project(x, y + grown, z)) else {
+    let (Some((mx, my, depth)), Some(above)) =
+        (view.project_deep(x, y, z), view.project(x, y + grown, z))
+    else {
         return;
     };
-    let reach = (middle.1 - above.1).abs().max(1.0);
-    let (left, right) = ((middle.0 - reach, middle.1), (middle.0 + reach, middle.1));
-    let (top, bottom) = ((middle.0, middle.1 - reach), (middle.0, middle.1 + reach));
+    let reach = (my - above.1).abs().max(1.0);
+    let (left, right) = ((mx - reach, my), (mx + reach, my));
+    let (top, bottom) = ((mx, my - reach), (mx, my + reach));
+    let mark = canvas.vertices.len();
     if particle.smoke {
         let color = with_alpha(SMOKE, 0.5 * life);
         canvas.triangle([left, top, right], color);
@@ -1309,6 +1221,7 @@ fn draw_particle(
             [left, top, right, left, right, bottom].map(|corner| Vertex::light(corner, glow)),
         );
     }
+    canvas.deepen(mark, depth);
 }
 
 /// A cone of fire or gas, solid where it leaves the nozzle and fading towards its far edge,
@@ -1319,30 +1232,27 @@ fn draw_spray(canvas: &mut Canvas, view: &battlefield::View, spray: &crate::weap
     const FAR_ALPHA: f32 = 0.1;
     const FAR_HEIGHT: f32 = 0.4;
     let (x, y, z) = spray.from;
-    let Some(nozzle) = view.project(x, y, z) else {
-        return;
-    };
     let color = if spray.gas { GAS_COLOR } else { FIRE_COLOR };
     let far = |i: usize| {
         let angle =
             spray.heading - spray.half_angle + i as f32 / WEDGES as f32 * spray.half_angle * 2.0;
         let (sin, cos) = angle.sin_cos();
-        view.project(
+        (
             x + cos * spray.reach,
             FAR_HEIGHT.min(y),
             z + sin * spray.reach,
         )
     };
-    let vertex =
-        |point: (f32, f32), alpha: f32| Vertex::new(point, with_alpha(color, alpha * spray.life));
+    let shade = |alpha: f32| with_alpha(color, alpha * spray.life);
     for i in 0..WEDGES {
-        if let (Some(a), Some(c)) = (far(i), far(i + 1)) {
-            canvas.vertices.extend([
-                vertex(nozzle, NEAR_ALPHA),
-                vertex(a, FAR_ALPHA),
-                vertex(c, FAR_ALPHA),
-            ]);
-        }
+        canvas.deep_fill(
+            view,
+            [
+                (spray.from, shade(NEAR_ALPHA)),
+                (far(i), shade(FAR_ALPHA)),
+                (far(i + 1), shade(FAR_ALPHA)),
+            ],
+        );
     }
 }
 
@@ -1356,7 +1266,7 @@ fn draw_strike_aim(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
         return;
     };
     let radius = STRIKE_RADIUS;
-    draw_ground_disc(canvas, view, (x, 0.02, z), radius, POISON_FILL, (0.05, 0.2));
+    draw_draped_disc(canvas, game, view, (x, z), radius, POISON_FILL, (0.05, 0.2));
     let thickness = (3.0 * ui_scale(game.height)).max(1.0);
     let point = |i: usize| {
         let (sin, cos) = (i as f32 / SIDES as f32 * TAU).sin_cos();
@@ -1489,14 +1399,8 @@ fn draw_dashed_line(
 /// A unit from simple boxes turned to its heading. Infantry is one tall thin block, a vehicle
 /// is a hull with a turret and a barrel, and an aircraft is a body with wings and a tail, so
 /// that their turning can be seen.
-/// Where a point of a flying unit shows on screen, given along its nose, across to its right
+/// Where in the world a point of a flying unit is, given along its nose, across to its right
 /// and up from its underside, leaning with it.
-fn body_point(view: &battlefield::View, unit: &Unit, point: (f32, f32, f32)) -> Option<(f32, f32)> {
-    let (x, y, z) = body_world(unit, point);
-    view.project(x, y, z)
-}
-
-/// Where in the world a point of a flying unit is, given as for `body_point`.
 fn body_world(unit: &Unit, (along, across, up): (f32, f32, f32)) -> (f32, f32, f32) {
     let (sin, cos) = unit.heading.sin_cos();
     let (lean_sin, lean_cos) = unit.bank.sin_cos();
@@ -1509,20 +1413,21 @@ fn body_world(unit: &Unit, (along, across, up): (f32, f32, f32)) -> (f32, f32, f
     )
 }
 
-fn body_triangle(
-    canvas: &mut Canvas,
-    view: &battlefield::View,
-    unit: &Unit,
-    points: [(f32, f32, f32); 3],
-    color: [f32; 3],
-) {
-    if let Some(reached) = &mut canvas.shadow_of {
-        reached.extend(points.map(|point| body_world(unit, point)));
-        return;
-    }
-    if let [Some(a), Some(b), Some(c)] = points.map(|point| body_point(view, unit, point)) {
-        canvas.triangle([a, b, c], with_alpha(color, 1.0));
-    }
+fn body_triangle(canvas: &mut Canvas, unit: &Unit, points: [Point; 3], color: [f32; 3]) {
+    let [a, b, c] = points.map(|point| body_world(unit, point));
+    let normal = unit_vector(cross(
+        [b.0 - a.0, b.1 - a.1, b.2 - a.2],
+        [c.0 - a.0, c.1 - a.1, c.2 - a.2],
+    ));
+    // Whichever way round it was given, it shows its upper side to the sky.
+    let normal = if normal[1] < 0.0 {
+        normal.map(|n| -n)
+    } else {
+        normal
+    };
+    canvas
+        .objects
+        .extend([a, b, c].map(|point| WorldVertex::solid(point, normal, color)));
 }
 
 /// A delta wing with a rocket engine burning at its tail.
@@ -1537,39 +1442,27 @@ fn draw_air_drone(
     let tail = (-0.28, 0.0, 0.05);
     let left_tip = (-0.42, -0.5, 0.05);
     let right_tip = (-0.42, 0.5, 0.05);
-    // The wing leaning towards the light shows a little brighter.
-    let shade = |side: f32| color.map(|c| c * (0.85 + 0.4 * side * unit.bank));
-    body_triangle(canvas, view, unit, [nose, left_tip, tail], shade(1.0));
-    body_triangle(canvas, view, unit, [nose, right_tip, tail], shade(-1.0));
+    body_triangle(canvas, unit, [nose, left_tip, tail], color);
+    body_triangle(canvas, unit, [nose, right_tip, tail], color);
     let dark = color.map(|c| c * 0.5);
     let ridge = (0.1, 0.0, 0.16);
-    body_triangle(canvas, view, unit, [nose, ridge, tail], dark);
+    body_triangle(canvas, unit, [nose, ridge, tail], dark);
     let fin_top = (-0.38, 0.0, 0.3);
-    body_triangle(canvas, view, unit, [ridge, tail, fin_top], dark);
+    body_triangle(canvas, unit, [ridge, tail, fin_top], dark);
     // The flame flickers as it burns.
     let reach = 0.45 + 0.12 * (game.battle_time() * 40.0).sin();
-    let flame = [
-        body_point(view, unit, (-0.28, -0.05, 0.05)),
-        body_point(view, unit, (-0.28, 0.05, 0.05)),
-        body_point(view, unit, (-0.28 - reach, 0.0, 0.05)),
-    ];
-    if let [Some(a), Some(b), Some(c)] = flame {
-        canvas.vertices.extend([
-            Vertex::light(a, ROCKET_FLAME),
-            Vertex::light(b, ROCKET_FLAME),
-            Vertex::light(c, [0.0; 3]),
-        ]);
-    }
+    canvas.deep_light(
+        view,
+        [
+            (body_world(unit, (-0.28, -0.05, 0.05)), ROCKET_FLAME),
+            (body_world(unit, (-0.28, 0.05, 0.05)), ROCKET_FLAME),
+            (body_world(unit, (-0.28 - reach, 0.0, 0.05)), [0.0; 3]),
+        ],
+    );
 }
 
 /// A body with two pairs of wings that beat in turn while it is up, and lie still once it sits.
-fn draw_ornithopter(
-    canvas: &mut Canvas,
-    game: &Game,
-    view: &battlefield::View,
-    unit: &Unit,
-    color: [f32; 3],
-) {
+fn draw_ornithopter(canvas: &mut Canvas, game: &Game, unit: &Unit, color: [f32; 3]) {
     const WING_ROOT: f32 = 0.1;
     let wing_color = color.map(|c| c * 0.7 + 0.25);
     let beat = |phase: f32| {
@@ -1586,20 +1479,8 @@ fn draw_ornithopter(
             let root_far = (along + 0.06, side * WING_ROOT, 0.2);
             let tip_near = (along - 0.07, side * reach, tip_height);
             let tip_far = (along + 0.07, side * reach, tip_height);
-            body_triangle(
-                canvas,
-                view,
-                unit,
-                [root_near, root_far, tip_far],
-                wing_color,
-            );
-            body_triangle(
-                canvas,
-                view,
-                unit,
-                [root_near, tip_far, tip_near],
-                wing_color,
-            );
+            body_triangle(canvas, unit, [root_near, root_far, tip_far], wing_color);
+            body_triangle(canvas, unit, [root_near, tip_far, tip_near], wing_color);
         }
     }
     let base = unit.y + unit.altitude;
@@ -1609,14 +1490,12 @@ fn draw_ornithopter(
     let tail = (tail_x, tail_z, 0.2, 0.03, unit.heading);
     draw_turned_box(
         canvas,
-        game,
-        view,
         tail,
         (base + 0.12, base + 0.17),
         color.map(|c| c * 0.6),
     );
     let body = (unit.x, unit.z, 0.2, 0.09, unit.heading);
-    draw_turned_box(canvas, game, view, body, (base + 0.04, base + 0.2), color);
+    draw_turned_box(canvas, body, (base + 0.04, base + 0.2), color);
 }
 
 /// A beam of light from a unit up in the air down to the ground ahead of it, fading with
@@ -1639,28 +1518,17 @@ fn draw_beam(
     };
     let lit = |across: f32| {
         let (x, z) = at(lamp_along, lamp_side + across);
-        view.project(x, unit.y + unit.altitude, z)
+        (x, unit.y + unit.altitude, z)
     };
     let far = |across: f32| {
         let (x, z) = at(far_along, far_side + across);
-        view.project(x, terrain.height_at(x, z), z)
+        (x, terrain.height_at(x, z).max(0.0) + OVER_GROUND, z)
     };
-    if let [Some(a), Some(b), Some(c), Some(d)] = [
-        lit(-lamp_half),
-        lit(lamp_half),
-        far(far_half),
-        far(-far_half),
-    ] {
-        let bright = Vertex::light;
-        canvas.vertices.extend([
-            bright(a, [HEADLIGHT; 3]),
-            bright(b, [HEADLIGHT; 3]),
-            bright(c, [0.0; 3]),
-            bright(a, [HEADLIGHT; 3]),
-            bright(c, [0.0; 3]),
-            bright(d, [0.0; 3]),
-        ]);
-    }
+    let (a, b) = (lit(-lamp_half), lit(lamp_half));
+    let (c, d) = (far(far_half), far(-far_half));
+    let bright = [HEADLIGHT; 3];
+    canvas.deep_light(view, [(a, bright), (b, bright), (c, [0.0; 3])]);
+    canvas.deep_light(view, [(a, bright), (c, [0.0; 3]), (d, [0.0; 3])]);
 }
 
 /// Two beams from the front ends of a platform's two blocks.
@@ -1680,11 +1548,9 @@ fn draw_carried(canvas: &mut Canvas, game: &Game, view: &battlefield::View, carr
     let (sin, cos) = carrier.heading.sin_cos();
     for side in [-0.15, 0.15] {
         let (x, z) = (carrier.x - sin * side, carrier.z + cos * side);
-        let top = view.project(x, carrier.y + carrier.altitude, z);
-        let bottom = view.project(x, vehicle.y + 0.25, z);
-        if let (Some(top), Some(bottom)) = (top, bottom) {
-            canvas.line(top, bottom, (1.5 * ui_scale(game.height)).max(1.0), CABLE);
-        }
+        let top = (x, carrier.y + carrier.altitude, z);
+        let bottom = (x, vehicle.y + 0.25, z);
+        canvas.solid_bar(top, bottom, 0.012, [cos, 0.0, sin], CABLE);
     }
     draw_unit_model(canvas, game, view, vehicle);
 }
@@ -1698,19 +1564,16 @@ fn draw_headlight(canvas: &mut Canvas, game: &Game, view: &battlefield::View, un
             unit.x + cos * ahead - sin * side,
             unit.z + sin * ahead + cos * side,
         );
-        view.project(x, terrain.height_at(x, z), z)
+        (x, terrain.height_at(x, z).max(0.0) + OVER_GROUND, z)
     };
-    if let (Some(lamp), Some(left), Some(right)) = (
-        on_ground(0.45, 0.0),
-        on_ground(2.6, -1.0),
-        on_ground(2.6, 1.0),
-    ) {
-        canvas.vertices.extend([
-            Vertex::light(lamp, [HEADLIGHT; 3]),
-            Vertex::light(left, [0.0; 3]),
-            Vertex::light(right, [0.0; 3]),
-        ]);
-    }
+    canvas.deep_light(
+        view,
+        [
+            (on_ground(0.45, 0.0), [HEADLIGHT; 3]),
+            (on_ground(2.6, -1.0), [0.0; 3]),
+            (on_ground(2.6, 1.0), [0.0; 3]),
+        ],
+    );
 }
 
 fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
@@ -1730,8 +1593,7 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
     let color = [r, g, b];
     let (forward_x, forward_z) = (unit.heading.cos(), unit.heading.sin());
     let ahead = |by: f32| (unit.x + forward_x * by, unit.z + forward_z * by);
-    let mut part =
-        |footprint, heights, color| draw_turned_box(canvas, game, view, footprint, heights, color);
+    let mut part = |footprint, heights, color| draw_turned_box(canvas, footprint, heights, color);
     match unit.kind {
         UnitKind::Infantry => {
             let barrel = |by: f32, half: f32, thick: f32| {
@@ -1826,10 +1688,10 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
             }
         }
         UnitKind::Vehicle if unit.role == Role::Strider => {
-            draw_strider(canvas, game, view, unit, color);
+            draw_strider(canvas, unit, color);
         }
         UnitKind::Vehicle if unit.role == Role::HeavyStrider => {
-            draw_heavy_strider(canvas, game, view, unit, color);
+            draw_heavy_strider(canvas, unit, color);
         }
         UnitKind::Vehicle => {
             let hull = (unit.x, unit.z, 0.45, 0.28, unit.heading);
@@ -1865,7 +1727,7 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
             draw_air_drone(canvas, game, view, unit, color);
         }
         UnitKind::Aircraft if unit.role == Role::Ornithopter => {
-            draw_ornithopter(canvas, game, view, unit, color);
+            draw_ornithopter(canvas, game, unit, color);
         }
         UnitKind::Aircraft => {
             // A long open frame, with an engine pod on each side and a big lamp at its nose.
@@ -1884,7 +1746,7 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
             let lamp = (lamp_x, lamp_z, 0.05, 0.12, unit.heading);
             part(lamp, (base + 0.02, base + 0.12), [1.0, 0.98, 0.85]);
         }
-        UnitKind::Building => draw_building(canvas, game, view, unit, color),
+        UnitKind::Building => draw_building(canvas, unit, color),
         UnitKind::Tower => {
             let wall = (unit.x, unit.z, 0.5, 0.5, 0.0);
             let head_base = units::TUBE_HEIGHT - 0.2;
@@ -1903,21 +1765,14 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
                 return;
             }
             for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
-                draw_tube(canvas, game, view, unit, side, color.map(|c| c * 0.5));
+                draw_tube(canvas, unit, side, color.map(|c| c * 0.5));
             }
         }
     }
 }
 
 /// A square tube of a missile tower, hinged at its back end and raised to its pitch.
-fn draw_tube(
-    canvas: &mut Canvas,
-    game: &Game,
-    view: &battlefield::View,
-    unit: &Unit,
-    side: f32,
-    color: [f32; 3],
-) {
+fn draw_tube(canvas: &mut Canvas, unit: &Unit, side: f32, color: [f32; 3]) {
     const HALF: f32 = 0.06;
     let (sin, cos) = unit.heading.sin_cos();
     let (rise, out) = unit.tube_pitch.sin_cos();
@@ -1925,54 +1780,72 @@ fn draw_tube(
     let point = |along: f32, across: f32, up: f32| {
         let ahead = units::TUBE_HINGE + along * out - up * rise;
         let right = side + across;
-        view.project(
+        (
             unit.x + cos * ahead - sin * right,
             unit.y + units::TUBE_HEIGHT + along * rise + up * out,
             unit.z + sin * ahead + cos * right,
         )
     };
     let length = units::TUBE_LENGTH;
-    let mut face = |corners: [(f32, f32, f32); 4], shade: f32| {
-        if let [Some(a), Some(b), Some(c), Some(d)] =
-            corners.map(|(along, across, up)| point(along, across, up))
-        {
-            fill_quad(canvas, game, [a, b, c, d], color.map(|c| c * shade));
-        }
-    };
-    // The side farther from the camera goes first, so that the nearer one covers it.
-    let (camera_x, camera_z) = view.position_on_ground();
-    let right_is_near = (camera_x - unit.x) * -sin + (camera_z - unit.z) * cos > 0.0;
-    let near = if right_is_near { HALF } else { -HALF };
-    for (across, shade) in [(-near, 0.6), (near, 0.8)] {
-        face(
-            [
-                (0.0, across, -HALF),
-                (length, across, -HALF),
-                (length, across, HALF),
-                (0.0, across, HALF),
-            ],
-            shade,
-        );
-    }
-    face(
-        [
+    let way = [cos * out, rise, sin * out];
+    let across = [-sin, 0.0, cos];
+    let up = [-cos * rise, out, -sin * rise];
+    let flip = |v: [f32; 3]| v.map(|c| -c);
+    let faces = [
+        (
+            (0.0, HALF, -HALF),
+            (length, HALF, -HALF),
+            (length, HALF, HALF),
+            (0.0, HALF, HALF),
+            across,
+            color,
+        ),
+        (
+            (0.0, -HALF, HALF),
+            (length, -HALF, HALF),
+            (length, -HALF, -HALF),
+            (0.0, -HALF, -HALF),
+            flip(across),
+            color,
+        ),
+        (
             (0.0, -HALF, HALF),
             (length, -HALF, HALF),
             (length, HALF, HALF),
             (0.0, HALF, HALF),
-        ],
-        1.0,
-    );
-    // The open end, dark inside.
-    face(
-        [
+            up,
+            color,
+        ),
+        (
+            (0.0, -HALF, -HALF),
+            (length, -HALF, -HALF),
+            (length, HALF, -HALF),
+            (0.0, HALF, -HALF),
+            flip(up),
+            color,
+        ),
+        // The open end, dark inside.
+        (
             (length, -HALF, -HALF),
             (length, HALF, -HALF),
             (length, HALF, HALF),
             (length, -HALF, HALF),
-        ],
-        0.25,
-    );
+            way,
+            color.map(|c| c * 0.25),
+        ),
+        (
+            (0.0, -HALF, -HALF),
+            (0.0, HALF, -HALF),
+            (0.0, HALF, HALF),
+            (0.0, -HALF, HALF),
+            flip(way),
+            color,
+        ),
+    ];
+    for (a, b, c, d, normal, color) in faces {
+        let at = |(along, side, height): (f32, f32, f32)| point(along, side, height);
+        canvas.solid_quad([at(a), at(b), at(c), at(d)], normal, (color, color));
+    }
 }
 
 /// Where a knee lies between a hip and a foot, given as (ahead, up) with the leg bending
@@ -2003,32 +1876,18 @@ struct Legs {
 }
 
 /// Two legs with knees under a striding unit, stepping in turn as it walks.
-fn draw_legs(
-    canvas: &mut Canvas,
-    view: &battlefield::View,
-    unit: &Unit,
-    legs: &Legs,
-    color: [f32; 3],
-) {
+fn draw_legs(canvas: &mut Canvas, unit: &Unit, legs: &Legs, color: [f32; 3]) {
     let hip_height = (legs.thigh + legs.shin) * 0.92;
     let (sin, cos) = unit.heading.sin_cos();
-    let on_screen = |side: f32, (ahead, up): (f32, f32)| {
-        view.project(
+    let at = |side: f32, (ahead, up): (f32, f32)| {
+        (
             unit.x + cos * ahead - sin * side,
             unit.y + up,
             unit.z + sin * ahead + cos * side,
         )
     };
-    // Line widths are in pixels: this makes them follow the zoom.
-    let pixels_per_unit = match (
-        view.project(unit.x, unit.y, unit.z),
-        view.project(unit.x, unit.y + 1.0, unit.z),
-    ) {
-        (Some(a), Some(b)) => (a.0 - b.0).hypot(a.1 - b.1),
-        _ => return,
-    };
-    let width = (legs.width * pixels_per_unit).max(1.0);
     let moving = unit.is_moving();
+    let right = [-sin, 0.0, cos];
     for (side, step) in [(-legs.side, 0.0), (legs.side, PI)] {
         let (swing, lift) = if moving {
             let phase = unit.stride * legs.pace + step;
@@ -2042,33 +1901,30 @@ fn draw_legs(
         let hip = (0.0, hip_height);
         let foot = (swing, lift);
         let knee = knee_of(hip, foot, legs.thigh, legs.shin);
-        let joints = [
-            on_screen(side, hip),
-            on_screen(side, knee),
-            on_screen(side, foot),
-        ];
-        if let [Some(hip), Some(knee), Some(foot)] = joints {
-            let thigh_color = with_alpha(color.map(|c| c * 0.8), 1.0);
-            canvas.line(hip, knee, width, thigh_color);
-            canvas.line(
-                knee,
-                foot,
-                width * 0.75,
-                with_alpha(color.map(|c| c * 0.6), 1.0),
-            );
-            canvas.circle(knee.0, knee.1, width * 0.65, thigh_color);
-        }
+        let half = legs.width / 2.0;
+        let thigh_color = color.map(|c| c * 0.8);
+        canvas.solid_bar(at(side, hip), at(side, knee), half, right, thigh_color);
+        let shin_color = color.map(|c| c * 0.6);
+        canvas.solid_bar(
+            at(side, knee),
+            at(side, foot),
+            half * 0.75,
+            right,
+            shin_color,
+        );
+        let (kx, ky, kz) = at(side, knee);
+        let joint = (kx, kz, half * 1.3, half * 1.3, unit.heading);
+        draw_turned_box(
+            canvas,
+            joint,
+            (ky - half * 1.3, ky + half * 1.3),
+            thigh_color,
+        );
     }
 }
 
 /// A small body up on two legs, with a missile pod on each side.
-fn draw_strider(
-    canvas: &mut Canvas,
-    game: &Game,
-    view: &battlefield::View,
-    unit: &Unit,
-    color: [f32; 3],
-) {
+fn draw_strider(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     let legs = Legs {
         side: 0.15,
         thigh: 0.3,
@@ -2077,11 +1933,11 @@ fn draw_strider(
         pace: 5.0,
         width: 0.07,
     };
-    draw_legs(canvas, view, unit, &legs, color);
+    draw_legs(canvas, unit, &legs, color);
     let (sin, cos) = unit.heading.sin_cos();
     let base = unit.y + 0.5;
     let body = (unit.x, unit.z, 0.22, 0.15, unit.heading);
-    draw_turned_box(canvas, game, view, body, (base, base + 0.24), color);
+    draw_turned_box(canvas, body, (base, base + 0.24), color);
     for side in [-0.21, 0.21] {
         let pod = (
             unit.x - sin * side,
@@ -2092,8 +1948,6 @@ fn draw_strider(
         );
         draw_turned_box(
             canvas,
-            game,
-            view,
             pod,
             (base + 0.1, base + 0.2),
             color.map(|c| c * 0.5),
@@ -2102,13 +1956,7 @@ fn draw_strider(
 }
 
 /// A big body up on two legs, with four cannons that each go back when they fire.
-fn draw_heavy_strider(
-    canvas: &mut Canvas,
-    game: &Game,
-    view: &battlefield::View,
-    unit: &Unit,
-    color: [f32; 3],
-) {
+fn draw_heavy_strider(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     const RECOIL_TRAVEL: f32 = 0.25;
     const BARREL_HALF: f32 = 0.28;
     let legs = Legs {
@@ -2119,16 +1967,14 @@ fn draw_heavy_strider(
         pace: 3.2,
         width: 0.12,
     };
-    draw_legs(canvas, view, unit, &legs, color);
+    draw_legs(canvas, unit, &legs, color);
     let (sin, cos) = unit.heading.sin_cos();
     let base = unit.y + 0.82;
     let body = (unit.x, unit.z, 0.42, 0.36, unit.heading);
-    draw_turned_box(canvas, game, view, body, (base, base + 0.2), color);
+    draw_turned_box(canvas, body, (base, base + 0.2), color);
     let top = (unit.x, unit.z, 0.25, 0.2, unit.heading);
     draw_turned_box(
         canvas,
-        game,
-        view,
         top,
         (base + 0.2, base + 0.42),
         color.map(|c| c * 0.85),
@@ -2146,25 +1992,19 @@ fn draw_heavy_strider(
             0.035,
             unit.heading,
         );
-        draw_turned_box(canvas, game, view, barrel, height, color.map(|c| c * 0.45));
+        draw_turned_box(canvas, barrel, height, color.map(|c| c * 0.45));
     }
 }
 
 /// A barracks, factory or hangar, with its door on its south side.
-fn draw_building(
-    canvas: &mut Canvas,
-    game: &Game,
-    view: &battlefield::View,
-    unit: &Unit,
-    color: [f32; 3],
-) {
+fn draw_building(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     let (x, z, y) = (unit.x, unit.z, unit.y);
     let walls = color.map(|c| c * 0.8);
     let roof = color.map(|c| c * 0.55);
     let mut part = |footprint: (f32, f32, f32, f32), heights, color| {
         let (x, z, half_x, half_z) = footprint;
         let turned = (x, z, half_x, half_z, 0.0);
-        draw_turned_box(canvas, game, view, turned, heights, color);
+        draw_turned_box(canvas, turned, heights, color);
     };
     let (half_z, door_half, door_top) = match unit.role {
         Role::Barracks => {
@@ -2188,16 +2028,15 @@ fn draw_building(
     part(door, (y, y + door_top), BUILDING_DOOR);
 }
 
-/// A box turned to any heading: (x, z, half length, half width, heading). Only the sides
-/// facing the camera are drawn, farthest first.
+/// A box turned to any heading: (x, z, half length, half width, heading). The air reaches its
+/// foot less, so its sides darken towards it.
 fn draw_turned_box(
     canvas: &mut Canvas,
-    game: &Game,
-    view: &battlefield::View,
     (x, z, half_length, half_width, heading): (f32, f32, f32, f32, f32),
     (base, top): (f32, f32),
     color: [f32; 3],
 ) {
+    const FOOT: f32 = 0.72;
     let (forward_x, forward_z) = (heading.cos(), heading.sin());
     let (right_x, right_z) = (-forward_z, forward_x);
     let corner = |along: f32, across: f32| {
@@ -2212,47 +2051,26 @@ fn draw_turned_box(
         corner(-1.0, 1.0),
         corner(-1.0, -1.0),
     ];
-    if let Some(reached) = &mut canvas.shadow_of {
-        for (px, pz) in corners {
-            reached.extend([(px, base, pz), (px, top, pz)]);
-        }
-        return;
-    }
-    let (camera_x, camera_z) = view.position_on_ground();
-    let mut face = |points: [(f32, f32, f32); 4], normal: [f32; 3], is_side: bool| {
-        let [Some(a), Some(b), Some(c), Some(d)] =
-            points.map(|(px, py, pz)| view.project(px, py, pz))
-        else {
-            return;
-        };
-        fill_lit_quad(canvas, game, [a, b, c, d], lit(color, normal), is_side);
-    };
+    let foot = color.map(|channel| channel * FOOT);
     for i in 0..corners.len() {
         let (a, b) = (corners[i], corners[(i + 1) % corners.len()]);
         let (mid_x, mid_z) = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
-        let (normal_x, normal_z) = (mid_x - x, mid_z - z);
-        let faces_camera = normal_x * (camera_x - mid_x) + normal_z * (camera_z - mid_z) > 0.0;
-        if faces_camera {
-            let length = normal_x.hypot(normal_z);
-            face(
-                [
-                    (a.0, base, a.1),
-                    (b.0, base, b.1),
-                    (b.0, top, b.1),
-                    (a.0, top, a.1),
-                ],
-                [normal_x / length, 0.0, normal_z / length],
-                true,
-            );
-        }
+        let normal = unit_vector([mid_x - x, 0.0, mid_z - z]);
+        canvas.solid_quad(
+            [
+                (a.0, base, a.1),
+                (b.0, base, b.1),
+                (b.0, top, b.1),
+                (a.0, top, a.1),
+            ],
+            normal,
+            (foot, color),
+        );
     }
-    // In a mirror what shows on the near side is its underside, not its top.
-    let cap = if view.is_mirrored() { base } else { top };
-    face(
-        corners.map(|(px, pz)| (px, cap, pz)),
-        [0.0, 1.0, 0.0],
-        false,
-    );
+    let [a, b, c, d] = corners;
+    let flat = |y: f32| [(a.0, y, a.1), (b.0, y, b.1), (c.0, y, c.1), (d.0, y, d.1)];
+    canvas.solid_quad(flat(top), [0.0, 1.0, 0.0], (color, color));
+    canvas.solid_quad(flat(base), [0.0, -1.0, 0.0], (foot, foot));
 }
 
 fn draw_selected_ring(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
@@ -2261,106 +2079,14 @@ fn draw_selected_ring(canvas: &mut Canvas, game: &Game, view: &battlefield::View
     let thickness = (2.0 * ui_scale(game.height)).max(1.0);
     let point = |i: usize| {
         let (sin, cos) = (i as f32 / SIDES as f32 * TAU).sin_cos();
-        view.project(unit.x + radius * cos, unit.y, unit.z + radius * sin)
+        (
+            unit.x + radius * cos,
+            unit.y + OVER_GROUND,
+            unit.z + radius * sin,
+        )
     };
     for i in 0..SIDES {
-        if let (Some(a), Some(b)) = (point(i), point(i + 1)) {
-            canvas.line(a, b, thickness, SELECTED_RING);
-        }
-    }
-}
-
-/// Two triangles of an opaque color, unless all four corners are off the screen.
-fn fill_quad(canvas: &mut Canvas, game: &Game, [a, b, c, d]: [(f32, f32); 4], color: [f32; 3]) {
-    if !battlefield::all_off_screen(&[a, b, c, d], game.width, game.height) {
-        let color = with_alpha(color, 1.0);
-        canvas.triangle([a, b, c], color);
-        canvas.triangle([a, c, d], color);
-    }
-}
-
-/// A face of a box, given bottom corners first if it is a side: the air reaches its foot less,
-/// so a side darkens towards it.
-fn fill_lit_quad(
-    canvas: &mut Canvas,
-    game: &Game,
-    [a, b, c, d]: [(f32, f32); 4],
-    color: [f32; 3],
-    is_side: bool,
-) {
-    const FOOT: f32 = 0.72;
-    if !battlefield::all_off_screen(&[a, b, c, d], game.width, game.height) {
-        let high = with_alpha(color, 1.0);
-        let low = if is_side {
-            with_alpha(color.map(|channel| channel * FOOT), 1.0)
-        } else {
-            high
-        };
-        canvas.vertices.extend(
-            [
-                (a, low),
-                (b, low),
-                (c, high),
-                (a, low),
-                (c, high),
-                (d, high),
-            ]
-            .map(|(point, color)| Vertex::new(point, color)),
-        );
-    }
-}
-
-/// A box seen from the camera: its top, its south face, and whichever side faces the camera.
-fn draw_box(
-    canvas: &mut Canvas,
-    game: &Game,
-    view: &battlefield::View,
-    (x, z, half_x, half_z): (f32, f32, f32, f32),
-    (base, top): (f32, f32),
-    color: [f32; 3],
-) {
-    let corner = |dx: f32, y: f32, dz: f32| view.project(x + dx, y, z + dz);
-    let side = if x > game.camera.x { -half_x } else { half_x };
-    // In a mirror what shows on the near side is its underside, not its top.
-    let cap = if view.is_mirrored() { base } else { top };
-    let faces = [
-        (
-            [
-                (side, base, -half_z),
-                (side, base, half_z),
-                (side, top, half_z),
-                (side, top, -half_z),
-            ],
-            [side.signum(), 0.0, 0.0],
-            true,
-        ),
-        (
-            [
-                (-half_x, base, half_z),
-                (half_x, base, half_z),
-                (half_x, top, half_z),
-                (-half_x, top, half_z),
-            ],
-            [0.0, 0.0, 1.0],
-            true,
-        ),
-        (
-            [
-                (-half_x, cap, -half_z),
-                (half_x, cap, -half_z),
-                (half_x, cap, half_z),
-                (-half_x, cap, half_z),
-            ],
-            [0.0, 1.0, 0.0],
-            false,
-        ),
-    ];
-    for (points, normal, is_side) in faces {
-        let [Some(a), Some(b), Some(c), Some(d)] = points.map(|(dx, y, dz)| corner(dx, y, dz))
-        else {
-            return;
-        };
-        fill_lit_quad(canvas, game, [a, b, c, d], lit(color, normal), is_side);
+        canvas.deep_line(view, point(i), point(i + 1), thickness, SELECTED_RING);
     }
 }
 
@@ -3199,46 +2925,5 @@ fn button_fill(action: Action, hovered: Option<Action>, pressed: Option<Action>)
         (true, true) => BUTTON_PRESSED,
         (true, false) => BUTTON_HOVER,
         _ => BUTTON,
-    }
-}
-
-#[cfg(test)]
-mod light_tests {
-    use super::*;
-
-    #[test]
-    fn the_sun_is_a_unit_vector_and_lights_what_faces_it_more() {
-        let length = SUN.iter().map(|c| c * c).sum::<f32>().sqrt();
-        assert!((length - 1.0).abs() < 0.01);
-        let total = |normal| sunlight(normal).iter().sum::<f32>();
-        assert!(total([0.0, 1.0, 0.0]) > total([-1.0, 0.0, 0.0]));
-        assert!(total([-1.0, 0.0, 0.0]) > total([0.0, 0.0, 1.0]));
-        assert!(total([0.0, 0.0, 1.0]) > total([1.0, 0.0, 0.0]));
-        assert!(
-            total([1.0, 0.0, 0.0]) > 0.5,
-            "the sky still lights the far side"
-        );
-    }
-
-    #[test]
-    fn shadows_fall_to_the_right_and_towards_the_camera_and_grow_with_height() {
-        let (x, z) = shadow_offset(1.0);
-        assert!(x > 0.0 && z > 0.0);
-        let (far_x, far_z) = shadow_offset(2.0);
-        assert!(far_x > x && far_z > z);
-    }
-
-    #[test]
-    fn a_hull_goes_around_the_outer_points_and_leaves_out_the_inner_ones() {
-        let hull = convex_hull(vec![
-            (0.0, 0.0),
-            (2.0, 0.0),
-            (2.0, 2.0),
-            (0.0, 2.0),
-            (1.0, 1.0),
-            (1.0, 0.0),
-        ]);
-        assert_eq!(hull.len(), 4);
-        assert!(!hull.contains(&(1.0, 1.0)));
     }
 }

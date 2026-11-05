@@ -16,15 +16,26 @@ static NSString *const kShader = @
     "  Out o; o.pos = float4(p.x, -p.y, 0.0, 1.0); o.color = float4(v[id].color); return o;\n"
     "}\n"
     "fragment float4 fs(Out in [[stage_in]]) { return in.color; }\n"
-    /* The ground: each pixel knows where in the world it is. */
-    "struct GroundIn { packed_float2 pos; packed_float4 color; packed_float3 world; };\n"
-    "struct GroundOut { float4 pos [[position]]; float4 color; float3 world; };\n"
-    "struct Sky { float2 size; float time; int material; float3 camera; float3 sun; };\n"
-    "vertex GroundOut vs_ground(uint id [[vertex_id]], const device GroundIn *v [[buffer(0)]],\n"
-    "                           constant float2 &size [[buffer(1)]]) {\n"
-    "  float2 p = float2(v[id].pos) / size * 2.0 - 1.0;\n"
-    "  GroundOut o; o.pos = float4(p.x, -p.y, 0.0, 1.0);\n"
-    "  o.color = float4(v[id].color); o.world = float3(v[id].world); return o;\n"
+    "struct EffectIn { packed_float3 pos; packed_float4 color; };\n"
+    "vertex Out vs_effect(uint id [[vertex_id]], const device EffectIn *v [[buffer(0)]],\n"
+    "                     constant float2 &size [[buffer(1)]]) {\n"
+    "  float3 at = float3(v[id].pos); float2 p = at.xy / size * 2.0 - 1.0;\n"
+    "  Out o; o.pos = float4(p.x, -p.y, at.z, 1.0); o.color = float4(v[id].color); return o;\n"
+    "}\n"
+    "struct WorldIn { packed_float3 pos; packed_float3 normal; packed_float3 color; float seen; float level; };\n"
+    "struct WorldOut { float4 pos [[position]]; float3 world; float3 normal; float3 color; float seen; float level; };\n"
+    "struct PointLight { packed_float3 place; float radius; packed_float3 color; float unused; };\n"
+    "struct Sky { float4x4 view; float4x4 sun_view; float2 size; float time; int material;\n"
+    "             float3 camera; float3 sun; int mirrored; int light_count; float2 padding; PointLight lights[16]; };\n"
+    "vertex WorldOut vs_world(uint id [[vertex_id]], const device WorldIn *v [[buffer(0)]],\n"
+    "                         constant Sky &sky [[buffer(1)]]) {\n"
+    "  WorldOut o; o.world = float3(v[id].pos); o.pos = sky.view * float4(o.world, 1.0);\n"
+    "  o.normal = float3(v[id].normal); o.color = float3(v[id].color);\n"
+    "  o.seen = v[id].seen; o.level = v[id].level; return o;\n"
+    "}\n"
+    "vertex float4 vs_shadow(uint id [[vertex_id]], const device WorldIn *v [[buffer(0)]],\n"
+    "                        constant Sky &sky [[buffer(1)]]) {\n"
+    "  return sky.sun_view * float4(float3(v[id].pos), 1.0);\n"
     "}\n"
     "static float hash(float2 p) {\n"
     "  p = fract(p * float2(123.34, 456.21)); p += dot(p, p + 45.32);\n"
@@ -86,9 +97,9 @@ static NSString *const kShader = @
     "}\n"
     /* The sea: what is under it bent by the waves and dimmed by how deep it is, and over that
      * the mirror image of the world and the sky, more so the flatter it is looked across. */
-    "static float3 water_pixel(float3 beach, float3 world, float2 uv, constant Sky &sky,\n"
-    "                          texture2d<float> mirror, sampler smooth) {\n"
-    "  float2 p = world.xz; float depth = -world.y; float t = sky.time;\n"
+    "static float3 water_pixel(float3 beach, float2 p, float depth, float in_sun, float2 uv,\n"
+    "                          constant Sky &sky, texture2d<float> mirror, sampler smooth) {\n"
+    "  float t = sky.time;\n"
     "  float e = 0.05;\n"
     "  float h = waves(p, t);\n"
     "  float2 slope = float2(waves(p + float2(e, 0), t) - h, waves(p + float2(0, e), t) - h) / e;\n"
@@ -119,33 +130,59 @@ static NSString *const kShader = @
     "  float3 above = image.rgb + sky_in(ray, sky.sun) * (1.0 - image.a);\n"
     /* A mirror image over water that shows it: never less than a hint of it. */
     "  float reflects = max(fresnel, image.a * 0.55);\n"
-    "  float3 color = mix(below, above, reflects);\n"
+    "  float3 color = mix(below, above, reflects) * mix(0.62, 1.0, in_sun);\n"
     /* The sun's glitter, and foam along the shore. */
     "  float3 half_way = normalize(sky.sun + to_eye);\n"
     "  float sharp = pow(max(dot(normal, half_way), 0.0), 900.0);\n"
-    "  color += float3(1.0, 0.95, 0.82) * sharp * 0.9 * (1.0 - image.a);\n"
+    "  color += float3(1.0, 0.95, 0.82) * sharp * 0.9 * (1.0 - image.a) * in_sun;\n"
     "  float surf = fbm(p * 3.2 + float2(t * 0.2, -t * 0.13));\n"
     "  float line = 0.5 + 0.5 * sin(depth * 26.0 - t * 1.4 + surf * 7.0);\n"
     "  float foam = smoothstep(0.26, 0.0, depth) * smoothstep(0.32, 0.68, surf) * (0.45 + 0.55 * line);\n"
     "  return mix(color, float3(0.95, 0.97, 0.98), foam * 0.85);\n"
     "}\n"
-    "fragment float4 fs_ground(GroundOut in [[stage_in]], constant Sky &sky [[buffer(0)]],\n"
-    "                          texture2d<float> mirror [[texture(0)]],\n"
-    "                          sampler smooth [[sampler(0)]]) {\n"
-    "  float3 color = in.color.rgb;\n"
-    "  float2 p = in.world.xz; float level = in.world.y;\n"
-    "  if (sky.material == 2) {\n"
-    "    color = sand_pixel(color, p, level, sky.sun);\n"
-    "  } else if (sky.material == 1 && level < 0.0) {\n"
-    "    color = water_pixel(color, in.world, in.pos.xy / sky.size, sky, mirror, smooth);\n"
-    "  } else if (sky.material == 1) {\n"
-    /* Land still wet from the sea, darker just above it. */
-    "    color *= mix(0.62, 1.0, smoothstep(0.0, 0.12, level));\n"
+    "static float sun_on(float3 world, float3 normal, constant Sky &sky, depth2d<float> map, sampler compare) {\n"
+    "  float4 seen = sky.sun_view * float4(world + normal * 0.04, 1.0);\n"
+    "  float2 uv = float2(seen.x * 0.5 + 0.5, 0.5 - seen.y * 0.5);\n"
+    "  if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0) return 1.0;\n"
+    "  float z = seen.z - 0.0004; float texel = 1.0 / 4096.0; float sum = 0.0;\n"
+    "  for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++)\n"
+    "    sum += map.sample_compare(compare, uv + float2(i, j) * texel * 1.5, z);\n"
+    "  return sum / 9.0;\n"
+    "}\n"
+    "static float3 light_on(float3 color, float3 world, float3 normal, float in_sun, constant Sky &sky) {\n"
+    "  float3 air = float3(0.42, 0.45, 0.52);\n"
+    "  float3 sunlight = float3(0.62, 0.58, 0.50);\n"
+    "  float wrap = max((dot(normal, sky.sun) + 0.5) / 1.5, 0.0);\n"
+    "  float3 light = air + sunlight * wrap * in_sun;\n"
+    "  for (int i = 0; i < sky.light_count; i++) {\n"
+    "    float3 to = float3(sky.lights[i].place) - world;\n"
+    "    float reach = length(to) / sky.lights[i].radius;\n"
+    "    float fall = max(1.0 - reach * reach, 0.0);\n"
+    "    float side = max(dot(normal, normalize(to)) * 0.75 + 0.25, 0.0);\n"
+    "    light += float3(sky.lights[i].color) * fall * fall * side;\n"
     "  }\n"
-    "  return float4(color * in.color.a, 1.0);\n"
-    "}\n";
+    "  return color * light;\n"
+    "}\n"
+    "fragment float4 fs_world(WorldOut in [[stage_in]], constant Sky &sky [[buffer(0)]],\n"
+    "                         texture2d<float> mirror [[texture(0)]], depth2d<float> map [[texture(1)]],\n"
+    "                         sampler smooth [[sampler(0)]], sampler compare [[sampler(1)]]) {\n"
+    "  /* What lies under the water's surface shows nothing in the mirror. */\n"
+    "  if (sky.mirrored != 0 && in.level < 0.0) discard_fragment();\n"
+    "  float3 normal = normalize(in.normal);\n"
+    "  float in_sun = sun_on(in.world, normal, sky, map, compare);\n"
+    "  float2 p = in.world.xz; float3 color = in.color;\n"
+    "  if (sky.material == 1 && in.level < 0.0) {\n"
+    "    color = water_pixel(color, p, -in.level, in_sun, in.pos.xy / sky.size, sky, mirror, smooth);\n"
+    "    return float4(color * in.seen, 1.0);\n"
+    "  }\n"
+    "  if (sky.material == 2) color = sand_pixel(color, p, in.level, sky.sun);\n"
+    "  /* Land still wet from the sea, darker just above it. */\n"
+    "  if (sky.material == 1) color *= mix(0.62, 1.0, smoothstep(0.0, 0.12, in.level));\n"
+    "  return float4(light_on(color, in.world, normal, in_sun, sky) * in.seen, 1.0);\n"
+    "}\n"
+    ;
 
-enum { FRAMES_IN_FLIGHT = 3 };
+enum { FRAMES_IN_FLIGHT = 3, SHADOW_MAP = 4096 }; /* The game steps its sun view by this map. */
 
 @interface OeWindow : NSWindow
 @end
@@ -159,9 +196,18 @@ static CAMetalLayer *g_layer;
 static id<MTLDevice> g_device;
 static id<MTLCommandQueue> g_queue;
 static id<MTLRenderPipelineState> g_pipeline;
-static id<MTLRenderPipelineState> g_ground_pipeline;
+static id<MTLRenderPipelineState> g_effect_pipeline;
+static id<MTLRenderPipelineState> g_world_pipeline;
+static id<MTLRenderPipelineState> g_shadow_pipeline;
+static id<MTLDepthStencilState> g_depth_write;
+static id<MTLDepthStencilState> g_depth_read;
+static id<MTLDepthStencilState> g_depth_ignored;
+static id<MTLTexture> g_depth;
 static id<MTLTexture> g_mirror;
+static id<MTLTexture> g_mirror_depth;
+static id<MTLTexture> g_shadow_map;
 static id<MTLSamplerState> g_sampler;
+static id<MTLSamplerState> g_compare_sampler;
 static id<MTLBuffer> g_buffers[FRAMES_IN_FLIGHT];
 static dispatch_semaphore_t g_inflight;
 static uint32_t g_frame;
@@ -185,23 +231,74 @@ static id<MTLTexture> empty_texture(void) {
     return empty;
 }
 
-static BOOL make_ground_pipeline(id<MTLLibrary> library) {
+static id<MTLDepthStencilState> depth_state(MTLCompareFunction compare, BOOL write) {
+    MTLDepthStencilDescriptor *desc = [MTLDepthStencilDescriptor new];
+    desc.depthCompareFunction = compare;
+    desc.depthWriteEnabled = write;
+    return [g_device newDepthStencilStateWithDescriptor:desc];
+}
+
+static id<MTLTexture> depth_texture(NSUInteger w, NSUInteger h, MTLTextureUsage usage) {
+    MTLTextureDescriptor *desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                                           width:w
+                                                          height:h
+                                                       mipmapped:NO];
+    desc.usage = usage;
+    desc.storageMode = MTLStorageModePrivate;
+    return [g_device newTextureWithDescriptor:desc];
+}
+
+static void blend_premultiplied(MTLRenderPipelineColorAttachmentDescriptor *color) {
+    color.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    color.blendingEnabled = YES;
+    color.sourceRGBBlendFactor = MTLBlendFactorOne;
+    color.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    color.sourceAlphaBlendFactor = MTLBlendFactorOne;
+    color.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+}
+
+/* All the pipelines and states the frame goes through. */
+static BOOL make_pipelines(id<MTLLibrary> library) {
     NSError *error = nil;
     MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
-    desc.vertexFunction = [library newFunctionWithName:@"vs_ground"];
-    desc.fragmentFunction = [library newFunctionWithName:@"fs_ground"];
+    desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+    desc.vertexFunction = [library newFunctionWithName:@"vs"];
+    desc.fragmentFunction = [library newFunctionWithName:@"fs"];
+    blend_premultiplied(desc.colorAttachments[0]);
+    g_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
+    desc.vertexFunction = [library newFunctionWithName:@"vs_effect"];
+    if (g_pipeline) g_effect_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
+
+    desc = [MTLRenderPipelineDescriptor new];
+    desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+    desc.vertexFunction = [library newFunctionWithName:@"vs_world"];
+    desc.fragmentFunction = [library newFunctionWithName:@"fs_world"];
     desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-    g_ground_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
-    if (!g_ground_pipeline) {
-        NSLog(@"ground pipeline failed: %@", error);
+    if (g_effect_pipeline) g_world_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
+
+    desc = [MTLRenderPipelineDescriptor new];
+    desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+    desc.vertexFunction = [library newFunctionWithName:@"vs_shadow"];
+    if (g_world_pipeline) g_shadow_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (!g_shadow_pipeline) {
+        NSLog(@"pipeline failed: %@", error);
         return NO;
     }
+    g_depth_write = depth_state(MTLCompareFunctionLess, YES);
+    g_depth_read = depth_state(MTLCompareFunctionLessEqual, NO);
+    g_depth_ignored = depth_state(MTLCompareFunctionAlways, NO);
+
     MTLSamplerDescriptor *sampler = [MTLSamplerDescriptor new];
     sampler.minFilter = MTLSamplerMinMagFilterLinear;
     sampler.magFilter = MTLSamplerMinMagFilterLinear;
     sampler.sAddressMode = MTLSamplerAddressModeClampToEdge;
     sampler.tAddressMode = MTLSamplerAddressModeClampToEdge;
     g_sampler = [g_device newSamplerStateWithDescriptor:sampler];
+    sampler.compareFunction = MTLCompareFunctionLessEqual;
+    g_compare_sampler = [g_device newSamplerStateWithDescriptor:sampler];
+    g_shadow_map = depth_texture(SHADOW_MAP, SHADOW_MAP,
+                                 MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
     return YES;
 }
 
@@ -249,22 +346,7 @@ int32_t oe_init(const char *title, int32_t *width, int32_t *height) {
             NSLog(@"shader compile failed: %@", error);
             return 0;
         }
-        MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
-        desc.vertexFunction = [library newFunctionWithName:@"vs"];
-        desc.fragmentFunction = [library newFunctionWithName:@"fs"];
-        MTLRenderPipelineColorAttachmentDescriptor *color = desc.colorAttachments[0];
-        color.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        color.blendingEnabled = YES;
-        color.sourceRGBBlendFactor = MTLBlendFactorOne;
-        color.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-        color.sourceAlphaBlendFactor = MTLBlendFactorOne;
-        color.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-        g_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
-        if (!g_pipeline) {
-            NSLog(@"pipeline failed: %@", error);
-            return 0;
-        }
-        if (!make_ground_pipeline(library)) return 0;
+        if (!make_pipelines(library)) return 0;
         g_inflight = dispatch_semaphore_create(FRAMES_IN_FLIGHT);
 
         g_invisible_cursor = [[NSCursor alloc]
@@ -424,16 +506,34 @@ int32_t oe_poll_event(OeEvent *event) {
     }
 }
 
-/* Fills a slot's buffer with these lists, one after another, and returns their offsets. */
-static id<MTLBuffer> fill_buffer(uint32_t slot, const void *const lists[3],
-                                 const NSUInteger bytes[3], NSUInteger offsets[3]) {
-    NSUInteger total = bytes[0] + bytes[1] + bytes[2];
+/* Matches `Sky` in the shader, whose float3s are 16 bytes each. */
+typedef struct {
+    float view[16];
+    float sun_view[16];
+    float size[2];
+    float time;
+    int32_t material;
+    float camera[4];
+    float sun[4];
+    int32_t mirrored;
+    int32_t light_count;
+    float padding[2];
+    OePointLight lights[OE_MAX_LIGHTS];
+} OeSky;
+
+enum { LISTS = 5 };
+
+/* Fills a slot's buffer with these lists, one after another, and notes their offsets. */
+static id<MTLBuffer> fill_buffer(uint32_t slot, const void *const lists[LISTS],
+                                 const NSUInteger bytes[LISTS], NSUInteger offsets[LISTS]) {
+    NSUInteger total = 0;
+    for (int i = 0; i < LISTS; i++) total += bytes[i];
     if (total && (!g_buffers[slot] || g_buffers[slot].length < total)) {
         g_buffers[slot] = [g_device newBufferWithLength:total * 2
                                                 options:MTLResourceStorageModeShared];
     }
     NSUInteger at = 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < LISTS; i++) {
         offsets[i] = at;
         if (bytes[i]) memcpy((char *)g_buffers[slot].contents + at, lists[i], bytes[i]);
         at += bytes[i];
@@ -441,9 +541,49 @@ static id<MTLBuffer> fill_buffer(uint32_t slot, const void *const lists[3],
     return g_buffers[slot];
 }
 
-/* The water's reflection, at half the size: its waves blur it anyway. */
-static void encode_mirror(id<MTLCommandBuffer> commands, id<MTLBuffer> buffer, NSUInteger offset,
-                          uint32_t count, const float size[2]) {
+static void draw_list(id<MTLRenderCommandEncoder> encoder, id<MTLBuffer> buffer, NSUInteger offset,
+                      uint32_t count) {
+    if (!count) return;
+    [encoder setVertexBuffer:buffer offset:offset atIndex:0];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count];
+}
+
+/* What the world's fragments read, in any pass that draws them. */
+static void bind_world(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> mirror, const OeSky *sky,
+                       int32_t material) {
+    OeSky mine = *sky;
+    mine.material = material;
+    [encoder setVertexBytes:&mine length:sizeof(mine) atIndex:1];
+    [encoder setFragmentBytes:&mine length:sizeof(mine) atIndex:0];
+    [encoder setFragmentTexture:mirror atIndex:0];
+    [encoder setFragmentTexture:g_shadow_map atIndex:1];
+    [encoder setFragmentSamplerState:g_sampler atIndex:0];
+    [encoder setFragmentSamplerState:g_compare_sampler atIndex:1];
+}
+
+/* The depth of all that is solid, as the sun sees it. */
+static void encode_shadows(id<MTLCommandBuffer> commands, id<MTLBuffer> buffer,
+                           const NSUInteger offsets[LISTS], const OeWorld *world, const OeSky *sky) {
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.depthAttachment.texture = g_shadow_map;
+    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.storeAction = MTLStoreActionStore;
+    pass.depthAttachment.clearDepth = 1.0;
+    id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+    [encoder setRenderPipelineState:g_shadow_pipeline];
+    [encoder setDepthStencilState:g_depth_write];
+    [encoder setDepthBias:1.0 slopeScale:2.0 clamp:0.01];
+    [encoder setVertexBytes:sky length:sizeof(*sky) atIndex:1];
+    draw_list(encoder, buffer, offsets[0], world->ground_count);
+    draw_list(encoder, buffer, offsets[1], world->objects_count);
+    draw_list(encoder, buffer, offsets[2], world->casters_count);
+    [encoder endEncoding];
+}
+
+/* The world seen in the water's mirror, at half the size: its waves blur it anyway. */
+static void encode_mirror(id<MTLCommandBuffer> commands, id<MTLBuffer> buffer,
+                          const NSUInteger offsets[LISTS], const OeWorld *world, const OeSky *sky,
+                          const float size[2]) {
     NSUInteger w = (NSUInteger)size[0] / 2, h = (NSUInteger)size[1] / 2;
     if (!g_mirror || g_mirror.width != w || g_mirror.height != h) {
         MTLTextureDescriptor *desc =
@@ -454,75 +594,92 @@ static void encode_mirror(id<MTLCommandBuffer> commands, id<MTLBuffer> buffer, N
         desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         desc.storageMode = MTLStorageModePrivate;
         g_mirror = [g_device newTextureWithDescriptor:desc];
+        g_mirror_depth = depth_texture(w, h, MTLTextureUsageRenderTarget);
     }
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = g_mirror;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+    pass.depthAttachment.texture = g_mirror_depth;
+    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+    pass.depthAttachment.clearDepth = 1.0;
+    OeSky mirrored = *sky;
+    memcpy(mirrored.view, world->mirror, sizeof(mirrored.view));
+    mirrored.mirrored = 1;
     id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-    [encoder setRenderPipelineState:g_pipeline];
-    [encoder setVertexBuffer:buffer offset:offset atIndex:0];
-    [encoder setVertexBytes:size length:sizeof(float) * 2 atIndex:1];
-    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count];
+    [encoder setRenderPipelineState:g_world_pipeline];
+    [encoder setDepthStencilState:g_depth_write];
+    bind_world(encoder, empty_texture(), &mirrored, 0);
+    draw_list(encoder, buffer, offsets[0], world->ground_count);
+    draw_list(encoder, buffer, offsets[1], world->objects_count);
     [encoder endEncoding];
 }
 
-/* Matches `Sky` in the shader, whose float3s are 16 bytes each. */
-typedef struct {
-    float size[2];
-    float time;
-    int32_t material;
-    float camera[4];
-    float sun[4];
-} OeSky;
-
-/* All of a frame, into a texture of the given size. */
+/* All of a frame, into a texture. */
 static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, uint32_t slot,
                          const OeWorld *world, float r, float g, float b) {
-    const void *const lists[3] = {world->ground, world->mirror, world->over};
-    const NSUInteger bytes[3] = {world->ground_count * sizeof(OeGroundVertex),
-                                 world->mirror_count * sizeof(OeVertex),
-                                 world->over_count * sizeof(OeVertex)};
-    NSUInteger offsets[3];
+    const void *const lists[LISTS] = {world->ground, world->objects, world->casters, world->effects,
+                                      world->over};
+    const NSUInteger bytes[LISTS] = {world->ground_count * sizeof(OeWorldVertex),
+                                     world->objects_count * sizeof(OeWorldVertex),
+                                     world->casters_count * sizeof(OeWorldVertex),
+                                     world->effects_count * sizeof(OeEffectVertex),
+                                     world->over_count * sizeof(OeVertex)};
+    NSUInteger offsets[LISTS];
     id<MTLBuffer> buffer = fill_buffer(slot, lists, bytes, offsets);
     float size[2] = {(float)target.width, (float)target.height};
-    if (world->mirror_count) {
-        encode_mirror(commands, buffer, offsets[1], world->mirror_count, size);
+
+    OeSky sky = {0};
+    memcpy(sky.view, world->view, sizeof(sky.view));
+    memcpy(sky.sun_view, world->sun_view, sizeof(sky.sun_view));
+    sky.size[0] = size[0];
+    sky.size[1] = size[1];
+    sky.time = world->time;
+    memcpy(sky.camera, world->camera, sizeof(world->camera));
+    memcpy(sky.sun, world->sun, sizeof(world->sun));
+    sky.light_count = (int32_t)MIN(world->lights_count, OE_MAX_LIGHTS);
+    if (sky.light_count) {
+        memcpy(sky.lights, world->lights, sizeof(OePointLight) * (size_t)sky.light_count);
     }
 
+    BOOL has_world = world->ground_count > 0;
+    BOOL has_water = has_world && world->material == 1;
+    if (has_world) encode_shadows(commands, buffer, offsets, world, &sky);
+    if (has_water) encode_mirror(commands, buffer, offsets, world, &sky, size);
+
+    if (!g_depth || g_depth.width != target.width || g_depth.height != target.height) {
+        g_depth = depth_texture(target.width, target.height, MTLTextureUsageRenderTarget);
+    }
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = target;
     pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     pass.colorAttachments[0].clearColor = MTLClearColorMake(r, g, b, 1.0);
+    pass.depthAttachment.texture = g_depth;
+    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.storeAction = MTLStoreActionDontCare;
+    pass.depthAttachment.clearDepth = 1.0;
     id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
-    if (world->ground_count) {
-        OeSky sky = {{size[0], size[1]}, world->time, world->material,
-                     {world->camera[0], world->camera[1], world->camera[2], 0},
-                     {world->sun[0], world->sun[1], world->sun[2], 0}};
-        [encoder setRenderPipelineState:g_ground_pipeline];
-        [encoder setVertexBuffer:buffer offset:offsets[0] atIndex:0];
-        [encoder setVertexBytes:size length:sizeof(size) atIndex:1];
-        [encoder setFragmentBytes:&sky length:sizeof(sky) atIndex:0];
-        [encoder setFragmentSamplerState:g_sampler atIndex:0];
-        /* A frame with no reflection samples nothing, but a texture must still be bound. */
-        if (world->mirror_count) {
-            [encoder setFragmentTexture:g_mirror atIndex:0];
-        } else {
-            [encoder setFragmentTexture:empty_texture() atIndex:0];
-        }
-        [encoder drawPrimitives:MTLPrimitiveTypeTriangle
-                    vertexStart:0
-                    vertexCount:world->ground_count];
+    if (has_world) {
+        [encoder setRenderPipelineState:g_world_pipeline];
+        [encoder setDepthStencilState:g_depth_write];
+        bind_world(encoder, has_water ? g_mirror : empty_texture(), &sky, world->material);
+        draw_list(encoder, buffer, offsets[0], world->ground_count);
+        bind_world(encoder, empty_texture(), &sky, 0);
+        draw_list(encoder, buffer, offsets[1], world->objects_count);
+    }
+    [encoder setVertexBytes:size length:sizeof(size) atIndex:1];
+    if (world->effects_count) {
+        [encoder setRenderPipelineState:g_effect_pipeline];
+        [encoder setDepthStencilState:g_depth_read];
+        draw_list(encoder, buffer, offsets[3], world->effects_count);
     }
     if (world->over_count) {
         [encoder setRenderPipelineState:g_pipeline];
-        [encoder setVertexBuffer:buffer offset:offsets[2] atIndex:0];
-        [encoder setVertexBytes:size length:sizeof(size) atIndex:1];
-        [encoder drawPrimitives:MTLPrimitiveTypeTriangle
-                    vertexStart:0
-                    vertexCount:world->over_count];
+        [encoder setDepthStencilState:g_depth_ignored];
+        draw_list(encoder, buffer, offsets[4], world->over_count);
     }
     [encoder endEncoding];
 }

@@ -55,14 +55,25 @@ pub struct WorldVertex {
     /// How much of the light the fog of war lets through.
     pub seen: f32,
     /// On the ground, its height; where a liquid lies, how far under its surface it is, below 0.
+    /// On an object, how much it shines: 0 for not at all, through paint, to 1 for bare metal.
     pub level: f32,
     /// Where on its unit it is, for the backend to lay black stains by, and how black they go.
     pub stain: [f32; 3],
 }
 
 impl WorldVertex {
-    /// A corner of an object standing on the map.
-    pub fn solid((x, y, z): (f32, f32, f32), normal: [f32; 3], [r, g, b]: [f32; 3]) -> Self {
+    /// A corner of an object standing on the map, not shining.
+    pub fn solid(point: (f32, f32, f32), normal: [f32; 3], color: [f32; 3]) -> Self {
+        WorldVertex::shiny(point, normal, color, 0.0)
+    }
+
+    /// A corner of an object standing on the map, shining by `shine`.
+    pub fn shiny(
+        (x, y, z): (f32, f32, f32),
+        normal: [f32; 3],
+        [r, g, b]: [f32; 3],
+        shine: f32,
+    ) -> Self {
         WorldVertex {
             x,
             y,
@@ -72,7 +83,7 @@ impl WorldVertex {
             g,
             b,
             seen: 1.0,
-            level: 1.0,
+            level: shine,
             stain: [0.0; 3],
         }
     }

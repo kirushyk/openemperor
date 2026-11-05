@@ -12,10 +12,12 @@ use crate::game::{
 };
 use crate::hud;
 use crate::planet;
-use crate::platform::{EffectVertex, Frame, MAX_LIGHTS, PointLight, Vertex, WorldVertex};
+use crate::platform::{EffectVertex, Frame, MAX_LIGHTS, Material, PointLight, Vertex, WorldVertex};
 use crate::units::{self, Role, Target, Unit, UnitKind};
 use crate::weapons::STRIKE_RADIUS;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
+
+mod models;
 
 type Color = [f32; 4];
 
@@ -27,10 +29,6 @@ const TEXT: Color = [0.93, 0.89, 0.78, 1.0];
 const HEADLIGHT: f32 = 0.35;
 /// How bright the flame of a rocket engine is at its nozzle.
 const ROCKET_FLAME: [f32; 3] = [1.0, 0.6, 0.15];
-/// How fast an ornithopter's wings beat, in radians per second.
-const WING_BEATS: f32 = 30.0;
-/// How far to each side of a platform's middle its two blocks lie.
-const PLATFORM_BLOCK_SIDE: f32 = 0.27;
 const BUILDING_DOOR: [f32; 3] = [0.05, 0.05, 0.06];
 const SMOKE: [f32; 3] = [0.16, 0.15, 0.14];
 pub const MAKING_DIM: Color = [0.0, 0.0, 0.0, 0.62];
@@ -128,6 +126,11 @@ struct Canvas {
     casters: Vec<WorldVertex>,
     /// What is see-through, hidden by whatever solid is in front of it.
     effects: Vec<EffectVertex>,
+    /// What looks at the models being made, so that faces none of it sees are left out; none
+    /// keeps them all.
+    watchers: Option<models::Watchers>,
+    /// How much of the model being made is worth making.
+    detail: models::Detail,
 }
 
 /// A point in the world, as (x, height, z).
@@ -1033,6 +1036,12 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     let view = battlefield::View::new(game.camera, game.width, game.height);
     draw_poison(canvas, game, &view);
     draw_order_lines(canvas, game, &view);
+    let terrain = battlefield::terrain(game.battle_map);
+    canvas.watchers = Some(models::Watchers {
+        eye: view.position(),
+        camera: true,
+        mirrored: terrain.material() == Material::Water,
+    });
     let is_marked = |unit: &Unit| unit.selected || game.in_selection_drag(unit);
     let mut flying: Vec<&Unit> = game
         .units
@@ -1071,6 +1080,12 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
                 draw_medals(canvas, game, &view, unit);
             }
             Object::Ruin(piece) => {
+                let middle = (piece.x, piece.y + piece.height / 2.0, piece.z);
+                let radius = piece.half_x.hypot(piece.half_z).hypot(piece.height / 2.0);
+                // Ruins are low: what of them is off the screen hardly throws a shadow onto it.
+                if view.ball_on_screen(middle, radius + piece.height).is_none() {
+                    continue;
+                }
                 let shade = piece.shade * game.sight_at(piece.x, piece.z).shade();
                 let color = RUIN_CONCRETE.map(|c| c * shade);
                 let footprint = (piece.x, piece.z, piece.half_x, piece.half_z, 0.0);
@@ -1084,10 +1099,11 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         .iter()
         .filter(|w| game.sight_at(w.unit.x, w.unit.z) == Sight::Visible)
     {
-        let drawn = canvas.objects.len();
-        draw_unit_model(canvas, game, &view, &wreck.unit);
-        stain_model(canvas, drawn, &wreck.unit);
-        draw_flames(canvas, game, &view, &wreck.unit);
+        let seen = seen_by(&view, &wreck.unit);
+        draw_seen_model(canvas, game, &wreck.unit, seen);
+        if matches!(seen, Seen::Near | Seen::Far) {
+            draw_flames(canvas, game, &view, &wreck.unit);
+        }
     }
     if let Some((building, can)) = game.placing_preview() {
         let color = if can { PLACE_OK } else { PLACE_NOT };
@@ -1100,7 +1116,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             color,
             (0.5, 0.5),
         );
-        draw_unit_model(canvas, game, &view, &building);
+        draw_unit_model(canvas, game, &building);
     }
     for unit in flying {
         draw_carried(canvas, game, &view, unit);
@@ -1109,6 +1125,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         draw_rockets_left(canvas, game, &view, unit);
         draw_medals(canvas, game, &view, unit);
     }
+    canvas.watchers = None;
 }
 
 /// Something small in the air that shows only by its shadow on the ground.
@@ -1723,205 +1740,6 @@ fn draw_dashed_line(
     }
 }
 
-/// A unit from simple boxes turned to its heading. Infantry is one tall thin block, a vehicle
-/// is a hull with a turret and a barrel, and an aircraft is a body with wings and a tail, so
-/// that their turning can be seen.
-/// Where in the world a point of a flying unit is, given along its nose, across to its right
-/// and up from its underside, leaning with it.
-fn body_world(unit: &Unit, (along, across, up): (f32, f32, f32)) -> (f32, f32, f32) {
-    let (sin, cos) = unit.heading.sin_cos();
-    let (lean_sin, lean_cos) = unit.bank.sin_cos();
-    let side = across * lean_cos + up * lean_sin;
-    let rise = up * lean_cos - across * lean_sin;
-    (
-        unit.x + cos * along - sin * side,
-        unit.y + unit.altitude + rise,
-        unit.z + sin * along + cos * side,
-    )
-}
-
-fn body_triangle(canvas: &mut Canvas, unit: &Unit, points: [Point; 3], color: [f32; 3]) {
-    let [a, b, c] = points.map(|point| body_world(unit, point));
-    let normal = unit_vector(cross(
-        [b.0 - a.0, b.1 - a.1, b.2 - a.2],
-        [c.0 - a.0, c.1 - a.1, c.2 - a.2],
-    ));
-    // Whichever way round it was given, it shows its upper side to the sky.
-    let normal = if normal[1] < 0.0 {
-        normal.map(|n| -n)
-    } else {
-        normal
-    };
-    canvas
-        .objects
-        .extend([a, b, c].map(|point| WorldVertex::solid(point, normal, color)));
-}
-
-/// A delta wing with a rocket engine burning at its tail.
-fn draw_air_drone(
-    canvas: &mut Canvas,
-    game: &Game,
-    view: &battlefield::View,
-    unit: &Unit,
-    color: [f32; 3],
-) {
-    let nose = (0.5, 0.0, 0.05);
-    let tail = (-0.28, 0.0, 0.05);
-    let left_tip = (-0.42, -0.5, 0.05);
-    let right_tip = (-0.42, 0.5, 0.05);
-    body_triangle(canvas, unit, [nose, left_tip, tail], color);
-    body_triangle(canvas, unit, [nose, right_tip, tail], color);
-    let dark = color.map(|c| c * 0.5);
-    let ridge = (0.1, 0.0, 0.16);
-    body_triangle(canvas, unit, [nose, ridge, tail], dark);
-    let fin_top = (-0.38, 0.0, 0.3);
-    body_triangle(canvas, unit, [ridge, tail, fin_top], dark);
-    // The flame flickers as it burns.
-    let reach = 0.45 + 0.12 * (game.battle_time() * 40.0).sin();
-    canvas.deep_light(
-        view,
-        [
-            (body_world(unit, (-0.28, -0.05, 0.05)), ROCKET_FLAME),
-            (body_world(unit, (-0.28, 0.05, 0.05)), ROCKET_FLAME),
-            (body_world(unit, (-0.28 - reach, 0.0, 0.05)), [0.0; 3]),
-        ],
-    );
-}
-
-/// A body with two pairs of wings that beat in turn while it is up, and lie still once it sits.
-fn draw_ornithopter(canvas: &mut Canvas, game: &Game, unit: &Unit, color: [f32; 3]) {
-    const WING_ROOT: f32 = 0.1;
-    let wing_color = color.map(|c| c * 0.7 + 0.25);
-    let beat = |phase: f32| {
-        if !unit.is_grounded() {
-            0.14 + 0.22 * (game.battle_time() * WING_BEATS + phase).sin()
-        } else {
-            0.1
-        }
-    };
-    for (along, reach, phase) in [(0.16, 0.5, 0.0), (-0.12, 0.42, PI)] {
-        for side in [-1.0, 1.0] {
-            let tip_height = beat(phase);
-            let root_near = (along - 0.06, side * WING_ROOT, 0.2);
-            let root_far = (along + 0.06, side * WING_ROOT, 0.2);
-            let tip_near = (along - 0.07, side * reach, tip_height);
-            let tip_far = (along + 0.07, side * reach, tip_height);
-            body_triangle(canvas, unit, [root_near, root_far, tip_far], wing_color);
-            body_triangle(canvas, unit, [root_near, tip_far, tip_near], wing_color);
-        }
-    }
-    let base = unit.y + unit.altitude;
-    let (sin, cos) = unit.heading.sin_cos();
-    let at = |by: f32| (unit.x + cos * by, unit.z + sin * by);
-    let (tail_x, tail_z) = at(-0.34);
-    let tail = (tail_x, tail_z, 0.2, 0.03, unit.heading);
-    draw_turned_box(
-        canvas,
-        tail,
-        (base + 0.12, base + 0.17),
-        color.map(|c| c * 0.6),
-    );
-    let body = (unit.x, unit.z, 0.2, 0.09, unit.heading);
-    draw_turned_box(canvas, body, (base + 0.04, base + 0.2), color);
-}
-
-/// An ornithopter's big brother: a broad armored body, heavy wings beating slower, and a fat
-/// rocket pod on each side.
-fn draw_destroyer(canvas: &mut Canvas, game: &Game, unit: &Unit, color: [f32; 3]) {
-    const WING_ROOT: f32 = 0.2;
-    let wing_color = color.map(|c| c * 0.55 + 0.2);
-    let beat = |phase: f32| {
-        if !unit.is_grounded() {
-            0.2 + 0.24 * (game.battle_time() * WING_BEATS * 0.6 + phase).sin()
-        } else {
-            0.14
-        }
-    };
-    for (along, reach, phase) in [(0.26, 0.8, 0.0), (-0.2, 0.68, PI)] {
-        for side in [-1.0, 1.0] {
-            let tip_height = beat(phase);
-            let root_near = (along - 0.1, side * WING_ROOT, 0.3);
-            let root_far = (along + 0.1, side * WING_ROOT, 0.3);
-            let tip_near = (along - 0.11, side * reach, tip_height);
-            let tip_far = (along + 0.11, side * reach, tip_height);
-            body_triangle(canvas, unit, [root_near, root_far, tip_far], wing_color);
-            body_triangle(canvas, unit, [root_near, tip_far, tip_near], wing_color);
-        }
-    }
-    let base = unit.y + unit.altitude;
-    let (sin, cos) = unit.heading.sin_cos();
-    let at = |by: f32, side: f32| {
-        (
-            unit.x + cos * by - sin * side,
-            unit.z + sin * by + cos * side,
-        )
-    };
-    let (tail_x, tail_z) = at(-0.5, 0.0);
-    let tail = (tail_x, tail_z, 0.28, 0.05, unit.heading);
-    draw_turned_box(
-        canvas,
-        tail,
-        (base + 0.14, base + 0.22),
-        color.map(|c| c * 0.5),
-    );
-    let body = (unit.x, unit.z, 0.34, 0.17, unit.heading);
-    draw_turned_box(canvas, body, (base + 0.04, base + 0.3), color);
-    let (nose_x, nose_z) = at(0.36, 0.0);
-    let nose = (nose_x, nose_z, 0.08, 0.1, unit.heading);
-    draw_turned_box(
-        canvas,
-        nose,
-        (base + 0.08, base + 0.22),
-        color.map(|c| c * 0.4),
-    );
-    for side in [-0.25, 0.25] {
-        let (pod_x, pod_z) = at(0.08, side);
-        let pod = (pod_x, pod_z, 0.22, 0.07, unit.heading);
-        draw_turned_box(canvas, pod, (base + 0.06, base + 0.18), [0.28, 0.28, 0.3]);
-    }
-}
-
-/// A beam of light from a unit up in the air down to the ground ahead of it, fading with
-/// distance. Each end is given as how far ahead, how far to the side and how wide to each side.
-fn draw_beam(
-    canvas: &mut Canvas,
-    game: &Game,
-    view: &battlefield::View,
-    unit: &Unit,
-    (lamp_along, lamp_side, lamp_half): (f32, f32, f32),
-    (far_along, far_side, far_half): (f32, f32, f32),
-) {
-    let terrain = battlefield::terrain(game.battle_map);
-    let (sin, cos) = unit.heading.sin_cos();
-    let at = |along: f32, across: f32| {
-        (
-            unit.x + cos * along - sin * across,
-            unit.z + sin * along + cos * across,
-        )
-    };
-    let lit = |across: f32| {
-        let (x, z) = at(lamp_along, lamp_side + across);
-        (x, unit.y + unit.altitude, z)
-    };
-    let far = |across: f32| {
-        let (x, z) = at(far_along, far_side + across);
-        (x, terrain.height_at(x, z).max(0.0) + OVER_GROUND, z)
-    };
-    let (a, b) = (lit(-lamp_half), lit(lamp_half));
-    let (c, d) = (far(far_half), far(-far_half));
-    let bright = [HEADLIGHT; 3];
-    canvas.deep_light(view, [(a, bright), (b, bright), (c, [0.0; 3])]);
-    canvas.deep_light(view, [(a, bright), (c, [0.0; 3]), (d, [0.0; 3])]);
-}
-
-/// Two beams from the front ends of a platform's two blocks.
-fn draw_platform_lamps(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
-    for lamp in [-PLATFORM_BLOCK_SIDE, PLATFORM_BLOCK_SIDE] {
-        let (near, far) = ((0.38, lamp, 0.08), (4.5, lamp * 2.5, 0.8));
-        draw_beam(canvas, game, view, unit, near, far);
-    }
-}
-
 /// A vehicle hanging under its carryall on two cables.
 fn draw_carried(canvas: &mut Canvas, game: &Game, view: &battlefield::View, carrier: &Unit) {
     let cables = |canvas: &mut Canvas, bottom_y: f32| {
@@ -1939,7 +1757,7 @@ fn draw_carried(canvas: &mut Canvas, game: &Game, view: &battlefield::View, carr
     }
     if let Some(load) = game.carried.iter().find(|load| load.carrier == carrier.id) {
         cables(canvas, load.vehicle.y);
-        draw_unit_model(canvas, game, view, &load.vehicle);
+        draw_seen_model(canvas, game, &load.vehicle, seen_by(view, carrier));
     }
 }
 
@@ -1960,28 +1778,68 @@ fn shaken(game: &Game, unit: &Unit, seed: f32) -> Unit {
     shown
 }
 
-/// White light on the ground in front of a vehicle, fading with distance.
-fn draw_headlight(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
-    let terrain = battlefield::terrain(game.battle_map);
-    let (sin, cos) = unit.heading.sin_cos();
-    let on_ground = |ahead: f32, side: f32| {
-        let (x, z) = (
-            unit.x + cos * ahead - sin * side,
-            unit.z + sin * ahead + cos * side,
-        );
-        (x, terrain.height_at(x, z).max(0.0) + OVER_GROUND, z)
+/// How many lamps a machine of this role has.
+#[cfg(test)]
+pub fn lamps_on(role: Role) -> usize {
+    models::lamp_spots(role).len()
+}
+
+/// How much of a unit is worth drawing this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Seen {
+    /// On the screen, big enough to show all its detail.
+    Near,
+    /// On the screen, but small.
+    Far,
+    /// Off the screen, with its shadow reaching onto it.
+    ShadowOnly,
+    /// Neither it nor its shadow is on the screen.
+    Unseen,
+}
+
+/// Below how many pixels across a unit's bounds on the screen it is drawn with less detail.
+const FAR_PIXELS: f32 = 40.0;
+
+/// A ball around all of a unit that is drawn: its middle and its radius.
+fn bounds(unit: &Unit) -> (Point, f32) {
+    let height = match (unit.kind, unit.role) {
+        (UnitKind::Infantry, _) => 0.7,
+        (_, Role::HeavyStrider) => 1.35,
+        (_, Role::Strider) => 0.8,
+        // It may have a vehicle hanging under it.
+        (_, Role::AdvancedCarryall) => 1.4,
+        (UnitKind::Vehicle | UnitKind::Aircraft, _) => 0.5,
+        (UnitKind::Tower, _) => units::TUBE_HEIGHT + 0.4,
+        (UnitKind::Building, _) => 1.6,
     };
-    canvas.deep_light(
-        view,
-        [
-            (on_ground(0.45, 0.0), [HEADLIGHT; 3]),
-            (on_ground(2.6, -1.0), [0.0; 3]),
-            (on_ground(2.6, 1.0), [0.0; 3]),
-        ],
-    );
+    let middle = (unit.x, unit.y + unit.altitude + height / 2.0, unit.z);
+    (middle, unit.kind.radius() * 1.5 + height / 2.0)
+}
+
+/// How much of a unit the camera can see: of it, or of its shadow on the ground.
+fn seen_by(view: &battlefield::View, unit: &Unit) -> Seen {
+    let (middle, radius) = bounds(unit);
+    if let Some(pixels) = view.ball_on_screen(middle, radius) {
+        return if pixels < FAR_PIXELS {
+            Seen::Far
+        } else {
+            Seen::Near
+        };
+    }
+    // The shadow lies between its foot and where the sun throws its top, on the ground.
+    let top = middle.1 + radius - unit.y;
+    let thrown = (-SUN[0] / SUN[1] * top, -SUN[2] / SUN[1] * top);
+    let shadow = (unit.x + thrown.0 / 2.0, unit.y, unit.z + thrown.1 / 2.0);
+    let reach = radius + thrown.0.hypot(thrown.1) / 2.0;
+    if view.ball_on_screen(shadow, reach).is_some() {
+        Seen::ShadowOnly
+    } else {
+        Seen::Unseen
+    }
 }
 
 fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    let seen = seen_by(view, unit);
     if let Some(theft) = unit.theft {
         // A vehicle's model stands on its y, however high it has been lifted.
         let mut lifted = *unit;
@@ -1992,9 +1850,7 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
         } else {
             lifted
         };
-        let drawn = canvas.objects.len();
-        draw_unit_model(canvas, game, view, &shown);
-        stain_model(canvas, drawn, &shown);
+        draw_seen_model(canvas, game, &shown, seen);
         return;
     }
     let is_fighting = unit.role == Role::AdvancedCarryall
@@ -2002,22 +1858,94 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
             .is_some_and(|stolen| stolen.theft.is_some_and(|theft| theft.struggle > 0.0));
     let shaken_unit = is_fighting.then(|| shaken(game, unit, 2.0));
     let unit = shaken_unit.as_ref().unwrap_or(unit);
-    if unit.kind == UnitKind::Vehicle {
-        draw_headlight(canvas, game, view, unit);
-    } else if unit.role == Role::AirDefensePlatform {
-        draw_platform_lamps(canvas, game, view, unit);
-    } else if unit.role == Role::AdvancedCarryall {
-        // A huge single lamp under its nose.
-        draw_beam(canvas, game, view, unit, (0.4, 0.0, 0.25), (8.0, 0.0, 3.5));
-    }
+    // Beams reach far past what they come from, so they show even when it does not.
+    draw_beams(canvas, game, view, unit);
     if unit.role == Role::LandingPad {
         draw_searchlight(canvas, game, view, unit);
     }
+    draw_seen_model(canvas, game, unit, seen);
+    if matches!(seen, Seen::Near | Seen::Far) {
+        if unit.role == Role::AirDrone {
+            draw_drone_flame(canvas, game, view, unit);
+        }
+        if unit.wear() > units::BURNS_PAST {
+            draw_flames(canvas, game, view, unit);
+        }
+    }
+}
+
+/// A unit's model with as much of it as can be seen, stained as it is: on the screen with its
+/// detail for how big it shows there, or off it only as a rough shape that casts its shadow.
+fn draw_seen_model(canvas: &mut Canvas, game: &Game, unit: &Unit, seen: Seen) {
     let drawn = canvas.objects.len();
-    draw_unit_model(canvas, game, view, unit);
-    stain_model(canvas, drawn, unit);
-    if unit.wear() > units::BURNS_PAST {
-        draw_flames(canvas, game, view, unit);
+    match seen {
+        Seen::Near | Seen::Far => {
+            if seen == Seen::Far {
+                canvas.detail = models::Detail::Low;
+            }
+            draw_unit_model(canvas, game, unit);
+            stain_model(canvas, drawn, unit);
+        }
+        Seen::ShadowOnly => {
+            let watchers = canvas.watchers;
+            canvas.detail = models::Detail::Low;
+            canvas.watchers = watchers.map(|w| models::Watchers { camera: false, ..w });
+            draw_unit_model(canvas, game, unit);
+            canvas.watchers = watchers;
+            let shadow: Vec<WorldVertex> = canvas.objects.drain(drawn..).collect();
+            canvas.casters.extend(shadow);
+        }
+        Seen::Unseen => {}
+    }
+    canvas.detail = models::Detail::Full;
+}
+
+/// The flame burning out of an air drone's nozzle, flickering.
+fn draw_drone_flame(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    let place = models::Place::in_air(unit);
+    let [a, u, c] = models::DRONE_NOZZLE;
+    let reach = 0.45 + 0.12 * (game.battle_time() * 40.0).sin();
+    let at = |p: [f32; 3]| {
+        let [x, y, z] = place.point(p);
+        (x, y, z)
+    };
+    canvas.deep_light(
+        view,
+        [
+            (at([a, u, c - 0.03]), ROCKET_FLAME),
+            (at([a, u, c + 0.03]), ROCKET_FLAME),
+            (at([a - reach, u, c]), [0.0; 3]),
+        ],
+    );
+    canvas.deep_light(
+        view,
+        [
+            (at([a, u - 0.03, c]), ROCKET_FLAME),
+            (at([a, u + 0.03, c]), ROCKET_FLAME),
+            (at([a - reach, u, c]), [0.0; 3]),
+        ],
+    );
+}
+
+/// Each of a machine's lamps' beams: an additive white trapezium from its lens, narrow there
+/// and brightest, to the ground ahead, wide there and fading to nothing.
+fn draw_beams(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    let terrain = battlefield::terrain(game.battle_map);
+    for beam in models::beams(unit) {
+        let (x, y, z) = beam.lens;
+        let lens = |by: f32| (x + beam.right[0] * by, y, z + beam.right[2] * by);
+        let far = |by: f32| {
+            let (fx, fz) = (
+                x + beam.ahead[0] * beam.reach + beam.right[0] * by,
+                z + beam.ahead[2] * beam.reach + beam.right[2] * by,
+            );
+            (fx, terrain.height_at(fx, fz).max(0.0) + OVER_GROUND, fz)
+        };
+        let (a, b) = (lens(-beam.half), lens(beam.half));
+        let (c, d) = (far(beam.spread), far(-beam.spread));
+        let bright = [HEADLIGHT; 3];
+        canvas.deep_light(view, [(a, bright), (b, bright), (c, [0.0; 3])]);
+        canvas.deep_light(view, [(a, bright), (c, [0.0; 3]), (d, [0.0; 3])]);
     }
 }
 
@@ -2158,7 +2086,7 @@ fn draw_landing_pad(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     );
 }
 
-fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
     let [r, g, b, _] = team_color(unit.color);
     let color = [r, g, b];
     let (forward_x, forward_z) = (unit.heading.cos(), unit.heading.sin());
@@ -2215,109 +2143,8 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
                 }
             }
         }
-        UnitKind::Vehicle if unit.role == Role::RepairVehicle => {
-            let hull = (unit.x, unit.z, 0.42, 0.26, unit.heading);
-            let top = unit.y + 0.3;
-            part(hull, (unit.y, top), color);
-            // A white cross on its roof.
-            let long = (unit.x, unit.z, 0.2, 0.06, unit.heading);
-            let wide = (unit.x, unit.z, 0.06, 0.2, unit.heading);
-            part(long, (top, top + 0.03), [0.95, 0.95, 0.95]);
-            part(wide, (top, top + 0.03), [0.95, 0.95, 0.95]);
-        }
-        UnitKind::Vehicle if unit.role == Role::Catapult => {
-            let hull = (unit.x, unit.z, 0.42, 0.26, unit.heading);
-            let top = unit.y + 0.22;
-            part(hull, (unit.y, top), color);
-            let (arm_x, arm_z) = ahead(-0.08);
-            let arm = (arm_x, arm_z, 0.36, 0.04, unit.heading);
-            part(arm, (top + 0.14, top + 0.2), color.map(|c| c * 0.6));
-            let (bucket_x, bucket_z) = ahead(-0.42);
-            let bucket = (bucket_x, bucket_z, 0.09, 0.09, unit.heading);
-            part(bucket, (top + 0.1, top + 0.26), color.map(|c| c * 0.45));
-        }
-        UnitKind::Vehicle if unit.role == Role::RocketLauncher => {
-            let hull = (unit.x, unit.z, 0.42, 0.26, unit.heading);
-            part(hull, (unit.y, unit.y + 0.22), color);
-            let beside = |side: f32| (unit.x - forward_z * side, unit.z + forward_x * side);
-            for side in [-0.14, 0.14] {
-                let (x, z) = beside(side);
-                let rack = (x, z, 0.3, 0.1, unit.heading);
-                let height = (unit.y + 0.22, unit.y + units::ROCKET_HEIGHT);
-                part(rack, height, color.map(|c| c * 0.5));
-            }
-            for &side in &units::ROCKET_SIDES[unit.salvo_fired..] {
-                let (x, z) = beside(side);
-                let rocket = (x, z, 0.28, 0.025, unit.heading);
-                let height = (units::ROCKET_HEIGHT, units::ROCKET_HEIGHT + 0.04);
-                part(
-                    rocket,
-                    (unit.y + height.0, unit.y + height.1),
-                    [0.9, 0.9, 0.85],
-                );
-            }
-        }
-        UnitKind::Vehicle if unit.role == Role::Strider => {
-            draw_strider(canvas, unit, color);
-        }
-        UnitKind::Vehicle if unit.role == Role::HeavyStrider => {
-            draw_heavy_strider(canvas, unit, color);
-        }
-        UnitKind::Vehicle => {
-            let hull = (unit.x, unit.z, 0.45, 0.28, unit.heading);
-            let (hull_top, turret_top) = (unit.y + 0.28, unit.y + 0.46);
-            part(hull, (unit.y, hull_top), color);
-            let turret = (unit.x, unit.z, 0.17, 0.17, unit.heading);
-            part(turret, (hull_top, turret_top), color.map(|c| c * 0.85));
-            let (barrel_x, barrel_z) = ahead(0.4);
-            let barrel = (barrel_x, barrel_z, 0.25, 0.04, unit.heading);
-            part(
-                barrel,
-                (hull_top + 0.06, hull_top + 0.13),
-                color.map(|c| c * 0.6),
-            );
-        }
-        UnitKind::Aircraft if unit.role == Role::AirDefensePlatform => {
-            let base = unit.y + unit.altitude;
-            let beside = |side: f32| (unit.x - forward_z * side, unit.z + forward_x * side);
-            for side in [-PLATFORM_BLOCK_SIDE, PLATFORM_BLOCK_SIDE] {
-                let (x, z) = beside(side);
-                let block = (x, z, 0.38, 0.1, unit.heading);
-                part(block, (base, base + 0.1), color.map(|c| c * 0.75));
-            }
-            let bridge = (unit.x, unit.z, 0.09, PLATFORM_BLOCK_SIDE, unit.heading);
-            part(bridge, (base + 0.02, base + 0.08), color.map(|c| c * 0.55));
-            let mount = (unit.x, unit.z, 0.11, 0.11, unit.heading);
-            part(mount, (base + 0.08, base + 0.26), color);
-            let (gun_x, gun_z) = ahead(0.3);
-            let gun = (gun_x, gun_z, 0.2, 0.03, unit.heading);
-            part(gun, (base + 0.15, base + 0.2), color.map(|c| c * 0.5));
-        }
-        UnitKind::Aircraft if unit.role == Role::AirDrone => {
-            draw_air_drone(canvas, game, view, unit, color);
-        }
-        UnitKind::Aircraft if unit.role == Role::Ornithopter => {
-            draw_ornithopter(canvas, game, unit, color);
-        }
-        UnitKind::Aircraft if unit.role == Role::Destroyer => {
-            draw_destroyer(canvas, game, unit, color);
-        }
-        UnitKind::Aircraft => {
-            // A long open frame, with an engine pod on each side and a big lamp at its nose.
-            let base = unit.y + unit.altitude;
-            let beside = |side: f32| (unit.x - forward_z * side, unit.z + forward_x * side);
-            let body = (unit.x, unit.z, 0.5, 0.14, unit.heading);
-            part(body, (base, base + 0.14), color);
-            let strut = (unit.x, unit.z, 0.08, 0.42, unit.heading);
-            part(strut, (base + 0.05, base + 0.1), color.map(|c| c * 0.6));
-            for side in [-0.42, 0.42] {
-                let (x, z) = beside(side);
-                let pod = (x, z, 0.18, 0.08, unit.heading);
-                part(pod, (base + 0.02, base + 0.16), color.map(|c| c * 0.75));
-            }
-            let (lamp_x, lamp_z) = ahead(0.52);
-            let lamp = (lamp_x, lamp_z, 0.05, 0.12, unit.heading);
-            part(lamp, (base + 0.02, base + 0.12), [1.0, 0.98, 0.85]);
+        UnitKind::Vehicle | UnitKind::Aircraft => {
+            models::draw_machine(canvas, unit, game.battle_time(), color);
         }
         UnitKind::Building if unit.role == Role::LandingPad => {
             draw_landing_pad(canvas, unit, color);
@@ -2438,138 +2265,6 @@ pub fn knee_of(hip: (f32, f32), foot: (f32, f32), thigh: f32, shin: f32) -> (f32
         hip.0 + along_x * along - along_y * out,
         hip.1 + along_y * along + along_x * out,
     )
-}
-
-/// How a striding unit's legs are built: how far apart, how long, and how far they swing.
-struct Legs {
-    side: f32,
-    thigh: f32,
-    shin: f32,
-    swing: f32,
-    /// How many radians of its step to each world unit it walks.
-    pace: f32,
-    width: f32,
-}
-
-/// Two legs with knees under a striding unit, stepping in turn as it walks.
-fn draw_legs(canvas: &mut Canvas, unit: &Unit, legs: &Legs, color: [f32; 3]) {
-    let hip_height = (legs.thigh + legs.shin) * 0.92;
-    let (sin, cos) = unit.heading.sin_cos();
-    let at = |side: f32, (ahead, up): (f32, f32)| {
-        (
-            unit.x + cos * ahead - sin * side,
-            unit.y + up,
-            unit.z + sin * ahead + cos * side,
-        )
-    };
-    let moving = unit.is_moving();
-    let right = [-sin, 0.0, cos];
-    for (side, step) in [(-legs.side, 0.0), (legs.side, PI)] {
-        let (swing, lift) = if moving {
-            let phase = unit.stride * legs.pace + step;
-            (
-                legs.swing * phase.sin(),
-                legs.swing * 0.5 * phase.cos().max(0.0),
-            )
-        } else {
-            (0.0, 0.0)
-        };
-        let hip = (0.0, hip_height);
-        let foot = (swing, lift);
-        let knee = knee_of(hip, foot, legs.thigh, legs.shin);
-        let half = legs.width / 2.0;
-        let thigh_color = color.map(|c| c * 0.8);
-        canvas.solid_bar(at(side, hip), at(side, knee), half, right, thigh_color);
-        let shin_color = color.map(|c| c * 0.6);
-        canvas.solid_bar(
-            at(side, knee),
-            at(side, foot),
-            half * 0.75,
-            right,
-            shin_color,
-        );
-        let (kx, ky, kz) = at(side, knee);
-        let joint = (kx, kz, half * 1.3, half * 1.3, unit.heading);
-        draw_turned_box(
-            canvas,
-            joint,
-            (ky - half * 1.3, ky + half * 1.3),
-            thigh_color,
-        );
-    }
-}
-
-/// A small body up on two legs, with a missile pod on each side.
-fn draw_strider(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
-    let legs = Legs {
-        side: 0.15,
-        thigh: 0.3,
-        shin: 0.28,
-        swing: 0.22,
-        pace: 5.0,
-        width: 0.07,
-    };
-    draw_legs(canvas, unit, &legs, color);
-    let (sin, cos) = unit.heading.sin_cos();
-    let base = unit.y + 0.5;
-    let body = (unit.x, unit.z, 0.22, 0.15, unit.heading);
-    draw_turned_box(canvas, body, (base, base + 0.24), color);
-    for side in [-0.21, 0.21] {
-        let pod = (
-            unit.x - sin * side,
-            unit.z + cos * side,
-            0.16,
-            0.05,
-            unit.heading,
-        );
-        draw_turned_box(
-            canvas,
-            pod,
-            (base + 0.1, base + 0.2),
-            color.map(|c| c * 0.5),
-        );
-    }
-}
-
-/// A big body up on two legs, with four cannons that each go back when they fire.
-fn draw_heavy_strider(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
-    const RECOIL_TRAVEL: f32 = 0.25;
-    const BARREL_HALF: f32 = 0.28;
-    let legs = Legs {
-        side: 0.3,
-        thigh: 0.48,
-        shin: 0.46,
-        swing: 0.34,
-        pace: 3.2,
-        width: 0.12,
-    };
-    draw_legs(canvas, unit, &legs, color);
-    let (sin, cos) = unit.heading.sin_cos();
-    let base = unit.y + 0.82;
-    let body = (unit.x, unit.z, 0.42, 0.36, unit.heading);
-    draw_turned_box(canvas, body, (base, base + 0.2), color);
-    let top = (unit.x, unit.z, 0.25, 0.2, unit.heading);
-    draw_turned_box(
-        canvas,
-        top,
-        (base + 0.2, base + 0.42),
-        color.map(|c| c * 0.85),
-    );
-    let height = (
-        unit.y + units::CANNON_HEIGHT,
-        unit.y + units::CANNON_HEIGHT + 0.06,
-    );
-    for (&side, &recoil) in units::CANNON_SIDES.iter().zip(&unit.recoil) {
-        let ahead = units::CANNON_REACH - BARREL_HALF - RECOIL_TRAVEL * recoil;
-        let barrel = (
-            unit.x + cos * ahead - sin * side,
-            unit.z + sin * ahead + cos * side,
-            BARREL_HALF,
-            0.035,
-            unit.heading,
-        );
-        draw_turned_box(canvas, barrel, height, color.map(|c| c * 0.45));
-    }
 }
 
 /// A barracks, factory or hangar, with its door on its south side.

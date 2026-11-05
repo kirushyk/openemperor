@@ -186,6 +186,21 @@ static NSString *const kShader = @
     "  }\n"
     "  return color * light;\n"
     "}\n"
+    /* How a machine shines: paint with a soft wide sheen, bare metal with a sharp highlight
+     * from the sun and the sky and ground seen in it, stronger at a glancing angle. */
+    "static float3 shine_on(float3 lit, float3 color, float3 world, float3 normal, float in_sun,\n"
+    "                       float shine, constant Sky &sky) {\n"
+    "  float metal = smoothstep(0.5, 0.9, shine);\n"
+    "  float3 to_eye = normalize(sky.camera - world);\n"
+    "  float3 halfway = normalize(to_eye + normalize(sky.sun));\n"
+    "  float power = mix(12.0, 70.0, metal);\n"
+    "  float spec = pow(max(dot(normal, halfway), 0.0), power) * in_sun * shine * mix(0.3, 1.4, metal);\n"
+    "  float3 bounce = reflect(-to_eye, normal);\n"
+    "  float3 seen = mix(float3(0.2, 0.19, 0.17), float3(0.62, 0.68, 0.78), bounce.y * 0.5 + 0.5);\n"
+    "  float glance = pow(1.0 - max(dot(normal, to_eye), 0.0), 3.0);\n"
+    "  float3 mirrored = color * seen * 1.1 + seen * glance * 0.35;\n"
+    "  return mix(lit, lit * 0.6 + mirrored * 0.7, metal * 0.55) + float3(1.0, 0.96, 0.88) * spec;\n"
+    "}\n"
     "fragment float4 fs_world(WorldOut in [[stage_in]], constant Sky &sky [[buffer(0)]],\n"
     "                         texture2d<float> mirror [[texture(0)]], depth2d<float> map [[texture(1)]],\n"
     "                         sampler smooth [[sampler(0)]], sampler compare [[sampler(1)]]) {\n"
@@ -195,11 +210,13 @@ static NSString *const kShader = @
     "  float in_sun = sun_on(in.world, normal, sky, map, compare);\n"
     "  float2 p = in.world.xz; float3 color = in.color;\n"
     /* Black stains of what is damaged, spreading the worse it is, with soot around them. */
+    "  float clean = 1.0;\n"
     "  if (in.stain.z > 0.0) {\n"
     "    float blot = fbm(in.stain.xy * 3.4);\n"
     "    float edge = 0.7 - in.stain.z * 0.24;\n"
-    "    color *= mix(1.0, 0.72, smoothstep(edge - 0.1, edge, blot));\n"
-    "    color *= mix(1.0, 0.1, smoothstep(edge, edge + 0.05, blot));\n"
+    "    clean = mix(1.0, 0.72, smoothstep(edge - 0.1, edge, blot));\n"
+    "    clean *= mix(1.0, 0.1, smoothstep(edge, edge + 0.05, blot));\n"
+    "    color *= clean;\n"
     "  }\n"
     "  if (sky.material == 1 && in.level < 0.0) {\n"
     "    color = water_pixel(color, p, -in.level, in_sun, in.pos.xy / sky.size, sky, mirror, smooth);\n"
@@ -212,6 +229,9 @@ static NSString *const kShader = @
     "  /* Land still wet from the sea, darker just above it. */\n"
     "  if (sky.material == 1) color *= mix(0.62, 1.0, smoothstep(0.0, 0.12, in.level));\n"
     "  float3 lit = light_on(color, in.world, normal, in_sun, sky);\n"
+    /* Objects say how much they shine in their level; soot takes it away. */
+    "  if (sky.material == 4 && in.level > 0.0)\n"
+    "    lit = shine_on(lit, color, in.world, normal, in_sun, in.level * clean, sky);\n"
     /* Land beside lava glows from below. */
     "  if (sky.material == 3) {\n"
     "    float near = smoothstep(0.55, 0.0, in.level);\n"
@@ -222,6 +242,8 @@ static NSString *const kShader = @
     ;
 
 enum { FRAMES_IN_FLIGHT = 3, SHADOW_MAP = 4096 }; /* The game steps its sun view by this map. */
+/* What the world's fragments are told they are drawing when it is the objects on the map. */
+enum { MATERIAL_OBJECTS = 4 };
 
 @interface OeWindow : NSWindow
 @end
@@ -652,6 +674,7 @@ static void encode_mirror(id<MTLCommandBuffer> commands, id<MTLBuffer> buffer,
     [encoder setDepthStencilState:g_depth_write];
     bind_world(encoder, empty_texture(), &mirrored, 0);
     draw_list(encoder, buffer, offsets[0], world->ground_count);
+    bind_world(encoder, empty_texture(), &mirrored, MATERIAL_OBJECTS);
     draw_list(encoder, buffer, offsets[1], world->objects_count);
     [encoder endEncoding];
 }
@@ -706,7 +729,7 @@ static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, u
         [encoder setDepthStencilState:g_depth_write];
         bind_world(encoder, has_water ? g_mirror : empty_texture(), &sky, world->material);
         draw_list(encoder, buffer, offsets[0], world->ground_count);
-        bind_world(encoder, empty_texture(), &sky, 0);
+        bind_world(encoder, empty_texture(), &sky, MATERIAL_OBJECTS);
         draw_list(encoder, buffer, offsets[1], world->objects_count);
     }
     [encoder setVertexBytes:size length:sizeof(size) atIndex:1];

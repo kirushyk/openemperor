@@ -56,9 +56,21 @@ do now:
 
 Stains, flames, shadows, headlights and selection rings work on the new models unchanged.
 
-**Budget.** The figures below are roughly triangles per model. A battle with about 400 machines
-on screen comes to about 150,000 triangles, drawn twice (once more for shadows). Units off
-screen are skipped. Tracked vehicles push that toward 200,000 when they're most of the army.
+**Budget.** The figures in each heading are the plan. As built, full-detail models come to
+roughly: tank, repair vehicle and catapult about 1,000 triangles each, rocket launcher about
+1,150, heavy strider about 1,150, strider about 700, destroyer about 750, carryall about 550,
+ornithopter about 400, air defense platform about 400 and air drone about 100.
+
+**What isn't drawn.**
+
+- **Off screen:** a machine that is off the screen isn't made at all, unless its shadow reaches
+  onto the screen. Then only a rough version of it is made, and only for the shadow.
+- **Small on screen:** a machine that shows small (less than about 40 pixels from its middle to
+  its edge, as at the highest camera) gets half the sides on its round parts, half the track
+  links and none of the small fittings.
+- **Hidden faces:** faces that neither the camera nor the sun sees, such as undersides, are left
+  out as the model is made. Faces the sun sees stay, so shadows stay whole. On the water planet,
+  faces seen in the water's reflection stay too.
 
 ## Ground vehicles
 
@@ -66,18 +78,17 @@ screen are skipped. Tracked vehicles push that toward 200,000 when they're most 
 
 Each track is a chain of separate links, not one solid belt:
 
-- **Links:** about 26 a side, each its own small plate (a thin box with a raised grouser bar
-  across it). The links run around the full loop: flat along the ground, up around the idler at
+- **Links:** 20 a side on the tank and 18 on the others, each its own small plate with a raised
+  grouser bar across it. The links run around the full loop: flat along the ground, up around the idler at
   the front, back along the top over the wheels, and down around the sprocket at the back. Small
   gaps between neighbouring links show the ground or the wheels behind.
 - **Motion:** the links travel around the loop as the vehicle drives, by how far it has gone,
   and stand still when it stops. When it turns on the spot, the two sides run opposite ways.
-- **Wheels:** inside the loop are road wheels (8 sides each), a toothed drive sprocket at the back
-  and a plain idler at the front, all dark gunmetal. Thin steel side skirts cover the top run of
+- **Wheels:** inside the loop are road wheels (8 sides each), a drive sprocket at the back whose
+  eight flats stand in for teeth, and a plain idler at the front. Thin steel side skirts cover the top run of
   links on the tank only.
 
-The links alone come to about 500 triangles per vehicle, which raises the three tracked budgets
-below.
+The links come to about 600 triangles per vehicle.
 
 ### Tank (now about 30, aim about 850)
 

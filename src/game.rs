@@ -4342,19 +4342,25 @@ mod tests {
             .unwrap();
         let carrier = game.units[carryall].id;
         let enemy = enemy_tank_in(&mut game);
-        let before = crate::render::build_frame(&game).objects.len();
+        // Cables are the only thing of their color.
+        let cables = |game: &Game| {
+            let frame = crate::render::build_frame(game);
+            let is_cable = |v: &&crate::platform::WorldVertex| (v.r, v.g, v.b) == (0.1, 0.1, 0.1);
+            frame.objects.iter().filter(is_cable).count()
+        };
+        assert_eq!(cables(&game), 0);
         game.units[enemy].theft = Some(crate::units::Theft {
             carrier,
             struggle: 3.0,
         });
-        let held = crate::render::build_frame(&game).objects.len();
-        assert!(held > before, "two cables");
+        let held = cables(&game);
+        assert!(held > 0, "two cables");
         game.units[enemy].theft = Some(crate::units::Theft {
             carrier,
             struggle: 0.0,
         });
         game.units[enemy].altitude = 1.0;
-        assert_eq!(crate::render::build_frame(&game).objects.len(), held);
+        assert!(cables(&game) > 0, "still hanging on them");
     }
 
     #[test]
@@ -5119,7 +5125,7 @@ mod tests {
     }
 
     #[test]
-    fn every_vehicle_shines_white_light_ahead_of_it_and_nothing_else_does() {
+    fn every_vehicle_shines_white_light_ahead_from_each_of_its_lamps_and_nothing_else_does() {
         let lights = |game: &Game| {
             crate::render::build(game)
                 .iter()
@@ -5131,12 +5137,19 @@ mod tests {
         // Rocket engines are lit too, in orange, and landing pads have searchlights.
         game.units
             .retain(|u| !u.kind.flies() && u.role != Role::LandingPad);
-        let vehicles = |game: &Game| {
+        let lamps = |game: &Game| {
             let is_vehicle = |u: &&Unit| u.alive && u.kind == UnitKind::Vehicle;
-            game.units.iter().filter(is_vehicle).count()
+            let vehicles = game.units.iter().filter(is_vehicle);
+            vehicles
+                .map(|u| crate::render::lamps_on(u.role))
+                .sum::<usize>()
         };
-        assert!(vehicles(&game) > 0);
-        assert_eq!(lights(&game), vehicles(&game), "one bright corner each");
+        assert!(lamps(&game) > 0);
+        assert_eq!(
+            lights(&game),
+            lamps(&game) * 3,
+            "three bright corners of two triangles from each lens"
+        );
         game.units.retain(|u| u.kind != UnitKind::Vehicle);
         assert_eq!(lights(&game), 0);
     }
@@ -5164,7 +5177,11 @@ mod tests {
         );
         click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START + 1));
         assert_eq!(game.units.last().unwrap().name(), "Air Drone");
-        assert_eq!(lit(&game), 2 * 3 + 2);
+        assert_eq!(
+            lit(&game),
+            2 * 3 + 2 * 2,
+            "and a flame of two crossed triangles"
+        );
         click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START + 2));
         assert_eq!(game.units.last().unwrap().name(), "Ornithopter");
         assert_eq!(game.units.last().unwrap().altitude, 0.0);
@@ -5275,6 +5292,45 @@ mod tests {
             .unwrap();
         theirs.owner = 0;
         assert!(game.can_produce(Role::Tank));
+    }
+
+    #[test]
+    fn machines_off_the_screen_are_left_out_or_only_cast_their_shadow_and_far_ones_are_simpler() {
+        let mut game = in_battle();
+        game.fog = None;
+        let terrain = crate::battlefield::terrain(game.battle_map);
+        let view = || crate::battlefield::View::new(game.camera, game.width, game.height);
+        let (cx, cz) = view()
+            .ground_at(game.width / 2.0, game.height / 2.0)
+            .unwrap();
+        let side = (0, game.stats_rows()[0].color);
+        let tank_at = |x: f32, z: f32| {
+            let mut tank = crate::units::new_building(terrain, (x, z), Role::Tank, side, 9999);
+            tank.y = 0.0;
+            tank
+        };
+        game.units.clear();
+        let drawn = |game: &mut Game, tank: Unit| {
+            game.units = vec![tank];
+            let frame = crate::render::build_frame(game);
+            (frame.objects.len(), frame.casters.len())
+        };
+        game.camera.zoom = 1.0;
+        let (near, _) = drawn(&mut game, tank_at(cx, cz));
+        game.camera.zoom = 0.0;
+        let (cx, cz) = crate::battlefield::View::new(game.camera, game.width, game.height)
+            .ground_at(game.width / 2.0, game.height / 2.0)
+            .unwrap();
+        let (far, _) = drawn(&mut game, tank_at(cx, cz));
+        assert!(far > 0 && far < near, "{far} {near}");
+        assert_eq!(drawn(&mut game, tank_at(cx + 500.0, cz)), (0, 0));
+        // Just past the screen's west edge, the sun throws its shadow east, back onto it.
+        let (objects, casters) = (0..400)
+            .map(|step| drawn(&mut game, tank_at(cx - step as f32 * 0.05, cz)))
+            .find(|&(objects, _)| objects == 0)
+            .unwrap();
+        assert_eq!(objects, 0);
+        assert!(casters > 0);
     }
 
     #[test]

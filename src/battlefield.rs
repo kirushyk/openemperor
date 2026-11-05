@@ -1206,6 +1206,24 @@ impl View {
         )
     }
 
+    /// How many pixels a ball of this radius spans from its middle on the screen, if any of it
+    /// is on the screen.
+    pub fn ball_on_screen(&self, (x, y, z): (f32, f32, f32), radius: f32) -> Option<f32> {
+        let (side, up, depth) = self.relative(x, y, z);
+        if depth + radius < NEAR {
+            return None;
+        }
+        let depth = depth.max(NEAR);
+        let (px, py) = self.to_screen(side, up, depth);
+        let pixels = self.focal * radius / depth;
+        let (width, height) = (self.center.0 * 2.0, self.center.1 * 2.0);
+        let on = px + pixels >= 0.0
+            && px - pixels <= width
+            && py + pixels >= 0.0
+            && py - pixels <= height;
+        on.then_some(pixels)
+    }
+
     /// A world point's place on screen; `None` if it is behind the camera.
     pub fn project(&self, x: f32, y: f32, z: f32) -> Option<(f32, f32)> {
         let (side, up, depth) = self.relative(x, y, z);

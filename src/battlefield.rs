@@ -153,6 +153,8 @@ pub struct Terrain {
     ruins: Vec<RuinPiece>,
     /// Which way the land faces at each grid point, for the backend to light it by.
     normals: Vec<[f32; 3]>,
+    /// Where lava erupts now and then.
+    vents: Vec<(f32, f32)>,
     /// Which grid points can be walked on, worked out the first time a route is looked for.
     walkable: OnceLock<Vec<bool>>,
 }
@@ -258,6 +260,7 @@ impl Terrain {
             colors,
             ruins: Vec::new(),
             normals: Vec::new(),
+            vents: Vec::new(),
             walkable: OnceLock::new(),
         };
         let mut random = (seed + 1).wrapping_mul(0x9E37_79B1) | 1;
@@ -284,7 +287,33 @@ impl Terrain {
         }
         terrain.ruins = pieces;
         terrain.normals = terrain.find_normals();
+        terrain.vents = terrain.find_vents(&mut random);
         terrain
+    }
+
+    /// Spots well out in the lava, apart from each other, if this map has any.
+    fn find_vents(&self, random: &mut u32) -> Vec<(f32, f32)> {
+        const VENTS: usize = 10;
+        const APART: f32 = 9.0;
+        /// How far under the noise's threshold it must be, to be well away from the shore.
+        const OUT_IN_IT: f32 = 0.02;
+        let mut vents: Vec<(f32, f32)> = Vec::new();
+        if self.material() != Material::Lava {
+            return vents;
+        }
+        for _ in 0..VENTS * 100 {
+            let (u, v) = (
+                (next_random(random) * GRID_LAST) as usize,
+                (next_random(random) * GRID_LAST) as usize,
+            );
+            let (x, z) = grid_to_world(u as f32, v as f32);
+            let is_free = vents.iter().all(|o| (o.0 - x).hypot(o.1 - z) >= APART);
+            let is_out_in_it = !self.is_ground(u, v) && self.deep[grid_index(u, v)] > OUT_IN_IT;
+            if vents.len() < VENTS && is_free && is_out_in_it {
+                vents.push((x, z));
+            }
+        }
+        vents
     }
 
     /// Which way the land faces at each grid point.
@@ -494,6 +523,7 @@ impl Terrain {
             colors: vec![SAND; GRID_POINTS],
             ruins,
             normals: vec![[0.0, 1.0, 0.0]; GRID_POINTS],
+            vents: Vec::new(),
             walkable: OnceLock::new(),
         }
     }
@@ -526,8 +556,14 @@ impl Terrain {
         match self.planet {
             Planet::A => Material::Sand,
             Planet::C => Material::Water,
-            Planet::D | Planet::G | Planet::S | Planet::T => Material::Plain,
+            Planet::G => Material::Lava,
+            Planet::D | Planet::S | Planet::T => Material::Plain,
         }
+    }
+
+    /// Where lava erupts now and then, if this map has any.
+    pub fn vents(&self) -> &[(f32, f32)] {
+        &self.vents
     }
 
     /// Whether this grid point is on a mountain or in a pit that nothing can walk on.
@@ -1168,27 +1204,32 @@ pub fn draw(
     width: f32,
     height: f32,
 ) {
-    /// Under the water's surface along the shore, however shallow the bottom is there.
+    /// Under a liquid's surface along the shore, however shallow the bottom is there.
     const SHORE: f32 = 0.12;
-    /// How far down the water goes for how far under the threshold its noise is.
+    /// How far down a liquid goes for how far under the threshold its noise is.
     const DEPTH: f32 = 6.0;
     /// What the land is made of right at the water, so its color does not run blue.
     const BEACH: [f32; 3] = [0.74, 0.68, 0.48];
+    /// The same at the lava, burnt black.
+    const BASALT: [f32; 3] = [0.10, 0.08, 0.07];
     const ROOM: f32 = 8.0;
-    let has_water = terrain.material() == Material::Water;
+    let shore = match terrain.material() {
+        Material::Water => Some(BEACH),
+        Material::Lava => Some(BASALT),
+        Material::Plain | Material::Sand => None,
+    };
     let view = View::new(camera, width, height);
     let point = |u: usize, v: usize| {
         let (x, z) = grid_to_world(u as f32, v as f32);
         let index = grid_index(u, v);
-        let is_water = has_water && !terrain.is_ground[index];
         let height = terrain.vertex_height(u, v);
-        let ([r, g, b], level) = if is_water {
-            (BEACH, -(SHORE + terrain.deep[index] * DEPTH))
-        } else if has_water {
+        let ([r, g, b], level) = match shore {
+            Some(color) if !terrain.is_ground[index] => {
+                (color, -(SHORE + terrain.deep[index] * DEPTH))
+            }
             // A pit in the land stays dry, however far down it goes.
-            (terrain.colors[index], height.max(0.001))
-        } else {
-            (terrain.colors[index], height)
+            Some(_) => (terrain.colors[index], height.max(0.001)),
+            None => (terrain.colors[index], height),
         };
         WorldVertex {
             x,
@@ -1866,9 +1907,25 @@ mod tests {
     }
 
     #[test]
+    fn only_lava_has_vents_and_they_lie_out_in_it_apart_from_each_other() {
+        let lava = terrain(map_on(Planet::G));
+        assert!(lava.vents().len() >= 3, "{}", lava.vents().len());
+        for (i, &(x, z)) in lava.vents().iter().enumerate() {
+            assert!(lava.on_map(x, z) && !lava.can_walk(x, z), "{x},{z}");
+            for &(ox, oz) in &lava.vents()[i + 1..] {
+                assert!((x - ox).hypot(z - oz) >= 9.0);
+            }
+        }
+        for planet in [Planet::A, Planet::C, Planet::D, Planet::S, Planet::T] {
+            assert!(terrain(map_on(planet)).vents().is_empty(), "{planet:?}");
+        }
+    }
+
+    #[test]
     fn each_map_gets_the_material_of_its_planet() {
         assert_eq!(terrain(map_on(Planet::A)).material(), Material::Sand);
         assert_eq!(terrain(map_on(Planet::C)).material(), Material::Water);
+        assert_eq!(terrain(map_on(Planet::G)).material(), Material::Lava);
         assert_eq!(terrain(map_on(Planet::D)).material(), Material::Plain);
     }
 

@@ -543,14 +543,31 @@ pub fn build_frame(game: &Game) -> Frame {
     }
 }
 
-/// What burns on the map right now and lights what is around it, the newest first.
+/// What burns on the map right now and lights what is around it: eruptions, flickering, then
+/// explosions, the newest first.
 fn lights_of(game: &Game) -> Vec<PointLight> {
-    game.combat
+    let seen = |(x, _, z): (f32, f32, f32)| game.sight_at(x, z) == Sight::Visible;
+    let eruptions = game
+        .combat
+        .eruptions
+        .iter()
+        .filter(|eruption| seen(eruption.at))
+        .map(|eruption| {
+            let flicker = 0.85 + 0.15 * (game.battle_time() * 23.0 + eruption.at.0).sin();
+            let light = eruption.strength() * 1.8 * flicker;
+            PointLight {
+                place: [eruption.at.0, 2.0, eruption.at.2],
+                radius: 11.0,
+                color: [light, light * 0.4, light * 0.1],
+                unused: 0.0,
+            }
+        });
+    let blasts = game
+        .combat
         .blasts
         .iter()
         .rev()
-        .filter(|blast| game.sight_at(blast.at.0, blast.at.2) == Sight::Visible)
-        .take(MAX_LIGHTS)
+        .filter(|blast| seen(blast.at))
         .map(|blast| {
             let light = blast.life * blast.life * 1.3;
             PointLight {
@@ -559,8 +576,8 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
                 color: [light, light * 0.55, light * 0.2],
                 unused: 0.0,
             }
-        })
-        .collect()
+        });
+    eruptions.chain(blasts).take(MAX_LIGHTS).collect()
 }
 
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -1183,8 +1200,55 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
             (0.9 * blast.life, 0.1 * blast.life),
         );
     }
+    for eruption in game.combat.eruptions.iter().filter(|e| seen(e.at)) {
+        draw_eruption(canvas, game, view, eruption);
+    }
     for particle in game.combat.particles.iter().filter(|p| seen(p.position)) {
         draw_particle(canvas, view, particle);
+    }
+}
+
+/// Lava bursting up from a vent: a glowing pool where it comes out and a fountain of light
+/// standing on it, both flickering, that the particles fly out of.
+fn draw_eruption(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    eruption: &crate::weapons::Eruption,
+) {
+    const POOL_WEDGES: usize = 24;
+    let (x, _, z) = eruption.at;
+    let strength = eruption.strength();
+    let flicker = 0.8 + 0.2 * (game.battle_time() * 31.0 + x).sin();
+    let height = 6.0 * strength * flicker;
+    let hot = [1.0, 0.55, 0.12].map(|c: f32| c * strength * flicker);
+    let pool_radius = 3.2 * strength;
+    let pool = |i: usize| {
+        let (sin, cos) = (i as f32 / POOL_WEDGES as f32 * TAU).sin_cos();
+        (x + pool_radius * cos, OVER_GROUND, z + pool_radius * sin)
+    };
+    for i in 0..POOL_WEDGES {
+        canvas.deep_light(
+            view,
+            [
+                ((x, OVER_GROUND, z), hot),
+                (pool(i), [0.0; 3]),
+                (pool(i + 1), [0.0; 3]),
+            ],
+        );
+    }
+    // Two blades across each other, so that it has width from any side.
+    for (dx, dz) in [(0.55, 0.0), (0.0, 0.55)] {
+        let (left, right) = ((x - dx, 0.0, z - dz), (x + dx, 0.0, z + dz));
+        let (tip_x, tip_z) = (x + 0.2 * (game.battle_time() * 7.0).sin(), z);
+        canvas.deep_light(
+            view,
+            [
+                (left, hot),
+                (right, hot),
+                ((tip_x, height, tip_z), [0.0; 3]),
+            ],
+        );
     }
 }
 

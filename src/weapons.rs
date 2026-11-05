@@ -82,6 +82,13 @@ const PARTICLES_AT_MOST: usize = 80;
 const PARTICLES_ALIVE_AT_MOST: usize = 800;
 const PARTICLE_SECONDS: f32 = 0.9;
 const PARTICLE_GRAVITY: f32 = 7.0;
+/// Eruptions leave this many of them free for explosions.
+const ERUPTION_PARTICLES_AT_MOST: usize = 500;
+const ERUPTION_PARTICLES_PER_SECOND: f32 = 170.0;
+const ERUPTION_SECONDS: f32 = 3.5;
+/// The longest a vent lies quiet.
+const VENT_QUIET_SECONDS: f32 = 22.0;
+const LAVA_PARTICLE_SECONDS: f32 = 2.4;
 
 /// How high the radioactive missile starts, and how long it takes to come down.
 const STRIKE_HEIGHT: f32 = 60.0;
@@ -383,6 +390,35 @@ pub struct Blast {
     pub life: f32,
 }
 
+/// Lava going up from a vent. It is only a sight: it hurts nobody.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Eruption {
+    pub at: Point,
+    /// From 1 when it starts down to 0.
+    pub life: f32,
+    /// How many particles it has yet to throw, short of a whole one.
+    owed: f32,
+}
+
+impl Eruption {
+    /// How hard it is going, from 0 as it starts and ends up to 1 halfway through.
+    pub fn strength(&self) -> f32 {
+        (self.life * (1.0 - self.life) * 4.0).max(0.0)
+    }
+}
+
+#[cfg(test)]
+impl Eruption {
+    /// One halfway through, burning its brightest.
+    pub fn at_for_test(at: Point) -> Self {
+        Eruption {
+            at,
+            life: 0.5,
+            owed: 0.0,
+        }
+    }
+}
+
 /// A spark or a puff of smoke thrown out by an explosion.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Particle {
@@ -430,6 +466,9 @@ pub struct Combat {
     pub sprays: Vec<Spray>,
     pub blasts: Vec<Blast>,
     pub particles: Vec<Particle>,
+    pub eruptions: Vec<Eruption>,
+    /// How long until each of the map's vents goes up, from when it is found to have any.
+    vent_waits: Vec<f32>,
     /// Where the next explosion's scatter comes from.
     random: u32,
     pub strikes: Vec<Strike>,
@@ -471,6 +510,71 @@ impl Combat {
         self.random = random;
     }
 
+    /// Starts vents whose time has come, and keeps those going up throwing lava and smoke.
+    fn work_vents(&mut self, terrain: &Terrain, dt: f32) {
+        let vents = terrain.vents();
+        if vents.is_empty() {
+            return;
+        }
+        let mut random = self.random | 1;
+        if self.vent_waits.len() != vents.len() {
+            self.vent_waits = vents
+                .iter()
+                .map(|_| next_random(&mut random) * VENT_QUIET_SECONDS)
+                .collect();
+        }
+        for (wait, &(x, z)) in self.vent_waits.iter_mut().zip(vents) {
+            *wait -= dt;
+            if *wait <= 0.0 {
+                *wait = ERUPTION_SECONDS + (0.3 + next_random(&mut random)) * VENT_QUIET_SECONDS;
+                self.eruptions.push(Eruption {
+                    at: (x, 0.0, z),
+                    life: 1.0,
+                    owed: 0.0,
+                });
+            }
+        }
+        let room = ERUPTION_PARTICLES_AT_MOST.saturating_sub(self.particles.len());
+        let mut thrown = Vec::new();
+        for eruption in &mut self.eruptions {
+            eruption.life -= dt / ERUPTION_SECONDS;
+            // It gets going, then dies down.
+            let strength = eruption.strength();
+            eruption.owed += ERUPTION_PARTICLES_PER_SECOND * strength * dt;
+            while eruption.owed >= 1.0 {
+                eruption.owed -= 1.0;
+                if thrown.len() >= room {
+                    continue;
+                }
+                let mut next = || next_random(&mut random);
+                let smoke = next() < 0.25;
+                let angle = next() * TAU;
+                let out = next() * if smoke { 0.6 } else { 2.2 } * (0.4 + strength);
+                let up = if smoke {
+                    1.2 + next() * 1.2
+                } else {
+                    (5.0 + next() * 7.0) * (0.5 + 0.5 * strength)
+                };
+                let spot = (
+                    eruption.at.0 + next() - 0.5,
+                    0.0,
+                    eruption.at.2 + next() - 0.5,
+                );
+                thrown.push(Particle {
+                    position: spot,
+                    velocity: (angle.cos() * out, up, angle.sin() * out),
+                    size: (0.5 + next()) * if smoke { 0.7 } else { 0.22 },
+                    smoke,
+                    life: 1.0,
+                    fade: 1.0 / (LAVA_PARTICLE_SECONDS * (0.5 + next())),
+                });
+            }
+        }
+        self.particles.append(&mut thrown);
+        self.eruptions.retain(|eruption| eruption.life > 0.0);
+        self.random = random;
+    }
+
     /// Moves sparks and smoke along, stopping them at the ground, and drops the spent ones.
     fn fly_particles(&mut self, terrain: &Terrain, dt: f32) {
         for particle in &mut self.particles {
@@ -498,6 +602,7 @@ impl Combat {
         for _ in 0..steps {
             self.step(units, teams, terrain, step_seconds);
         }
+        self.work_vents(terrain, dt);
     }
 
     fn step(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
@@ -1225,6 +1330,71 @@ mod tests {
         let by_friend = Shooter::of(&friend[0]);
         hit(&mut friend, 1, WeaponKind::Rockets, by_friend, &TEAMS);
         assert_eq!(friend[1].target, None);
+    }
+
+    fn lava_map() -> &'static Terrain {
+        let map = (0..crate::game::MAPS.len())
+            .find(|&map| !crate::battlefield::terrain(map).vents().is_empty())
+            .expect("a map with lava");
+        crate::battlefield::terrain(map)
+    }
+
+    #[test]
+    fn vents_erupt_now_and_then_with_particles_going_up_and_hurting_nobody() {
+        let terrain = lava_map();
+        let mut combat = Combat::default();
+        let (vent_x, vent_z) = terrain.vents()[0];
+        let mut units = [target_at(vent_x, vent_z)];
+        units[0].kind = UnitKind::Aircraft;
+        let health = units[0].health;
+        let mut most = 0;
+        let mut went_up = false;
+        for _ in 0..(VENT_QUIET_SECONDS * 20.0) as usize {
+            combat.advance(&mut units, &TEAMS, terrain, 0.05);
+            most = most.max(combat.eruptions.len());
+            went_up |= combat.particles.iter().any(|p| p.position.1 > 1.0);
+            assert!(combat.particles.len() <= ERUPTION_PARTICLES_AT_MOST + 1);
+        }
+        assert!(most > 0, "some vent went up");
+        assert!(went_up, "its lava flies");
+        assert_eq!(units[0].health, health);
+    }
+
+    #[test]
+    fn an_eruption_dies_down_and_explosions_still_find_room() {
+        let terrain = lava_map();
+        let mut combat = Combat::default();
+        combat.eruptions.push(Eruption {
+            at: (0.0, 0.0, 40.0),
+            life: 1.0,
+            owed: 0.0,
+        });
+        for _ in 0..(ERUPTION_SECONDS * 50.0) as usize + 1 {
+            combat.work_vents(terrain, 0.02);
+        }
+        assert!(
+            combat.eruptions.iter().all(|e| e.at != (0.0, 0.0, 40.0)),
+            "it ended"
+        );
+        combat.particles.clear();
+        combat.vent_waits.iter_mut().for_each(|wait| *wait = 0.0);
+        for _ in 0..400 {
+            combat.work_vents(terrain, 0.05);
+            combat.vent_waits.iter_mut().for_each(|wait| *wait = 0.0);
+        }
+        assert!(combat.particles.len() <= ERUPTION_PARTICLES_AT_MOST);
+        let before = combat.particles.len();
+        combat.explode((0.0, 0.0, 40.0), 1.0);
+        assert!(combat.particles.len() > before);
+    }
+
+    #[test]
+    fn a_map_with_no_vents_has_no_eruptions() {
+        let mut combat = Combat::default();
+        for _ in 0..1000 {
+            combat.advance(&mut [], &TEAMS, flat(), 0.05);
+        }
+        assert!(combat.eruptions.is_empty() && combat.particles.is_empty());
     }
 
     fn run(combat: &mut Combat, units: &mut [Unit], seconds: f32) {

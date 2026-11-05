@@ -122,6 +122,7 @@ pub enum Material {
     Plain = 0,
     Water = 1,
     Sand = 2,
+    Lava = 3,
 }
 
 /// A frame: the world, for the backend to place, light and shade, then what goes on the screen.
@@ -156,7 +157,7 @@ impl Frame {
     /// backend with no world pipeline. It has no depth and no shadows.
     #[cfg(any(test, not(target_os = "macos")))]
     pub fn flattened(&self) -> Vec<Vertex> {
-        let has_liquid = self.material == Material::Water;
+        let has_liquid = matches!(self.material, Material::Water | Material::Lava);
         let place = |v: &WorldVertex| {
             let m = &self.view;
             let w = m[3] * v.x + m[7] * v.y + m[11] * v.z + m[15];

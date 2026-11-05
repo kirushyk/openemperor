@@ -86,7 +86,7 @@ typedef struct {
     uint32_t over_count;
     const OePointLight *lights;
     uint32_t lights_count;
-    int32_t material; /* 0 plain, 1 water, 2 sand */
+    int32_t material; /* 0 plain, 1 water, 2 sand, 3 lava */
     float time;
     float view[16];   /* by columns */
     float mirror[16]; /* the view as seen in a mirror at height 0 */

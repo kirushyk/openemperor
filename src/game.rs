@@ -4106,6 +4106,19 @@ mod tests {
     }
 
     #[test]
+    fn an_eruption_gives_the_backend_a_light_while_it_burns() {
+        let mut game = in_battle();
+        game.fog = None;
+        game.combat
+            .eruptions
+            .push(crate::weapons::Eruption::at_for_test((0.0, 0.0, 40.0)));
+        let frame = crate::render::build_frame(&game);
+        assert_eq!(frame.lights.len(), 1);
+        assert!(frame.lights[0].color[0] > 0.0);
+        assert!(frame.lights[0].color[0] > frame.lights[0].color[2], "fiery");
+    }
+
+    #[test]
     fn nothing_of_the_world_is_drawn_outside_a_battle() {
         let game = Game::new(W, H);
         let frame = crate::render::build_frame(&game);

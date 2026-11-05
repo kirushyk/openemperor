@@ -1715,18 +1715,40 @@ fn draw_platform_lamps(canvas: &mut Canvas, game: &Game, view: &battlefield::Vie
 
 /// A vehicle hanging under its carryall on two cables.
 fn draw_carried(canvas: &mut Canvas, game: &Game, view: &battlefield::View, carrier: &Unit) {
-    let Some(load) = game.carried.iter().find(|load| load.carrier == carrier.id) else {
-        return;
+    let cables = |canvas: &mut Canvas, bottom_y: f32| {
+        let (sin, cos) = carrier.heading.sin_cos();
+        for side in [-0.15, 0.15] {
+            let (x, z) = (carrier.x - sin * side, carrier.z + cos * side);
+            let top = (x, carrier.y + carrier.altitude, z);
+            let bottom = (x, bottom_y + 0.25, z);
+            canvas.solid_bar(top, bottom, 0.012, [cos, 0.0, sin], CABLE);
+        }
     };
-    let vehicle = &load.vehicle;
-    let (sin, cos) = carrier.heading.sin_cos();
-    for side in [-0.15, 0.15] {
-        let (x, z) = (carrier.x - sin * side, carrier.z + cos * side);
-        let top = (x, carrier.y + carrier.altitude, z);
-        let bottom = (x, vehicle.y + 0.25, z);
-        canvas.solid_bar(top, bottom, 0.012, [cos, 0.0, sin], CABLE);
+    if let Some(stolen) = stolen_by(game, carrier) {
+        // It draws itself, being in the battle still.
+        cables(canvas, stolen.y + stolen.altitude);
     }
-    draw_unit_model(canvas, game, view, vehicle);
+    if let Some(load) = game.carried.iter().find(|load| load.carrier == carrier.id) {
+        cables(canvas, load.vehicle.y);
+        draw_unit_model(canvas, game, view, &load.vehicle);
+    }
+}
+
+/// The enemy vehicle this carryall has hold of, if any.
+fn stolen_by<'a>(game: &'a Game, carrier: &Unit) -> Option<&'a Unit> {
+    game.units
+        .iter()
+        .find(|u| u.alive && u.theft.is_some_and(|theft| theft.carrier == carrier.id))
+}
+
+/// Which way, and how far, the fight throws something that is in one right now, as it is seen.
+fn shaken(game: &Game, unit: &Unit, seed: f32) -> Unit {
+    let time = game.battle_time() * 37.0 + seed;
+    let mut shown = *unit;
+    shown.x += 0.07 * time.sin();
+    shown.z += 0.05 * (time * 1.3).cos();
+    shown.heading += 0.12 * (time * 0.7).sin();
+    shown
 }
 
 /// White light on the ground in front of a vehicle, fading with distance.
@@ -1751,6 +1773,26 @@ fn draw_headlight(canvas: &mut Canvas, game: &Game, view: &battlefield::View, un
 }
 
 fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    if let Some(theft) = unit.theft {
+        // A vehicle's model stands on its y, however high it has been lifted.
+        let mut lifted = *unit;
+        lifted.y += unit.altitude;
+        lifted.altitude = 0.0;
+        let shown = if theft.struggle > 0.0 {
+            shaken(game, &lifted, 0.0)
+        } else {
+            lifted
+        };
+        let drawn = canvas.objects.len();
+        draw_unit_model(canvas, game, view, &shown);
+        stain_model(canvas, drawn, &shown);
+        return;
+    }
+    let is_fighting = unit.role == Role::AdvancedCarryall
+        && stolen_by(game, unit)
+            .is_some_and(|stolen| stolen.theft.is_some_and(|theft| theft.struggle > 0.0));
+    let shaken_unit = is_fighting.then(|| shaken(game, unit, 2.0));
+    let unit = shaken_unit.as_ref().unwrap_or(unit);
     if unit.kind == UnitKind::Vehicle {
         draw_headlight(canvas, game, view, unit);
     } else if unit.role == Role::AirDefensePlatform {

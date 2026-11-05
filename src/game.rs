@@ -4205,6 +4205,71 @@ mod tests {
         assert!(crate::render::build(&game).len() > full);
     }
 
+    /// Adds an enemy tank where the player's second group stands, and returns where it is.
+    fn enemy_tank_in(game: &mut Game) -> usize {
+        let id = game.next_unit_id;
+        game.next_unit_id += 1;
+        let terrain = battlefield::terrain(game.battle_map);
+        let at = terrain
+            .nearest_walkable((4.0, battlefield::MAP_MIDDLE_Z))
+            .unwrap();
+        let tank = units::new_building(terrain, at, Role::Tank, (1, TeamColor::Red), id);
+        game.units.push(tank);
+        game.units.len() - 1
+    }
+
+    #[test]
+    fn a_click_on_an_enemy_vehicle_with_a_carryall_selected_sends_it_to_steal_it() {
+        let mut game = in_battle();
+        game.fog = None;
+        let carryall = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::AdvancedCarryall)
+            .unwrap();
+        let enemy = enemy_tank_in(&mut game);
+        game.camera.x = game.units[enemy].x;
+        game.camera.z = game.units[enemy].z;
+        let unit = game.units[enemy];
+        let (x, y) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
+        game.units[carryall].selected = true;
+        game.handle(Event::MouseMove(x, y));
+        assert_eq!(game.cursor_look(), CursorLook::Carry);
+        click_at(&mut game, x, y);
+        assert_eq!(
+            game.units[carryall].target,
+            Some(crate::units::Target::Unit(unit.id))
+        );
+    }
+
+    #[test]
+    fn a_stolen_vehicle_draws_with_cables_while_held_and_while_hanging() {
+        let mut game = in_battle();
+        let carryall = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::AdvancedCarryall)
+            .unwrap();
+        let carrier = game.units[carryall].id;
+        let enemy = enemy_tank_in(&mut game);
+        let before = crate::render::build_frame(&game).objects.len();
+        game.units[enemy].theft = Some(crate::units::Theft {
+            carrier,
+            struggle: 3.0,
+        });
+        let held = crate::render::build_frame(&game).objects.len();
+        assert!(held > before, "two cables");
+        game.units[enemy].theft = Some(crate::units::Theft {
+            carrier,
+            struggle: 0.0,
+        });
+        game.units[enemy].altitude = 1.0;
+        assert_eq!(crate::render::build_frame(&game).objects.len(), held);
+    }
+
     #[test]
     fn nothing_of_the_world_is_drawn_outside_a_battle() {
         let game = Game::new(W, H);

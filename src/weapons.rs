@@ -163,7 +163,7 @@ impl WeaponKind {
     /// Mortar shells and invisible bullets only reach the ground, where aircraft that have
     /// landed are too; the automatic gun is the one bullet weapon that can aim up. Anti-air
     /// missiles only go for what is up in the air. Everything else can aim up.
-    pub fn can_target(self, kind: UnitKind, altitude: f32) -> bool {
+    pub fn can_target(self, altitude: f32) -> bool {
         match self {
             WeaponKind::Unarmed | WeaponKind::Repair => false,
             WeaponKind::Mortar
@@ -173,7 +173,7 @@ impl WeaponKind {
             | WeaponKind::Pistol
             | WeaponKind::Cannon => altitude <= 0.0,
             WeaponKind::Flame | WeaponKind::Gas => altitude <= SPRAY_CEILING,
-            WeaponKind::AirMissile => kind.flies() && altitude > 0.0,
+            WeaponKind::AirMissile => altitude > 0.0,
             _ => true,
         }
     }
@@ -698,6 +698,7 @@ impl Combat {
                 units[i].salvo_fired = 0;
             }
             if !units[i].has_rockets()
+                || units[i].theft.is_some()
                 || !units[i].can_launch()
                 || (units[i].is_moving() && !units[i].weapon.fires_on_move())
             {
@@ -851,7 +852,7 @@ impl Combat {
             if index == sprayer
                 || !other.alive
                 || !harmed
-                || !unit.weapon.can_target(other.kind, other.altitude)
+                || !unit.weapon.can_target(other.altitude)
             {
                 continue;
             }
@@ -1040,7 +1041,7 @@ fn strike(
     for index in 0..units.len() {
         let unit = units[index];
         let touched = distance(at, unit.center()) <= unit.kind.radius() + PLACE_SHOT_SPREAD;
-        if index != firing && unit.alive && touched && weapon.can_target(unit.kind, unit.altitude) {
+        if index != firing && unit.alive && touched && weapon.can_target(unit.altitude) {
             hit(units, index, weapon, shooter, teams);
         }
     }
@@ -1071,6 +1072,7 @@ fn harm(units: &mut [Unit], victim: usize, damage: f32, shooter: Shooter, teams:
 fn answer_attacker(units: &mut [Unit], victim: usize, attacker_id: u32, teams: &[usize]) {
     let unit = units[victim];
     let is_free = unit.target.is_none()
+        && unit.theft.is_none()
         && !unit.deployed
         && !unit.kind.is_building()
         && (!unit.is_moving() || unit.owner != 0);
@@ -1246,7 +1248,7 @@ fn nearest_enemy(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usiz
     for (i, unit) in units.iter().enumerate() {
         if unit.alive
             && are_enemies(teams, owner, unit.owner)
-            && weapon.can_target(unit.kind, unit.altitude)
+            && weapon.can_target(unit.altitude)
             && unit.kind != UnitKind::Building
         {
             let away = distance(from, unit.center());
@@ -1417,6 +1419,64 @@ mod tests {
         let by_friend = Shooter::of(&friend[0]);
         hit(&mut friend, 1, WeaponKind::Rockets, by_friend, &TEAMS);
         assert_eq!(friend[1].target, None);
+    }
+
+    /// An enemy vehicle hanging from the player's carryall, with `weapon` of the player's near.
+    fn hanging_enemy(weapon: WeaponKind) -> [Unit; 3] {
+        let mut carryall = Unit::for_test(0.0, 60.0, UnitKind::Aircraft);
+        carryall.role = Role::AdvancedCarryall;
+        carryall.weapon = WeaponKind::Unarmed;
+        carryall.id = 1;
+        carryall.carrying = true;
+        let mut stolen = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        stolen.id = 2;
+        stolen.owner = 1;
+        stolen.weapon = WeaponKind::Cannon;
+        stolen.altitude = 1.0;
+        stolen.theft = Some(crate::units::Theft {
+            carrier: 1,
+            struggle: 0.0,
+        });
+        let mut friend = shooter(weapon);
+        friend.id = 3;
+        friend.x = 5.0;
+        [carryall, stolen, friend]
+    }
+
+    #[test]
+    fn friendly_anti_aircraft_shoots_a_stolen_vehicle_in_the_air_and_not_its_carryall() {
+        for weapon in [WeaponKind::AutoGun, WeaponKind::AirMissile] {
+            let mut units = hanging_enemy(weapon);
+            let (carryall_health, stolen_health) = (units[0].health, units[1].health);
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 6.0);
+            assert!(units[1].health < stolen_health, "{weapon:?}");
+            assert_eq!(units[0].health, carryall_health, "{weapon:?}");
+        }
+    }
+
+    #[test]
+    fn guns_that_cannot_reach_the_air_do_not_shoot_a_stolen_vehicle_in_it() {
+        let mut units = hanging_enemy(WeaponKind::Cannon);
+        let health = units[1].health;
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 6.0);
+        assert_eq!(units[1].health, health);
+    }
+
+    #[test]
+    fn a_stolen_vehicle_fires_at_nobody_and_does_not_answer_being_shot() {
+        let mut units = hanging_enemy(WeaponKind::Bullet);
+        units[1].altitude = 0.0;
+        units[2].x = 3.0;
+        units[2].cooldown = 1000.0;
+        let health = units[2].health;
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 6.0);
+        assert_eq!(units[2].health, health, "held, it does not fire");
+        let attacker = Shooter::of(&units[2]);
+        hit(&mut units, 1, WeaponKind::Bullet, attacker, &TEAMS);
+        assert_eq!(units[1].target, None);
     }
 
     #[test]
@@ -2699,12 +2759,12 @@ mod tests {
     fn what_has_landed_is_on_the_ground_for_every_weapon_and_rockets_reach_both() {
         let landed = (UnitKind::Aircraft, 0.0);
         let flying = (UnitKind::Aircraft, 4.0);
-        let can = |weapon: WeaponKind, (kind, altitude)| weapon.can_target(kind, altitude);
+        let can = |weapon: WeaponKind, (_, altitude): (UnitKind, f32)| weapon.can_target(altitude);
         assert!(can(WeaponKind::Mortar, landed) && !can(WeaponKind::Mortar, flying));
         assert!(can(WeaponKind::Flame, landed) && !can(WeaponKind::Flame, flying));
         assert!(!can(WeaponKind::AirMissile, landed) && can(WeaponKind::AirMissile, flying));
         assert!(can(WeaponKind::Rockets, flying));
-        assert!(WeaponKind::Rockets.can_target(UnitKind::Vehicle, 0.0));
+        assert!(WeaponKind::Rockets.can_target(0.0));
     }
 
     #[test]
@@ -2715,15 +2775,12 @@ mod tests {
             WeaponKind::Pistol,
             WeaponKind::Cannon,
         ] {
-            assert!(!weapon.can_target(UnitKind::Aircraft, 4.0), "{weapon:?}");
-            assert!(
-                weapon.can_target(UnitKind::Aircraft, 0.0),
-                "{weapon:?} landed"
-            );
-            assert!(weapon.can_target(UnitKind::Infantry, 0.0), "{weapon:?}");
+            assert!(!weapon.can_target(4.0), "{weapon:?}");
+            assert!(weapon.can_target(0.0), "{weapon:?} landed");
+            assert!(weapon.can_target(0.0), "{weapon:?}");
         }
         for weapon in [WeaponKind::AutoGun, WeaponKind::Laser, WeaponKind::Missile] {
-            assert!(weapon.can_target(UnitKind::Aircraft, 4.0), "{weapon:?}");
+            assert!(weapon.can_target(4.0), "{weapon:?}");
         }
     }
 
@@ -2865,7 +2922,7 @@ mod tests {
     #[test]
     fn its_shells_are_tracers_hitting_harder_than_a_catapults_and_leave_a_path_behind_them() {
         assert!(WeaponKind::Bombard.damage() > WeaponKind::Mortar.damage());
-        assert!(!WeaponKind::Bombard.can_target(UnitKind::Aircraft, 4.0));
+        assert!(!WeaponKind::Bombard.can_target(4.0));
         assert!(!WeaponKind::Bombard.fires_on_move());
         let mut units = [heavy_strider_facing_east(), target_at(10.0, 60.0)];
         units[1].cooldown = 1000.0;

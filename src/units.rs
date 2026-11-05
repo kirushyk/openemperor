@@ -159,6 +159,8 @@ const LIFT_REACH: f32 = 0.3;
 /// World units per second a carried vehicle is pulled up or let down, and how high it hangs.
 const WINCH_SPEED: f32 = 3.0;
 const HANG_HEIGHT: f32 = CRUISE_ALTITUDE - 0.6;
+/// How long an enemy vehicle fights a carryall that has hold of it before it can be lifted.
+pub const STRUGGLE_SECONDS: f32 = 4.0;
 /// Radians it leans into the sharpest turn, and how quickly it gets there, per second.
 const MOST_BANK: f32 = 0.6;
 const BANK_RATE: f32 = 4.0;
@@ -524,6 +526,8 @@ pub struct Unit {
     pad: Option<Pad>,
     /// How far along a pad is with loading its next rocket, in seconds.
     reloading: f32,
+    /// The enemy carryall that has hold of it, if one has.
+    pub theft: Option<Theft>,
 }
 
 impl Unit {
@@ -689,12 +693,12 @@ impl Unit {
             && self.alive
             && other.alive
             && self.id != other.id
-            && self.weapon.can_target(other.kind, other.altitude)
+            && self.weapon.can_target(other.altitude)
     }
 
     /// Whether it can be told to fire at a place on the ground.
     pub fn can_fire_at_ground(&self) -> bool {
-        self.alive && self.weapon.can_target(UnitKind::Infantry, 0.0)
+        self.alive && self.weapon.can_target(0.0)
     }
 
     /// Whether it can look after another unit: a repair vehicle fixes friendly vehicles.
@@ -720,7 +724,18 @@ impl Unit {
 
     /// Whether it would go to another unit to fix it or pick it up.
     pub fn can_tend(&self, other: &Unit, teams: &[usize]) -> bool {
-        self.can_fix(other, teams) || self.can_lift(other, teams)
+        self.can_fix(other, teams) || self.can_lift(other, teams) || self.can_steal(other, teams)
+    }
+
+    /// Whether it could take hold of this enemy vehicle and carry it off.
+    pub fn can_steal(&self, other: &Unit, teams: &[usize]) -> bool {
+        self.role == Role::AdvancedCarryall
+            && !self.carrying
+            && self.alive
+            && other.alive
+            && other.kind == UnitKind::Vehicle
+            && other.theft.is_none()
+            && are_enemies(teams, self.owner, other.owner)
     }
 
     /// Whether it could take this building over.
@@ -738,7 +753,7 @@ impl Unit {
             && other.alive
             && self.has_rockets()
             && are_enemies(teams, self.owner, other.owner)
-            && self.weapon.can_target(other.kind, other.altitude)
+            && self.weapon.can_target(other.altitude)
     }
 
     /// Whether it could be at this spot. Aircraft only have to stay on the map.
@@ -818,7 +833,7 @@ impl Unit {
 
     /// Whether the player can select it, and so give it orders.
     pub fn is_selectable(&self) -> bool {
-        self.owner == 0
+        self.owner == 0 && self.theft.is_none()
     }
 
     /// Whether a box or the select-all key takes it. Buildings that make units are only ever
@@ -869,6 +884,7 @@ impl Unit {
             rockets_fired: 0,
             pad: None,
             reloading: 0.0,
+            theft: None,
         }
     }
 }
@@ -995,6 +1011,7 @@ fn place_unit(
         rockets_fired: 0,
         pad: None,
         reloading: 0.0,
+        theft: None,
     });
 }
 
@@ -1751,6 +1768,15 @@ fn push_out_of_ruins(unit: &mut Unit, terrain: &Terrain) -> bool {
     touched
 }
 
+/// An enemy carryall's hold on a vehicle, which stays in the battle meanwhile: up in the air it
+/// is a target like any other. It does nothing of its own until it is put down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Theft {
+    pub carrier: u32,
+    /// How many more seconds it fights before it can be lifted.
+    pub struggle: f32,
+}
+
 /// A landing pad, and where it stands.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pad {
@@ -1794,7 +1820,14 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
     for _ in 0..SEPARATION_ROUNDS {
         for a in 0..units.len() {
             for b in a + 1..units.len() {
-                if !units[a].alive || !units[b].alive {
+                // A carryall and the vehicle it has hold of are meant to be together.
+                let held_by =
+                    |held: &Unit, by: &Unit| held.theft.is_some_and(|theft| theft.carrier == by.id);
+                if !units[a].alive
+                    || !units[b].alive
+                    || held_by(&units[a], &units[b])
+                    || held_by(&units[b], &units[a])
+                {
                     continue;
                 }
                 let (dx, dz) = (units[b].x - units[a].x, units[b].z - units[a].z);
@@ -2035,6 +2068,23 @@ pub fn carry(
             continue;
         };
         let carrier = units[i];
+        let in_reach = |u: &Unit| (u.x - carrier.x).hypot(u.z - carrier.z) <= LIFT_REACH;
+        if let Some(index) = units
+            .iter()
+            .position(|u| u.id == id && carrier.can_steal(u, teams) && in_reach(u))
+        {
+            let vehicle = &mut units[index];
+            vehicle.theft = Some(Theft {
+                carrier: carrier.id,
+                struggle: STRUGGLE_SECONDS,
+            });
+            vehicle.selected = false;
+            vehicle.target = None;
+            vehicle.stand_down();
+            units[i].carrying = true;
+            units[i].stand_down();
+            break;
+        }
         let Some(index) = units.iter().position(|u| {
             u.id == id && carrier.can_lift(u, teams) && {
                 (u.x - carrier.x).hypot(u.z - carrier.z) <= LIFT_REACH
@@ -2093,6 +2143,62 @@ pub fn carry(
         }
     }
     *carried = still_carried;
+    work_on_thefts(units, terrain, dt);
+}
+
+/// Holds stolen vehicles to their carryalls: fighting at first, both staying where they are,
+/// then up in the air and along with it until it puts them down, when they are free again. A
+/// vehicle whose carryall is gone goes with it, and a carryall whose vehicle is gone has its
+/// hands free.
+fn work_on_thefts(units: &mut [Unit], terrain: &Terrain, dt: f32) {
+    for i in 0..units.len() {
+        let Some(mut theft) = units[i].theft else {
+            continue;
+        };
+        let held = units.iter().position(|u| u.id == theft.carrier && u.alive);
+        let Some(c) = held else {
+            units[i].alive = false;
+            units[i].selected = false;
+            units[i].theft = None;
+            continue;
+        };
+        if !units[i].alive {
+            units[c].carrying = false;
+            units[c].unloading = false;
+            units[i].theft = None;
+            continue;
+        }
+        if theft.struggle > 0.0 {
+            // Neither can go anywhere yet, whatever they have been told.
+            theft.struggle -= dt;
+            let spot = (units[i].x, units[i].z);
+            (units[c].x, units[c].z) = spot;
+            units[c].destination = spot;
+            units[c].unloading = false;
+            units[i].destination = spot;
+            units[i].theft = Some(theft);
+            continue;
+        }
+        let spot = (units[c].x, units[c].z);
+        let lowering = units[c].unloading
+            && !units[c].is_moving()
+            && terrain.can_walk(spot.0, spot.1)
+            && clear_of_ruins(terrain, spot);
+        let winch = if lowering { -WINCH_SPEED } else { WINCH_SPEED };
+        let height = (units[i].altitude + winch * dt).clamp(0.0, HANG_HEIGHT);
+        let heading = units[c].heading;
+        let vehicle = &mut units[i];
+        (vehicle.x, vehicle.z, vehicle.heading) = (spot.0, spot.1, heading);
+        vehicle.y = terrain.height_at(spot.0, spot.1);
+        vehicle.altitude = height;
+        vehicle.destination = spot;
+        if lowering && height <= 0.0 {
+            vehicle.theft = None;
+            vehicle.reset_progress();
+            units[c].carrying = false;
+            units[c].unloading = false;
+        }
+    }
 }
 
 /// Tells whatever lands whether an enemy is within reach of where it would fire from, up at its
@@ -3507,6 +3613,10 @@ mod tests {
         assert!(of_opponent(Role::AdvancedCarryall) && of_opponent(Role::AirDrone));
     }
 
+    fn open_map() -> Terrain {
+        Terrain::open_with_ruins(Vec::new())
+    }
+
     fn carry_scene() -> (Vec<Unit>, Vec<Carried>) {
         let mut carryall = Unit::for_test(0.0, MAP_MIDDLE_Z, UnitKind::Aircraft);
         carryall.role = Role::AdvancedCarryall;
@@ -3525,6 +3635,144 @@ mod tests {
             advance(units, terrain, &[0], 0.05);
             carry(units, carried, terrain, &[0], 0.05);
         }
+    }
+
+    /// An enemy tank on open ground, and a player's carryall sent to steal it.
+    fn theft_scene() -> Vec<Unit> {
+        let (mut units, _) = carry_scene();
+        units[1].owner = 1;
+        order_attack(&mut units, 1, &[0, 1]);
+        units
+    }
+
+    fn run_theft(units: &mut Vec<Unit>, terrain: &Terrain, seconds: f32) {
+        let mut carried = Vec::new();
+        for _ in 0..(seconds / 0.05) as usize {
+            advance(units, terrain, &[0, 1], 0.05);
+            carry(units, &mut carried, terrain, &[0, 1], 0.05);
+        }
+        assert!(carried.is_empty(), "a stolen vehicle stays in the battle");
+    }
+
+    /// Runs a theft until the carryall has hold of the tank.
+    fn seized(terrain: &Terrain) -> Vec<Unit> {
+        let mut units = theft_scene();
+        for _ in 0..200 {
+            run_theft(&mut units, terrain, 0.05);
+            if units[1].theft.is_some() {
+                return units;
+            }
+        }
+        panic!("it never got hold: {units:?}");
+    }
+
+    #[test]
+    fn a_carryall_takes_hold_of_an_enemy_vehicle_fights_it_for_a_while_then_lifts_it() {
+        let terrain = open_map();
+        let units = theft_scene();
+        assert_eq!(units[0].target, Some(Target::Unit(units[1].id)));
+        let mut units = seized(&terrain);
+        assert!(units[0].carrying);
+        assert_eq!(units[1].altitude, 0.0, "still on the ground");
+        let spot = (units[1].x, units[1].z);
+        run_theft(&mut units, &terrain, STRUGGLE_SECONDS - 0.5);
+        assert_eq!(units[1].altitude, 0.0, "still fighting it");
+        assert_eq!((units[1].x, units[1].z), spot);
+        run_theft(&mut units, &terrain, 2.0);
+        assert!(units[1].altitude > 0.0, "up it goes");
+        assert!(units[1].alive);
+        assert_eq!(units[1].owner, 1, "it is still the enemy's");
+    }
+
+    #[test]
+    fn what_a_carryall_has_hold_of_goes_nowhere_and_neither_does_it_until_the_fight_is_over() {
+        let terrain = open_map();
+        let mut units = seized(&terrain);
+        let spot = (units[1].x, units[1].z);
+        units[1].destination = (spot.0 + 5.0, spot.1);
+        units[0].selected = true;
+        order_move(&mut units, (-10.0, MAP_MIDDLE_Z), &terrain, &[0, 1]);
+        run_theft(&mut units, &terrain, 1.0);
+        assert_eq!((units[1].x, units[1].z), spot);
+        assert!((units[0].x - spot.0).hypot(units[0].z - spot.1) < 0.001);
+        assert!(!units[1].is_selectable());
+    }
+
+    #[test]
+    fn a_stolen_vehicle_goes_along_and_is_put_down_where_sent_free_again_and_still_the_enemys() {
+        let terrain = open_map();
+        let mut units = seized(&terrain);
+        run_theft(&mut units, &terrain, STRUGGLE_SECONDS + 1.0);
+        units[0].selected = true;
+        order_move(&mut units, (-10.0, MAP_MIDDLE_Z), &terrain, &[0, 1]);
+        run_theft(&mut units, &terrain, 1.0);
+        assert!(units[1].altitude > 0.0, "it hangs on the way");
+        assert_eq!((units[1].x, units[1].z), (units[0].x, units[0].z));
+        run_theft(&mut units, &terrain, 8.0);
+        assert_eq!(units[1].theft, None);
+        assert_eq!(units[1].altitude, 0.0);
+        assert!(!units[0].carrying);
+        assert_eq!(units[1].owner, 1);
+        assert!(units[1].x < -8.0, "{:?}", units[1]);
+    }
+
+    #[test]
+    fn a_stolen_vehicle_dies_with_its_carryall_whether_held_or_up_in_the_air() {
+        let terrain = open_map();
+        let mut units = seized(&terrain);
+        units[0].alive = false;
+        run_theft(&mut units, &terrain, 0.1);
+        assert!(!units[1].alive, "while they fight");
+
+        let mut units = seized(&terrain);
+        run_theft(&mut units, &terrain, STRUGGLE_SECONDS + 1.0);
+        units[0].alive = false;
+        run_theft(&mut units, &terrain, 0.1);
+        assert!(!units[1].alive, "up in the air");
+    }
+
+    #[test]
+    fn a_carryall_whose_stolen_vehicle_is_destroyed_has_its_hands_free() {
+        let terrain = open_map();
+        let mut units = seized(&terrain);
+        run_theft(&mut units, &terrain, STRUGGLE_SECONDS + 1.0);
+        units[1].alive = false;
+        run_theft(&mut units, &terrain, 0.1);
+        assert!(units[0].alive);
+        assert!(!units[0].carrying);
+    }
+
+    #[test]
+    fn a_carryall_steals_only_enemy_ground_vehicles_one_at_a_time() {
+        let (units, _) = carry_scene();
+        let carryall = units[0];
+        let enemy_tank = Unit {
+            owner: 1,
+            ..units[1]
+        };
+        let teams = [0, 1];
+        assert!(carryall.can_steal(&enemy_tank, &teams));
+        assert!(
+            !carryall.can_steal(&units[1], &teams),
+            "a friend is lifted, not stolen"
+        );
+        let soldier = Unit {
+            kind: UnitKind::Infantry,
+            ..enemy_tank
+        };
+        assert!(!carryall.can_steal(&soldier, &teams));
+        let plane = Unit {
+            kind: UnitKind::Aircraft,
+            ..enemy_tank
+        };
+        assert!(!carryall.can_steal(&plane, &teams));
+        let busy = Unit {
+            carrying: true,
+            ..carryall
+        };
+        assert!(!busy.can_steal(&enemy_tank, &teams));
+        let tank_of_ours = units[1];
+        assert!(!tank_of_ours.can_steal(&enemy_tank, &teams));
     }
 
     #[test]
@@ -4478,10 +4726,6 @@ mod tests {
         pad.weapon = WeaponKind::Unarmed;
         pad.id = 2;
         [machine, pad]
-    }
-
-    fn open_map() -> Terrain {
-        Terrain::open_with_ruins(Vec::new())
     }
 
     #[test]

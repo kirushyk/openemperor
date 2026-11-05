@@ -208,9 +208,11 @@ impl WeaponKind {
                 | WeaponKind::Sniper
                 | WeaponKind::AutoGun
                 | WeaponKind::Gas,
-                UnitKind::Vehicle | UnitKind::Tower,
+                UnitKind::Vehicle | UnitKind::Tower | UnitKind::Building,
             ) => self.damage() * 0.25,
-            (WeaponKind::Flame, UnitKind::Vehicle | UnitKind::Tower) => self.damage() * 0.5,
+            (WeaponKind::Flame, UnitKind::Vehicle | UnitKind::Tower | UnitKind::Building) => {
+                self.damage() * 0.5
+            }
             _ => self.damage(),
         }
     }
@@ -745,7 +747,7 @@ fn hurt(unit: &mut Unit, damage: f32) {
 /// Towers, sprayers, tanks, catapults and whatever carries rockets can only fire the way they
 /// face.
 fn must_turn_to_fire(unit: &Unit) -> bool {
-    unit.kind.is_building()
+    unit.kind == UnitKind::Tower
         || unit.weapon.spray_angle().is_some()
         || (unit.weapon != WeaponKind::Repair
             && matches!(

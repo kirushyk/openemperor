@@ -269,6 +269,10 @@ impl Terrain {
                 (SITE, -SITE),
                 (SITE, SITE),
                 (-SITE, SITE),
+                (0.0, -SITE),
+                (SITE, 0.0),
+                (0.0, SITE),
+                (-SITE, 0.0),
                 (0.0, 0.0),
             ]
             .iter()

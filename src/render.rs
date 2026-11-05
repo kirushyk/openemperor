@@ -31,6 +31,7 @@ const ROCKET_FLAME: [f32; 3] = [1.0, 0.6, 0.15];
 const WING_BEATS: f32 = 30.0;
 /// How far to each side of a platform's middle its two blocks lie.
 const PLATFORM_BLOCK_SIDE: f32 = 0.27;
+const BUILDING_DOOR: [f32; 3] = [0.05, 0.05, 0.06];
 const CABLE: Color = [0.1, 0.1, 0.1, 1.0];
 const QUIET: Color = [0.55, 0.53, 0.48, 1.0];
 const GOLD: Color = [0.95, 0.76, 0.32, 1.0];
@@ -1489,6 +1490,7 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
             let lamp = (lamp_x, lamp_z, 0.05, 0.12, unit.heading);
             part(lamp, (base + 0.02, base + 0.12), [1.0, 0.98, 0.85]);
         }
+        UnitKind::Building => draw_building(canvas, game, view, unit, color),
         UnitKind::Tower => {
             let (right_x, right_z) = (-forward_z, forward_x);
             let wall = (unit.x, unit.z, 0.5, 0.5, 0.0);
@@ -1519,6 +1521,44 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
             }
         }
     }
+}
+
+/// A barracks, factory or hangar, with its door on its south side.
+fn draw_building(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    unit: &Unit,
+    color: [f32; 3],
+) {
+    let (x, z, y) = (unit.x, unit.z, unit.y);
+    let walls = color.map(|c| c * 0.8);
+    let roof = color.map(|c| c * 0.55);
+    let mut part = |footprint: (f32, f32, f32, f32), heights, color| {
+        let (x, z, half_x, half_z) = footprint;
+        let turned = (x, z, half_x, half_z, 0.0);
+        draw_turned_box(canvas, game, view, turned, heights, color);
+    };
+    let (half_z, door_half, door_top) = match unit.role {
+        Role::Barracks => {
+            part((x, z, 1.0, 0.7), (y, y + 0.5), walls);
+            part((x, z, 1.0, 0.35), (y + 0.5, y + 0.68), roof);
+            (0.7, 0.15, 0.35)
+        }
+        Role::Factory => {
+            part((x + 0.6, z - 0.4, 0.13, 0.13), (y, y + 1.5), roof);
+            part((x, z, 1.05, 0.85), (y, y + 0.85), walls);
+            (0.85, 0.45, 0.55)
+        }
+        _ => {
+            part((x, z, 1.1, 0.9), (y, y + 0.6), walls);
+            part((x, z, 0.9, 0.9), (y + 0.6, y + 0.76), roof);
+            part((x, z, 0.55, 0.9), (y + 0.76, y + 0.86), walls);
+            (0.9, 0.75, 0.5)
+        }
+    };
+    let door = (x, z + half_z + 0.01, door_half, 0.01);
+    part(door, (y, y + door_top), BUILDING_DOOR);
 }
 
 /// A box turned to any heading: (x, z, half length, half width, heading). Only the sides
@@ -1787,7 +1827,8 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
         }
         // Tip text gives the full name of what it makes.
         let makes = Game::build_role(game.build_tab, i);
-        let symbol = if makes.is_some() { GOLD } else { GOLD_DIM };
+        let can_make = makes.is_some_and(|role| game.can_produce(role));
+        let symbol = if can_make { GOLD } else { GOLD_DIM };
         draw_tab_symbol(canvas, game.build_tab, cx, cy, cell.w * 0.5, symbol);
         let label = makes.map_or(format!("{letter}{}", i + 1), |role| {
             short_name(role).to_string()
@@ -1797,7 +1838,11 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
             cell.x + 6.0 * s,
             cell.y + 14.0 * s,
             chat_px(game),
-            TEXT,
+            if can_make || makes.is_none() {
+                TEXT
+            } else {
+                QUIET
+            },
         );
     }
     for tab in hud::build_tabs(game.width, game.height) {

@@ -104,7 +104,7 @@ impl Casualties {
             UnitKind::Infantry => self.infantry += 1,
             UnitKind::Vehicle => self.vehicles += 1,
             UnitKind::Aircraft => self.aircraft += 1,
-            UnitKind::Tower => self.buildings += 1,
+            UnitKind::Tower | UnitKind::Building => self.buildings += 1,
         }
     }
 }
@@ -1434,26 +1434,16 @@ impl Game {
         }
     }
 
-    /// Adds a unit of the player's next to their tower, or their first unit if it is gone.
-    /// There is no cost or waiting yet.
+    /// Whether the player has the building that makes this.
+    pub fn can_produce(&self, role: Role) -> bool {
+        units::maker_of(&self.units, role, 0).is_some()
+    }
+
+    /// Adds a unit of the player's by the building that makes it, if they have one. There is
+    /// no cost or waiting yet.
     fn produce(&mut self, role: Role) {
-        let tower = self
-            .units
-            .iter()
-            .find(|u| u.owner == 0 && u.kind.is_building());
-        let Some(beside) = tower.or_else(|| self.units.iter().find(|u| u.owner == 0)) else {
-            return;
-        };
-        let (near, color) = ((beside.x, beside.z), beside.color);
         let terrain = battlefield::terrain(self.battle_map);
-        if units::produce(
-            &mut self.units,
-            terrain,
-            role,
-            near,
-            (0, color),
-            self.next_unit_id,
-        ) {
+        if units::produce(&mut self.units, terrain, role, 0, self.next_unit_id) {
             self.next_unit_id += 1;
             self.post_chat(format!("{} ready", role.name()));
         }
@@ -1468,7 +1458,14 @@ impl Game {
             if self.build_tab == BuildTab::Vehicles && cell == SUPERWEAPON_CELL {
                 return Some("Superweapon");
             }
-            return Game::build_role(self.build_tab, cell).map(Role::name);
+            return Game::build_role(self.build_tab, cell).map(|role| {
+                match role.made_in().filter(|_| !self.can_produce(role)) {
+                    Some(Role::Barracks) => "Needs a Barracks",
+                    Some(Role::Factory) => "Needs a Factory",
+                    Some(_) => "Needs a Hangar",
+                    None => role.name(),
+                }
+            });
         }
         if !self.cursor_on_battlefield() || self.selection_anchor.is_some() {
             return None;
@@ -3266,6 +3263,9 @@ mod tests {
     #[test]
     fn enemy_fire_can_now_defeat_the_player() {
         let mut game = in_battle();
+        // Set down among them, big buildings would only push them about and keep them from firing.
+        game.units
+            .retain(|u| !(u.owner == 0 && u.kind == UnitKind::Building));
         // Everyone of the player's stands in the open beside armed enemies, unarmed.
         let enemy = game.units.iter().find(|u| u.owner == 1).copied().unwrap();
         for unit in game.units.iter_mut().filter(|u| u.owner == 0) {
@@ -3320,7 +3320,10 @@ mod tests {
         }
         assert_eq!(game.outcome, Some(Outcome::Victory));
         assert_eq!(game.killed.infantry, enemies);
-        assert_eq!(game.killed.buildings, 2, "its towers fell too");
+        assert_eq!(
+            game.killed.buildings, 5,
+            "its towers and buildings fell too"
+        );
     }
 
     #[test]
@@ -4132,7 +4135,8 @@ mod tests {
                 .count()
         };
         let mut game = in_battle();
-        game.units.retain(|u| u.kind == UnitKind::Infantry);
+        game.units
+            .retain(|u| matches!(u.kind, UnitKind::Infantry | UnitKind::Building));
         assert_eq!(lit(&game), 0);
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START));
@@ -4224,6 +4228,40 @@ mod tests {
     }
 
     #[test]
+    fn without_its_building_a_button_makes_nothing_and_its_tip_says_why() {
+        let mut game = in_battle();
+        game.units.retain(|u| u.role != Role::Barracks);
+        let before = game.units.len();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Infantry));
+        click_hud(&mut game, Action::BuildCell(0));
+        assert_eq!(game.units.len(), before);
+        let b = hud::grid_cells(W, H)[0];
+        game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
+        assert_eq!(game.tip(), Some("Needs a Barracks"));
+        assert!(!game.chat.iter().any(|line| line.text == "Scout ready"));
+        assert!(!crate::render::build(&game).is_empty());
+
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        click_hud(&mut game, Action::BuildCell(0));
+        assert_eq!(game.units.len(), before + 1, "the factory stands");
+    }
+
+    #[test]
+    fn taking_a_factory_lets_the_player_make_vehicles_again() {
+        let mut game = in_battle();
+        game.units
+            .retain(|u| u.role != Role::Factory || u.owner != 0);
+        assert!(!game.can_produce(Role::Tank));
+        let theirs = game
+            .units
+            .iter_mut()
+            .find(|u| u.role == Role::Factory)
+            .unwrap();
+        theirs.owner = 0;
+        assert!(game.can_produce(Role::Tank));
+    }
+
+    #[test]
     fn other_build_cells_still_make_nothing_nor_does_a_finished_battle() {
         let mut game = in_battle();
         let before = game.units.len();
@@ -4297,10 +4335,12 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        game.units
+            .retain(|u| !(u.owner == 1 && u.kind == UnitKind::Building));
         for unit in game
             .units
             .iter_mut()
-            .filter(|u| u.owner == 1 && !u.kind.is_building())
+            .filter(|u| u.owner == 1 && u.kind != UnitKind::Tower)
         {
             unit.alive = false;
         }

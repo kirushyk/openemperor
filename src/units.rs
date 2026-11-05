@@ -64,6 +64,8 @@ pub enum UnitKind {
     Aircraft,
     /// A building: it never moves and takes no orders, and turns its two tubes by itself.
     Tower,
+    /// A large building that makes units and fights no one.
+    Building,
 }
 
 impl UnitKind {
@@ -74,11 +76,12 @@ impl UnitKind {
             UnitKind::Vehicle => 0.45,
             UnitKind::Aircraft => 0.4,
             UnitKind::Tower => 0.6,
+            UnitKind::Building => BUILDING_RADIUS,
         }
     }
 
     pub fn is_building(self) -> bool {
-        self == UnitKind::Tower
+        matches!(self, UnitKind::Tower | UnitKind::Building)
     }
 
     /// The experience its killer gets.
@@ -86,7 +89,7 @@ impl UnitKind {
         match self {
             UnitKind::Infantry => 1,
             UnitKind::Vehicle | UnitKind::Aircraft => 2,
-            UnitKind::Tower => 3,
+            UnitKind::Tower | UnitKind::Building => 3,
         }
     }
 
@@ -105,6 +108,7 @@ impl UnitKind {
             UnitKind::Vehicle => 300.0,
             UnitKind::Aircraft => 150.0,
             UnitKind::Tower => 600.0,
+            UnitKind::Building => 800.0,
         }
     }
 
@@ -114,11 +118,19 @@ impl UnitKind {
             UnitKind::Infantry => 2.5,
             UnitKind::Vehicle => 4.5,
             UnitKind::Aircraft => 7.0,
-            UnitKind::Tower => 0.0,
+            UnitKind::Tower | UnitKind::Building => 0.0,
         }
     }
 }
 
+const BUILDING_RADIUS: f32 = 1.2;
+/// How far beyond its side the door of a building is.
+const DOOR_MARGIN: f32 = 0.2;
+/// How far out of a factory's door a new vehicle drives.
+const DRIVE_OUT: f32 = 2.5;
+/// How far behind a group's middle its buildings stand, and how far apart.
+const BUILDINGS_BEHIND: f32 = 3.6;
+const BUILDING_SPREAD: f32 = 3.0;
 /// How high aircraft fly, in world units.
 const CRUISE_ALTITUDE: f32 = 4.0;
 /// World units per second that whatever lands goes up and comes down.
@@ -182,6 +194,12 @@ pub enum Role {
     Tower,
     /// A tower that throws fire.
     FlameTower,
+    /// Makes infantry.
+    Barracks,
+    /// Makes ground vehicles.
+    Factory,
+    /// Makes aircraft.
+    Hangar,
 }
 
 impl Role {
@@ -202,6 +220,7 @@ impl Role {
             | Role::AirDrone
             | Role::Ornithopter => UnitKind::Aircraft,
             Role::Tower | Role::FlameTower => UnitKind::Tower,
+            Role::Barracks | Role::Factory | Role::Hangar => UnitKind::Building,
         }
     }
 
@@ -224,13 +243,16 @@ impl Role {
             Role::GasInfantry => "Gas Infantry",
             Role::Tower => "Tower",
             Role::FlameTower => "Flame Tower",
+            Role::Barracks => "Barracks",
+            Role::Factory => "Factory",
+            Role::Hangar => "Hangar",
         }
     }
 
     fn weapon(self) -> WeaponKind {
         match self {
             Role::LightInfantry => WeaponKind::Bullet,
-            Role::Scout => WeaponKind::Unarmed,
+            Role::Scout | Role::Barracks | Role::Factory | Role::Hangar => WeaponKind::Unarmed,
             Role::Sniper => WeaponKind::Sniper,
             Role::Engineer | Role::KInfantry => WeaponKind::Pistol,
             Role::Tank => WeaponKind::Cannon,
@@ -291,12 +313,23 @@ impl Role {
         }
     }
 
+    /// The building that makes it, if anything does.
+    pub fn made_in(self) -> Option<Role> {
+        match self.kind() {
+            UnitKind::Infantry => Some(Role::Barracks),
+            UnitKind::Vehicle => Some(Role::Factory),
+            UnitKind::Aircraft => Some(Role::Hangar),
+            UnitKind::Tower | UnitKind::Building => None,
+        }
+    }
+
     fn for_kind(kind: UnitKind) -> Self {
         match kind {
             UnitKind::Infantry => Role::LightInfantry,
             UnitKind::Vehicle => Role::Tank,
             UnitKind::Aircraft => Role::AdvancedCarryall,
             UnitKind::Tower => Role::Tower,
+            UnitKind::Building => Role::Barracks,
         }
     }
 }
@@ -450,7 +483,7 @@ impl Unit {
             (_, UnitKind::Infantry) => INFANTRY_SIGHT,
             (_, UnitKind::Vehicle) => VEHICLE_SIGHT,
             (_, UnitKind::Aircraft) => AIRCRAFT_SIGHT,
-            (_, UnitKind::Tower) => TOWER_SIGHT,
+            (_, UnitKind::Tower | UnitKind::Building) => TOWER_SIGHT,
         };
         own.max(self.weapon.range() + 1.0)
     }
@@ -779,26 +812,89 @@ fn place_building(
     place_unit(units, terrain, at, role, role.weapon(), side, id);
 }
 
-/// Adds a new unit at the free spot nearest to a point, if there is one. Returns whether
-/// it did. Nobody stands or is headed where it appears.
+/// Places around a building where others must not be sent, so that nobody presses against it.
+fn building_footprint(building: &Unit) -> [(f32, f32); 8] {
+    std::array::from_fn(|i| {
+        let (sin, cos) = (i as f32 / 8.0 * TAU).sin_cos();
+        let reach = building.kind.radius() / 2.0;
+        (building.x + reach * cos, building.z + reach * sin)
+    })
+}
+
+/// The building of this owner that can make this role, if they have one.
+pub fn maker_of(units: &[Unit], role: Role, owner: usize) -> Option<&Unit> {
+    let made_in = role.made_in()?;
+    units
+        .iter()
+        .find(|u| u.alive && u.owner == owner && u.role == made_in)
+}
+
+/// Adds a new unit for an owner, if they have the building that makes it and there is a free
+/// spot by its door, on its south side. Returns whether it did. Infantry and aircraft appear
+/// at that spot, and a vehicle comes out of the door and drives there.
 pub fn produce(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
     role: Role,
-    near: (f32, f32),
-    side: (usize, TeamColor),
+    owner: usize,
     id: u32,
 ) -> bool {
+    let Some(&maker) = maker_of(units, role, owner) else {
+        return false;
+    };
+    let door = (
+        maker.x,
+        maker.z + maker.kind.radius() + role.kind().radius() + DOOR_MARGIN,
+    );
+    let vehicle = role.kind() == UnitKind::Vehicle;
+    let near = if vehicle {
+        (door.0, door.1 + DRIVE_OUT)
+    } else {
+        door
+    };
     let taken: Vec<(f32, f32)> = units
         .iter()
         .filter(|u| u.alive && !u.keeps_to_the_air())
-        .flat_map(|u| [(u.x, u.z), u.destination])
+        .flat_map(|u| {
+            let around = u.kind.is_building().then(|| building_footprint(u));
+            [(u.x, u.z), u.destination]
+                .into_iter()
+                .chain(around.into_iter().flatten())
+        })
         .collect();
     let Some(&spot) = find_slots(terrain, near, 1, &taken, false).first() else {
         return false;
     };
-    place_unit(units, terrain, spot, role, role.weapon(), side, id);
+    let side = (owner, maker.color);
+    let appears_at = if vehicle { door } else { spot };
+    place_unit(units, terrain, appears_at, role, role.weapon(), side, id);
+    if let Some(new) = units.last_mut().filter(|_| vehicle) {
+        new.heading = FRAC_PI_2;
+        new.destination = spot;
+    }
     true
+}
+
+/// Puts up an owner's three buildings in a row behind a group's middle.
+fn place_base(
+    units: &mut Vec<Unit>,
+    terrain: &Terrain,
+    center: (f32, f32),
+    behind: (f32, f32),
+    side: (usize, TeamColor),
+) {
+    let (across_x, across_z) = (-behind.1, behind.0);
+    for (role, along) in [
+        (Role::Hangar, -BUILDING_SPREAD),
+        (Role::Factory, 0.0),
+        (Role::Barracks, BUILDING_SPREAD),
+    ] {
+        let at = (
+            center.0 + behind.0 * BUILDINGS_BEHIND + across_x * along,
+            center.1 + behind.1 * BUILDINGS_BEHIND + across_z * along,
+        );
+        place_building(units, terrain, at, role, side);
+    }
 }
 
 /// Switches every selected K Infantry between its pistol and, standing still, its cannon.
@@ -844,6 +940,7 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
         Role::FlameTower,
         player,
     );
+    place_base(&mut units, terrain, (0.0, MAP_MIDDLE_Z), (0.0, 1.0), player);
     spawn_group(
         &mut units,
         terrain,
@@ -868,6 +965,8 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
             center.1 - OPPONENT_TOWER_OFFSET * sin,
         );
         place_building(&mut units, terrain, flame, Role::FlameTower, (i + 1, color));
+        // On the side towards the middle of the map, where the ring leaves the most room.
+        place_base(&mut units, terrain, center, (-sin, cos), (i + 1, color));
         // Above the block: something for the player's anti-air to go after.
         for (role, side) in [
             (Role::AdvancedCarryall, -SPACING),
@@ -892,7 +991,7 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
 /// Whether a point lies where a group can start, which must be land even on a planet whose
 /// lower terrain is water or lava. Opponents spread around the whole ring.
 pub fn needs_land(x: f32, z: f32) -> bool {
-    const REACH: f32 = 5.0;
+    const REACH: f32 = 6.5;
     let from_middle = x.hypot(z - MAP_MIDDLE_Z);
     let from_second_group = (x - SECOND_GROUP_X).hypot(z - MAP_MIDDLE_Z);
     from_middle < REACH || from_second_group < REACH || (from_middle - OPPONENT_RING).abs() < REACH
@@ -904,7 +1003,7 @@ pub fn keeps_clear(x: f32, z: f32) -> bool {
     let from_second_group = (x - SECOND_GROUP_X).hypot(z - MAP_MIDDLE_Z);
     from_middle > CLEARANCE
         && from_second_group > CLEARANCE
-        && (from_middle - OPPONENT_RING).abs() > CLEARANCE * 0.6
+        && (from_middle - OPPONENT_RING).abs() > CLEARANCE * 0.8
 }
 
 /// Up to `count` free spots near a point, nearest first, each far enough from the others
@@ -989,7 +1088,10 @@ fn order_layer(
                 any_heavy && are_enemies(teams, 0, u.owner) && !u.kind.is_building();
             in_layer(u) && !u.selected && u.alive && !can_be_run_over
         })
-        .map(|u| u.destination)
+        .flat_map(|u| {
+            let around = u.kind.is_building().then(|| building_footprint(u));
+            std::iter::once(u.destination).chain(around.into_iter().flatten())
+        })
         .collect();
     // Deployed units are dug in and stay put.
     let mut chosen: Vec<usize> = (0..units.len())
@@ -1374,7 +1476,7 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
                 unit.heading += turn.clamp(-most, most);
                 held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
             }
-            UnitKind::Tower => {}
+            UnitKind::Tower | UnitKind::Building => {}
         }
     }
     squash(units, teams);
@@ -2171,14 +2273,16 @@ mod tests {
 
     fn produced(role: Role) -> Unit {
         let mut units = Vec::new();
-        assert!(produce(
+        let side = (0, TeamColor::Blue);
+        place_unit(
             &mut units,
             open_ground(),
-            role,
             (0.0, 60.0),
-            (0, TeamColor::Blue),
-            99
-        ));
+            role,
+            role.weapon(),
+            side,
+            99,
+        );
         units[0]
     }
 
@@ -2219,22 +2323,32 @@ mod tests {
 
     #[test]
     fn production_never_stacks_units_on_each_other() {
-        let mut units = Vec::new();
+        let mut units = base_of(0);
         for id in 0..12 {
-            assert!(produce(
-                &mut units,
-                open_ground(),
-                Role::Tank,
-                (0.0, 60.0),
-                (0, TeamColor::Blue),
-                id
-            ));
+            assert!(produce(&mut units, open_ground(), Role::Scout, 0, 10 + id));
         }
         assert!(
             largest_overlap(&units) <= 0.0,
             "{}",
             largest_overlap(&units)
         );
+    }
+
+    #[test]
+    fn vehicles_made_in_a_hurry_sort_themselves_out_beyond_the_door() {
+        let mut units = base_of(0);
+        for id in 0..12 {
+            assert!(produce(&mut units, open_ground(), Role::Tank, 0, 10 + id));
+        }
+        for _ in 0..200 {
+            advance(&mut units, open_ground(), &[0], 0.05);
+        }
+        assert!(
+            largest_overlap(&units) <= 0.001,
+            "{}",
+            largest_overlap(&units)
+        );
+        assert!(units.iter().all(|u| !u.is_moving()));
     }
 
     #[test]
@@ -2945,6 +3059,124 @@ mod tests {
         assert!(!full.keeps_to_the_air(), "it wants a spot on the ground");
     }
 
+    fn base_of(owner: usize) -> Vec<Unit> {
+        let terrain = open_ground();
+        let mut units = Vec::new();
+        place_base(
+            &mut units,
+            terrain,
+            (0.0, 60.0),
+            (0.0, 1.0),
+            (owner, TeamColor::Red),
+        );
+        units
+    }
+
+    #[test]
+    fn each_building_makes_its_own_kind_of_unit_for_its_owner_only() {
+        let mut units = base_of(1);
+        assert!(
+            !produce(&mut units, open_ground(), Role::Tank, 0, 50),
+            "not theirs"
+        );
+        for (role, kind, maker) in [
+            (Role::Scout, UnitKind::Infantry, Role::Barracks),
+            (Role::Tank, UnitKind::Vehicle, Role::Factory),
+            (Role::AirDrone, UnitKind::Aircraft, Role::Hangar),
+        ] {
+            assert_eq!(role.kind(), kind);
+            assert_eq!(maker_of(&units, role, 1).map(|u| u.role), Some(maker));
+            assert!(produce(&mut units, open_ground(), role, 1, 50));
+            let new = units.last().unwrap();
+            assert_eq!((new.role, new.owner, new.color), (role, 1, TeamColor::Red));
+        }
+        assert_eq!(Role::Barracks.made_in(), None);
+    }
+
+    #[test]
+    fn with_its_building_gone_nothing_of_that_kind_can_be_made() {
+        for (role, maker) in [
+            (Role::Sniper, Role::Barracks),
+            (Role::Catapult, Role::Factory),
+            (Role::Ornithopter, Role::Hangar),
+        ] {
+            let mut units = base_of(0);
+            let before = units.len();
+            units.iter_mut().find(|u| u.role == maker).unwrap().alive = false;
+            assert!(!produce(&mut units, open_ground(), role, 0, 50), "{role:?}");
+            assert_eq!(units.len(), before);
+        }
+    }
+
+    #[test]
+    fn a_vehicle_comes_out_of_the_factory_door_and_drives_away_from_it() {
+        let mut units = base_of(0);
+        let factory = *units.iter().find(|u| u.role == Role::Factory).unwrap();
+        assert!(produce(&mut units, open_ground(), Role::Tank, 0, 50));
+        let tank = *units.last().unwrap();
+        assert_eq!(tank.x, factory.x);
+        let touching = factory.kind.radius() + tank.kind.radius();
+        assert!((tank.z - factory.z - touching).abs() < 0.5, "at the door");
+        assert!(tank.is_moving(), "on its way out");
+        assert!(tank.destination.1 > tank.z);
+        for _ in 0..100 {
+            advance(&mut units, open_ground(), &[0], 0.05);
+        }
+        assert!(!units.last().unwrap().is_moving(), "it gets there");
+    }
+
+    #[test]
+    fn infantry_appears_by_the_barracks_without_touching_it() {
+        let mut units = base_of(0);
+        let barracks = *units.iter().find(|u| u.role == Role::Barracks).unwrap();
+        assert!(produce(&mut units, open_ground(), Role::Scout, 0, 50));
+        let scout = units.last().unwrap();
+        let away = (scout.x - barracks.x).hypot(scout.z - barracks.z);
+        assert!(
+            away > barracks.kind.radius() + scout.kind.radius(),
+            "{away}"
+        );
+        assert!(away < 4.0, "{away}");
+        assert!(!scout.is_moving());
+    }
+
+    #[test]
+    fn nobody_is_sent_to_a_spot_inside_a_building() {
+        let mut units = base_of(1);
+        let barracks = *units.iter().find(|u| u.role == Role::Barracks).unwrap();
+        let mut tank = unit_at(barracks.x + 8.0, barracks.z, UnitKind::Vehicle);
+        tank.selected = true;
+        units.push(tank);
+        order_move(&mut units, (barracks.x, barracks.z), open_ground(), &[0, 1]);
+        let sent = units.last().unwrap().destination;
+        let away = (sent.0 - barracks.x).hypot(sent.1 - barracks.z);
+        assert!(
+            away > barracks.kind.radius() + UnitKind::Vehicle.radius(),
+            "{away}"
+        );
+    }
+
+    #[test]
+    fn everyone_starts_with_all_three_buildings_on_land_and_an_engineer_can_take_them() {
+        let terrain = terrain(0);
+        let units = spawn(terrain, &COLORS);
+        for owner in 0..COLORS.len() {
+            for role in [Role::Barracks, Role::Factory, Role::Hangar] {
+                let building = units.iter().find(|u| u.owner == owner && u.role == role);
+                let building = building.expect("all three");
+                assert!(terrain.can_walk(building.x, building.z));
+                assert_eq!(building.weapon, WeaponKind::Unarmed);
+                assert!(!building.is_selectable());
+            }
+        }
+        let mut engineer = unit_at(0.0, 60.0, UnitKind::Infantry);
+        engineer.role = Role::Engineer;
+        let enemy = units
+            .iter()
+            .find(|u| u.owner == 1 && u.role == Role::Factory);
+        assert!(engineer.can_capture(enemy.unwrap(), &[0, 1]));
+    }
+
     #[test]
     fn enemies_are_told_apart_by_team() {
         assert!(are_enemies(&[0, 1, 2], 0, 1));
@@ -2956,10 +3188,12 @@ mod tests {
     #[test]
     fn opponents_have_no_vehicles_and_the_player_has_vehicles_that_are_heavy() {
         let units = spawn(terrain(0), &COLORS);
-        assert!(units.iter().filter(|u| u.owner != 0).all(|u| matches!(
-            u.kind,
-            UnitKind::Infantry | UnitKind::Tower | UnitKind::Aircraft
-        )));
+        assert!(
+            units
+                .iter()
+                .filter(|u| u.owner != 0)
+                .all(|u| u.kind != UnitKind::Vehicle)
+        );
         assert!(
             units
                 .iter()

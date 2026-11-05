@@ -20,7 +20,7 @@ const PICK_RADIUS: f32 = 25.0;
 const STARTING_ENERGY: i32 = 65;
 
 /// The Vehicles menu's cell holding the superweapon.
-pub const SUPERWEAPON_CELL: usize = 4;
+pub const SUPERWEAPON_CELL: usize = 6;
 /// What each tab's first cells produce, in order.
 const INFANTRY_BUILDS: [Role; 7] = [
     Role::Scout,
@@ -31,11 +31,13 @@ const INFANTRY_BUILDS: [Role; 7] = [
     Role::FlameInfantry,
     Role::GasInfantry,
 ];
-const VEHICLE_BUILDS: [Role; 4] = [
+const VEHICLE_BUILDS: [Role; 6] = [
     Role::Tank,
     Role::RepairVehicle,
     Role::Catapult,
     Role::RocketLauncher,
+    Role::Strider,
+    Role::HeavyStrider,
 ];
 /// What the Vehicles menu's bottom row makes, from its left end.
 const BOTTOM_VEHICLE_BUILDS: [Role; 3] =
@@ -4087,9 +4089,16 @@ mod tests {
     fn each_vehicle_button_makes_its_vehicle_and_the_superweapon_comes_after_them() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        for (cell, name) in ["Tank", "Repair Vehicle", "Catapult", "Rocket Launcher"]
-            .into_iter()
-            .enumerate()
+        for (cell, name) in [
+            "Tank",
+            "Repair Vehicle",
+            "Catapult",
+            "Rocket Launcher",
+            "Strider",
+            "Heavy Strider",
+        ]
+        .into_iter()
+        .enumerate()
         {
             let before = game.units.len();
             click_hud(&mut game, Action::BuildCell(cell));
@@ -4259,6 +4268,40 @@ mod tests {
             .unwrap();
         theirs.owner = 0;
         assert!(game.can_produce(Role::Tank));
+    }
+
+    #[test]
+    fn striders_draw_at_rest_on_the_move_and_with_their_cannons_recoiling() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        click_hud(&mut game, Action::BuildCell(4));
+        click_hud(&mut game, Action::BuildCell(5));
+        assert!(!crate::render::build(&game).is_empty());
+        let strider = game.units.last_mut().unwrap();
+        assert_eq!(strider.role, Role::HeavyStrider);
+        strider.recoil = [1.0, 0.5, 0.0, 0.0];
+        strider.stride = 1.3;
+        strider.destination.0 += 5.0;
+        strider.selected = true;
+        assert!(!crate::render::build(&game).is_empty());
+    }
+
+    #[test]
+    fn a_knee_lies_ahead_of_the_straight_line_from_hip_to_foot_and_the_limbs_keep_their_length() {
+        let (thigh, shin) = (0.5, 0.5);
+        let hip = (0.0, 1.0);
+        let foot = (0.2, 0.2);
+        let knee = crate::render::knee_of(hip, foot, thigh, shin);
+        let length = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).hypot(a.1 - b.1);
+        assert!((length(hip, knee) - thigh).abs() < 0.001);
+        assert!((length(foot, knee) - shin).abs() < 0.001);
+        assert!(knee.0 > 0.1, "it bends forward: {knee:?}");
+        // Too far to reach, the leg is simply straight.
+        let knee = crate::render::knee_of(hip, (0.0, -5.0), thigh, shin);
+        assert!(
+            (knee.0).abs() < 0.001 && (knee.1 - 0.5).abs() < 0.001,
+            "{knee:?}"
+        );
     }
 
     #[test]
@@ -4475,6 +4518,8 @@ mod tests {
             "Repair Vehicle",
             "Catapult",
             "Rocket Launcher",
+            "Strider",
+            "Heavy Strider",
             "Superweapon",
         ]
         .into_iter()

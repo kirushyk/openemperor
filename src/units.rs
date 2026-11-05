@@ -178,6 +178,10 @@ pub enum Role {
     Catapult,
     /// Fires a salvo of rockets from its two racks, then reloads for a long time.
     RocketLauncher,
+    /// Walks on two legs and fires missiles.
+    Strider,
+    /// Walks on two big legs and fires its four cannons in turn, then has to calm down.
+    HeavyStrider,
     /// Hangs in the air, unarmed, and carries friendly vehicles to where it is told.
     AdvancedCarryall,
     /// Hangs in the air and fires an automatic gun at the air and the ground alike.
@@ -212,9 +216,12 @@ impl Role {
             | Role::KInfantry
             | Role::FlameInfantry
             | Role::GasInfantry => UnitKind::Infantry,
-            Role::Tank | Role::RepairVehicle | Role::Catapult | Role::RocketLauncher => {
-                UnitKind::Vehicle
-            }
+            Role::Tank
+            | Role::RepairVehicle
+            | Role::Catapult
+            | Role::RocketLauncher
+            | Role::Strider
+            | Role::HeavyStrider => UnitKind::Vehicle,
             Role::AdvancedCarryall
             | Role::AirDefensePlatform
             | Role::AirDrone
@@ -235,6 +242,8 @@ impl Role {
             Role::RepairVehicle => "Repair Vehicle",
             Role::Catapult => "Catapult",
             Role::RocketLauncher => "Rocket Launcher",
+            Role::Strider => "Strider",
+            Role::HeavyStrider => "Heavy Strider",
             Role::AdvancedCarryall => "Advanced Carryall",
             Role::AirDefensePlatform => "Air Defense Platform",
             Role::AirDrone => "Air Drone",
@@ -259,7 +268,8 @@ impl Role {
             Role::RepairVehicle => WeaponKind::Repair,
             Role::Catapult => WeaponKind::Mortar,
             Role::RocketLauncher | Role::Ornithopter => WeaponKind::Rockets,
-            Role::Tower => WeaponKind::Missile,
+            Role::Tower | Role::Strider => WeaponKind::Missile,
+            Role::HeavyStrider => WeaponKind::Bombard,
             Role::AdvancedCarryall => WeaponKind::Unarmed,
             Role::AirDefensePlatform => WeaponKind::AutoGun,
             Role::AirDrone => WeaponKind::AirMissile,
@@ -276,6 +286,8 @@ impl Role {
             Role::KInfantry => 120.0,
             Role::RepairVehicle => 200.0,
             Role::Catapult | Role::RocketLauncher => 180.0,
+            Role::Strider => 220.0,
+            Role::HeavyStrider => 450.0,
             Role::AirDefensePlatform => 200.0,
             Role::AirDrone => 80.0,
             Role::FlameTower => 500.0,
@@ -287,6 +299,8 @@ impl Role {
         match self {
             Role::Scout => 4.0,
             Role::Catapult | Role::RocketLauncher => 3.5,
+            Role::Strider => 4.0,
+            Role::HeavyStrider => 2.8,
             Role::AirDefensePlatform => 3.0,
             Role::AirDrone => 8.0,
             Role::Ornithopter => 5.5,
@@ -363,6 +377,13 @@ pub const ROCKET_SIDES: [f32; 6] = [-0.21, -0.14, -0.07, 0.07, 0.14, 0.21];
 /// How high a rocket launcher's rockets lie, and how far ahead of its middle they end.
 pub const ROCKET_HEIGHT: f32 = 0.35;
 const ROCKET_REACH: f32 = 0.3;
+/// Where a Heavy Strider's cannons lie from its middle, in the order they fire.
+pub const CANNON_SIDES: [f32; 4] = [-0.3, -0.14, 0.14, 0.3];
+/// How high its cannons are, and how far ahead of its middle they end.
+pub const CANNON_HEIGHT: f32 = 1.05;
+pub const CANNON_REACH: f32 = 0.7;
+/// How high a Strider's missiles leave from.
+const STRIDER_MUZZLE_HEIGHT: f32 = 0.66;
 
 /// What a unit was told to go after.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -414,8 +435,12 @@ pub struct Unit {
     pub second_tube: bool,
     /// How far a missile tower's tubes are raised, in radians: below level if negative.
     pub tube_pitch: f32,
-    /// How many rockets of its salvo have gone: they stay gone until it has reloaded.
-    pub rockets_fired: usize,
+    /// How many shots of its salvo have gone: they stay gone until it has reloaded.
+    pub salvo_fired: usize,
+    /// How far back each of a Heavy Strider's cannons has recoiled, from 1 when it fires to 0.
+    pub recoil: [f32; 4],
+    /// How far it has walked, which is what moves a strider's legs.
+    pub stride: f32,
     /// How far it leans into a turn along its length, in radians: positive to its right.
     pub bank: f32,
     /// Whether what sits on the ground has an enemy near enough to go up and fire on.
@@ -615,9 +640,21 @@ impl Unit {
     /// Where its shots come from: a tower takes turns with the ends of its two tubes, and a
     /// rocket launcher goes along its racks.
     pub fn muzzle(&self) -> (f32, f32, f32) {
+        if self.role == Role::Strider {
+            return (self.x, self.y + STRIDER_MUZZLE_HEIGHT, self.z);
+        }
+        if self.role == Role::HeavyStrider {
+            let (sin, cos) = self.heading.sin_cos();
+            let side = CANNON_SIDES.get(self.salvo_fired).copied().unwrap_or(0.0);
+            return (
+                self.x + cos * CANNON_REACH - sin * side,
+                self.y + CANNON_HEIGHT,
+                self.z + sin * CANNON_REACH + cos * side,
+            );
+        }
         if self.role == Role::RocketLauncher {
             let (sin, cos) = self.heading.sin_cos();
-            let side = ROCKET_SIDES.get(self.rockets_fired).copied().unwrap_or(0.0);
+            let side = ROCKET_SIDES.get(self.salvo_fired).copied().unwrap_or(0.0);
             return (
                 self.x + cos * ROCKET_REACH - sin * side,
                 self.y + ROCKET_HEIGHT,
@@ -647,7 +684,11 @@ impl Unit {
         let above_feet = if self.kind.is_building() {
             TUBE_HEIGHT * 0.7
         } else {
-            HEIGHT / 2.0
+            match self.role {
+                Role::Strider => 0.5,
+                Role::HeavyStrider => 0.9,
+                _ => HEIGHT / 2.0,
+            }
         };
         self.y + self.altitude + above_feet
     }
@@ -683,7 +724,9 @@ impl Unit {
             alive: true,
             second_tube: false,
             tube_pitch: 0.0,
-            rockets_fired: 0,
+            salvo_fired: 0,
+            recoil: [0.0; 4],
+            stride: 0.0,
             bank: 0.0,
             alerted: false,
             carrying: false,
@@ -800,7 +843,9 @@ fn place_unit(
         alive: true,
         second_tube: false,
         tube_pitch: 0.0,
-        rockets_fired: 0,
+        salvo_fired: 0,
+        recoil: [0.0; 4],
+        stride: 0.0,
         bank: 0.0,
         alerted: false,
         carrying: false,
@@ -1497,6 +1542,7 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
         held_back[i] |= push_out_of_ruins(unit, terrain);
         // Wedged against those who stay put, a chaser would otherwise press on forever.
         let moved = (unit.x - started_at[i].0).hypot(unit.z - started_at[i].1);
+        unit.stride += moved;
         held_back[i] |= unit.target.is_some() && moved < unit.speed() * dt * WEDGED_SHARE;
         unit.y = terrain.height_at(unit.x, unit.z);
         give_up_if_stuck(unit, held_back[i], dt);
@@ -2306,6 +2352,8 @@ mod tests {
             (Role::Tank, WeaponKind::Cannon, "Tank"),
             (Role::RepairVehicle, WeaponKind::Repair, "Repair Vehicle"),
             (Role::Catapult, WeaponKind::Mortar, "Catapult"),
+            (Role::Strider, WeaponKind::Missile, "Strider"),
+            (Role::HeavyStrider, WeaponKind::Bombard, "Heavy Strider"),
             (Role::RocketLauncher, WeaponKind::Rockets, "Rocket Launcher"),
             (
                 Role::AirDefensePlatform,
@@ -3184,6 +3232,24 @@ mod tests {
             .iter()
             .find(|u| u.owner == 1 && u.role == Role::Factory);
         assert!(engineer.can_capture(enemy.unwrap(), &[0, 1]));
+    }
+
+    #[test]
+    fn striders_are_vehicles_made_in_a_factory_whose_stride_grows_as_they_walk() {
+        for role in [Role::Strider, Role::HeavyStrider] {
+            assert_eq!(role.kind(), UnitKind::Vehicle);
+            assert_eq!(role.made_in(), Some(Role::Factory));
+            let mut unit = produced(role);
+            unit.destination = (unit.x + 5.0, unit.z);
+            unit.heading = 0.0;
+            let mut units = [unit];
+            advance(&mut units, open_ground(), &[0], 0.5);
+            assert!(units[0].stride > 0.5, "{role:?} {}", units[0].stride);
+            assert!(
+                units[0].pick_height() > HEIGHT / 2.0,
+                "the body is up on its legs"
+            );
+        }
     }
 
     #[test]

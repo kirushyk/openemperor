@@ -895,6 +895,22 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     for shell in game.combat.shells.iter().filter(|s| seen(s.position())) {
         let (_, ground, _) = shell.landing();
         let (x, y, z) = shell.position();
+        if let Some(tracer) = shell.tracer() {
+            draw_shadow(canvas, view, (x, ground, z), 0.08);
+            let project = |(x, y, z): (f32, f32, f32)| view.project(x, y, z);
+            let path = std::iter::once((x, y, z)).chain(tracer);
+            let next = tracer.into_iter();
+            for (i, (from, to)) in path.zip(next).enumerate() {
+                if let (Some(a), Some(b)) = (project(from), project(to)) {
+                    let fade = 0.5 * (1.0 - i as f32 / tracer.len() as f32);
+                    canvas.line(a, b, (2.0 * s).max(1.0), with_alpha([1.0; 3], fade));
+                }
+            }
+            if let Some((px, py)) = project((x, y, z)) {
+                canvas.circle(px, py, (3.0 * s).max(1.5), with_alpha([1.0; 3], 1.0));
+            }
+            continue;
+        }
         draw_shadow(canvas, view, (x, ground, z), 0.16);
         if let Some((px, py)) = view.project(x, y, z) {
             canvas.circle(px, py, (5.0 * s).max(2.0), SHELL_BODY);
@@ -1426,7 +1442,7 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
                 let height = (unit.y + 0.22, unit.y + units::ROCKET_HEIGHT);
                 part(rack, height, color.map(|c| c * 0.5));
             }
-            for &side in &units::ROCKET_SIDES[unit.rockets_fired..] {
+            for &side in &units::ROCKET_SIDES[unit.salvo_fired..] {
                 let (x, z) = beside(side);
                 let rocket = (x, z, 0.28, 0.025, unit.heading);
                 let height = (units::ROCKET_HEIGHT, units::ROCKET_HEIGHT + 0.04);
@@ -1436,6 +1452,12 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
                     [0.9, 0.9, 0.85],
                 );
             }
+        }
+        UnitKind::Vehicle if unit.role == Role::Strider => {
+            draw_strider(canvas, game, view, unit, color);
+        }
+        UnitKind::Vehicle if unit.role == Role::HeavyStrider => {
+            draw_heavy_strider(canvas, game, view, unit, color);
         }
         UnitKind::Vehicle => {
             let hull = (unit.x, unit.z, 0.45, 0.28, unit.heading);
@@ -1579,6 +1601,181 @@ fn draw_tube(
         ],
         0.25,
     );
+}
+
+/// Where a knee lies between a hip and a foot, given as (ahead, up) with the leg bending
+/// forward. Out of reach, the leg goes straight towards the foot.
+pub fn knee_of(hip: (f32, f32), foot: (f32, f32), thigh: f32, shin: f32) -> (f32, f32) {
+    let (dx, dy) = (foot.0 - hip.0, foot.1 - hip.1);
+    let span = dx.hypot(dy).clamp(0.0001, thigh + shin);
+    let length = dx.hypot(dy).max(0.0001);
+    let (along_x, along_y) = (dx / length, dy / length);
+    let along = (thigh * thigh - shin * shin + span * span) / (2.0 * span);
+    let out = (thigh * thigh - along * along).max(0.0).sqrt();
+    // A leg going down has its forward side to the left of that way.
+    (
+        hip.0 + along_x * along - along_y * out,
+        hip.1 + along_y * along + along_x * out,
+    )
+}
+
+/// How a striding unit's legs are built: how far apart, how long, and how far they swing.
+struct Legs {
+    side: f32,
+    thigh: f32,
+    shin: f32,
+    swing: f32,
+    /// How many radians of its step to each world unit it walks.
+    pace: f32,
+    width: f32,
+}
+
+/// Two legs with knees under a striding unit, stepping in turn as it walks.
+fn draw_legs(
+    canvas: &mut Canvas,
+    view: &battlefield::View,
+    unit: &Unit,
+    legs: &Legs,
+    color: [f32; 3],
+) {
+    let hip_height = (legs.thigh + legs.shin) * 0.92;
+    let (sin, cos) = unit.heading.sin_cos();
+    let on_screen = |side: f32, (ahead, up): (f32, f32)| {
+        view.project(
+            unit.x + cos * ahead - sin * side,
+            unit.y + up,
+            unit.z + sin * ahead + cos * side,
+        )
+    };
+    // Line widths are in pixels: this makes them follow the zoom.
+    let pixels_per_unit = match (
+        view.project(unit.x, unit.y, unit.z),
+        view.project(unit.x, unit.y + 1.0, unit.z),
+    ) {
+        (Some(a), Some(b)) => (a.0 - b.0).hypot(a.1 - b.1),
+        _ => return,
+    };
+    let width = (legs.width * pixels_per_unit).max(1.0);
+    let moving = unit.is_moving();
+    for (side, step) in [(-legs.side, 0.0), (legs.side, PI)] {
+        let (swing, lift) = if moving {
+            let phase = unit.stride * legs.pace + step;
+            (
+                legs.swing * phase.sin(),
+                legs.swing * 0.5 * phase.cos().max(0.0),
+            )
+        } else {
+            (0.0, 0.0)
+        };
+        let hip = (0.0, hip_height);
+        let foot = (swing, lift);
+        let knee = knee_of(hip, foot, legs.thigh, legs.shin);
+        let joints = [
+            on_screen(side, hip),
+            on_screen(side, knee),
+            on_screen(side, foot),
+        ];
+        if let [Some(hip), Some(knee), Some(foot)] = joints {
+            let thigh_color = with_alpha(color.map(|c| c * 0.8), 1.0);
+            canvas.line(hip, knee, width, thigh_color);
+            canvas.line(
+                knee,
+                foot,
+                width * 0.75,
+                with_alpha(color.map(|c| c * 0.6), 1.0),
+            );
+            canvas.circle(knee.0, knee.1, width * 0.65, thigh_color);
+        }
+    }
+}
+
+/// A small body up on two legs, with a missile pod on each side.
+fn draw_strider(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    unit: &Unit,
+    color: [f32; 3],
+) {
+    let legs = Legs {
+        side: 0.15,
+        thigh: 0.3,
+        shin: 0.28,
+        swing: 0.22,
+        pace: 5.0,
+        width: 0.07,
+    };
+    draw_legs(canvas, view, unit, &legs, color);
+    let (sin, cos) = unit.heading.sin_cos();
+    let base = unit.y + 0.5;
+    let body = (unit.x, unit.z, 0.22, 0.15, unit.heading);
+    draw_turned_box(canvas, game, view, body, (base, base + 0.24), color);
+    for side in [-0.21, 0.21] {
+        let pod = (
+            unit.x - sin * side,
+            unit.z + cos * side,
+            0.16,
+            0.05,
+            unit.heading,
+        );
+        draw_turned_box(
+            canvas,
+            game,
+            view,
+            pod,
+            (base + 0.1, base + 0.2),
+            color.map(|c| c * 0.5),
+        );
+    }
+}
+
+/// A big body up on two legs, with four cannons that each go back when they fire.
+fn draw_heavy_strider(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    unit: &Unit,
+    color: [f32; 3],
+) {
+    const RECOIL_TRAVEL: f32 = 0.25;
+    const BARREL_HALF: f32 = 0.28;
+    let legs = Legs {
+        side: 0.3,
+        thigh: 0.48,
+        shin: 0.46,
+        swing: 0.34,
+        pace: 3.2,
+        width: 0.12,
+    };
+    draw_legs(canvas, view, unit, &legs, color);
+    let (sin, cos) = unit.heading.sin_cos();
+    let base = unit.y + 0.82;
+    let body = (unit.x, unit.z, 0.42, 0.36, unit.heading);
+    draw_turned_box(canvas, game, view, body, (base, base + 0.2), color);
+    let top = (unit.x, unit.z, 0.25, 0.2, unit.heading);
+    draw_turned_box(
+        canvas,
+        game,
+        view,
+        top,
+        (base + 0.2, base + 0.42),
+        color.map(|c| c * 0.85),
+    );
+    let height = (
+        unit.y + units::CANNON_HEIGHT,
+        unit.y + units::CANNON_HEIGHT + 0.06,
+    );
+    for (&side, &recoil) in units::CANNON_SIDES.iter().zip(&unit.recoil) {
+        let ahead = units::CANNON_REACH - BARREL_HALF - RECOIL_TRAVEL * recoil;
+        let barrel = (
+            unit.x + cos * ahead - sin * side,
+            unit.z + sin * ahead + cos * side,
+            BARREL_HALF,
+            0.035,
+            unit.heading,
+        );
+        draw_turned_box(canvas, game, view, barrel, height, color.map(|c| c * 0.45));
+    }
 }
 
 /// A barracks, factory or hangar, with its door on its south side.
@@ -1950,6 +2147,8 @@ fn short_name(role: Role) -> &'static str {
         Role::RepairVehicle => "Repair",
         Role::Catapult => "Catap",
         Role::RocketLauncher => "Rocket",
+        Role::Strider => "Strider",
+        Role::HeavyStrider => "HvyStr",
         Role::AdvancedCarryall => "Carry",
         Role::AirDefensePlatform => "AirDef",
         Role::AirDrone => "Drone",

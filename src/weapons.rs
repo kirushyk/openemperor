@@ -6,8 +6,8 @@
 
 use crate::battlefield::Terrain;
 use crate::units::{
-    Point, ROCKET_SIDES, Role, TUBE_HEIGHT, Target, Unit, UnitKind, are_enemies, are_friends,
-    distance, substeps, turn_between,
+    CANNON_SIDES, Point, ROCKET_SIDES, Role, TUBE_HEIGHT, Target, Unit, UnitKind, are_enemies,
+    are_friends, distance, substeps, turn_between,
 };
 
 /// A unit with nothing in range looks again this often, in seconds.
@@ -25,6 +25,17 @@ const MISSILE_BLAST_RADIUS: f32 = 0.8;
 const SHELL_SPEED: f32 = 7.0;
 const SHELL_ARC: f32 = 0.35;
 const SHELL_BLAST_RADIUS: f32 = 1.6;
+
+/// A Heavy Strider's shells fly faster and lower than a catapult's, and go off in a tighter blast.
+const BOMBARD_SPEED: f32 = 11.0;
+const BOMBARD_ARC: f32 = 0.2;
+const BOMBARD_BLAST_RADIUS: f32 = 1.0;
+/// How long a Heavy Strider calms down once all four cannons have fired, in seconds.
+const BOMBARD_CALM_SECONDS: f32 = 7.0;
+/// How long a cannon takes to come forward again after it recoils.
+const RECOIL_SECONDS: f32 = 0.5;
+/// How much of a tracer shell's path stays visible, in seconds of its flight.
+const TRACER_SECONDS: f32 = 0.2;
 
 /// How long a rocket launcher takes to reload once its whole salvo has gone, in seconds.
 const ROCKET_RELOAD_SECONDS: f32 = 8.0;
@@ -83,6 +94,8 @@ pub enum WeaponKind {
     Mortar,
     /// Flies like a missile, one after another in a salvo, each weaker than a missile.
     Rockets,
+    /// Like a mortar, but a smaller white shell that hits harder, from four cannons in turn.
+    Bombard,
     /// Like a bullet, but slower and from farther away, and hits harder.
     Sniper,
     /// Like a bullet, but weak and slower.
@@ -111,6 +124,7 @@ impl WeaponKind {
             WeaponKind::Laser => 9.0,
             WeaponKind::Mortar => 16.0,
             WeaponKind::Rockets => 13.0,
+            WeaponKind::Bombard => 14.0,
             WeaponKind::Sniper => 14.0,
             WeaponKind::Pistol => 5.0,
             WeaponKind::Cannon => 10.0,
@@ -130,6 +144,7 @@ impl WeaponKind {
         match self {
             WeaponKind::Unarmed | WeaponKind::Repair => false,
             WeaponKind::Mortar
+            | WeaponKind::Bombard
             | WeaponKind::Bullet
             | WeaponKind::Sniper
             | WeaponKind::Pistol
@@ -161,6 +176,15 @@ impl WeaponKind {
         )
     }
 
+    /// How many shots it fires in turn, and how long it then waits, if it fires salvos.
+    fn salvo(self) -> Option<(usize, f32)> {
+        match self {
+            WeaponKind::Rockets => Some((ROCKET_SIDES.len(), ROCKET_RELOAD_SECONDS)),
+            WeaponKind::Bombard => Some((CANNON_SIDES.len(), BOMBARD_CALM_SECONDS)),
+            _ => None,
+        }
+    }
+
     /// How wide its cone is to each side, in radians, if it sprays one.
     fn spray_angle(self) -> Option<f32> {
         match self {
@@ -177,6 +201,7 @@ impl WeaponKind {
             WeaponKind::Laser => 1.2,
             WeaponKind::Mortar => 4.0,
             WeaponKind::Rockets => 0.3,
+            WeaponKind::Bombard => 0.5,
             WeaponKind::Sniper => 3.5,
             WeaponKind::Pistol => 1.5,
             WeaponKind::Cannon => 3.0,
@@ -195,6 +220,7 @@ impl WeaponKind {
             WeaponKind::Laser => 25.0,
             WeaponKind::Mortar => 70.0,
             WeaponKind::Rockets => 35.0,
+            WeaponKind::Bombard => 90.0,
             WeaponKind::Sniper => 90.0,
             WeaponKind::Pistol => 8.0,
             WeaponKind::Cannon => 80.0,
@@ -263,6 +289,7 @@ pub struct Shell {
     elapsed: f32,
     duration: f32,
     arc: f32,
+    weapon: WeaponKind,
     /// Fired by order at a place or a friend, it spares nobody.
     hurts_all: bool,
     shooter: Shooter,
@@ -271,7 +298,21 @@ pub struct Shell {
 impl Shell {
     /// Where it is along its ballistic arc.
     pub fn position(&self) -> Point {
-        let t = self.elapsed / self.duration;
+        self.position_at(self.elapsed)
+    }
+
+    /// The points of its arc it has just passed, nearest first, if it shows them.
+    pub fn tracer(&self) -> Option<[Point; 4]> {
+        (self.weapon == WeaponKind::Bombard).then(|| {
+            std::array::from_fn(|i| {
+                let behind = TRACER_SECONDS * (i as f32 + 1.0) / 4.0;
+                self.position_at((self.elapsed - behind).max(0.0))
+            })
+        })
+    }
+
+    fn position_at(&self, elapsed: f32) -> Point {
+        let t = elapsed / self.duration;
         let along = |a: f32, b: f32| a + (b - a) * t;
         (
             along(self.start.0, self.landing.0),
@@ -380,6 +421,7 @@ impl Combat {
         self.fall_strikes(units, dt);
         self.poison_land(units, dt);
         heal_veterans(units, dt);
+        ease_recoil(units, dt);
         fade(&mut self.beams, dt / BEAM_SECONDS, |b| &mut b.life);
         fade(&mut self.flares, dt / FLARE_SECONDS, |f| &mut f.life);
         fade(&mut self.sprays, dt / SPRAY_SECONDS, |s| &mut s.life);
@@ -392,8 +434,13 @@ impl Combat {
                 continue;
             }
             units[i].cooldown -= dt;
-            if units[i].cooldown <= 0.0 && units[i].rockets_fired == ROCKET_SIDES.len() {
-                units[i].rockets_fired = 0;
+            let salvo_over = |unit: &Unit| {
+                unit.weapon
+                    .salvo()
+                    .is_some_and(|(shots, _)| unit.salvo_fired == shots)
+            };
+            if units[i].cooldown <= 0.0 && salvo_over(&units[i]) {
+                units[i].salvo_fired = 0;
             }
             if !units[i].can_launch() || (units[i].is_moving() && !units[i].weapon.fires_on_move())
             {
@@ -491,24 +538,38 @@ impl Combat {
                     fuel: MISSILE_FUEL_SECONDS,
                 });
                 units[i].second_tube = !units[i].second_tube;
-                if weapon == WeaponKind::Rockets {
-                    units[i].rockets_fired += 1;
-                    if units[i].rockets_fired == ROCKET_SIDES.len() {
-                        units[i].cooldown = ROCKET_RELOAD_SECONDS;
-                    }
-                }
             }
-            WeaponKind::Mortar => {
+            WeaponKind::Mortar | WeaponKind::Bombard => {
                 let flat = (to.0 - from.0).hypot(to.2 - from.2);
+                let (speed, arc) = if weapon == WeaponKind::Bombard {
+                    (BOMBARD_SPEED, BOMBARD_ARC)
+                } else {
+                    (SHELL_SPEED, SHELL_ARC)
+                };
                 self.shells.push(Shell {
                     start: from,
                     landing: to,
                     elapsed: 0.0,
-                    duration: (flat / SHELL_SPEED).max(0.2),
-                    arc: flat * SHELL_ARC,
+                    duration: (flat / speed).max(0.2),
+                    arc: flat * arc,
+                    weapon,
                     hurts_all: forced,
                     shooter,
                 });
+            }
+        }
+        if let Some((shots, wait)) = weapon.salvo() {
+            let fired = units[i].salvo_fired;
+            if let Some(recoil) = units[i]
+                .recoil
+                .get_mut(fired)
+                .filter(|_| weapon == WeaponKind::Bombard)
+            {
+                *recoil = 1.0;
+            }
+            units[i].salvo_fired = fired + 1;
+            if fired + 1 == shots {
+                units[i].cooldown = wait;
             }
         }
     }
@@ -623,6 +684,11 @@ impl Combat {
                 flying.push(shell);
                 continue;
             }
+            let blast_radius = if shell.weapon == WeaponKind::Bombard {
+                BOMBARD_BLAST_RADIUS
+            } else {
+                SHELL_BLAST_RADIUS
+            };
             // Only enemies of whoever fired are hurt, so that units can fire freely.
             for index in 0..units.len() {
                 let unit = units[index];
@@ -630,9 +696,9 @@ impl Combat {
                     && (shell.hurts_all || are_enemies(teams, shell.shooter.owner, unit.owner))
                 {
                     let away = distance(shell.landing, unit.center());
-                    let reach = SHELL_BLAST_RADIUS + unit.kind.radius();
+                    let reach = blast_radius + unit.kind.radius();
                     if away < reach {
-                        let damage = WeaponKind::Mortar.damage()
+                        let damage = shell.weapon.damage()
                             * shell.shooter.power
                             * (1.0 - away / reach * 0.5);
                         harm(units, index, damage, shell.shooter, teams);
@@ -641,7 +707,7 @@ impl Combat {
             }
             self.blasts.push(Blast {
                 at: shell.landing,
-                radius: SHELL_BLAST_RADIUS,
+                radius: blast_radius,
                 life: 1.0,
             });
         }
@@ -740,6 +806,13 @@ fn harm(units: &mut [Unit], victim: usize, damage: f32, shooter: Shooter, teams:
     }
 }
 
+/// Cannons that have recoiled come forward again.
+fn ease_recoil(units: &mut [Unit], dt: f32) {
+    for recoil in units.iter_mut().flat_map(|u| &mut u.recoil) {
+        *recoil = (*recoil - dt / RECOIL_SECONDS).max(0.0);
+    }
+}
+
 /// Units with a medal slowly win health back by themselves.
 fn heal_veterans(units: &mut [Unit], dt: f32) {
     for unit in units.iter_mut().filter(|u| u.alive && u.rank() > 0) {
@@ -764,7 +837,11 @@ fn must_turn_to_fire(unit: &Unit) -> bool {
         || (unit.weapon != WeaponKind::Repair
             && matches!(
                 unit.role,
-                Role::Tank | Role::Catapult | Role::RocketLauncher | Role::Ornithopter
+                Role::Tank
+                    | Role::Catapult
+                    | Role::RocketLauncher
+                    | Role::Ornithopter
+                    | Role::HeavyStrider
             ))
 }
 
@@ -2199,6 +2276,106 @@ mod tests {
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
         }
         assert_eq!(units[0].tube_pitch, 0.0);
+    }
+
+    fn heavy_strider_facing_east() -> Unit {
+        let mut unit = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        unit.role = Role::HeavyStrider;
+        unit.id = 1;
+        unit.weapon = WeaponKind::Bombard;
+        unit.heading = 0.0;
+        unit
+    }
+
+    #[test]
+    fn a_heavy_strider_fires_all_four_cannons_one_by_one_with_recoil_then_calms_down() {
+        let mut target = target_at(10.0, 60.0);
+        target.health = 100_000.0;
+        let mut units = [heavy_strider_facing_east(), target];
+        let mut combat = Combat::default();
+        let (mut shots, mut sides, mut elapsed) = (Vec::new(), Vec::new(), 0.0);
+        let mut seen = 0;
+        while shots.len() < 5 && elapsed < 30.0 {
+            let before = units[0].salvo_fired;
+            let side = units[0].muzzle().2 - 60.0;
+            combat.advance(&mut units, &TEAMS, flat(), 0.01);
+            elapsed += 0.01;
+            if units[0].salvo_fired != before && units[0].salvo_fired > 0 {
+                seen += 1;
+                shots.push(elapsed);
+                sides.push(side);
+                let cannon = units[0].salvo_fired - 1;
+                assert!(units[0].recoil[cannon] > 0.9, "this one goes back");
+                if cannon > 0 {
+                    assert!(
+                        units[0].recoil[cannon - 1] < 0.9,
+                        "the last is coming forward"
+                    );
+                }
+            }
+        }
+        assert_eq!(seen, 5, "{shots:?}");
+        for pair in shots[..4].windows(2) {
+            assert!(pair[1] - pair[0] < 1.0, "in turn: {shots:?}");
+        }
+        assert!(shots[4] - shots[3] > 6.0, "calm: {shots:?}");
+        let mut distinct = sides[1..4].to_vec();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 3, "{sides:?}");
+        assert!(units[0].recoil.iter().all(|&r| r < 1.0));
+    }
+
+    #[test]
+    fn its_shells_are_tracers_hitting_harder_than_a_catapults_and_leave_a_path_behind_them() {
+        assert!(WeaponKind::Bombard.damage() > WeaponKind::Mortar.damage());
+        assert!(!WeaponKind::Bombard.can_target(UnitKind::Aircraft, 4.0));
+        assert!(!WeaponKind::Bombard.fires_on_move());
+        let mut units = [heavy_strider_facing_east(), target_at(10.0, 60.0)];
+        units[1].cooldown = 1000.0;
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        units[0].cooldown = 1000.0;
+        for _ in 0..5 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        let shell = combat.shells[0];
+        let tracer = shell.tracer().expect("white shells show their path");
+        assert!(tracer[0].0 < shell.position().0 && tracer[3].0 < tracer[0].0);
+        for _ in 0..40 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert!(units[1].health < 100.0);
+        assert!(
+            combat
+                .blasts
+                .iter()
+                .all(|b| b.radius <= BOMBARD_BLAST_RADIUS)
+        );
+    }
+
+    #[test]
+    fn a_catapults_shell_shows_no_path() {
+        let mut units = [catapult_facing_east(), target_at(10.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert_eq!(combat.shells[0].tracer(), None);
+    }
+
+    #[test]
+    fn a_heavy_strider_turns_to_face_its_target_and_a_strider_fires_missiles_on_the_move() {
+        let mut units = [heavy_strider_facing_east(), target_at(-10.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert!(combat.shells.is_empty(), "the target is behind it");
+
+        let mut strider = heavy_strider_facing_east();
+        strider.role = Role::Strider;
+        strider.weapon = WeaponKind::Missile;
+        strider.destination = (0.0, 70.0);
+        let mut units = [strider, target_at(8.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert_eq!(combat.missiles.len(), 1);
     }
 
     fn rocket_launcher_facing_east() -> Unit {

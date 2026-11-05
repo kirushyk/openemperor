@@ -62,6 +62,8 @@ pub const ORDER_LINE: Color = [0.35, 1.0, 0.45, 0.85];
 pub const ATTACK_LINE: Color = [1.0, 0.2, 0.15, 0.85];
 pub const ATTACK_CURSOR: Color = [0.95, 0.12, 0.1, 1.0];
 pub const MOVE_CURSOR: Color = [0.2, 0.92, 0.32, 1.0];
+/// Times per second the arrows of a green cursor draw in and out.
+const CURSOR_PULSE: f32 = 1.2;
 pub const HEAL_LINE: Color = [0.3, 0.6, 1.0, 0.85];
 pub const HEAL_CURSOR: Color = [0.25, 0.6, 1.0, 1.0];
 pub const MEDAL: Color = [1.0, 0.82, 0.25, 1.0];
@@ -463,25 +465,52 @@ impl Canvas {
     /// A red bullseye centered on the cursor, with four arrows around it pointing in and
     /// slowly turning. A dark edge keeps it readable over red units and red ground.
     /// A green ring with four arrows inside it, drawing in on the point it would send them to.
-    fn move_cursor(&mut self, (x, y): (f32, f32), s: f32, seconds: f32) {
-        /// Times per second the arrows draw in.
-        const PULSE: f32 = 1.2;
-        let outer = 26.0 * s;
+    fn move_cursor(&mut self, at: (f32, f32), s: f32, seconds: f32) {
+        self.green_ring(at, 26.0 * s, s);
+        let pulse = 3.0 * s * (seconds * CURSOR_PULSE * TAU).sin();
+        self.four_arrows(at, (7.0 * s + pulse, 18.0 * s + pulse), s);
+    }
+
+    /// A green ring with four arrows outside it, pushing away from it as a unit spreads out to
+    /// dig in.
+    fn deploy_cursor(&mut self, at: (f32, f32), s: f32, seconds: f32) {
+        self.green_ring(at, 14.0 * s, s);
+        let pulse = 3.0 * s * (seconds * CURSOR_PULSE * TAU).sin();
+        self.four_arrows(at, (35.0 * s + pulse, 20.0 * s + pulse), s);
+    }
+
+    /// A green ring with four arrows inside it around a dot, for a unit drawing back in.
+    fn undeploy_cursor(&mut self, (x, y): (f32, f32), s: f32, seconds: f32) {
+        self.green_ring((x, y), 34.0 * s, s);
+        let pulse = 3.0 * s * (seconds * CURSOR_PULSE * TAU).sin();
+        self.four_arrows((x, y), (13.0 * s + pulse, 26.0 * s + pulse), s);
+        let edge = (2.0 * s).max(1.0);
+        self.circle(x, y, 4.0 * s + edge, CURSOR_EDGE);
+        self.circle(x, y, 4.0 * s, MOVE_CURSOR);
+    }
+
+    fn green_ring(&mut self, at: (f32, f32), radius: f32, s: f32) {
         let thickness = (4.0 * s).max(1.0);
         let edge = (2.0 * s).max(1.0);
-        self.ring((x, y), outer, thickness + edge * 2.0, CURSOR_EDGE);
-        self.ring((x, y), outer, thickness, MOVE_CURSOR);
-        let drawn_in = 3.0 * s * (seconds * PULSE * TAU).sin();
+        self.ring(at, radius, thickness + edge * 2.0, CURSOR_EDGE);
+        self.ring(at, radius, thickness, MOVE_CURSOR);
+    }
+
+    /// Four green arrows around a point, each given by how far out its tip and its base are:
+    /// the tip nearer for arrows pointing in, farther for arrows pointing out.
+    fn four_arrows(&mut self, (x, y): (f32, f32), (tip, base): (f32, f32), s: f32) {
+        let edge = (2.0 * s).max(1.0);
+        let half = 6.5 * s;
+        let beyond = edge * 1.8 * (tip - base).signum();
         for arrow in 0..4 {
             let (sin, cos) = (arrow as f32 * FRAC_PI_2).sin_cos();
             // Measured out from the center and sideways from the arrow's middle.
             let at = |out: f32, side: f32| (x + cos * out - sin * side, y + sin * out + cos * side);
-            let (tip, base, half) = (7.0 * s + drawn_in, 18.0 * s + drawn_in, 6.5 * s);
             self.triangle(
                 [
-                    at(tip - edge * 1.8, 0.0),
-                    at(base + edge, -half - edge * 1.6),
-                    at(base + edge, half + edge * 1.6),
+                    at(tip + beyond, 0.0),
+                    at(base - beyond * 0.6, -half - edge * 1.6),
+                    at(base - beyond * 0.6, half + edge * 1.6),
                 ],
                 CURSOR_EDGE,
             );
@@ -588,7 +617,7 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
             let flicker = 0.85 + 0.15 * (game.battle_time() * 23.0 + eruption.at.0).sin();
             let light = eruption.strength() * 1.8 * flicker;
             PointLight {
-                place: [eruption.at.0, 2.0, eruption.at.2],
+                place: [eruption.at.0, eruption.at.1 + 2.0, eruption.at.2],
                 radius: 11.0,
                 color: [light, light * 0.4, light * 0.1],
                 unused: 0.0,
@@ -790,6 +819,8 @@ fn canvas_of(game: &Game) -> Canvas {
         CursorLook::Heal => canvas.heal_cursor(game.mouse, s),
         CursorLook::Carry => canvas.carry_cursor(game.mouse, s),
         CursorLook::Move => canvas.move_cursor(game.mouse, s, game.screen_elapsed()),
+        CursorLook::Deploy => canvas.deploy_cursor(game.mouse, s, game.screen_elapsed()),
+        CursorLook::Undeploy => canvas.undeploy_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::Arrow => canvas.cursor(game.mouse, s),
     }
     canvas
@@ -1372,7 +1403,8 @@ fn draw_eruption(
     eruption: &crate::weapons::Eruption,
 ) {
     const POOL_WEDGES: usize = 24;
-    let (x, _, z) = eruption.at;
+    let (x, ground, z) = eruption.at;
+    let surface = ground + OVER_GROUND;
     let strength = eruption.strength();
     let flicker = 0.8 + 0.2 * (game.battle_time() * 31.0 + x).sin();
     let height = 6.0 * strength * flicker;
@@ -1380,13 +1412,13 @@ fn draw_eruption(
     let pool_radius = 3.2 * strength;
     let pool = |i: usize| {
         let (sin, cos) = (i as f32 / POOL_WEDGES as f32 * TAU).sin_cos();
-        (x + pool_radius * cos, OVER_GROUND, z + pool_radius * sin)
+        (x + pool_radius * cos, surface, z + pool_radius * sin)
     };
     for i in 0..POOL_WEDGES {
         canvas.deep_light(
             view,
             [
-                ((x, OVER_GROUND, z), hot),
+                ((x, surface, z), hot),
                 (pool(i), [0.0; 3]),
                 (pool(i + 1), [0.0; 3]),
             ],
@@ -1394,14 +1426,14 @@ fn draw_eruption(
     }
     // Two blades across each other, so that it has width from any side.
     for (dx, dz) in [(0.55, 0.0), (0.0, 0.55)] {
-        let (left, right) = ((x - dx, 0.0, z - dz), (x + dx, 0.0, z + dz));
+        let (left, right) = ((x - dx, ground, z - dz), (x + dx, ground, z + dz));
         let (tip_x, tip_z) = (x + 0.2 * (game.battle_time() * 7.0).sin(), z);
         canvas.deep_light(
             view,
             [
                 (left, hot),
                 (right, hot),
-                ((tip_x, height, tip_z), [0.0; 3]),
+                ((tip_x, ground + height, tip_z), [0.0; 3]),
             ],
         );
     }

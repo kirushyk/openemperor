@@ -373,6 +373,11 @@ impl Role {
         matches!(self, Role::Barracks | Role::Factory | Role::Hangar)
     }
 
+    /// Whether it can dig in where it stands.
+    pub fn can_deploy(self) -> bool {
+        self == Role::KInfantry
+    }
+
     /// Whether it sits on the ground when it has nowhere to go.
     pub fn lands(self) -> bool {
         matches!(self, Role::Ornithopter | Role::Destroyer)
@@ -1310,16 +1315,21 @@ fn place_base(
 pub fn toggle_deploy(units: &mut [Unit]) {
     for unit in units
         .iter_mut()
-        .filter(|u| u.selected && u.role == Role::KInfantry)
+        .filter(|u| u.selected && u.role.can_deploy())
     {
-        unit.deployed = !unit.deployed;
-        unit.weapon = if unit.deployed {
-            WeaponKind::Cannon
-        } else {
-            WeaponKind::Pistol
-        };
-        unit.destination = (unit.x, unit.z);
+        switch_deployed(unit);
     }
+}
+
+/// Switches one K Infantry between its pistol and, standing still, its cannon.
+pub fn switch_deployed(unit: &mut Unit) {
+    unit.deployed = !unit.deployed;
+    unit.weapon = if unit.deployed {
+        WeaponKind::Cannon
+    } else {
+        WeaponKind::Pistol
+    };
+    unit.destination = (unit.x, unit.z);
 }
 
 /// The player gets a block between two towers at the map's middle and another block a long

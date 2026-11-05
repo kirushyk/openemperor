@@ -109,6 +109,10 @@ pub enum CursorLook {
     Carry,
     /// The selected would go here, or a selected building would send what it makes here.
     Move,
+    /// The selected unit under the cursor would dig in.
+    Deploy,
+    /// The selected unit under the cursor would stop being dug in.
+    Undeploy,
 }
 
 /// The new building the player has on the way: one at a time.
@@ -1764,11 +1768,29 @@ impl Game {
             Some(AttackOrder::Unit(unit)) => look_at(&self.units[unit]),
             None => match self.attackable_under_cursor() {
                 Some(unit) => look_at(&self.units[unit]),
+                None if self.deployable_under_cursor().is_some() => {
+                    match self
+                        .deployable_under_cursor()
+                        .map(|u| self.units[u].deployed)
+                    {
+                        Some(true) => CursorLook::Undeploy,
+                        _ => CursorLook::Deploy,
+                    }
+                }
                 None if self.would_put_down_here() => CursorLook::Carry,
                 None if self.would_go_here() => CursorLook::Move,
                 None => CursorLook::Arrow,
             },
         }
+    }
+
+    /// The selected unit under the cursor that a click would deploy or bring back from that.
+    fn deployable_under_cursor(&self) -> Option<usize> {
+        if !self.can_order_attack_here() {
+            return None;
+        }
+        self.unit_under_cursor()
+            .filter(|&unit| self.units[unit].selected && self.units[unit].role.can_deploy())
     }
 
     /// Whether a click here would send somewhere any of what is selected: whatever can move, or
@@ -1851,6 +1873,9 @@ impl Game {
             }
         } else if let Some(chosen) = self.attackable_under_cursor() {
             units::order_attack(&mut self.units, chosen, &self.teams);
+        } else if let Some(unit) = self.deployable_under_cursor().filter(|_| !adding) {
+            // So two clicks on one that is not selected yet select it, then switch it.
+            units::switch_deployed(&mut self.units[unit]);
         } else if let Some(picked) = self.unit_under_cursor() {
             // A building that makes units is always picked on its own.
             let adding = adding && self.units[picked].kind != UnitKind::Building;
@@ -4477,6 +4502,91 @@ mod tests {
         game.update(0.01);
         assert!(game.combat.wrecks.is_empty());
         assert!(game.combat.blasts.len() > 1, "it blows apart");
+    }
+
+    /// A K Infantry of the player's on open ground, as yet unselected, and the cursor over it.
+    fn k_infantry_under_cursor() -> (Game, usize) {
+        let mut game = in_battle();
+        game.units.iter_mut().for_each(|u| u.selected = false);
+        game.units
+            .retain(|u| u.owner != 0 || u.kind != UnitKind::Infantry);
+        let (x, y) = clear_spot_on_screen();
+        let spot = game.view().ground_at(x, y).unwrap();
+        let terrain = battlefield::terrain(game.battle_map);
+        let side = (0, game.stats_rows()[0].color);
+        let id = game.next_unit_id;
+        game.next_unit_id += 1;
+        let soldier = units::new_building(terrain, spot, Role::KInfantry, side, id);
+        game.units.push(soldier);
+        let index = game.units.len() - 1;
+        let (px, py) = game
+            .view()
+            .project(soldier.x, soldier.pick_height(), soldier.z)
+            .unwrap();
+        game.handle(Event::MouseMove(px, py));
+        (game, index)
+    }
+
+    #[test]
+    fn hovering_a_selected_deployable_unit_shows_what_a_click_would_do_and_a_click_does_it() {
+        let (mut game, soldier) = k_infantry_under_cursor();
+        assert_eq!(game.cursor_look(), CursorLook::Arrow, "not selected yet");
+        game.units[soldier].selected = true;
+        assert_eq!(game.cursor_look(), CursorLook::Deploy);
+        let deploy_look = line_vertices(&game, crate::render::MOVE_CURSOR);
+        assert!(deploy_look > 0, "it draws");
+        let (x, y) = game.mouse;
+        click_at(&mut game, x, y);
+        assert!(game.units[soldier].deployed);
+        assert_eq!(
+            game.units[soldier].weapon,
+            crate::weapons::WeaponKind::Cannon
+        );
+        assert!(game.units[soldier].selected, "it stays selected");
+        assert_eq!(game.cursor_look(), CursorLook::Undeploy);
+        assert!(line_vertices(&game, crate::render::MOVE_CURSOR) > 0);
+        click_at(&mut game, x, y);
+        assert!(!game.units[soldier].deployed);
+        assert_eq!(game.cursor_look(), CursorLook::Deploy);
+    }
+
+    #[test]
+    fn two_clicks_on_a_deployable_unit_not_yet_selected_deploy_it_and_two_more_bring_it_back() {
+        let (mut game, soldier) = k_infantry_under_cursor();
+        let (x, y) = game.mouse;
+        click_at(&mut game, x, y);
+        assert!(game.units[soldier].selected);
+        assert!(!game.units[soldier].deployed, "the first only selects it");
+        click_at(&mut game, x, y);
+        assert!(game.units[soldier].deployed);
+
+        game.units[soldier].selected = false;
+        click_at(&mut game, x, y);
+        assert!(game.units[soldier].deployed, "the first only selects it");
+        click_at(&mut game, x, y);
+        assert!(!game.units[soldier].deployed);
+    }
+
+    #[test]
+    fn hovering_what_cannot_deploy_shows_no_deploy_cursor_and_a_click_on_it_still_picks_it() {
+        let mut game = in_battle();
+        game.units.iter_mut().for_each(|u| u.selected = false);
+        let tank = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Vehicle)
+            .unwrap();
+        game.units[tank].selected = true;
+        let unit = game.units[tank];
+        let (x, y) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert_eq!(game.cursor_look(), CursorLook::Arrow);
+        click_at(&mut game, x, y);
+        assert!(game.units[tank].selected);
+        assert!(!game.units[tank].deployed);
     }
 
     #[test]

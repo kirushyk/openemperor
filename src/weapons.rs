@@ -556,7 +556,7 @@ impl Combat {
     /// Starts vents whose time has come, and keeps those going up throwing lava and smoke.
     fn work_vents(&mut self, terrain: &Terrain, dt: f32) {
         let vents = terrain.vents();
-        if vents.is_empty() {
+        if vents.is_empty() && self.eruptions.is_empty() {
             return;
         }
         let mut random = self.random | 1;
@@ -600,7 +600,7 @@ impl Combat {
                 };
                 let spot = (
                     eruption.at.0 + next() - 0.5,
-                    0.0,
+                    eruption.at.1,
                     eruption.at.2 + next() - 0.5,
                 );
                 thrown.push(Particle {
@@ -617,6 +617,71 @@ impl Combat {
         self.particles.append(&mut thrown);
         self.eruptions.retain(|eruption| eruption.life > 0.0);
         self.random = random;
+    }
+
+    /// The superweapon going off: the blast, a ring of fire racing out along the ground, a
+    /// fireball, a column of smoke climbing, and a fountain burning on for a few seconds after.
+    /// It clears away older particles if it must: nothing else is this important.
+    fn explode_superweapon(&mut self, at: Point, radius: f32) {
+        const RING: usize = 150;
+        const FIREBALL: usize = 110;
+        const COLUMN: usize = 80;
+        self.explode(at, radius);
+        let excess = (self.particles.len() + RING + FIREBALL + COLUMN)
+            .saturating_sub(PARTICLES_ALIVE_AT_MOST);
+        self.particles.drain(..excess.min(self.particles.len()));
+        let mut random = self.random | 1;
+        let mut next = || next_random(&mut random);
+        for i in 0..RING {
+            let angle = i as f32 / RING as f32 * TAU + next() * 0.05;
+            let speed = radius * (1.5 + next() * 0.4);
+            self.particles.push(Particle {
+                position: (at.0, at.1 + 0.2, at.2),
+                velocity: (angle.cos() * speed, 0.8 + next() * 1.2, angle.sin() * speed),
+                size: (0.7 + next()) * 0.32,
+                smoke: i % 4 == 0,
+                flame: true,
+                life: 1.0,
+                fade: 1.0 / (0.9 + next() * 0.3),
+            });
+        }
+        // The smoke goes first, so that the fire shows through it.
+        for _ in 0..COLUMN {
+            let angle = next() * TAU;
+            let out = next() * 1.8;
+            self.particles.push(Particle {
+                position: (
+                    at.0 + angle.cos() * out,
+                    at.1 + next() * 2.0,
+                    at.2 + angle.sin() * out,
+                ),
+                velocity: (angle.cos() * out, 3.5 + next() * 8.0, angle.sin() * out),
+                size: (0.7 + next()) * 0.55,
+                smoke: true,
+                flame: false,
+                life: 1.0,
+                fade: 1.0 / (2.2 + next() * 1.8),
+            });
+        }
+        for _ in 0..FIREBALL {
+            let angle = next() * TAU;
+            let out = next() * radius * 0.9;
+            self.particles.push(Particle {
+                position: (at.0, at.1 + 0.3, at.2),
+                velocity: (angle.cos() * out, 2.0 + next() * 11.0, angle.sin() * out),
+                size: (0.7 + next()) * 0.42,
+                smoke: false,
+                flame: false,
+                life: 1.0,
+                fade: 1.0 / (1.1 + next() * 1.0),
+            });
+        }
+        self.random = random;
+        self.eruptions.push(Eruption {
+            at,
+            life: 1.0,
+            owed: 0.0,
+        });
     }
 
     /// What is left of a unit going up, more of it the harder it was hit past dead: one blast
@@ -828,7 +893,7 @@ impl Combat {
         self.fire(units, teams, terrain, dt);
         self.fly_missiles(units, teams, terrain, dt);
         self.fly_shells(units, teams, dt);
-        self.fall_strikes(units, dt);
+        self.fall_strikes(units, terrain, dt);
         self.poison_land(units, dt);
         heal_veterans(units, dt);
         ease_recoil(units, dt);
@@ -1142,7 +1207,7 @@ impl Combat {
         self.shells = flying;
     }
 
-    fn fall_strikes(&mut self, units: &mut [Unit], dt: f32) {
+    fn fall_strikes(&mut self, units: &mut [Unit], terrain: &Terrain, dt: f32) {
         let mut falling = Vec::with_capacity(self.strikes.len());
         for mut strike in std::mem::take(&mut self.strikes) {
             strike.elapsed += dt;
@@ -1157,7 +1222,8 @@ impl Combat {
                     hurt(unit, STRIKE_DAMAGE * (1.0 - away / STRIKE_RADIUS * 0.5));
                 }
             }
-            self.explode((strike.x, 0.0, strike.z), STRIKE_RADIUS);
+            let ground = terrain.height_at(strike.x, strike.z).max(0.0);
+            self.explode_superweapon((strike.x, ground, strike.z), STRIKE_RADIUS);
             self.poison.push(PoisonZone {
                 x: strike.x,
                 z: strike.z,
@@ -1839,6 +1905,54 @@ mod tests {
         run(&mut combat, &mut units, 3.0);
         assert!(combat.wrecks.is_empty());
         assert_eq!(units[0].health, health);
+    }
+
+    #[test]
+    fn the_superweapon_goes_up_with_far_more_than_any_other_explosion_and_burns_on() {
+        let mut plain = Combat::default();
+        plain.explode((0.0, 0.0, 60.0), STRIKE_RADIUS);
+        let mut combat = Combat::default();
+        combat.explode_superweapon((0.0, 0.0, 60.0), STRIKE_RADIUS);
+        assert!(combat.particles.len() > plain.particles.len() * 4);
+        assert!(combat.particles.iter().any(|p| p.smoke));
+        assert!(combat.particles.iter().any(|p| !p.smoke));
+        let fastest = combat
+            .particles
+            .iter()
+            .map(|p| p.velocity.0.hypot(p.velocity.2))
+            .fold(0.0, f32::max);
+        assert!(fastest > STRIKE_RADIUS, "the ring races out: {fastest}");
+        assert_eq!(combat.eruptions.len(), 1);
+
+        let mut units: [Unit; 0] = [];
+        for _ in 0..30 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert!(
+            !combat.eruptions.is_empty(),
+            "it burns on, even where there are no vents"
+        );
+        assert!(!combat.particles.is_empty());
+        for _ in 0..200 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert!(combat.eruptions.is_empty(), "and then it is over");
+    }
+
+    #[test]
+    fn the_superweapon_makes_room_for_itself_however_busy_the_battle_is() {
+        let mut combat = Combat::default();
+        for _ in 0..30 {
+            combat.explode((0.0, 0.0, 60.0), 3.0);
+        }
+        combat.explode_superweapon((5.0, 0.0, 60.0), STRIKE_RADIUS);
+        assert!(combat.particles.len() <= PARTICLES_ALIVE_AT_MOST + 80);
+        let new = combat
+            .particles
+            .iter()
+            .filter(|p| p.position.0 > 3.0)
+            .count();
+        assert!(new >= 300, "{new}");
     }
 
     fn lava_map() -> &'static Terrain {

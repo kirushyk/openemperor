@@ -1566,6 +1566,30 @@ impl Game {
         self.work_on_making(0.0);
     }
 
+    /// Selects everything of the player's that can move and shows on screen. If that is already
+    /// selected, or there is nothing of theirs on screen, selects it all across the map.
+    fn select_all(&mut self) {
+        let movable = |u: &Unit| u.is_selectable() && !u.kind.is_building();
+        let view = self.view();
+        let (width, height) = (self.width, self.height);
+        let on_screen = |u: &Unit| {
+            view.project(u.x, u.pick_height(), u.z)
+                .is_some_and(|(x, y)| {
+                    (0.0..width).contains(&x)
+                        && (0.0..height).contains(&y)
+                        && !hud::covers(x, y, width, height)
+                })
+        };
+        let whole_map = self
+            .units
+            .iter()
+            .filter(|u| movable(u) && on_screen(u))
+            .all(|u| u.selected);
+        for unit in &mut self.units {
+            unit.selected = movable(unit) && (whole_map || on_screen(unit));
+        }
+    }
+
     /// Whether the player has the building that makes this. Nothing is needed for a building.
     pub fn can_produce(&self, role: Role) -> bool {
         role.made_in().is_none() || units::maker_of(&self.units, role, 0).is_some()
@@ -2412,11 +2436,7 @@ impl Game {
                 (Screen::InGame, Key::Char('d' | 'D')) if !self.key_paused => {
                     units::toggle_deploy(&mut self.units)
                 }
-                (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => {
-                    for unit in &mut self.units {
-                        unit.selected = unit.is_selectable() && !unit.kind.is_building();
-                    }
-                }
+                (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => self.select_all(),
                 (_, Key::Escape) => self.go_back(),
                 _ => {}
             },
@@ -5258,7 +5278,7 @@ mod tests {
     }
 
     #[test]
-    fn the_a_key_selects_all_the_players_units_anywhere_on_the_map() {
+    fn the_a_key_selects_those_on_screen_then_the_whole_map() {
         let mut game = in_battle();
         let everyone = game
             .units
@@ -5266,6 +5286,17 @@ mod tests {
             .filter(|u| u.is_selectable() && !u.kind.is_building())
             .count();
         assert!(everyone > FIRST_GROUP, "including the group off screen");
+        game.handle(Event::KeyDown(Key::Char('a')));
+        let on_screen = selected_count(&game);
+        assert!(on_screen > 0 && on_screen < everyone, "{on_screen}");
+
+        // Part of them selected: still those on screen.
+        let chosen = game.units.iter().position(|u| u.selected).unwrap();
+        game.units[chosen].selected = false;
+        game.handle(Event::KeyDown(Key::Char('a')));
+        assert_eq!(selected_count(&game), on_screen);
+
+        // All of them already: now the whole map.
         game.handle(Event::KeyDown(Key::Char('a')));
         assert_eq!(selected_count(&game), everyone);
         assert!(
@@ -5287,9 +5318,40 @@ mod tests {
         game.handle(Event::KeyDown(Key::Char('A')));
         assert_eq!(
             selected_count(&game),
-            everyone,
+            on_screen,
             "with Shift or Caps Lock too"
         );
+
+        // A selected unit off screen is let go when only those on screen are taken.
+        game.handle(Event::KeyDown(Key::Char('a')));
+        assert_eq!(selected_count(&game), everyone);
+        game.units[chosen].selected = false;
+        game.handle(Event::KeyDown(Key::Char('a')));
+        assert_eq!(selected_count(&game), on_screen);
+    }
+
+    #[test]
+    fn with_none_of_the_players_units_on_screen_the_a_key_selects_the_whole_map() {
+        let mut game = in_battle();
+        let everyone = game
+            .units
+            .iter()
+            .filter(|u| u.is_selectable() && !u.kind.is_building())
+            .count();
+        for unit in game.units.iter_mut().filter(|u| u.owner == 0) {
+            unit.x += 500.0;
+        }
+        game.handle(Event::KeyDown(Key::Char('a')));
+        assert_eq!(selected_count(&game), everyone);
+    }
+
+    #[test]
+    fn the_a_key_leaves_a_selected_tower_out() {
+        let mut game = in_battle();
+        let tower = tower_of(&game, 0);
+        game.units[tower].selected = true;
+        game.handle(Event::KeyDown(Key::Char('a')));
+        assert!(!game.units[tower].selected);
     }
 
     #[test]

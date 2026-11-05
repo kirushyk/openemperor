@@ -4590,6 +4590,41 @@ mod tests {
     }
 
     #[test]
+    fn a_selected_building_shows_a_red_flag_on_its_gathering_point_as_well_as_the_line() {
+        let red = |game: &Game| {
+            crate::render::build_frame(game)
+                .objects
+                .iter()
+                .filter(|v| v.r > 0.9 && v.g < 0.2 && v.b < 0.2)
+                .map(|v| (v.x, v.z))
+                .collect::<Vec<_>>()
+        };
+        let mut game = in_battle();
+        game.units.iter_mut().for_each(|u| u.selected = false);
+        let barracks = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Barracks)
+            .unwrap();
+        game.units.retain(|u| u.owner == 0 || !u.role.makes_units());
+        let others = red(&game).len();
+        game.units[barracks].gathering = Some((3.0, 70.0));
+        assert_eq!(red(&game).len(), others, "only while it is selected");
+
+        game.units[barracks].selected = true;
+        let flag = red(&game);
+        assert_eq!(flag.len(), others + 3, "one triangle");
+        assert!(
+            flag.iter().any(|&(x, z)| (x, z) == (3.0, 70.0)),
+            "at the point"
+        );
+        assert!(line_vertices(&game, crate::render::ORDER_LINE) > 0);
+
+        game.units[barracks].gathering = None;
+        assert_eq!(red(&game).len(), others);
+    }
+
+    #[test]
     fn nothing_of_the_world_is_drawn_outside_a_battle() {
         let game = Game::new(W, H);
         let frame = crate::render::build_frame(&game);

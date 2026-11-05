@@ -37,6 +37,7 @@ pub const MAKING_DIM: Color = [0.0, 0.0, 0.0, 0.62];
 const PLACE_OK: [f32; 3] = [0.3, 1.0, 0.4];
 const PLACE_NOT: [f32; 3] = [1.0, 0.25, 0.2];
 const CABLE: [f32; 3] = [0.1, 0.1, 0.1];
+const GATHERING_FLAG: [f32; 3] = [0.95, 0.1, 0.08];
 const ROCKET_PIP: Color = [0.95, 0.8, 0.25, 1.0];
 const ROCKET_PIP_GONE: Color = [0.1, 0.1, 0.1, 0.8];
 const QUIET: Color = [0.55, 0.53, 0.48, 1.0];
@@ -1649,10 +1650,44 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
             None => {
                 if let Some(point) = unit.gathering {
                     draw_dashed_line(canvas, game, view, from, point, ORDER_LINE);
+                    draw_gathering_flag(canvas, game, point);
                 }
             }
         }
     }
+}
+
+/// A red triangular flag on a pole, stirring a little, where a building sends what it makes. It
+/// leans towards the camera, or from straight above it would hardly show.
+fn draw_gathering_flag(canvas: &mut Canvas, game: &Game, (x, z): (f32, f32)) {
+    const POLE_HEIGHT: f32 = 1.5;
+    const FLAG_TALL: f32 = 0.5;
+    const FLAG_LEANS: f32 = 0.7;
+    const FLAG_LONG: f32 = 1.0;
+    let ground = battlefield::terrain(game.battle_map)
+        .height_at(x, z)
+        .max(0.0);
+    let top = ground + POLE_HEIGHT;
+    draw_turned_box(
+        canvas,
+        (x, z, 0.035, 0.035, 0.0),
+        (ground, top),
+        [0.82, 0.82, 0.8],
+    );
+    let stir = (game.screen_elapsed() * 3.0 + x).sin() * 0.07;
+    let normal = unit_vector([0.0, FLAG_LEANS, FLAG_TALL]);
+    canvas.objects.extend(
+        [
+            (x, top, z),
+            (x, top - FLAG_TALL, z + FLAG_LEANS),
+            (
+                x + FLAG_LONG,
+                top - FLAG_TALL / 2.0 + stir,
+                z + FLAG_LEANS / 2.0,
+            ),
+        ]
+        .map(|point| WorldVertex::solid(point, normal, GATHERING_FLAG)),
+    );
 }
 
 fn draw_dashed_line(
@@ -1667,6 +1702,7 @@ fn draw_dashed_line(
     const GAP: f32 = 0.3;
     let thickness = (2.0 * ui_scale(game.height)).max(1.0);
     let screen = (0.0, 0.0, game.width, game.height);
+    let terrain = battlefield::terrain(game.battle_map);
     let (to_x, to_z) = (to.0 - from.0, to.1 - from.1);
     let length = to_x.hypot(to_z);
     let (dir_x, dir_z) = (to_x / length, to_z / length);
@@ -1675,8 +1711,10 @@ fn draw_dashed_line(
         let end = (along + DASH).min(length);
         let a = (from.0 + dir_x * along, from.1 + dir_z * along);
         let b = (from.0 + dir_x * end, from.1 + dir_z * end);
-        let visible = view
-            .project_ground_line(a, b)
+        // Along the land itself, so that it meets what stands at its end.
+        let on_land = |(x, z): (f32, f32)| view.project(x, terrain.height_at(x, z).max(0.0), z);
+        let visible = on_land(a)
+            .zip(on_land(b))
             .and_then(|(a, b)| battlefield::clip_to_rect(a, b, screen));
         if let Some((a, b)) = visible {
             canvas.line(a, b, thickness, color);

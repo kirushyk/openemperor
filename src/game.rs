@@ -67,6 +67,8 @@ const OPPONENT_BUILDS: [Role; 13] = [
 ];
 /// What the Buildings menu makes, in order.
 const BUILDING_BUILDS: [Role; 3] = [Role::Barracks, Role::Factory, Role::Hangar];
+/// Where the H key sends the selected: a fixed place for now, where the player's base starts.
+const HOME: (f32, f32) = (0.0, battlefield::MAP_MIDDLE_Z);
 /// How often each opponent builds something, in seconds of battle.
 const OPPONENT_BUILD_SECONDS: f32 = 15.0;
 
@@ -2437,6 +2439,12 @@ impl Game {
                     units::toggle_deploy(&mut self.units)
                 }
                 (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => self.select_all(),
+                (Screen::InGame, Key::Char('h' | 'H')) if !self.key_paused => units::order_move(
+                    &mut self.units,
+                    HOME,
+                    battlefield::terrain(self.battle_map),
+                    &self.teams,
+                ),
                 (_, Key::Escape) => self.go_back(),
                 _ => {}
             },
@@ -5343,6 +5351,43 @@ mod tests {
         }
         game.handle(Event::KeyDown(Key::Char('a')));
         assert_eq!(selected_count(&game), everyone);
+    }
+
+    #[test]
+    fn the_h_key_sends_the_selected_home_and_nobody_else() {
+        let mut game = in_battle();
+        let tank = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .unwrap();
+        let other = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::LightInfantry)
+            .unwrap();
+        let away = (game.units[tank].x + 20.0, game.units[tank].z);
+        game.units[tank].x = away.0;
+        game.units[tank].destination = away;
+        let stays = game.units[other].destination;
+        game.units[tank].selected = true;
+        game.handle(Event::KeyDown(Key::Char('h')));
+        let sent = game.units[tank].destination;
+        assert!((sent.0 - HOME.0).hypot(sent.1 - HOME.1) < 8.0, "{sent:?}");
+        assert_ne!(sent, away);
+        assert_eq!(game.units[other].destination, stays, "not selected");
+
+        game.units[tank].destination = away;
+        game.handle(Event::KeyDown(Key::Char('H')));
+        assert_ne!(
+            game.units[tank].destination, away,
+            "with Shift or Caps Lock too"
+        );
+
+        game.units[tank].destination = away;
+        game.handle(Event::KeyDown(Key::Pause));
+        game.handle(Event::KeyDown(Key::Char('h')));
+        assert_eq!(game.units[tank].destination, away, "not while paused");
     }
 
     #[test]

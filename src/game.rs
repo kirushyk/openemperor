@@ -4,6 +4,7 @@ use crate::battlefield::{self, Camera};
 use crate::fog::{Fog, Sight};
 use crate::hud::{self, DEPLOY_BUTTON};
 use crate::platform::{Event, Key};
+use crate::strategy::Strategy;
 use crate::units::{self, Role, Unit, UnitKind};
 use crate::weapons::Combat;
 use crate::weapons::OVERKILL_BLOWS_APART;
@@ -1261,6 +1262,8 @@ pub struct Game {
     pub site: Site,
     /// Seconds until opponents next build something.
     opponent_random: u32,
+    /// Each opponent's plan for its army, in owner order from 1. None in the tutorial.
+    strategies: Vec<Strategy>,
     pub combat: Combat,
     /// The superweapon is chosen and waiting for a click on the map.
     pub aiming_strike: bool,
@@ -1330,6 +1333,7 @@ impl Game {
             following: None,
             site: Site::Idle,
             opponent_random: 1,
+            strategies: Vec::new(),
             combat: Combat::default(),
             aiming_strike: false,
             strike_recharge: 0.0,
@@ -1522,8 +1526,7 @@ impl Game {
     }
 
     /// Each opponent keeps all its buildings busy, starting something at random the moment one
-    /// is free, and sends it to a random place on the map when it is done. That is all the
-    /// strategy they have for now.
+    /// is free. What comes out joins its army at the rally point, where `Strategy` takes over.
     fn run_opponents(&mut self) {
         let terrain = battlefield::terrain(self.battle_map);
         for owner in 1..self.teams.len() {
@@ -1560,7 +1563,13 @@ impl Game {
             if self.units[new].owner == 0 {
                 self.post_chat(format!("{} ready", self.units[new].name()));
             } else {
-                let point = terrain.random_point(&mut self.opponent_random);
+                let owner = self.units[new].owner;
+                let rally = self
+                    .strategies
+                    .get(owner - 1)
+                    .and_then(|plan| plan.rally(&self.units, &self.teams));
+                let point =
+                    rally.unwrap_or_else(|| terrain.random_point(&mut self.opponent_random));
                 units::send_to_spot(&mut self.units, new, point, terrain);
             }
         }
@@ -2211,6 +2220,16 @@ impl Game {
         self.following = None;
         self.site = Site::Idle;
         self.opponent_random = map as u32 * 2 + 1;
+        self.strategies = (1..colors.len())
+            .filter(|_| self.battle_kind != BattleKind::Tutorial)
+            .map(|owner| {
+                let kind = match self.battle_kind {
+                    BattleKind::Skirmish => self.skirmish.opponents[owner - 1].kind,
+                    _ => OpponentKind::Competent,
+                };
+                Strategy::new(owner, kind)
+            })
+            .collect();
         self.combat = Combat::default();
         self.aiming_strike = false;
         self.strike_recharge = 0.0;
@@ -2470,6 +2489,9 @@ impl Game {
                 self.settle_casualties();
                 if self.outcome.is_none() {
                     self.run_opponents();
+                    for plan in &mut self.strategies {
+                        plan.think(&mut self.units, terrain, &self.teams, dt);
+                    }
                     self.work_on_making(dt);
                     self.work_on_site(dt);
                 }
@@ -5427,7 +5449,7 @@ mod tests {
     }
 
     #[test]
-    fn opponents_keep_every_building_busy_and_send_what_comes_out_off_at_random() {
+    fn opponents_keep_every_building_busy_and_send_what_comes_out_to_their_rally_point() {
         let mut game = in_battle();
         let owners = 1..game.teams.len();
         let makers = |game: &Game, owner: usize| {
@@ -5477,15 +5499,64 @@ mod tests {
             new.iter()
                 .all(|u| u.owner != 0 && u.is_moving() && !u.selected)
         );
-        let terrain = battlefield::terrain(game.battle_map);
-        assert!(
-            new.iter()
-                .all(|u| terrain.on_map(u.destination.0, u.destination.1))
-        );
+        for unit in new {
+            let rally = game.strategies[unit.owner - 1]
+                .rally(&game.units, &game.teams)
+                .unwrap();
+            let off = (unit.destination.0 - rally.0).hypot(unit.destination.1 - rally.1);
+            assert!(off < 6.0, "{unit:?} goes to {rally:?}");
+        }
         assert!(
             !game.chat.iter().any(|line| line.text.ends_with("ready")),
             "only yours"
         );
+    }
+
+    #[test]
+    fn opponents_gather_their_army_then_send_it_all_off_together_against_an_enemy_base() {
+        let mut game = in_battle();
+        assert_eq!(game.strategies.len(), game.teams.len() - 1);
+        let rally = game.strategies[0].rally(&game.units, &game.teams).unwrap();
+        let soldiers = |game: &Game| -> Vec<Unit> {
+            game.units
+                .iter()
+                .filter(|u| u.alive && u.owner == 1 && !u.kind.is_building())
+                .copied()
+                .collect()
+        };
+        // A competent opponent waits a minute and a half, gathering what it makes.
+        while game.battle_time < 85.0 {
+            game.update(0.25);
+        }
+        assert!(game.strategies[0].attackers.is_empty(), "still waiting");
+        let gathered = soldiers(&game)
+            .iter()
+            .filter(|u| (u.x - rally.0).hypot(u.z - rally.1) < 9.0)
+            .count();
+        assert!(
+            gathered * 3 >= soldiers(&game).len() * 2,
+            "most stand at the rally"
+        );
+        assert!(gathered >= 8, "enough for an attack");
+
+        while game.battle_time < 100.0 {
+            game.update(0.25);
+        }
+        let plan = &game.strategies[0];
+        assert!(plan.attackers.len() >= 8, "they set off together");
+        assert!(plan.wave_size > 8, "and the next attack waits for more");
+        let enemy = |id: u32| {
+            game.units
+                .iter()
+                .find(|u| u.id == id)
+                .is_some_and(|u| units::are_enemies(&game.teams, 1, u.owner))
+        };
+        let attacking = soldiers(&game)
+            .iter()
+            .filter(|u| plan.attackers.contains(&u.id))
+            .filter(|u| matches!(u.target, Some(units::Target::Unit(id)) if enemy(id)))
+            .count();
+        assert!(attacking * 2 >= plan.attackers.len(), "after the enemy");
     }
 
     #[test]
@@ -6876,6 +6947,8 @@ mod tests {
             .position(|u| u.owner == 0 && u.kind == UnitKind::Aircraft)
             .unwrap();
         game.units[scout].destination = (far_x, far_z);
+        // An enemy base stands out there, and its guards shoot back.
+        game.units[scout].health = 1e9;
         for _ in 0..200 {
             game.update(0.05);
         }

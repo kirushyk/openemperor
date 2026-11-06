@@ -8,6 +8,7 @@ mod hud;
 mod planet;
 mod platform;
 mod render;
+mod strategy;
 mod units;
 mod weapons;
 

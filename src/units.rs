@@ -716,6 +716,13 @@ impl Unit {
         self.best_remaining = f32::INFINITY;
     }
 
+    /// Tells it to go after a unit by id, as a click on that unit would.
+    pub fn go_after(&mut self, id: u32) {
+        if self.target != Some(Target::Unit(id)) {
+            set_target(self, Target::Unit(id));
+        }
+    }
+
     /// Whether it has something to fire: everything does but a machine that has run out of the
     /// rockets it carries.
     pub fn has_rockets(&self) -> bool {

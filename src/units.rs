@@ -158,6 +158,13 @@ const LEAVES_PAD: f32 = 1.5;
 const OVER_PAD: f32 = 0.5;
 /// How close to a pad a machine short of rockets gets a full one to make way, or goes to it.
 const PAD_NEARBY: f32 = 10.0;
+/// How far from its base's MCV a machine home from a mission sits down.
+const HOME_BESIDE: f32 = 3.2;
+/// How far above the lowest ground counts as higher ground to sit down on, and how far out, in
+/// rings so far apart, a machine looks for it.
+const HIGHER_GROUND: f32 = 0.35;
+const HIGHER_GROUND_RINGS: usize = 10;
+const HIGHER_GROUND_STEP: f32 = 1.5;
 /// How far from a pad a machine waits for it to be free.
 const PAD_BESIDE: f32 = 2.8;
 /// How far from a pad a machine waiting for it no longer counts as beside it.
@@ -738,6 +745,9 @@ pub struct Unit {
     pub rockets_fired: u8,
     /// The landing pad it is going to or sitting on.
     pad: Option<Pad>,
+    /// Whether what lands has had something to go after since it was last sent anywhere: once
+    /// that is over, it goes home instead of sitting down where it is.
+    on_mission: bool,
     /// How far along a pad is with loading its next rocket, in seconds.
     reloading: f32,
     /// The enemy carryall that has hold of it, if one has.
@@ -1222,6 +1232,7 @@ impl Unit {
             way: None,
             rockets_fired: 0,
             pad: None,
+            on_mission: false,
             reloading: 0.0,
             theft: None,
             stall: Stall::NOT_STALLED,
@@ -1354,6 +1365,7 @@ fn place_unit(
         way: None,
         rockets_fired: 0,
         pad: None,
+        on_mission: false,
         reloading: 0.0,
         theft: None,
         stall: Stall::NOT_STALLED,
@@ -1971,6 +1983,8 @@ fn order_layer(
         let Some(nearest) = nearest else { return };
         units[i].destination = slots.swap_remove(nearest);
         units[i].target = None;
+        // Sent somewhere, it sits down there.
+        units[i].on_mission = false;
         units[i].unloading = units[i].carrying;
         units[i].reset_progress();
     }
@@ -2909,9 +2923,7 @@ fn alert_landers(units: &mut [Unit], teams: &[usize]) {
 /// one, and lets go of a pad once they have left it with rockets on board. One out of rockets
 /// that has been sent elsewhere goes there first, then back. With no pad free it waits beside
 /// the nearest. A full one on a pad makes way for a friend near it that is short of rockets.
-fn tend_pads(units: &mut [Unit], dt: f32) {
-    let is_pad_of =
-        |u: &Unit, owner: usize| u.alive && u.role == Role::LandingPad && u.owner == owner;
+fn tend_pads(units: &mut [Unit], terrain: &Terrain, dt: f32) {
     for i in 0..units.len() {
         if !units[i].alive || !units[i].role.lands() {
             continue;
@@ -2997,7 +3009,94 @@ fn tend_pads(units: &mut [Unit], dt: f32) {
             }
             _ => {}
         }
+        go_home_after_a_mission(units, i, terrain);
     }
+}
+
+/// Once what lands has nothing more to go after and no enemy close by, it goes to a free pad of its owner's, or
+/// beside one if they are all taken, or else back to its base by the MCV, or at least to the
+/// nearest higher ground off the sand, rather than sitting down wherever it is.
+fn go_home_after_a_mission(units: &mut [Unit], i: usize, terrain: &Terrain) {
+    let unit = units[i];
+    if unit.target.is_some() {
+        units[i].on_mission = true;
+        return;
+    }
+    // With more enemies close by, its mission is not over yet.
+    if !unit.on_mission
+        || unit.alerted
+        || unit.is_moving()
+        || unit.pad.is_some()
+        || !unit.has_rockets()
+    {
+        return;
+    }
+    units[i].on_mission = false;
+    let away = |u: &Unit| (u.x - unit.x).hypot(u.z - unit.z);
+    let taken = |id: u32| {
+        units
+            .iter()
+            .any(|u| u.alive && u.pad.is_some_and(|pad| pad.id == id))
+    };
+    let pads = || units.iter().filter(|u| is_pad_of(u, unit.owner));
+    let as_pad = |u: &Unit| Pad {
+        id: u.id,
+        x: u.x,
+        z: u.z,
+    };
+    let nearest = |of: &mut dyn Iterator<Item = &Unit>| {
+        of.min_by(|a, b| away(a).total_cmp(&away(b))).copied()
+    };
+    if let Some(pad) = nearest(&mut pads().filter(|u| !taken(u.id))) {
+        units[i].pad = Some(as_pad(&pad));
+        units[i].destination = (pad.x, pad.z);
+    } else if let Some(pad) = nearest(&mut pads()) {
+        units[i].destination = beside_pad(as_pad(&pad), unit.id);
+    } else if let Some(base) = nearest(
+        &mut units
+            .iter()
+            .filter(|u| u.alive && u.owner == unit.owner && u.role == Role::Mcv && u.deployed),
+    )
+    .or_else(|| {
+        nearest(
+            &mut units
+                .iter()
+                .filter(|u| u.alive && u.owner == unit.owner && u.kind.is_building()),
+        )
+    }) {
+        let (sin, cos) = (unit.id as f32 * 2.4).sin_cos();
+        units[i].destination = (base.x + cos * HOME_BESIDE, base.z + sin * HOME_BESIDE);
+    } else if let Some(high) = higher_ground_near(terrain, (unit.x, unit.z)) {
+        units[i].destination = high;
+    } else {
+        return;
+    }
+    units[i].reset_progress();
+}
+
+/// The nearest place around a point on the higher ground above the sand, if the sand is
+/// where it would otherwise sit down.
+fn higher_ground_near(terrain: &Terrain, (x, z): (f32, f32)) -> Option<(f32, f32)> {
+    let high = |(x, z): (f32, f32)| {
+        terrain.can_walk(x, z) && terrain.height_at(x, z) > terrain.floor() + HIGHER_GROUND
+    };
+    if high((x, z)) {
+        return None;
+    }
+    (1..=HIGHER_GROUND_RINGS).find_map(|ring| {
+        let reach = ring as f32 * HIGHER_GROUND_STEP;
+        let tries = 6 * ring;
+        (0..tries).find_map(|n| {
+            let angle = n as f32 / tries as f32 * TAU;
+            let at = (x + reach * angle.cos(), z + reach * angle.sin());
+            high(at).then_some(at)
+        })
+    })
+}
+
+/// Whether it is a landing pad of this owner's still standing.
+fn is_pad_of(u: &Unit, owner: usize) -> bool {
+    u.alive && u.role == Role::LandingPad && u.owner == owner
 }
 
 /// A spot beside a landing pad to wait or to make way at, its own for each machine.
@@ -3008,7 +3107,7 @@ fn beside_pad(pad: Pad, id: u32) -> (f32, f32) {
 
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
-    tend_pads(units, dt);
+    tend_pads(units, terrain, dt);
     alert_landers(units, teams);
     rush_to_the_hurt(units, teams);
     chase_targets(units, terrain, teams);
@@ -5546,6 +5645,88 @@ mod tests {
         pad.weapon = WeaponKind::Unarmed;
         pad.id = 2;
         [machine, pad]
+    }
+
+    /// A machine up in the air on a mission against an enemy that is then gone.
+    fn after_a_mission(units: &mut [Unit], terrain: &Terrain) {
+        units[0].rockets_fired = 0;
+        units[0].target = Some(Target::Unit(999));
+        for _ in 0..600 {
+            advance(units, terrain, &[0], 0.05);
+        }
+    }
+
+    #[test]
+    fn after_a_mission_a_machine_goes_to_its_pad_however_far_off() {
+        let terrain = open_map();
+        let mut units = machine_and_pad(Role::Ornithopter);
+        units[1].x = PAD_NEARBY + 12.0;
+        after_a_mission(&mut units, &terrain);
+        assert!(
+            (units[0].x - units[1].x).hypot(units[0].z - 50.0) < OVER_PAD,
+            "{:?}",
+            units[0]
+        );
+        assert_eq!(units[0].altitude, PAD_TOP, "on its deck");
+    }
+
+    #[test]
+    fn after_a_mission_with_no_pad_a_machine_goes_back_to_its_base_by_the_mcv() {
+        let terrain = open_map();
+        let mut units = machine_and_pad(Role::Destroyer);
+        units[1].role = Role::Mcv;
+        units[1].deployed = true;
+        units[1].x = -14.0;
+        after_a_mission(&mut units, &terrain);
+        let away = (units[0].x - units[1].x).hypot(units[0].z - units[1].z);
+        assert!(away < HOME_BESIDE + 1.0, "{away}");
+        assert_eq!(units[0].altitude, 0.0, "sitting there");
+    }
+
+    #[test]
+    fn after_a_mission_with_no_home_a_machine_sits_down_on_higher_ground_than_the_sand() {
+        let terrain = crate::battlefield::terrain(0);
+        assert_eq!(terrain.floor(), 0.0, "a map with sand");
+        // Sand with higher ground close by.
+        let sand = (0..200)
+            .flat_map(|i| (0..200).map(move |j| (i as f32 * 0.5 - 50.0, j as f32 * 0.5)))
+            .find(|&(x, z)| {
+                terrain.can_walk(x, z)
+                    && terrain.height_at(x, z) < 0.05
+                    && higher_ground_near(terrain, (x, z))
+                        .is_some_and(|(hx, hz)| (hx - x).hypot(hz - z) > 3.0)
+            })
+            .unwrap();
+        let mut units = [machine_and_pad(Role::Ornithopter)[0]];
+        (units[0].x, units[0].z) = sand;
+        units[0].destination = sand;
+        after_a_mission(&mut units, terrain);
+        let unit = units[0];
+        assert!(
+            terrain.height_at(unit.x, unit.z) > HIGHER_GROUND,
+            "{unit:?}"
+        );
+        assert_eq!(unit.altitude, 0.0);
+    }
+
+    #[test]
+    fn a_machine_sent_somewhere_after_a_mission_sits_down_there_and_not_at_home() {
+        let terrain = open_map();
+        let mut units = machine_and_pad(Role::Ornithopter);
+        units[0].selected = true;
+        units[0].rockets_fired = 0;
+        units[0].target = Some(Target::Unit(999));
+        advance(&mut units, &terrain, &[0], 0.05);
+        order_move(&mut units, (-10.0, 50.0), &terrain, &[0]);
+        for _ in 0..600 {
+            advance(&mut units, &terrain, &[0], 0.05);
+        }
+        assert!(
+            (units[0].x + 10.0).hypot(units[0].z - 50.0) < 1.5,
+            "{:?}",
+            units[0]
+        );
+        assert_eq!(units[0].altitude, 0.0);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use crate::battlefield::{MapSize, RuinPiece, Terrain};
 use crate::game::TeamColor;
 use crate::weapons::WeaponKind;
 use std::cmp::Ordering;
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
 
 /// About how tall a unit stands, in world units.
 pub const HEIGHT: f32 = 0.5;
@@ -2352,13 +2352,35 @@ fn fly_on(unit: &mut Unit, terrain: &Terrain, dt: f32) {
     let lean = MOST_BANK * turned / most;
     unit.bank += (lean - unit.bank) * (BANK_RATE * dt).min(1.0);
     let step = unit.speed() * dt;
-    let (dx, dz) = (unit.heading.cos() * step, unit.heading.sin() * step);
-    if let Some(&(tx, tz)) = [(dx, dz), (dx, 0.0), (0.0, dz)]
-        .iter()
-        .find(|(tx, tz)| unit.can_enter(terrain, unit.x + tx, unit.z + tz))
-    {
+    let ahead = (unit.heading.cos(), unit.heading.sin());
+    // At the map's edge it glides along it at full speed, the way its nose is nearer to, or
+    // the way it is turning if it meets the edge head on. The edges run along the grid.
+    let left = (-ahead.1, ahead.0);
+    let turning = if turned >= 0.0 { 1.0 } else { -1.0 };
+    let mut glides = [(1.0, 1.0), (-1.0, 1.0)].map(|(ex, ez): (f32, f32)| {
+        let (ex, ez) = (ex * FRAC_1_SQRT_2, ez * FRAC_1_SQRT_2);
+        let along = ahead.0 * ex + ahead.1 * ez;
+        let side = left.0 * ex + left.1 * ez;
+        let sign = (along + 0.1 * turning * side).signum();
+        (along.abs(), (ex * sign, ez * sign))
+    });
+    glides.sort_by(|a, b| b.0.total_cmp(&a.0));
+    // In a corner it can only glide back out along one of the edges.
+    let back = glides.map(|(_, (wx, wz))| (-wx, -wz));
+    let ways = std::iter::once(ahead)
+        .chain(glides.map(|(_, way)| way))
+        .chain(back);
+    let free = ways
+        .map(|(wx, wz)| (wx * step, wz * step))
+        .enumerate()
+        .find(|(_, (tx, tz))| unit.can_enter(terrain, unit.x + tx, unit.z + tz));
+    if let Some((way, (tx, tz))) = free {
         unit.x += tx;
         unit.z += tz;
+        if way > 0 {
+            // Its nose comes round to the way it glides.
+            unit.heading += turn_between(unit.heading, tz.atan2(tx)).clamp(-most, most);
+        }
     }
 }
 
@@ -3795,6 +3817,33 @@ mod tests {
         assert!(headings.abs() > TAU, "round and round: {headings}");
         assert_eq!(units[0].bank.signum(), headings.signum(), "into the turn");
         assert!(units[0].bank.abs() > 0.2, "{}", units[0].bank);
+    }
+
+    #[test]
+    fn a_drone_sent_to_the_edge_or_a_corner_of_the_map_glides_along_the_edge_and_never_sticks() {
+        let terrain = crate::battlefield::terrain(0);
+        let last = terrain.size().cells() as f32;
+        for (u, v) in [
+            (last - 0.5, last / 2.0),
+            (last / 2.0, 0.5),
+            (last - 0.5, last - 0.5),
+        ] {
+            let edge = crate::battlefield::grid_to_world(u, v);
+            let mut units = [drone_at(0.0, MAP_MIDDLE_Z)];
+            units[0].destination = edge;
+            for _ in 0..800 {
+                let before = (units[0].x, units[0].z);
+                advance(&mut units, terrain, &[0], 0.05);
+                let moved = (units[0].x - before.0).hypot(units[0].z - before.1);
+                assert!(moved > 0.3, "stuck at {before:?} going to {edge:?}");
+                assert!(terrain.on_map(units[0].x, units[0].z));
+            }
+            let away = (units[0].x - edge.0).hypot(units[0].z - edge.1);
+            assert!(
+                away < CIRCLE_RADIUS * 2.5,
+                "still about where it was sent: {away}"
+            );
+        }
     }
 
     #[test]

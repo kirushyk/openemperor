@@ -113,6 +113,8 @@ pub enum CursorLook {
     Deploy,
     /// The selected unit under the cursor would stop being dug in.
     Undeploy,
+    /// A selected ornithopter or destroyer would land on the landing pad under the cursor.
+    Land,
 }
 
 /// The new building the player has on the way: one at a time.
@@ -1777,6 +1779,7 @@ impl Game {
                         _ => CursorLook::Deploy,
                     }
                 }
+                None if self.pad_under_cursor().is_some() => CursorLook::Land,
                 None if self.would_put_down_here() => CursorLook::Carry,
                 None if self.would_go_here() => CursorLook::Move,
                 None => CursorLook::Arrow,
@@ -1791,6 +1794,15 @@ impl Game {
         }
         self.unit_under_cursor()
             .filter(|&unit| self.units[unit].selected && self.units[unit].role.can_deploy())
+    }
+
+    /// The player's landing pad under the cursor, if a click would land a selected machine on it.
+    fn pad_under_cursor(&self) -> Option<usize> {
+        if !self.can_order_attack_here() || !self.selected_units().iter().any(|u| u.role.lands()) {
+            return None;
+        }
+        self.unit_under_cursor()
+            .filter(|&unit| self.units[unit].role == Role::LandingPad)
     }
 
     /// Whether a click here would send somewhere any of what is selected: whatever can move, or
@@ -1876,6 +1888,8 @@ impl Game {
         } else if let Some(unit) = self.deployable_under_cursor().filter(|_| !adding) {
             // So two clicks on one that is not selected yet select it, then switch it.
             units::switch_deployed(&mut self.units[unit]);
+        } else if let Some(pad) = self.pad_under_cursor().filter(|_| !adding) {
+            units::order_land(&mut self.units, pad);
         } else if let Some(picked) = self.unit_under_cursor() {
             // A building that makes units is always picked on its own.
             let adding = adding && self.units[picked].kind != UnitKind::Building;
@@ -5185,6 +5199,40 @@ mod tests {
         click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START + 2));
         assert_eq!(game.units.last().unwrap().name(), "Ornithopter");
         assert_eq!(game.units.last().unwrap().altitude, 0.0);
+    }
+
+    #[test]
+    fn a_selected_machine_shows_the_land_cursor_over_its_own_pad_and_a_click_lands_it_there() {
+        let mut game = in_battle();
+        game.fog = None;
+        let pad = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::LandingPad)
+            .unwrap();
+        let machine = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Aircraft)
+            .unwrap();
+        game.units[machine].role = Role::Ornithopter;
+        let at = game.units[pad];
+        game.camera.look_at(at.x, at.z);
+        let (x, y) = game.view().project(at.x, at.pick_height(), at.z).unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert_eq!(game.cursor_look(), CursorLook::Arrow, "nothing selected");
+        game.units[machine].selected = true;
+        assert_eq!(game.cursor_look(), CursorLook::Land);
+        click_at(&mut game, x, y);
+        assert!(
+            game.units[machine].selected,
+            "the pad is not picked instead"
+        );
+        assert!(!game.units[pad].selected);
+        assert_eq!(game.units[machine].destination, (at.x, at.z));
+        // An enemy's pad is no place to land.
+        game.units[pad].owner = 1;
+        assert_ne!(game.cursor_look(), CursorLook::Land);
     }
 
     #[test]

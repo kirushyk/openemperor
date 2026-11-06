@@ -493,6 +493,49 @@ impl Canvas {
         self.circle(x, y, 4.0 * s, MOVE_CURSOR);
     }
 
+    /// A green ring around a green H, as on a landing pad, with an arrow over it coming down
+    /// onto it again and again.
+    fn land_cursor(&mut self, (x, y): (f32, f32), s: f32, seconds: f32) {
+        self.green_ring((x, y), 24.0 * s, s);
+        let edge = (2.0 * s).max(1.0);
+        let (half_h, apart, bar) = (10.0 * s, 6.0 * s, 2.5 * s);
+        for (grow, color) in [(edge, CURSOR_EDGE), (0.0, MOVE_CURSOR)] {
+            for side in [-1.0, 1.0] {
+                let left = x + side * apart - bar - grow;
+                self.rect(
+                    left,
+                    y - half_h - grow,
+                    (bar + grow) * 2.0,
+                    (half_h + grow) * 2.0,
+                    color,
+                );
+            }
+            self.rect(
+                x - apart,
+                y - bar - grow,
+                apart * 2.0,
+                (bar + grow) * 2.0,
+                color,
+            );
+        }
+        // The arrow drops from high over the ring down onto it, then starts again.
+        let fall = (seconds * CURSOR_PULSE).fract();
+        let tip = y - 28.0 * s - 18.0 * s * (1.0 - fall);
+        let (half, tall) = (8.0 * s, 11.0 * s);
+        self.triangle(
+            [
+                (x, tip + edge * 1.8),
+                (x - half - edge * 1.6, tip - tall - edge),
+                (x + half + edge * 1.6, tip - tall - edge),
+            ],
+            CURSOR_EDGE,
+        );
+        self.triangle(
+            [(x, tip), (x - half, tip - tall), (x + half, tip - tall)],
+            MOVE_CURSOR,
+        );
+    }
+
     fn green_ring(&mut self, at: (f32, f32), radius: f32, s: f32) {
         let thickness = (4.0 * s).max(1.0);
         let edge = (2.0 * s).max(1.0);
@@ -825,6 +868,7 @@ fn canvas_of(game: &Game) -> Canvas {
         CursorLook::Move => canvas.move_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::Deploy => canvas.deploy_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::Undeploy => canvas.undeploy_cursor(game.mouse, s, game.screen_elapsed()),
+        CursorLook::Land => canvas.land_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::Arrow => canvas.cursor(game.mouse, s),
     }
     canvas
@@ -2043,7 +2087,7 @@ fn draw_landing_pad(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     };
     flat(
         canvas,
-        (x, z, 0.95, 0.95),
+        (x, z, units::PAD_DECK, units::PAD_DECK),
         (y, y + 0.07),
         color.map(|c| c * 0.6),
     );

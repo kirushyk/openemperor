@@ -135,6 +135,8 @@ impl UnitKind {
 const BUILDING_RADIUS: f32 = 1.2;
 /// How high the deck of a landing pad is, which is where a machine on it sits.
 pub const PAD_TOP: f32 = 0.14;
+/// How far a landing pad's deck reaches each way from its middle.
+pub const PAD_DECK: f32 = 0.95;
 /// How long a landing pad takes to load one rocket, in seconds.
 const RELOAD_SECONDS: f32 = 1.2;
 /// How far from its pad a machine with rockets left no longer counts as using it.
@@ -382,6 +384,15 @@ impl Role {
     /// Whether it can dig in where it stands.
     pub fn can_deploy(self) -> bool {
         self == Role::KInfantry
+    }
+
+    /// For a flat building that what goes on the ground can cross: how far its deck reaches
+    /// each way from its middle, and how high its top is.
+    pub fn deck(self) -> Option<(f32, f32)> {
+        match self {
+            Role::LandingPad => Some((PAD_DECK, PAD_TOP)),
+            _ => None,
+        }
     }
 
     /// Whether it sits on the ground when it has nowhere to go.
@@ -1350,6 +1361,41 @@ pub fn toggle_deploy(units: &mut [Unit]) {
     }
 }
 
+/// Sends the selected machines that load at landing pads to this one: the nearest of them lands
+/// on it, unless another machine has it already, and the rest wait beside it.
+pub fn order_land(units: &mut [Unit], pad: usize) {
+    let pad_unit = units[pad];
+    let pad = Pad {
+        id: pad_unit.id,
+        x: pad_unit.x,
+        z: pad_unit.z,
+    };
+    let mut taken = units
+        .iter()
+        .any(|u| u.alive && !u.selected && u.pad.is_some_and(|used| used.id == pad.id));
+    let away = |u: &Unit| (u.x - pad.x).hypot(u.z - pad.z);
+    let mut chosen: Vec<usize> = (0..units.len())
+        .filter(|&i| {
+            let u = &units[i];
+            u.alive && u.selected && u.owner == pad_unit.owner && u.role.lands()
+        })
+        .collect();
+    chosen.sort_by(|&a, &b| away(&units[a]).total_cmp(&away(&units[b])));
+    for i in chosen {
+        let unit = &mut units[i];
+        unit.target = None;
+        if taken {
+            unit.pad = None;
+            unit.destination = beside_pad(pad, unit.id);
+        } else {
+            unit.pad = Some(pad);
+            unit.destination = (pad.x, pad.z);
+            taken = true;
+        }
+        unit.reset_progress();
+    }
+}
+
 /// Switches one K Infantry between its pistol and, standing still, its cannon.
 pub fn switch_deployed(unit: &mut Unit) {
     unit.deployed = !unit.deployed;
@@ -1809,9 +1855,11 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
         let other_layer = (other.altitude > 0.0) != (unit.altitude > 0.0);
         let building_to_capture =
             unit.target == Some(Target::Unit(other.id)) && unit.can_capture(other, teams);
+        // A flat building is crossed, not steered around.
         if other_index == index
             || !other.alive
             || other_layer
+            || other.role.deck().is_some()
             || building_to_capture
             || can_squash(unit, other, teams)
         {
@@ -1993,8 +2041,11 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 // And so are a machine and the pad it is using.
                 let using =
                     |machine: &Unit, pad: &Unit| machine.pad.is_some_and(|used| used.id == pad.id);
+                // A flat building is driven and walked over, not into.
                 if !units[a].alive
                     || !units[b].alive
+                    || units[a].role.deck().is_some()
+                    || units[b].role.deck().is_some()
                     || held_by(&units[a], &units[b])
                     || held_by(&units[b], &units[a])
                     || using(&units[a], &units[b])
@@ -2126,6 +2177,7 @@ fn find_new_way(units: &mut [Unit], i: usize, terrain: &Terrain) {
                 && u.alive
                 && u.altitude <= 0.0
                 && Some(u.id) != target_id
+                && u.role.deck().is_none()
                 && (u.kind.is_building() || u.deployed || !u.is_moving())
         })
         .map(|u| (u.x, u.z, u.kind.radius() + unit.kind.radius()))
@@ -2228,6 +2280,30 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
         give_up_if_stuck(unit, held_back[i], dt);
         if !unit.kind.flies() {
             watch_for_stall(unit, dt);
+        }
+    }
+    climb_onto_decks(units);
+}
+
+/// Stands what is on the ground and over a flat building's deck on top of it.
+fn climb_onto_decks(units: &mut [Unit]) {
+    let decks: Vec<(f32, f32, f32, f32)> = units
+        .iter()
+        .filter(|u| u.alive)
+        .filter_map(|u| u.role.deck().map(|(reach, top)| (u.x, u.z, reach, top)))
+        .collect();
+    if decks.is_empty() {
+        return;
+    }
+    for unit in units.iter_mut() {
+        if !unit.alive || unit.kind.flies() || unit.kind.is_building() {
+            continue;
+        }
+        let on = decks
+            .iter()
+            .find(|&&(x, z, reach, _)| (unit.x - x).abs() <= reach && (unit.z - z).abs() <= reach);
+        if let Some(&(_, _, _, top)) = on {
+            unit.y += top;
         }
     }
 }
@@ -5288,6 +5364,56 @@ mod tests {
         }
         assert_eq!((units[0].x, units[0].z), (0.0, 50.0));
         assert_eq!((units[1].x, units[1].z), (1.0, 50.0));
+    }
+
+    #[test]
+    fn a_tank_and_a_soldier_drive_and_walk_right_over_a_landing_pad_standing_on_its_deck() {
+        let terrain = open_map();
+        for kind in [UnitKind::Vehicle, UnitKind::Infantry] {
+            let [_, mut pad] = machine_and_pad(Role::Ornithopter);
+            pad.x = 0.0;
+            let mut crossing = unit_at(-4.0, 50.0, kind);
+            crossing.id = 5;
+            crossing.destination = (4.0, 50.0);
+            let mut units = [pad, crossing];
+            let mut stood_on_deck = false;
+            for _ in 0..400 {
+                advance(&mut units, &terrain, &[0], 0.05);
+                let unit = units[1];
+                if unit.x.abs() < 0.5 {
+                    let ground = terrain.height_at(unit.x, unit.z);
+                    stood_on_deck |= (unit.y - ground - PAD_TOP).abs() < 0.001;
+                    assert!((unit.z - 50.0).abs() < 0.1, "straight across: {unit:?}");
+                }
+            }
+            assert_eq!((units[0].x, units[0].z), (0.0, 50.0), "the pad stays put");
+            let unit = units[1];
+            assert!((unit.x - 4.0).abs() < 0.3, "it got across: {unit:?}");
+            assert_eq!(unit.y, terrain.height_at(unit.x, unit.z), "and back down");
+            assert!(stood_on_deck, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_machine_sent_to_a_pad_lands_there_and_loads_and_the_next_waits_beside_it() {
+        let terrain = open_map();
+        let [mut first, pad] = machine_and_pad(Role::Ornithopter);
+        first.rockets_fired = 1;
+        first.selected = true;
+        let mut second = first;
+        second.id = 3;
+        second.z = 60.0;
+        let mut units = [first, pad, second];
+        order_land(&mut units, 1);
+        assert_eq!(units[0].destination, (8.0, 50.0), "the nearer lands");
+        assert_ne!(units[2].destination, (8.0, 50.0), "the other waits beside");
+        for _ in 0..1000 {
+            advance(&mut units, &terrain, &[0], 0.05);
+            if units[0].rockets_fired == 0 {
+                break;
+            }
+        }
+        assert_eq!(units[0].rockets_fired, 0, "loaded: {:?}", units[0]);
     }
 
     #[test]

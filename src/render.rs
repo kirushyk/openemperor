@@ -1860,10 +1860,12 @@ const FAR_PIXELS: f32 = 40.0;
 fn bounds(unit: &Unit) -> (Point, f32) {
     let height = match (unit.kind, unit.role) {
         (UnitKind::Infantry, _) => 0.7,
-        (_, Role::HeavyStrider) => 1.35,
-        (_, Role::Strider) => 0.8,
+        (_, Role::Minotaurus) => 1.35,
+        (_, Role::Mongoose) => 0.8,
         // Its pipe stands high once it is deployed.
         (_, Role::Mpv) => 2.4,
+        // Its cannon stands high once it is deployed.
+        (_, Role::SiegeTank) => 2.3,
         // It may have a vehicle hanging under it.
         (_, Role::AdvancedCarryall) => 1.4,
         (UnitKind::Vehicle | UnitKind::Aircraft, _) => 0.5,
@@ -2000,7 +2002,7 @@ fn draw_beams(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: 
 /// the red glares that blink in turn either side of it.
 fn draw_mpv_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
     const PUFFS: usize = 7;
-    let faction = game.faction_of(unit.owner);
+    let faction = unit.house;
     let time = game.battle_time();
     draw_beam(
         canvas,
@@ -2130,6 +2132,9 @@ fn draw_flames(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit:
     }
 }
 
+/// The dull olive of infantry's packs and launchers.
+const INFANTRY_GEAR: [f32; 3] = [0.3, 0.32, 0.22];
+
 /// The steel case of a tower's searchlight, and the glass at its front.
 const SEARCHLIGHT_HOUSING: [f32; 3] = [0.3, 0.31, 0.33];
 const SEARCHLIGHT_LENS: [f32; 3] = [1.0, 0.98, 0.88];
@@ -2224,8 +2229,7 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
     let ahead = |by: f32| (unit.x + forward_x * by, unit.z + forward_z * by);
     let mut part = |footprint, heights, color| draw_turned_box(canvas, footprint, heights, color);
     if unit.role == Role::Mpv {
-        let faction = game.faction_of(unit.owner);
-        models::draw_mpv(canvas, unit, faction, game.battle_time(), color);
+        models::draw_mpv(canvas, unit, unit.house, game.battle_time(), color);
         return;
     }
     match unit.kind {
@@ -2266,6 +2270,50 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
                     };
                     part(barrel(-0.17, 0.05, 0.09), (y + 0.2, y + 0.5), spray_color);
                     part(barrel(0.22, 0.12, 0.03), (y + 0.32, y + 0.38), dark);
+                }
+                (Role::RegularInfantry, _) => {
+                    // Stockier, with a helmet and a rifle.
+                    let body = (unit.x, unit.z, 0.15, 0.15, unit.heading);
+                    part(body, (y, y + 0.58), color);
+                    let helmet = (unit.x, unit.z, 0.12, 0.12, unit.heading);
+                    part(helmet, (y + 0.58, y + 0.66), dark);
+                    part(barrel(0.2, 0.14, 0.02), (y + 0.36, y + 0.4), dark);
+                }
+                (Role::RocketInfantry, _) => {
+                    // A launcher tube resting on the shoulder, longer behind than in front.
+                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
+                    part(body, (y, y + 0.6), color);
+                    part(
+                        barrel(0.04, 0.26, 0.045),
+                        (y + 0.52, y + 0.62),
+                        INFANTRY_GEAR,
+                    );
+                    part(barrel(0.3, 0.012, 0.05), (y + 0.51, y + 0.63), [0.05; 3]);
+                }
+                (Role::SuicideInfantry, _) => {
+                    // A belt of charges around the middle and a red detonator on the chest.
+                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
+                    part(body, (y, y + 0.6), color);
+                    let belt = (unit.x, unit.z, 0.16, 0.16, unit.heading);
+                    part(belt, (y + 0.24, y + 0.38), INFANTRY_GEAR);
+                    part(
+                        barrel(0.15, 0.03, 0.04),
+                        (y + 0.42, y + 0.48),
+                        [0.95, 0.08, 0.05],
+                    );
+                }
+                (Role::MortarInfantry, true) => {
+                    // Kneeling behind a mortar tube raised high on its base plate.
+                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
+                    part(body, (y, y + 0.36), color);
+                    part(barrel(0.3, 0.12, 0.12), (y, y + 0.04), INFANTRY_GEAR);
+                    part(barrel(0.32, 0.04, 0.04), (y + 0.04, y + 0.5), dark);
+                }
+                (Role::MortarInfantry, false) => {
+                    // The mortar tube carried on the back.
+                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
+                    part(body, (y, y + 0.6), color);
+                    part(barrel(-0.16, 0.04, 0.04), (y + 0.2, y + 0.66), dark);
                 }
                 (Role::Engineer, _) => {
                     let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
@@ -2664,7 +2712,7 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
             continue;
         }
         // Tip text gives the full name of what it makes.
-        let makes = Game::build_role(game.build_tab, i);
+        let makes = game.build_role(game.build_tab, i);
         let can_make = makes.is_some_and(|role| game.can_produce(role));
         let symbol = if can_make { GOLD } else { GOLD_DIM };
         draw_tab_symbol(canvas, game.build_tab, cx, cy, cell.w * 0.5, symbol);
@@ -2750,9 +2798,9 @@ fn short_name(role: Role) -> &'static str {
         Role::KInfantry => "K Inf",
         Role::RepairVehicle => "Repair",
         Role::Catapult => "Catap",
-        Role::RocketLauncher => "Rocket",
-        Role::Strider => "Strider",
-        Role::HeavyStrider => "HvyStr",
+        Role::RocketLauncher => "RktLnch",
+        Role::Mongoose => "Mongse",
+        Role::Minotaurus => "Minotr",
         Role::AdvancedCarryall => "Carry",
         Role::AirDefensePlatform => "AirDef",
         Role::AirDrone => "Drone",
@@ -2763,6 +2811,16 @@ fn short_name(role: Role) -> &'static str {
         Role::GunTower => "MG Twr",
         Role::FlameInfantry => "Flame",
         Role::GasInfantry => "Gas",
+        Role::RegularInfantry => "Regular",
+        Role::RocketInfantry => "Rocket",
+        Role::SuicideInfantry => "Suicide",
+        Role::MortarInfantry => "Mortar",
+        Role::SandBike => "Bike",
+        Role::DiskSaw => "Saw",
+        Role::FlameTank => "FlmTank",
+        Role::HugeTank => "HugeTk",
+        Role::LaserTank => "Laser",
+        Role::SiegeTank => "Siege",
         _ => role.name(),
     }
 }

@@ -83,6 +83,17 @@ const PARTICLES_ALIVE_AT_MOST: usize = 800;
 const PARTICLE_SECONDS: f32 = 0.9;
 const PARTICLE_GRAVITY: f32 = 7.0;
 const HEAVY_BLAST_RADIUS: f32 = 1.5;
+/// How far a suicide infantry's explosion reaches, and how much it harms whoever it reaches.
+pub const SUICIDE_BLAST_RADIUS: f32 = 3.2;
+const SUICIDE_DAMAGE: f32 = 450.0;
+/// How far ahead of a disk saw's middle its blade spins, how far it reaches from there, and
+/// how much it harms the infantry it cuts each second.
+pub const SAW_AHEAD: f32 = 0.62;
+const SAW_REACH: f32 = 0.42;
+const SAW_DAMAGE_PER_SECOND: f32 = 260.0;
+/// Which way a flame tank's two flamethrowers point from its nose: ten and two o'clock.
+pub const FLAME_TANK_NOZZLES: [f32; 2] =
+    [-std::f32::consts::FRAC_PI_3, std::f32::consts::FRAC_PI_3];
 const STREAK_SECONDS: f32 = 0.14;
 /// How hard a shot-down aircraft falls.
 const WRECK_GRAVITY: f32 = 9.0;
@@ -124,6 +135,9 @@ pub enum WeaponKind {
     HeavyRockets,
     /// Like a mortar, but a smaller white shell that hits harder, from four cannons in turn.
     Bombard,
+    /// A siege tank's long cannon, deployed: a bombard's shell, one at a time but more often
+    /// all told, and from farther away.
+    Siege,
     /// Like a bullet, but slower and from farther away, and hits harder.
     Sniper,
     /// Like a bullet, but weak and slower.
@@ -153,6 +167,7 @@ impl WeaponKind {
             WeaponKind::Mortar => 16.0,
             WeaponKind::Rockets | WeaponKind::HeavyRockets => 13.0,
             WeaponKind::Bombard => 14.0,
+            WeaponKind::Siege => 20.0,
             WeaponKind::Sniper => 14.0,
             WeaponKind::Pistol => 5.0,
             WeaponKind::Cannon => 10.0,
@@ -173,6 +188,7 @@ impl WeaponKind {
             WeaponKind::Unarmed | WeaponKind::Repair => false,
             WeaponKind::Mortar
             | WeaponKind::Bombard
+            | WeaponKind::Siege
             | WeaponKind::Bullet
             | WeaponKind::Sniper
             | WeaponKind::Pistol
@@ -238,6 +254,7 @@ impl WeaponKind {
             WeaponKind::Rockets => 0.3,
             WeaponKind::HeavyRockets => 0.6,
             WeaponKind::Bombard => 0.5,
+            WeaponKind::Siege => 1.6,
             WeaponKind::Sniper => 3.5,
             WeaponKind::Pistol => 1.5,
             WeaponKind::Cannon => 3.0,
@@ -257,7 +274,7 @@ impl WeaponKind {
             WeaponKind::Mortar => 70.0,
             WeaponKind::Rockets => 35.0,
             WeaponKind::HeavyRockets => 130.0,
-            WeaponKind::Bombard => 90.0,
+            WeaponKind::Bombard | WeaponKind::Siege => 90.0,
             WeaponKind::Sniper => 90.0,
             WeaponKind::Pistol => 8.0,
             WeaponKind::Cannon => 80.0,
@@ -340,7 +357,7 @@ impl Shell {
 
     /// The points of its arc it has just passed, nearest first, if it shows them.
     pub fn tracer(&self) -> Option<[Point; 4]> {
-        (self.weapon == WeaponKind::Bombard).then(|| {
+        matches!(self.weapon, WeaponKind::Bombard | WeaponKind::Siege).then(|| {
             std::array::from_fn(|i| {
                 let behind = TRACER_SECONDS * (i as f32 + 1.0) / 4.0;
                 self.position_at((self.elapsed - behind).max(0.0))
@@ -891,6 +908,8 @@ impl Combat {
 
     fn step(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
         self.fire(units, teams, terrain, dt);
+        self.set_off_suicides(units, teams);
+        cut_with_saws(units, teams, dt);
         self.fly_missiles(units, teams, terrain, dt);
         self.fly_shells(units, teams, dt);
         self.fall_strikes(units, terrain, dt);
@@ -982,8 +1001,8 @@ impl Combat {
             | WeaponKind::Cannon
             | WeaponKind::AutoGun => {
                 strike(units, i, target, to, weapon, teams);
-                // A machine gun tower's two guns take turns.
-                units[i].second_tube ^= units[i].kind == UnitKind::Tower;
+                // Twin guns take turns.
+                units[i].second_tube ^= has_twin_guns(&units[i]);
             }
             WeaponKind::Flame | WeaponKind::Gas => self.spray(units, i, teams, forced),
             WeaponKind::Laser => {
@@ -1037,12 +1056,12 @@ impl Combat {
                 });
                 units[i].second_tube = !units[i].second_tube;
             }
-            WeaponKind::Mortar | WeaponKind::Bombard => {
+            WeaponKind::Mortar | WeaponKind::Bombard | WeaponKind::Siege => {
                 let flat = (to.0 - from.0).hypot(to.2 - from.2);
-                let (speed, arc) = if weapon == WeaponKind::Bombard {
-                    (BOMBARD_SPEED, BOMBARD_ARC)
-                } else {
-                    (SHELL_SPEED, SHELL_ARC)
+                let (speed, arc) = match weapon {
+                    WeaponKind::Bombard => (BOMBARD_SPEED, BOMBARD_ARC),
+                    WeaponKind::Siege => (BOMBARD_SPEED * 1.2, BOMBARD_ARC * 1.3),
+                    _ => (SHELL_SPEED, SHELL_ARC),
                 };
                 self.shells.push(Shell {
                     start: from,
@@ -1080,33 +1099,58 @@ impl Combat {
             return;
         };
         let reach = unit.weapon.range();
-        for index in 0..units.len() {
-            let other = units[index];
-            let harmed = forced || are_enemies(teams, unit.owner, other.owner);
-            if index == sprayer
-                || !other.alive
-                || !harmed
-                || !unit.weapon.can_target(other.height_as_target())
-            {
+        for &nozzle in spray_ways(&unit) {
+            let heading = unit.heading + nozzle;
+            for index in 0..units.len() {
+                let other = units[index];
+                let harmed = forced || are_enemies(teams, unit.owner, other.owner);
+                if index == sprayer
+                    || !other.alive
+                    || !harmed
+                    || !unit.weapon.can_target(other.height_as_target())
+                {
+                    continue;
+                }
+                let (dx, dz) = (other.x - unit.x, other.z - unit.z);
+                let away = dx.hypot(dz);
+                // A big target counts from as far around as its side reaches.
+                let off_center = turn_between(heading, dz.atan2(dx)).abs();
+                let widened = half_angle + (other.radius() / away.max(0.0001)).min(1.0).asin();
+                if away <= reach + other.radius() && off_center <= widened {
+                    hit(units, index, unit.weapon, Shooter::of(&unit), teams);
+                }
+            }
+            self.sprays.push(Spray {
+                from: unit.nozzle(nozzle),
+                heading,
+                reach,
+                half_angle,
+                gas: unit.weapon == WeaponKind::Gas,
+                life: 1.0,
+            });
+        }
+    }
+
+    /// A deployed suicide infantry blows up, harming everyone around it, friend or foe, and
+    /// itself most of all.
+    fn set_off_suicides(&mut self, units: &mut [Unit], teams: &[usize]) {
+        for i in 0..units.len() {
+            if !(units[i].alive && units[i].deployed && units[i].role == Role::SuicideInfantry) {
                 continue;
             }
-            let (dx, dz) = (other.x - unit.x, other.z - unit.z);
-            let away = dx.hypot(dz);
-            // A big target counts from as far around as its side reaches.
-            let off_center = turn_between(unit.heading, dz.atan2(dx)).abs();
-            let widened = half_angle + (other.radius() / away.max(0.0001)).min(1.0).asin();
-            if away <= reach + other.radius() && off_center <= widened {
-                hit(units, index, unit.weapon, Shooter::of(&unit), teams);
+            let center = units[i].center();
+            let shooter = Shooter::of(&units[i]);
+            hurt(&mut units[i], f32::INFINITY);
+            for index in (0..units.len()).filter(|&index| index != i) {
+                let away = distance(center, units[index].center()) - units[index].radius();
+                if units[index].alive && away <= SUICIDE_BLAST_RADIUS {
+                    // Strongest in the middle, half as strong at the edge.
+                    let share = 1.0 - 0.5 * (away / SUICIDE_BLAST_RADIUS).max(0.0);
+                    harm(units, index, SUICIDE_DAMAGE * share, shooter, teams);
+                }
             }
+            self.explode(center, SUICIDE_BLAST_RADIUS);
         }
-        self.sprays.push(Spray {
-            from: unit.muzzle(),
-            heading: unit.heading,
-            reach,
-            half_angle,
-            gas: unit.weapon == WeaponKind::Gas,
-            life: 1.0,
-        });
     }
 
     fn fly_missiles(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
@@ -1184,10 +1228,10 @@ impl Combat {
                 flying.push(shell);
                 continue;
             }
-            let blast_radius = if shell.weapon == WeaponKind::Bombard {
-                BOMBARD_BLAST_RADIUS
-            } else {
-                SHELL_BLAST_RADIUS
+            let blast_radius = match shell.weapon {
+                WeaponKind::Bombard => BOMBARD_BLAST_RADIUS,
+                WeaponKind::Siege => BOMBARD_BLAST_RADIUS * 1.2,
+                _ => SHELL_BLAST_RADIUS,
             };
             // Only enemies of whoever fired are hurt, so that units can fire freely.
             for index in 0..units.len() {
@@ -1352,6 +1396,12 @@ fn hurt(unit: &mut Unit, damage: f32) {
 /// Towers, sprayers, tanks, catapults and whatever carries rockets can only fire the way they
 /// face.
 fn must_turn_to_fire(unit: &Unit) -> bool {
+    if matches!(
+        unit.role,
+        Role::HugeTank | Role::DiskSaw | Role::SandBike | Role::FlameTank
+    ) {
+        return true;
+    }
     unit.kind == UnitKind::Tower
         || unit.weapon.spray_angle().is_some()
         || (unit.weapon != WeaponKind::Repair
@@ -1362,8 +1412,46 @@ fn must_turn_to_fire(unit: &Unit) -> bool {
                     | Role::RocketLauncher
                     | Role::Ornithopter
                     | Role::Destroyer
-                    | Role::HeavyStrider
+                    | Role::Minotaurus
             ))
+}
+
+/// Which ways from its nose a sprayer's nozzles point.
+fn spray_ways(unit: &Unit) -> &'static [f32] {
+    if unit.role == Role::FlameTank {
+        &FLAME_TANK_NOZZLES
+    } else {
+        &[0.0]
+    }
+}
+
+/// Whether it fires two guns side by side in turn.
+fn has_twin_guns(unit: &Unit) -> bool {
+    matches!(unit.role, Role::GunTower | Role::DiskSaw | Role::HugeTank)
+}
+
+/// A disk saw's blade cuts down the enemy infantry it reaches.
+fn cut_with_saws(units: &mut [Unit], teams: &[usize], dt: f32) {
+    for i in 0..units.len() {
+        if !(units[i].alive && units[i].role == Role::DiskSaw) {
+            continue;
+        }
+        let (sin, cos) = units[i].heading.sin_cos();
+        let blade = (units[i].x + cos * SAW_AHEAD, units[i].z + sin * SAW_AHEAD);
+        let shooter = Shooter::of(&units[i]);
+        for index in 0..units.len() {
+            let other = units[index];
+            let reached =
+                (other.x - blade.0).hypot(other.z - blade.1) <= SAW_REACH + other.radius();
+            if other.alive
+                && other.kind == UnitKind::Infantry
+                && are_enemies(teams, shooter.owner, other.owner)
+                && reached
+            {
+                harm(units, index, SAW_DAMAGE_PER_SECOND * dt, shooter, teams);
+            }
+        }
+    }
 }
 
 /// What a unit fires at this moment.
@@ -1400,7 +1488,12 @@ fn turn_to_aim(units: &mut [Unit], index: usize, aim: Option<Aim>, dt: f32) -> b
         }
     };
     let (dx, dz) = (goal.0 - units[index].x, goal.2 - units[index].z);
-    let turn = turn_between(units[index].heading, dz.atan2(dx));
+    // A flame tank turns whichever of its nozzles is nearer onto its aim.
+    let turn = spray_ways(&units[index])
+        .iter()
+        .map(|&way| turn_between(units[index].heading + way, dz.atan2(dx)))
+        .min_by(|a, b| a.abs().total_cmp(&b.abs()))
+        .unwrap_or(0.0);
     let most = AIM_TURN * dt;
     let turned = turn.clamp(-most, most);
     units[index].heading += turned;
@@ -1486,6 +1579,7 @@ fn nearest_enemy(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usiz
     for (i, unit) in units.iter().enumerate() {
         if unit.alive
             && are_enemies(teams, owner, unit.owner)
+            && !unit.hidden_from(owner, teams)
             && weapon.can_target(unit.height_as_target())
             && unit.kind != UnitKind::Building
         {
@@ -2117,6 +2211,145 @@ mod tests {
             combat.advance(&mut [], &TEAMS, flat(), 0.05);
         }
         assert!(combat.eruptions.is_empty() && combat.particles.is_empty());
+    }
+
+    /// A unit of a role at a point, for the player, its weapon as the role's.
+    fn as_role(role: Role, x: f32, z: f32) -> Unit {
+        let mut unit = Unit::for_test(x, z, role.kind());
+        unit.role = role;
+        unit.weapon =
+            crate::units::new_building(flat(), (x, z), role, (0, TeamColor::Blue), 1).weapon;
+        unit.id = 1;
+        unit.cooldown = 0.0;
+        unit.heading = 0.0;
+        unit
+    }
+
+    #[test]
+    fn a_deployed_suicide_infantry_blows_up_everyone_around_it_and_itself() {
+        let mut bomber = as_role(Role::SuicideInfantry, 0.0, 60.0);
+        assert_eq!(bomber.weapon, WeaponKind::Unarmed);
+        let mut friend = Unit::for_test(1.0, 60.0, UnitKind::Infantry);
+        friend.id = 3;
+        let mut tank = target_at(2.0, 60.0);
+        tank.kind = UnitKind::Vehicle;
+        tank.health = 300.0;
+        let far = target_at(SUICIDE_BLAST_RADIUS + 2.0, 60.0);
+        let mut units = [bomber, target_at(0.5, 60.0), friend, tank, far];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.5);
+        assert!(units.iter().all(|u| u.alive), "nothing before it deploys");
+        crate::units::switch_deployed(&mut units[0]);
+        bomber = units[0];
+        assert!(bomber.deployed);
+        run(&mut combat, &mut units, 0.05);
+        assert!(!units[0].alive, "it goes with it");
+        assert!(!units[1].alive && !units[2].alive, "enemy and friend alike");
+        assert!(units[3].health < 300.0 * 0.5, "even a vehicle badly");
+        assert!(
+            units[4].alive && units[4].health == units[4].max_health(),
+            "not beyond"
+        );
+        assert!(!combat.blasts.is_empty());
+    }
+
+    #[test]
+    fn a_disk_saw_cuts_down_infantry_its_blade_reaches_but_not_vehicles() {
+        let saw = as_role(Role::DiskSaw, 0.0, 60.0);
+        let mut tank = target_at(SAW_AHEAD + 0.3, 60.6);
+        tank.kind = UnitKind::Vehicle;
+        tank.id = 3;
+        let mut units = [saw, target_at(SAW_AHEAD + 0.2, 60.0), tank];
+        units[0].cooldown = 1e9;
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.5);
+        assert!(!units[1].alive, "cut down");
+        assert_eq!(units[2].health, units[2].max_health(), "only infantry");
+    }
+
+    #[test]
+    fn a_flame_tank_sprays_from_two_nozzles_at_ten_and_two_oclock() {
+        // Its target is ahead and to the right, where its two o'clock nozzle points.
+        let way = FLAME_TANK_NOZZLES[1];
+        let target = target_at(3.0 * way.cos(), 60.0 + 3.0 * way.sin());
+        let mut units = [as_role(Role::FlameTank, 0.0, 60.0), target];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.3);
+        assert!(
+            units[0].heading.abs() < 0.2,
+            "it hardly turns: {}",
+            units[0].heading
+        );
+        assert!(units[1].health < units[1].max_health());
+        let headings: Vec<f32> = combat.sprays.iter().map(|s| s.heading).collect();
+        assert!(
+            headings
+                .iter()
+                .any(|h| (h - units[0].heading - way).abs() < 0.01)
+        );
+        assert!(
+            headings
+                .iter()
+                .any(|h| (h - units[0].heading + way).abs() < 0.01)
+        );
+    }
+
+    #[test]
+    fn a_huge_tank_and_a_disk_saw_fire_their_twin_guns_in_turn() {
+        for role in [Role::HugeTank, Role::DiskSaw] {
+            let mut units = [as_role(role, 0.0, 60.0), target_at(4.0, 60.0)];
+            let mut combat = Combat::default();
+            let mut fired_from = Vec::new();
+            for _ in 0..200 {
+                let known = combat.flares.len();
+                combat.advance(&mut units, &TEAMS, flat(), 0.05);
+                if combat.flares.len() > known {
+                    fired_from.push(combat.flares.last().unwrap().at);
+                }
+            }
+            assert!(fired_from.len() >= 2, "{role:?}");
+            assert!(distance(fired_from[0], fired_from[1]) > 0.2, "{role:?}");
+        }
+    }
+
+    #[test]
+    fn nobody_goes_after_an_enemy_scout_but_a_blast_still_harms_it() {
+        let mut scout = target_at(4.0, 60.0);
+        scout.role = Role::Scout;
+        let rifle = shooter(WeaponKind::Bullet);
+        assert!(!rifle.can_attack(&scout, &TEAMS), "it cannot be seen");
+        let mut units = [rifle, scout];
+        let mut combat = Combat::default();
+        let before = units[1].health;
+        run(&mut combat, &mut units, 3.0);
+        assert_eq!(units[1].health, before, "nobody fires at it");
+        combat.explode(units[1].center(), 1.0);
+        let mut bomber = as_role(Role::SuicideInfantry, 3.0, 60.0);
+        crate::units::switch_deployed(&mut bomber);
+        let mut units = [bomber, units[1]];
+        run(&mut combat, &mut units, 0.05);
+        assert!(!units[1].alive, "caught in the blast");
+    }
+
+    #[test]
+    fn a_siege_tank_fires_its_cannon_on_tracks_and_shells_from_farther_off_deployed() {
+        let mut siege = as_role(Role::SiegeTank, 0.0, 60.0);
+        assert_eq!(siege.weapon, WeaponKind::Cannon);
+        crate::units::switch_deployed(&mut siege);
+        assert_eq!(siege.weapon, WeaponKind::Siege);
+        assert!(WeaponKind::Siege.range() > WeaponKind::Bombard.range());
+        // More shots a minute than a heavy strider's four cannons with their calm after.
+        let bombard = 60.0 / (BOMBARD_CALM_SECONDS + 0.5 * 3.0) * 4.0;
+        assert!(60.0 / WeaponKind::Siege.cooldown() > bombard);
+        let far = WeaponKind::Siege.range() - 1.0;
+        let mut units = [siege, target_at(far, 60.0)];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.2);
+        assert_eq!(combat.shells.len(), 1, "one at a time");
+        run(&mut combat, &mut units, 6.0);
+        assert!(units[1].health < units[1].max_health(), "from that far");
+        crate::units::switch_deployed(&mut units[0]);
+        assert_eq!(units[0].weapon, WeaponKind::Cannon, "packed up again");
     }
 
     fn run(combat: &mut Combat, units: &mut [Unit], seconds: f32) {
@@ -3401,7 +3634,7 @@ mod tests {
 
     fn heavy_strider_facing_east() -> Unit {
         let mut unit = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
-        unit.role = Role::HeavyStrider;
+        unit.role = Role::Minotaurus;
         unit.id = 1;
         unit.weapon = WeaponKind::Bombard;
         unit.heading = 0.0;
@@ -3490,7 +3723,7 @@ mod tests {
         assert!(combat.shells.is_empty(), "the target is behind it");
 
         let mut strider = heavy_strider_facing_east();
-        strider.role = Role::Strider;
+        strider.role = Role::Mongoose;
         strider.weapon = WeaponKind::Missile;
         strider.destination = (0.0, 70.0);
         let mut units = [strider, target_at(8.0, 60.0)];

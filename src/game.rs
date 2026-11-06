@@ -23,24 +23,68 @@ const STARTING_ENERGY: i32 = 65;
 
 /// The Vehicles menu's cell holding the superweapon.
 pub const SUPERWEAPON_CELL: usize = 6;
-/// What each tab's first cells produce, in order.
-const INFANTRY_BUILDS: [Role; 7] = [
-    Role::Scout,
-    Role::LightInfantry,
-    Role::Sniper,
-    Role::Engineer,
-    Role::KInfantry,
-    Role::FlameInfantry,
-    Role::GasInfantry,
+/// What each house's Infantry menu makes, in order: every house's scout and engineer, and its
+/// own three.
+const INFANTRY_BUILDS: [(Faction, [Role; 5]); 3] = [
+    (
+        Faction::A,
+        [
+            Role::Scout,
+            Role::LightInfantry,
+            Role::Sniper,
+            Role::Engineer,
+            Role::KInfantry,
+        ],
+    ),
+    (
+        Faction::H,
+        [
+            Role::Scout,
+            Role::RegularInfantry,
+            Role::RocketInfantry,
+            Role::Engineer,
+            Role::FlameInfantry,
+        ],
+    ),
+    (
+        Faction::O,
+        [
+            Role::Scout,
+            Role::GasInfantry,
+            Role::MortarInfantry,
+            Role::Engineer,
+            Role::SuicideInfantry,
+        ],
+    ),
 ];
-const VEHICLE_BUILDS: [Role; 6] = [
-    Role::Tank,
-    Role::RepairVehicle,
-    Role::Catapult,
-    Role::RocketLauncher,
-    Role::Strider,
-    Role::HeavyStrider,
-];
+/// What each house's Vehicles menu makes on the ground, in the cells `VEHICLE_CELLS` lists.
+fn vehicle_builds(house: Faction) -> &'static [Role] {
+    match house {
+        Faction::A => &[
+            Role::SandBike,
+            Role::RepairVehicle,
+            Role::RocketLauncher,
+            Role::Mongoose,
+            Role::Minotaurus,
+        ],
+        Faction::H => &[
+            Role::Tank,
+            Role::Catapult,
+            Role::RocketLauncher,
+            Role::DiskSaw,
+            Role::FlameTank,
+            Role::HugeTank,
+        ],
+        Faction::O => &[
+            Role::Recon,
+            Role::LaserTank,
+            Role::RocketLauncher,
+            Role::SiegeTank,
+        ],
+    }
+}
+/// The Vehicles menu's cells free for ground vehicles, in order.
+const VEHICLE_CELLS: [usize; 8] = [0, 1, 2, 3, 4, 5, 8, 10];
 /// What the Vehicles menu's bottom row makes, from its left end.
 const BOTTOM_VEHICLE_BUILDS: [Role; 3] =
     [Role::AirDefensePlatform, Role::AirDrone, Role::Ornithopter];
@@ -56,17 +100,28 @@ pub const SUPERWEAPON_RECHARGE: f32 = 60.0;
 
 /// What opponents build, one at random whenever they get to. They leave out what only helps
 /// others, since they have no plan for it yet.
-const OPPONENT_BUILDS: [Role; 14] = [
+const OPPONENT_BUILDS: [Role; 25] = [
     Role::LightInfantry,
     Role::Sniper,
     Role::KInfantry,
+    Role::RegularInfantry,
+    Role::RocketInfantry,
     Role::FlameInfantry,
     Role::GasInfantry,
+    Role::MortarInfantry,
+    Role::SuicideInfantry,
+    Role::SandBike,
+    Role::Mongoose,
+    Role::Minotaurus,
     Role::Tank,
     Role::Catapult,
+    Role::DiskSaw,
+    Role::FlameTank,
+    Role::HugeTank,
+    Role::Recon,
+    Role::LaserTank,
+    Role::SiegeTank,
     Role::RocketLauncher,
-    Role::Strider,
-    Role::HeavyStrider,
     Role::AirDefensePlatform,
     Role::AirDrone,
     Role::Ornithopter,
@@ -1377,8 +1432,9 @@ impl Game {
 
     /// Whether the player can see this unit: their own and allies' always, others only in view.
     pub fn shows(&self, unit: &Unit) -> bool {
-        units::are_friends(&self.teams, 0, unit.owner)
-            || self.sight_at(unit.x, unit.z) == Sight::Visible
+        !unit.hidden_from(0, &self.teams)
+            && (units::are_friends(&self.teams, 0, unit.owner)
+                || self.sight_at(unit.x, unit.z) == Sight::Visible)
     }
 
     /// Sees the map anew from where the player's and allies' units stand now.
@@ -1515,15 +1571,22 @@ impl Game {
             .then_some(chosen)
     }
 
-    /// What a cell of the build menu makes.
-    pub fn build_role(tab: BuildTab, cell: usize) -> Option<Role> {
+    /// What a cell of the build menu makes, for the player's house.
+    pub fn build_role(&self, tab: BuildTab, cell: usize) -> Option<Role> {
+        let house = self.faction_of(0);
         match tab {
-            BuildTab::Infantry => INFANTRY_BUILDS.get(cell).copied(),
+            BuildTab::Infantry => INFANTRY_BUILDS
+                .iter()
+                .find(|(of, _)| *of == house)
+                .and_then(|(_, builds)| builds.get(cell))
+                .copied(),
             BuildTab::Vehicles if cell == CARRYALL_CELL => Some(Role::AdvancedCarryall),
             BuildTab::Vehicles if cell == MPV_CELL => Some(Role::Mpv),
             BuildTab::Vehicles if cell == DESTROYER_CELL => Some(Role::Destroyer),
-            BuildTab::Vehicles => VEHICLE_BUILDS
-                .get(cell)
+            BuildTab::Vehicles => VEHICLE_CELLS
+                .iter()
+                .position(|&free| free == cell)
+                .and_then(|i| vehicle_builds(house).get(i))
                 .or_else(|| BOTTOM_VEHICLE_BUILDS.get(cell.checked_sub(BOTTOM_ROW_START)?))
                 .copied(),
             BuildTab::Buildings => BUILDING_BUILDS.get(cell).copied(),
@@ -1668,7 +1731,7 @@ impl Game {
     /// it. Otherwise it shows greyed out.
     pub fn tab_enabled(&self, tab: BuildTab) -> bool {
         (0..hud::GRID_ROWS * hud::GRID_COLUMNS)
-            .filter_map(|cell| Game::build_role(tab, cell))
+            .filter_map(|cell| self.build_role(tab, cell))
             .any(|role| self.can_produce(role))
     }
 
@@ -1722,7 +1785,8 @@ impl Game {
         let at = self.view().ground_at(self.mouse.0, self.mouse.1)?;
         let terrain = battlefield::terrain(self.battle_map);
         let side = (0, self.stats_rows().first()?.color);
-        let building = units::new_building(terrain, at, role, side, self.next_unit_id);
+        let mut building = units::new_building(terrain, at, role, side, self.next_unit_id);
+        building.house = self.faction_of(0);
         let can = units::can_place_building(&self.units, terrain, at)
             && self.sight_at(at.0, at.1) != Sight::Unexplored
             && self.can_produce(role);
@@ -1738,7 +1802,7 @@ impl Game {
             if self.build_tab == BuildTab::Vehicles && cell == SUPERWEAPON_CELL {
                 return Some("Superweapon");
             }
-            return Game::build_role(self.build_tab, cell).map(|role| {
+            return self.build_role(self.build_tab, cell).map(|role| {
                 if self.can_produce(role) {
                     return role.name();
                 }
@@ -2247,6 +2311,10 @@ impl Game {
         self.teams = (0..colors.len()).collect();
         self.reported_defeated = vec![false; colors.len()];
         self.units = units::spawn(battlefield::terrain(map), &colors);
+        let houses: Vec<Faction> = (0..colors.len()).map(|o| self.faction_of(o)).collect();
+        for unit in &mut self.units {
+            unit.house = houses[unit.owner];
+        }
         self.next_unit_id = self.units.len() as u32;
         self.fog = self.fog_allowed().then(Fog::new);
         self.update_fog();
@@ -2589,7 +2657,7 @@ impl Game {
                     && let Some(Action::BuildCell(cell)) = self.hovered()
                 {
                     // On a build button it calls off one of those, and the selection stands.
-                    if let Some(role) = Game::build_role(self.build_tab, cell) {
+                    if let Some(role) = self.build_role(self.build_tab, cell) {
                         if self.site_of(role) {
                             self.site = Site::Idle;
                         } else {
@@ -2763,7 +2831,7 @@ impl Game {
 
     /// Makes what the cell makes, or gets the superweapon ready to aim.
     fn activate_build_cell(&mut self, cell: usize) {
-        if let Some(role) = Game::build_role(self.build_tab, cell) {
+        if let Some(role) = self.build_role(self.build_tab, cell) {
             if role.kind().is_building() {
                 if self.can_produce(role) {
                     self.click_building(role);
@@ -4291,7 +4359,7 @@ mod tests {
     fn a_landing_pad_is_built_from_the_buildings_menu_and_every_side_starts_with_one() {
         let mut game = in_battle();
         assert_eq!(
-            Game::build_role(BuildTab::Buildings, 3),
+            game.build_role(BuildTab::Buildings, 3),
             Some(Role::LandingPad)
         );
         for owner in 0..game.teams.len() {
@@ -5170,26 +5238,51 @@ mod tests {
     }
 
     #[test]
-    fn each_vehicle_button_makes_its_vehicle_and_the_superweapon_comes_after_them() {
+    fn each_vehicle_button_makes_its_houses_vehicle_and_the_superweapon_comes_after_them() {
+        for (house, names) in [
+            (
+                Faction::A,
+                &[
+                    "Sand Bike",
+                    "Repair Vehicle",
+                    "Rocket Launcher",
+                    "Mongoose",
+                    "Minotaurus",
+                ][..],
+            ),
+            (
+                Faction::H,
+                &[
+                    "Tank",
+                    "Catapult",
+                    "Rocket Launcher",
+                    "Disk Saw",
+                    "Flame Tank",
+                    "Huge Tank",
+                ][..],
+            ),
+            (
+                Faction::O,
+                &["Recon", "Laser Tank", "Rocket Launcher", "Siege Tank"][..],
+            ),
+        ] {
+            let mut game = in_battle_as(house);
+            click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+            for (&cell, &name) in VEHICLE_CELLS.iter().zip(names) {
+                let before = game.units.len();
+                click_hud(&mut game, Action::BuildCell(cell));
+                assert_eq!(game.units.len(), before + 1, "{house:?} {name}");
+                assert_eq!(game.units[before].name(), name);
+                assert_eq!(game.units[before].kind, UnitKind::Vehicle);
+                assert_eq!(game.units[before].house, house);
+            }
+            assert_eq!(
+                game.build_role(BuildTab::Vehicles, VEHICLE_CELLS[names.len()]),
+                None
+            );
+        }
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        for (cell, name) in [
-            "Tank",
-            "Repair Vehicle",
-            "Catapult",
-            "Rocket Launcher",
-            "Strider",
-            "Heavy Strider",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let before = game.units.len();
-            click_hud(&mut game, Action::BuildCell(cell));
-            assert_eq!(game.units.len(), before + 1);
-            assert_eq!(game.units[before].name(), name);
-            assert_eq!(game.units[before].kind, UnitKind::Vehicle);
-        }
         assert!(!game.aiming_strike);
         let before = game.units.len();
         click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
@@ -5454,7 +5547,7 @@ mod tests {
         click_hud(&mut game, Action::BuildCell(5));
         assert!(!crate::render::build(&game).is_empty());
         let strider = game.units.last_mut().unwrap();
-        assert_eq!(strider.role, Role::HeavyStrider);
+        assert_eq!(strider.role, Role::Minotaurus);
         strider.recoil = [1.0, 0.5, 0.0, 0.0];
         strider.stride = 1.3;
         strider.destination.0 += 5.0;
@@ -5803,7 +5896,7 @@ mod tests {
         press(&mut game, 12);
         assert!(game.making_progress(Role::Scout).is_some());
         assert!(
-            game.making_progress(Role::Tank).is_some(),
+            game.making_progress(Role::SandBike).is_some(),
             "not behind the scouts"
         );
         assert!(game.making_progress(Role::AirDefensePlatform).is_some());
@@ -6005,7 +6098,7 @@ mod tests {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         assert_eq!(
-            Game::build_role(BuildTab::Vehicles, MPV_CELL),
+            game.build_role(BuildTab::Vehicles, MPV_CELL),
             Some(Role::Mpv)
         );
         click_hud(&mut game, Action::BuildCell(MPV_CELL));
@@ -6031,7 +6124,7 @@ mod tests {
         ] {
             let mut game = in_battle();
             click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
-            assert_eq!(Game::build_role(BuildTab::Buildings, cell), Some(role));
+            assert_eq!(game.build_role(BuildTab::Buildings, cell), Some(role));
             click_hud(&mut game, Action::BuildCell(cell));
             game.update(role.build_seconds() + 0.1);
             assert_eq!(game.site, Site::Ready(role));
@@ -6236,12 +6329,27 @@ mod tests {
     }
 
     #[test]
-    fn the_infantry_menu_also_makes_flame_and_gas_infantry() {
-        let mut game = in_battle();
-        for (cell, name) in [(5, "Flame Infantry"), (6, "Gas Infantry")] {
-            let before = game.units.len();
-            click_hud(&mut game, Action::BuildCell(cell));
-            assert_eq!(game.units[before].name(), name);
+    fn each_houses_barracks_makes_its_own_three_besides_scouts_and_engineers() {
+        for (house, names) in [
+            (Faction::A, ["Light Infantry", "Sniper", "K Infantry"]),
+            (
+                Faction::H,
+                ["Regular Infantry", "Rocket Infantry", "Flame Infantry"],
+            ),
+            (
+                Faction::O,
+                ["Gas Infantry", "Mortar Infantry", "Suicide Infantry"],
+            ),
+        ] {
+            let mut game = in_battle_as(house);
+            let all = ["Scout", names[0], names[1], "Engineer", names[2]];
+            for (cell, name) in all.into_iter().enumerate() {
+                let before = game.units.len();
+                click_hud(&mut game, Action::BuildCell(cell));
+                assert_eq!(game.units[before].name(), name, "{house:?}");
+                assert_eq!(game.units[before].house, house);
+            }
+            assert_eq!(game.build_role(BuildTab::Infantry, all.len()), None);
         }
     }
 
@@ -6291,20 +6399,21 @@ mod tests {
 
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         for (i, name) in [
-            "Tank",
-            "Repair Vehicle",
-            "Catapult",
-            "Rocket Launcher",
-            "Strider",
-            "Heavy Strider",
-            "Superweapon",
+            Some("Sand Bike"),
+            Some("Repair Vehicle"),
+            Some("Rocket Launcher"),
+            Some("Mongoose"),
+            Some("Minotaurus"),
+            None,
+            Some("Superweapon"),
+            Some("MPV"),
         ]
         .into_iter()
         .enumerate()
         {
             let b = cell(i);
             game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
-            assert_eq!(game.tip(), Some(name));
+            assert_eq!(game.tip(), name);
         }
 
         let tower = game.units[tower_of(&game, 0)];
@@ -8461,7 +8570,13 @@ mod tests {
     }
 
     fn in_battle() -> Game {
+        in_battle_as(Faction::A)
+    }
+
+    /// A skirmish with the player of this house.
+    fn in_battle_as(house: Faction) -> Game {
         let mut game = in_setup();
+        game.skirmish.faction = house;
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         assert_eq!(game.screen, Screen::InGame);

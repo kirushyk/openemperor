@@ -688,8 +688,8 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         Role::RepairVehicle => &[[0.43, 0.24, 0.0]],
         Role::Catapult => &[[0.43, 0.17, 0.0]],
         Role::RocketLauncher => &[[0.46, 0.2, -0.15], [0.46, 0.2, 0.15]],
-        Role::Strider => &[[0.25, 0.57, 0.0]],
-        Role::HeavyStrider => &[[0.41, 1.15, -0.06], [0.41, 1.15, 0.06]],
+        Role::Mongoose => &[[0.25, 0.57, 0.0]],
+        Role::Minotaurus => &[[0.41, 1.15, -0.06], [0.41, 1.15, 0.06]],
         Role::AdvancedCarryall => &[[0.55, 0.03, -0.08], [0.55, 0.03, 0.08]],
         Role::AirDefensePlatform => &[[0.41, 0.05, -0.27], [0.41, 0.05, 0.27]],
         Role::Ornithopter => &[[0.23, 0.08, 0.0]],
@@ -698,6 +698,14 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         Role::Tower | Role::GunTower => &[[0.14, 1.5, 0.0]],
         // A big headlamp on the front of each front track pod.
         Role::Mpv => &[[1.02, 0.34, -0.66], [1.02, 0.34, 0.66]],
+        Role::SandBike => &[[0.43, 0.2, 0.0]],
+        Role::DiskSaw => &[[0.4, 0.24, -0.15], [0.4, 0.24, 0.15]],
+        Role::FlameTank => &[[0.43, 0.2, 0.0]],
+        Role::HugeTank => &[[0.73, 0.37, -0.36], [0.73, 0.37, 0.36]],
+        Role::Recon => &[[0.38, 0.42, 0.0]],
+        Role::LaserTank => &[[0.48, 0.17, 0.0]],
+        // On top of its right track.
+        Role::SiegeTank => &[[0.36, 0.25, 0.33]],
         _ => &[],
     }
 }
@@ -706,7 +714,7 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
 fn lamp_radius(role: Role) -> f32 {
     match role {
         Role::AdvancedCarryall => 0.045,
-        Role::HeavyStrider => 0.035,
+        Role::Minotaurus => 0.035,
         Role::Tower | Role::GunTower => 0.045,
         Role::Mpv => 0.075,
         _ => 0.026,
@@ -741,7 +749,7 @@ pub fn beams(unit: &Unit) -> Vec<Beam> {
         Role::AdvancedCarryall => (8.0, 2.6),
         Role::AirDefensePlatform => (4.5, 0.8),
         Role::Ornithopter | Role::Destroyer => (5.0, 1.2),
-        Role::HeavyStrider => (3.5, 1.0),
+        Role::Minotaurus => (3.5, 1.0),
         Role::Mpv => (4.5, 1.5),
         // A searchlight throws a long, narrow beam far over the ground as the tower looks out.
         Role::Tower | Role::GunTower => (8.0, 0.9),
@@ -779,13 +787,20 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
         Role::RepairVehicle => repair_vehicle(model, unit, team),
         Role::Catapult => catapult(model, unit, team),
         Role::RocketLauncher => rocket_launcher(model, unit, team),
-        Role::Strider => strider(model, unit, team),
-        Role::HeavyStrider => heavy_strider(model, unit, team),
+        Role::Mongoose => strider(model, unit, team),
+        Role::Minotaurus => heavy_strider(model, unit, team),
         Role::AdvancedCarryall => carryall(model, team),
         Role::AirDefensePlatform => air_defense_platform(model, team),
         Role::AirDrone => air_drone(model, team),
         Role::Ornithopter => ornithopter(model, unit, time, team),
         Role::Destroyer => destroyer(model, unit, time, team),
+        Role::SandBike => sand_bike(model, team),
+        Role::DiskSaw => disk_saw(model, unit, time, team),
+        Role::FlameTank => flame_tank(model, unit, team),
+        Role::HugeTank => huge_tank(model, unit, team),
+        Role::Recon => recon(model, unit, team),
+        Role::LaserTank => laser_tank(model, time, team),
+        Role::SiegeTank => siege_tank(model, unit, team),
         _ => return,
     }
     let radius = lamp_radius(unit.role);
@@ -1964,3 +1979,309 @@ pub fn draw_mpv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, c
 
 /// How far an MPV's tracks are from its middle line.
 const MPV_TRACKS_APART: f32 = 0.66;
+
+/// A fast sand bike: a flat teardrop, round at the nose and drawn out to a point behind, on a
+/// wheel at each end, with a rifle on its nose.
+fn sand_bike(model: &mut Model, team: Paint) {
+    let rings = [
+        [-0.46, 0.2, 0.0, 0.0],
+        [-0.3, 0.2, 0.05, 0.1],
+        [-0.05, 0.2, 0.08, 0.18],
+        [0.2, 0.2, 0.085, 0.2],
+        [0.34, 0.2, 0.065, 0.15],
+        [0.42, 0.2, 0.0, 0.0],
+    ];
+    model.loft(Loft {
+        rings: &rings,
+        sides: 14,
+        paint: STEEL,
+        top: Some(team),
+    });
+    for along in [0.24, -0.26] {
+        model.wheel([along, 0.11, 0.0], 0.11, 0.06, 12, RUBBER);
+    }
+    model.ball([0.06, 0.27, 0.0], [0.12, 0.06, 0.09], true, GLASS);
+    model.tube(
+        tube([0.18, 0.26, 0.0], [0.5, 0.2, 0.0], 0.016).sides(6),
+        GUNMETAL,
+    );
+}
+
+/// A tracked disk saw: a low hull on tracks with a huge blade spinning upright in front of it
+/// on two arms, and twin rifles above.
+fn disk_saw(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
+    let track = Track {
+        rear: -0.32,
+        front: 0.3,
+        height: 0.1,
+        radius: 0.085,
+        half_width: 0.06,
+        road_wheels: 4,
+        links: 18,
+    };
+    tracks(model, unit, &track, 0.22);
+    model.bevel([-0.02, 0.22, 0.0], [0.38, 0.09, 0.2], 0.025, GUNMETAL);
+    model.bevel([-0.1, 0.34, 0.0], [0.26, 0.04, 0.17], 0.02, team);
+    let hub = [crate::weapons::SAW_AHEAD, 0.3, 0.0];
+    for side in [-0.06, 0.06] {
+        model.bar([0.3, 0.26, side], [hub[0], hub[1], side], 0.022, STEEL);
+    }
+    // The blade, with teeth around its rim turning as it spins.
+    let blade = tube([hub[0], hub[1], -0.012], [hub[0], hub[1], 0.012], 0.3).sides(model.sides(20));
+    model.tube(blade, STEEL);
+    model.tube(
+        tube([hub[0], hub[1], -0.03], [hub[0], hub[1], 0.03], 0.05).sides(8),
+        BRONZE,
+    );
+    let teeth = if model.fine { 16 } else { 8 };
+    let spin = time * 14.0;
+    for n in 0..teeth {
+        let angle = spin + n as f32 / teeth as f32 * TAU;
+        let (sin, cos) = angle.sin_cos();
+        let (ahead_sin, ahead_cos) = (angle + 0.25).sin_cos();
+        let at = |r: f32, s: f32, c: f32| [hub[0] + c * r, hub[1] + s * r, 0.0];
+        let (a, b, c) = (
+            at(0.29, sin, cos),
+            at(0.29, ahead_sin, ahead_cos),
+            at(0.36, sin, cos),
+        );
+        model.triangle([a, b, c], [[0.0, 0.0, 1.0]; 3], STEEL);
+        model.triangle([a, c, b], [[0.0, 0.0, -1.0]; 3], STEEL);
+    }
+    for side in [-0.2, 0.2] {
+        model.bevel([0.12, 0.36, side], [0.1, 0.035, 0.03], 0.01, GUNMETAL);
+        model.tube(
+            tube([0.2, 0.36, side], [0.5, 0.36, side], 0.016).sides(6),
+            GUNMETAL,
+        );
+    }
+}
+
+/// A flame tank: a tracked hull with two fuel tanks on its back and a flamethrower at each
+/// front corner, one aimed at ten and one at two o'clock.
+fn flame_tank(model: &mut Model, unit: &Unit, team: Paint) {
+    let track = Track {
+        rear: -0.34,
+        front: 0.34,
+        height: 0.1,
+        radius: 0.085,
+        half_width: 0.06,
+        road_wheels: 5,
+        links: 20,
+    };
+    tracks(model, unit, &track, 0.205);
+    model.bevel([0.0, 0.22, 0.0], [0.42, 0.09, 0.2], 0.03, STEEL);
+    for side in [-1.0, 1.0] {
+        model.block([0.0, 0.25, side * 0.282], [0.36, 0.04, 0.006], team);
+        model.tube(
+            tube([-0.4, 0.42, side * 0.1], [0.05, 0.42, side * 0.1], 0.085).sides(10),
+            BRONZE,
+        );
+    }
+    for way in crate::weapons::FLAME_TANK_NOZZLES {
+        let (sin, cos) = way.sin_cos();
+        let from = [0.25 + cos * 0.08, 0.3, sin * 0.12];
+        let to = [0.25 + cos * 0.3, 0.3, sin * 0.34];
+        model.tube(tube(from, to, 0.035).taper(0.045).sides(8), GUNMETAL);
+        model.tube(
+            tube(to, [to[0] + cos * 0.004, to[1], to[2] + sin * 0.004], 0.04).sides(8),
+            BORE,
+        );
+    }
+}
+
+/// A huge tank: long tracks with six road wheels, a broad hull and a big turret with twin
+/// cannons.
+fn huge_tank(model: &mut Model, unit: &Unit, team: Paint) {
+    let track = Track {
+        rear: -0.58,
+        front: 0.58,
+        height: 0.135,
+        radius: 0.115,
+        half_width: 0.09,
+        road_wheels: 6,
+        links: 26,
+    };
+    tracks(model, unit, &track, 0.42);
+    model.bevel([0.0, 0.2, 0.0], [0.62, 0.11, 0.32], 0.03, GUNMETAL);
+    let corner = |a: f32, u: f32, c: f32| [a, u, c];
+    model.hexa(
+        [
+            corner(-0.7, 0.3, -0.52),
+            corner(0.72, 0.3, -0.52),
+            corner(0.72, 0.3, 0.52),
+            corner(-0.7, 0.3, 0.52),
+            corner(-0.66, 0.44, -0.5),
+            corner(0.5, 0.44, -0.5),
+            corner(0.5, 0.44, 0.5),
+            corner(-0.66, 0.44, 0.5),
+        ],
+        STEEL,
+    );
+    let turret = tube([-0.1, 0.44, 0.0], [-0.1, 0.72, 0.0], 0.34)
+        .taper(0.28)
+        .sides(8)
+        .faceted();
+    model.tube(turret, STEEL);
+    model.tube(
+        tube([-0.1, 0.72, 0.0], [-0.1, 0.73, 0.0], 0.27)
+            .sides(8)
+            .faceted(),
+        team,
+    );
+    for side in [-0.13, 0.13] {
+        model.bevel([0.24, 0.62, side], [0.06, 0.06, 0.05], 0.015, GUNMETAL);
+        model.tube(tube([0.3, 0.62, side], [0.97, 0.62, side], 0.035), GUNMETAL);
+        model.tube(tube([0.97, 0.62, side], [1.05, 0.62, side], 0.05), GUNMETAL);
+    }
+}
+
+/// A recon machine on four long insect legs, two reaching forward and two back, that step as
+/// it runs and as it turns.
+fn recon(model: &mut Model, unit: &Unit, team: Paint) {
+    const THIGH: f32 = 0.32;
+    const SHIN: f32 = 0.42;
+    let body_height = 0.42;
+    model.ball([0.0, body_height, 0.0], [0.26, 0.11, 0.17], false, STEEL);
+    model.ball(
+        [0.0, body_height + 0.02, 0.0],
+        [0.22, 0.09, 0.14],
+        true,
+        team,
+    );
+    model.ball(
+        [0.27, body_height, 0.0],
+        [0.11, 0.08, 0.09],
+        false,
+        GUNMETAL,
+    );
+    model.ball(
+        [0.33, body_height + 0.02, 0.0],
+        [0.04, 0.035, 0.07],
+        false,
+        GLASS,
+    );
+    model.tube(
+        tube(
+            [0.3, body_height - 0.07, 0.0],
+            [0.55, body_height - 0.07, 0.0],
+            0.014,
+        )
+        .sides(6),
+        GUNMETAL,
+    );
+    let moving = unit.is_moving();
+    for (forward, side, step) in [
+        (1.0, -1.0, 0.0),
+        (1.0, 1.0, PI),
+        (-1.0, -1.0, PI),
+        (-1.0, 1.0, 0.0),
+    ] {
+        let phase = unit.stride * 4.0 + step;
+        let (swing, lift) = if moving || unit.stride > 0.0 {
+            (0.1 * phase.sin(), 0.07 * phase.cos().max(0.0))
+        } else {
+            (0.0, 0.0)
+        };
+        let hip = [forward * 0.14, body_height, side * 0.12];
+        let foot = [forward * 0.6 + swing, lift, side * 0.38];
+        // The knee rises high above the line from hip to foot, like an insect's.
+        let reach = (foot[0] - hip[0]).hypot(foot[2] - hip[2]);
+        let knee2 = knee_of((0.0, hip[1]), (reach, foot[1]), THIGH, SHIN);
+        let t = knee2.0 / reach.max(0.001);
+        let knee = [
+            hip[0] + (foot[0] - hip[0]) * t,
+            knee2.1,
+            hip[2] + (foot[2] - hip[2]) * t,
+        ];
+        model.ball(hip, [0.035; 3], false, BRONZE);
+        model.tube(tube(hip, knee, 0.025).sides(6), STEEL);
+        model.ball(knee, [0.03; 3], false, BRONZE);
+        model.tube(tube(knee, foot, 0.02).taper(0.01).sides(6), GUNMETAL);
+    }
+}
+
+/// A laser tank gliding just above the ground: a flat hover skirt under a smooth wedge with
+/// the owner's color on top, and a laser on a dome in the middle.
+fn laser_tank(model: &mut Model, time: f32, team: Paint) {
+    let float = 0.02 * (time * 3.0).sin();
+    model.bevel([0.0, 0.1 + float, 0.0], [0.44, 0.05, 0.3], 0.04, GUNMETAL);
+    let rings = [
+        [-0.46, 0.2 + float, 0.07, 0.26],
+        [-0.2, 0.22 + float, 0.11, 0.3],
+        [0.25, 0.22 + float, 0.1, 0.28],
+        [0.48, 0.18 + float, 0.03, 0.14],
+    ];
+    model.loft(Loft {
+        rings: &rings,
+        sides: 12,
+        paint: STEEL,
+        top: Some(team),
+    });
+    model.ball(
+        [-0.02, 0.33 + float, 0.0],
+        [0.13, 0.12, 0.13],
+        true,
+        GUNMETAL,
+    );
+    model.tube(
+        tube([0.0, 0.42 + float, 0.0], [0.0, 0.52 + float, 0.0], 0.03).sides(8),
+        STEEL,
+    );
+    model.ball([0.0, 0.54 + float, 0.0], [0.045; 3], false, LASER_CRYSTAL);
+}
+
+/// A laser's crystal, glowing red.
+const LASER_CRYSTAL: Paint = Paint {
+    color: [1.0, 0.2, 0.15],
+    shine: 0.0,
+};
+
+/// A siege tank: a hull on two tracks with a cannon longer than itself resting on top. Deployed,
+/// a leg of three segments raises the cannon high, pointing up at a slant.
+fn siege_tank(model: &mut Model, unit: &Unit, team: Paint) {
+    let track = Track {
+        rear: -0.42,
+        front: 0.42,
+        height: 0.12,
+        radius: 0.1,
+        half_width: 0.07,
+        road_wheels: 5,
+        links: 22,
+    };
+    tracks(model, unit, &track, 0.33);
+    model.bevel([0.0, 0.25, 0.0], [0.48, 0.1, 0.24], 0.03, STEEL);
+    model.bevel([-0.15, 0.37, 0.0], [0.28, 0.03, 0.2], 0.02, team);
+    if !unit.deployed {
+        // Resting on a cradle at each end.
+        model.bevel([-0.35, 0.42, 0.0], [0.05, 0.05, 0.08], 0.01, GUNMETAL);
+        model.bevel([0.38, 0.42, 0.0], [0.05, 0.05, 0.08], 0.01, GUNMETAL);
+        let [tip, height] = units::SIEGE_TIP;
+        model.tube(
+            tube([-0.72, height, 0.0], [tip - 0.1, height, 0.0], 0.065),
+            GUNMETAL,
+        );
+        model.tube(
+            tube([tip - 0.1, height, 0.0], [tip, height, 0.0], 0.085),
+            GUNMETAL,
+        );
+        return;
+    }
+    let joints = [
+        [-0.1, 0.38, 0.0],
+        [0.18, 0.85, 0.0],
+        [-0.1, 1.28, 0.0],
+        [0.1, 1.6, 0.0],
+    ];
+    for pair in joints.windows(2) {
+        model.tube(tube(pair[0], pair[1], 0.055).sides(8), STEEL);
+        model.ball(pair[1], [0.07; 3], false, BRONZE);
+    }
+    let pivot = joints[3];
+    let [tip, height] = units::SIEGE_RAISED_TIP;
+    let way = [tip - pivot[0], height - pivot[1], 0.0];
+    let back = [pivot[0] - way[0] * 0.7, pivot[1] - way[1] * 0.7, 0.0];
+    let brake = [pivot[0] + way[0] * 0.9, pivot[1] + way[1] * 0.9, 0.0];
+    model.tube(tube(back, brake, 0.065), GUNMETAL);
+    model.tube(tube(brake, [tip, height, 0.0], 0.085), GUNMETAL);
+}

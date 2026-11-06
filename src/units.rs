@@ -3,7 +3,7 @@
 #[cfg(test)]
 use crate::battlefield::MAP_MIDDLE_Z;
 use crate::battlefield::{MapSize, RuinPiece, Terrain};
-use crate::game::TeamColor;
+use crate::game::{Faction, TeamColor};
 use crate::weapons::WeaponKind;
 use std::cmp::Ordering;
 use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
@@ -221,9 +221,9 @@ pub enum Role {
     /// Fires a salvo of rockets from its two racks, then reloads for a long time.
     RocketLauncher,
     /// Walks on two legs and fires missiles.
-    Strider,
+    Mongoose,
     /// Walks on two big legs and fires its four cannons in turn, then has to calm down.
-    HeavyStrider,
+    Minotaurus,
     /// Hangs in the air, unarmed, and carries friendly vehicles to where it is told.
     AdvancedCarryall,
     /// Hangs in the air and fires an automatic gun at the air and the ground alike.
@@ -235,6 +235,32 @@ pub enum Role {
     Ornithopter,
     /// A heavier, slower ornithopter whose rockets do far more harm.
     Destroyer,
+    /// House H's rifleman: tougher than light infantry.
+    RegularInfantry,
+    /// House H's soldier with a shoulder launcher firing missiles.
+    RocketInfantry,
+    /// House O's: unarmed, and deploying sets off a huge explosion that takes it and everyone
+    /// around with it.
+    SuicideInfantry,
+    /// House O's: a pistol on the move, and deployed a mortar lobbing shells in an arc.
+    MortarInfantry,
+    /// House A's fast bike: a flat teardrop with a rifle that only really hurts infantry.
+    SandBike,
+    /// House H's: a huge spinning disk saw in front that cuts down infantry it reaches, and
+    /// twin rifles.
+    DiskSaw,
+    /// House H's tank with two flamethrowers, at ten and at two o'clock.
+    FlameTank,
+    /// House H's huge tank with twin cannons.
+    HugeTank,
+    /// House O's quick scouting machine on four long insect legs.
+    Recon,
+    /// House O's laser tank, gliding over the ground: it goes any way at once, turning slowly
+    /// towards where it is going.
+    LaserTank,
+    /// House O's tank on two tracks with a cannon longer than itself. Deployed, it stands
+    /// still and raises the cannon on a leg to shell what is far off.
+    SiegeTank,
     /// Sprays fire at the ground in front of it.
     FlameInfantry,
     /// Sprays green gas at the ground in front of it.
@@ -263,14 +289,25 @@ impl Role {
             | Role::Engineer
             | Role::KInfantry
             | Role::FlameInfantry
-            | Role::GasInfantry => UnitKind::Infantry,
+            | Role::GasInfantry
+            | Role::RegularInfantry
+            | Role::RocketInfantry
+            | Role::SuicideInfantry
+            | Role::MortarInfantry => UnitKind::Infantry,
             Role::Tank
             | Role::RepairVehicle
             | Role::Mpv
+            | Role::SandBike
+            | Role::DiskSaw
+            | Role::FlameTank
+            | Role::HugeTank
+            | Role::Recon
+            | Role::LaserTank
+            | Role::SiegeTank
             | Role::Catapult
             | Role::RocketLauncher
-            | Role::Strider
-            | Role::HeavyStrider => UnitKind::Vehicle,
+            | Role::Mongoose
+            | Role::Minotaurus => UnitKind::Vehicle,
             Role::AdvancedCarryall
             | Role::AirDefensePlatform
             | Role::AirDrone
@@ -293,14 +330,25 @@ impl Role {
             Role::Mpv => "MPV",
             Role::Catapult => "Catapult",
             Role::RocketLauncher => "Rocket Launcher",
-            Role::Strider => "Strider",
-            Role::HeavyStrider => "Heavy Strider",
+            Role::Mongoose => "Mongoose",
+            Role::Minotaurus => "Minotaurus",
             Role::AdvancedCarryall => "Advanced Carryall",
             Role::AirDefensePlatform => "Air Defense Platform",
             Role::AirDrone => "Air Drone",
             Role::Ornithopter => "Ornithopter",
             Role::Destroyer => "Destroyer",
             Role::FlameInfantry => "Flame Infantry",
+            Role::RegularInfantry => "Regular Infantry",
+            Role::RocketInfantry => "Rocket Infantry",
+            Role::SuicideInfantry => "Suicide Infantry",
+            Role::MortarInfantry => "Mortar Infantry",
+            Role::SandBike => "Sand Bike",
+            Role::DiskSaw => "Disk Saw",
+            Role::FlameTank => "Flame Tank",
+            Role::HugeTank => "Huge Tank",
+            Role::Recon => "Recon",
+            Role::LaserTank => "Laser Tank",
+            Role::SiegeTank => "Siege Tank",
             Role::GasInfantry => "Gas Infantry",
             Role::Tower => "Rocket Tower",
             Role::FlameTower => "Flame Tower",
@@ -314,9 +362,20 @@ impl Role {
 
     fn weapon(self) -> WeaponKind {
         match self {
-            Role::LightInfantry => WeaponKind::Bullet,
+            Role::LightInfantry
+            | Role::RegularInfantry
+            | Role::SandBike
+            | Role::DiskSaw
+            | Role::Recon => WeaponKind::Bullet,
+            Role::LaserTank => WeaponKind::Laser,
+            Role::SiegeTank => WeaponKind::Cannon,
+            Role::RocketInfantry => WeaponKind::Missile,
+            Role::MortarInfantry => WeaponKind::Pistol,
+            Role::FlameTank => WeaponKind::Flame,
+            Role::HugeTank => WeaponKind::Cannon,
             Role::Scout
             | Role::Mpv
+            | Role::SuicideInfantry
             | Role::Barracks
             | Role::Factory
             | Role::Hangar
@@ -328,8 +387,8 @@ impl Role {
             Role::Catapult => WeaponKind::Mortar,
             Role::RocketLauncher | Role::Ornithopter => WeaponKind::Rockets,
             Role::Destroyer => WeaponKind::HeavyRockets,
-            Role::Tower | Role::Strider => WeaponKind::Missile,
-            Role::HeavyStrider => WeaponKind::Bombard,
+            Role::Tower | Role::Mongoose => WeaponKind::Missile,
+            Role::Minotaurus => WeaponKind::Bombard,
             Role::AdvancedCarryall => WeaponKind::Unarmed,
             Role::AirDefensePlatform | Role::GunTower => WeaponKind::AutoGun,
             Role::AirDrone => WeaponKind::AirMissile,
@@ -343,12 +402,20 @@ impl Role {
             Role::Scout => 60.0,
             Role::Sniper => 70.0,
             Role::Engineer => 80.0,
-            Role::KInfantry => 120.0,
+            Role::KInfantry | Role::RegularInfantry => 120.0,
+            Role::SuicideInfantry => 80.0,
+            Role::SandBike => 160.0,
+            Role::DiskSaw => 340.0,
+            Role::FlameTank => 320.0,
+            Role::HugeTank => 700.0,
+            Role::Recon => 150.0,
+            Role::LaserTank => 260.0,
+            Role::SiegeTank => 380.0,
             Role::RepairVehicle => 200.0,
             Role::Mpv => 1200.0,
             Role::Catapult | Role::RocketLauncher => 180.0,
-            Role::Strider => 220.0,
-            Role::HeavyStrider => 450.0,
+            Role::Mongoose => 220.0,
+            Role::Minotaurus => 450.0,
             Role::AirDefensePlatform => 200.0,
             Role::AirDrone => 80.0,
             Role::Destroyer => 320.0,
@@ -362,9 +429,15 @@ impl Role {
         match self {
             Role::Scout => 4.0,
             Role::Mpv => 1.8,
+            Role::SandBike => 6.5,
+            Role::HugeTank => 2.6,
+            Role::Recon => 6.0,
+            Role::LaserTank => 5.5,
+            Role::SiegeTank => 3.0,
+            Role::SuicideInfantry => 3.0,
             Role::Catapult | Role::RocketLauncher => 3.5,
-            Role::Strider => 4.0,
-            Role::HeavyStrider => 2.8,
+            Role::Mongoose => 4.0,
+            Role::Minotaurus => 2.8,
             Role::AirDefensePlatform => 3.0,
             Role::AirDrone => 8.0,
             Role::Ornithopter => 5.5,
@@ -378,13 +451,23 @@ impl Role {
         match self {
             Role::Scout => 3.0,
             Role::LightInfantry | Role::Engineer => 4.0,
-            Role::FlameInfantry | Role::GasInfantry => 5.0,
+            Role::FlameInfantry
+            | Role::GasInfantry
+            | Role::RegularInfantry
+            | Role::SuicideInfantry => 5.0,
+            Role::RocketInfantry | Role::MortarInfantry => 6.0,
+            Role::SandBike => 6.0,
+            Role::DiskSaw | Role::FlameTank => 10.0,
+            Role::HugeTank => 18.0,
+            Role::Recon => 6.0,
+            Role::LaserTank => 11.0,
+            Role::SiegeTank => 16.0,
             Role::Sniper | Role::KInfantry => 6.0,
             Role::RepairVehicle => 7.0,
-            Role::Tank | Role::Catapult | Role::Strider | Role::AirDrone => 9.0,
+            Role::Tank | Role::Catapult | Role::Mongoose | Role::AirDrone => 9.0,
             Role::RocketLauncher | Role::Ornithopter | Role::AirDefensePlatform => 11.0,
             Role::AdvancedCarryall => 12.0,
-            Role::HeavyStrider | Role::Destroyer => 15.0,
+            Role::Minotaurus | Role::Destroyer => 15.0,
             Role::Mpv => 25.0,
             Role::LandingPad => 10.0,
             Role::Barracks => 15.0,
@@ -403,13 +486,46 @@ impl Role {
 
     /// Whether it can dig in where it stands.
     pub fn can_deploy(self) -> bool {
-        matches!(self, Role::KInfantry | Role::Mpv)
+        matches!(
+            self,
+            Role::KInfantry
+                | Role::MortarInfantry
+                | Role::SuicideInfantry
+                | Role::SiegeTank
+                | Role::Mpv
+        )
+    }
+
+    /// Whether a building of this house can make it. Every barracks makes scouts and
+    /// engineers, every factory MPVs and rocket launchers, which no house has been given yet,
+    /// and every hangar the same aircraft.
+    pub fn made_by(self, house: Faction) -> bool {
+        match self {
+            Role::LightInfantry | Role::KInfantry | Role::Sniper => house == Faction::A,
+            Role::RegularInfantry | Role::RocketInfantry | Role::FlameInfantry => {
+                house == Faction::H
+            }
+            Role::GasInfantry | Role::SuicideInfantry | Role::MortarInfantry => house == Faction::O,
+            Role::SandBike | Role::RepairVehicle | Role::Mongoose | Role::Minotaurus => {
+                house == Faction::A
+            }
+            Role::Recon | Role::LaserTank | Role::SiegeTank => house == Faction::O,
+            Role::Tank | Role::DiskSaw | Role::FlameTank | Role::HugeTank | Role::Catapult => {
+                house == Faction::H
+            }
+            _ => true,
+        }
     }
 
     /// The radius of the sphere it collides with, as it comes out.
     pub fn radius(self) -> f32 {
         match self {
             Role::Mpv => MPV_RADIUS,
+            Role::HugeTank => 0.65,
+            Role::SiegeTank => 0.55,
+            Role::Recon => 0.4,
+            Role::DiskSaw => 0.5,
+            Role::SandBike => 0.35,
             _ => self.kind().radius(),
         }
     }
@@ -474,6 +590,10 @@ impl Role {
 
 /// Radians per second a vehicle can turn.
 const TURN_SPEED: f32 = 3.0;
+/// Radians per second a laser tank's nose comes round to the way it glides.
+const GLIDER_TURN_SPEED: f32 = 1.0;
+/// How far a recon's legs step for each radian it turns on the spot.
+const LEGS_PER_TURN: f32 = 0.45;
 /// On a map of size S, the player's second group, far enough east to need scrolling to from the
 /// first.
 const SECOND_GROUP_X: f32 = 35.0;
@@ -507,6 +627,9 @@ pub const CANNON_SIDES: [f32; 4] = [-0.3, -0.14, 0.14, 0.3];
 /// How high its cannons are, and how far ahead of its middle they end.
 pub const CANNON_HEIGHT: f32 = 1.05;
 pub const CANNON_REACH: f32 = 0.7;
+/// Where a siege tank's cannon tip is, as [along, up], on its tracks and raised when deployed.
+pub const SIEGE_TIP: [f32; 2] = [1.05, 0.5];
+pub const SIEGE_RAISED_TIP: [f32; 2] = [0.97, 2.1];
 /// How high a Strider's missiles leave from.
 const STRIDER_MUZZLE_HEIGHT: f32 = 0.66;
 
@@ -547,6 +670,9 @@ pub struct Unit {
     /// 0 is the player; opponents count up from 1.
     pub owner: usize,
     pub color: TeamColor,
+    /// The great house that built it, which decides what a building of it can make and how a
+    /// house's own machines look.
+    pub house: Faction,
     pub selected: bool,
     pub kind: UnitKind,
     /// Facing, in radians: 0 points east and a quarter turn points south.
@@ -757,10 +883,17 @@ impl Unit {
     /// makes buildings and towers.
     pub fn can_make(&self, role: Role) -> bool {
         self.alive
+            && role.made_by(self.house)
             && match role.made_in() {
                 Some(maker) => self.role == maker,
                 None => self.role == Role::Mpv && self.deployed,
             }
+    }
+
+    /// Whether this owner cannot see it at all: a scout is invisible to its enemies, though it
+    /// can still be caught in a blast or driven over.
+    pub fn hidden_from(&self, owner: usize, teams: &[usize]) -> bool {
+        self.role == Role::Scout && are_enemies(teams, owner, self.owner)
     }
 
     /// Tells it to go after a unit by id, as a click on that unit would.
@@ -868,6 +1001,7 @@ impl Unit {
     pub fn can_attack(&self, other: &Unit, teams: &[usize]) -> bool {
         self.alive
             && other.alive
+            && !other.hidden_from(self.owner, teams)
             && self.has_rockets()
             && are_enemies(teams, self.owner, other.owner)
             && self.weapon.can_target(other.height_as_target())
@@ -895,10 +1029,23 @@ impl Unit {
     /// Where its shots come from: a tower takes turns with the ends of its two tubes or guns,
     /// and a rocket launcher goes along its racks.
     pub fn muzzle(&self) -> (f32, f32, f32) {
-        if self.role == Role::Strider {
+        if self.role == Role::SiegeTank {
+            let [ahead, up] = if self.deployed {
+                SIEGE_RAISED_TIP
+            } else {
+                SIEGE_TIP
+            };
+            let (sin, cos) = self.heading.sin_cos();
+            return (self.x + cos * ahead, self.y + up, self.z + sin * ahead);
+        }
+        if self.role == Role::LaserTank {
+            // The crystal on top of its dome.
+            return (self.x, self.y + 0.54, self.z);
+        }
+        if self.role == Role::Mongoose {
             return (self.x, self.y + STRIDER_MUZZLE_HEIGHT, self.z);
         }
-        if self.role == Role::HeavyStrider {
+        if self.role == Role::Minotaurus {
             let (sin, cos) = self.heading.sin_cos();
             let side = CANNON_SIDES.get(self.salvo_fired).copied().unwrap_or(0.0);
             return (
@@ -934,16 +1081,42 @@ impl Unit {
         (self.x, self.y + self.altitude + HEIGHT * 0.8, self.z)
     }
 
+    /// Where a sprayer's nozzle pointing this way from its nose is: a flame tank has one at
+    /// each front corner, and anyone else sprays from its muzzle.
+    pub fn nozzle(&self, way: f32) -> (f32, f32, f32) {
+        if self.role != Role::FlameTank {
+            return self.muzzle();
+        }
+        let (sin, cos) = (self.heading + way).sin_cos();
+        (self.x + cos * 0.5, self.y + 0.3, self.z + sin * 0.5)
+    }
+
     /// Where gunfire comes out: at the end of the barrel, outside its body.
     pub fn gun_tip(&self) -> (f32, f32, f32) {
-        if self.role == Role::GunTower {
+        if matches!(self.role, Role::GunTower | Role::SiegeTank) {
             return self.muzzle();
+        }
+        // Twin guns side by side, firing in turn.
+        let twin = match self.role {
+            Role::DiskSaw => Some((0.5, 0.36, 0.2)),
+            Role::HugeTank => Some((1.05, 0.62, 0.13)),
+            _ => None,
+        };
+        if let Some((ahead, up, side)) = twin {
+            let side = if self.second_tube { side } else { -side };
+            let (sin, cos) = self.heading.sin_cos();
+            return (
+                self.x + cos * ahead - sin * side,
+                self.y + up,
+                self.z + sin * ahead + cos * side,
+            );
         }
         let base = self.y + self.altitude;
         let (ahead, up) = match (self.role, self.deployed) {
             (Role::KInfantry, true) => (0.75, 0.18),
             (Role::KInfantry, false) => (0.2, 0.42),
             (Role::Sniper, _) => (0.56, 0.42),
+            (Role::SandBike, _) => (0.5, 0.2),
             (Role::AirDefensePlatform, _) => (0.5, 0.175),
             _ if self.kind == UnitKind::Infantry => (0.16, 0.4),
             _ if self.kind == UnitKind::Vehicle => (0.65, 0.375),
@@ -959,8 +1132,8 @@ impl Unit {
             TUBE_HEIGHT * 0.7
         } else {
             match self.role {
-                Role::Strider => 0.5,
-                Role::HeavyStrider => 0.9,
+                Role::Mongoose => 0.5,
+                Role::Minotaurus => 0.9,
                 _ => HEIGHT / 2.0,
             }
         };
@@ -995,6 +1168,7 @@ impl Unit {
             z,
             owner: 0,
             color: TeamColor::Blue,
+            house: Faction::A,
             selected: false,
             kind,
             heading: -FRAC_PI_2,
@@ -1123,6 +1297,7 @@ fn place_unit(
         z,
         owner,
         color,
+        house: Faction::A,
         selected: false,
         kind,
         heading: -FRAC_PI_2,
@@ -1176,10 +1351,8 @@ fn building_footprint(building: &Unit) -> [(f32, f32); 8] {
 /// The building of this owner that can make this role, if they have one.
 #[cfg(test)]
 pub fn maker_of(units: &[Unit], role: Role, owner: usize) -> Option<&Unit> {
-    let made_in = role.made_in()?;
-    units
-        .iter()
-        .find(|u| u.alive && u.owner == owner && u.role == made_in)
+    role.made_in()?;
+    units.iter().find(|u| u.owner == owner && u.can_make(role))
 }
 
 /// Adds a new unit for an owner, if they have the building that makes it and there is a free
@@ -1195,22 +1368,21 @@ fn produce(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, owner: usize, i
 
 /// Whether an owner has a building of the right kind with nothing to do.
 pub fn has_free_maker(units: &[Unit], role: Role, owner: usize) -> bool {
-    role.made_in().is_some_and(|made_in| {
-        units
+    role.made_in().is_some()
+        && units
             .iter()
-            .any(|u| u.alive && u.owner == owner && u.role == made_in && u.making.is_none())
-    })
+            .any(|u| u.owner == owner && u.can_make(role) && u.making.is_none())
 }
 
 /// Gives a role to the owner's building of the right kind that has the least to do: at once if
 /// it is free, otherwise at the end of its queue. Returns whether one could take it.
 pub fn start_making(units: &mut [Unit], role: Role, owner: usize) -> bool {
-    let Some(made_in) = role.made_in() else {
+    if role.made_in().is_none() {
         return false;
-    };
+    }
     let least_busy = units
         .iter_mut()
-        .filter(|u| u.alive && u.owner == owner && u.role == made_in)
+        .filter(|u| u.owner == owner && u.can_make(role))
         .min_by_key(|u| (u.making.is_some(), u.waiting()));
     let Some(building) = least_busy else {
         return false;
@@ -1310,6 +1482,7 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
     });
     place_unit(units, terrain, appears_at, role, role.weapon(), side, id);
     if let Some(new) = units.last_mut() {
+        new.house = maker.house;
         if vehicle {
             new.heading = FRAC_PI_2;
         }
@@ -1478,10 +1651,13 @@ pub fn switch_deployed(unit: &mut Unit) {
         unit.target = None;
         return;
     }
-    unit.weapon = if unit.deployed {
-        WeaponKind::Cannon
-    } else {
-        WeaponKind::Pistol
+    unit.weapon = match (unit.role, unit.deployed) {
+        (Role::KInfantry, true) => WeaponKind::Cannon,
+        (Role::MortarInfantry, true) => WeaponKind::Mortar,
+        (Role::SiegeTank, true) => WeaponKind::Siege,
+        (Role::SiegeTank, false) => WeaponKind::Cannon,
+        (Role::SuicideInfantry, _) => WeaponKind::Unarmed,
+        _ => WeaponKind::Pistol,
     };
     unit.destination = (unit.x, unit.z);
 }
@@ -1856,6 +2032,7 @@ pub fn can_run_over(squasher: &Unit, victim: &Unit, teams: &[usize]) -> bool {
         && squasher.alive
         && victim.alive
         && victim.kind == UnitKind::Infantry
+        && !victim.hidden_from(squasher.owner, teams)
         && are_enemies(teams, squasher.owner, victim.owner)
 }
 
@@ -2314,8 +2491,19 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
                 unit.heading = way;
                 held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
             }
+            // A laser tank glides any way at once, slowly turning its nose that way meanwhile.
+            UnitKind::Vehicle if unit.role == Role::LaserTank => {
+                let slow = GLIDER_TURN_SPEED * dt;
+                unit.heading += turn.clamp(-slow, slow);
+                held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
+            }
             UnitKind::Vehicle => {
-                unit.heading += turn.clamp(-most, most);
+                let turned = turn.clamp(-most, most);
+                unit.heading += turned;
+                if unit.role == Role::Recon {
+                    // Its legs step as it turns on the spot as well.
+                    unit.stride += turned.abs() * LEGS_PER_TURN;
+                }
                 if turn.abs() <= DRIVE_ALIGNMENT {
                     held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
                 }
@@ -3398,8 +3586,8 @@ mod tests {
             (Role::Tank, WeaponKind::Cannon, "Tank"),
             (Role::RepairVehicle, WeaponKind::Repair, "Repair Vehicle"),
             (Role::Catapult, WeaponKind::Mortar, "Catapult"),
-            (Role::Strider, WeaponKind::Missile, "Strider"),
-            (Role::HeavyStrider, WeaponKind::Bombard, "Heavy Strider"),
+            (Role::Mongoose, WeaponKind::Missile, "Mongoose"),
+            (Role::Minotaurus, WeaponKind::Bombard, "Minotaurus"),
             (Role::RocketLauncher, WeaponKind::Rockets, "Rocket Launcher"),
             (
                 Role::AirDefensePlatform,
@@ -3442,7 +3630,13 @@ mod tests {
     fn vehicles_made_in_a_hurry_sort_themselves_out_beyond_the_door() {
         let mut units = base_of(0);
         for id in 0..12 {
-            assert!(produce(&mut units, open_ground(), Role::Tank, 0, 10 + id));
+            assert!(produce(
+                &mut units,
+                open_ground(),
+                Role::RocketLauncher,
+                0,
+                10 + id
+            ));
         }
         for _ in 0..200 {
             advance(&mut units, open_ground(), &[0], 0.05);
@@ -4361,12 +4555,12 @@ mod tests {
     fn each_building_makes_its_own_kind_of_unit_for_its_owner_only() {
         let mut units = base_of(1);
         assert!(
-            !produce(&mut units, open_ground(), Role::Tank, 0, 50),
+            !produce(&mut units, open_ground(), Role::RocketLauncher, 0, 50),
             "not theirs"
         );
         for (role, kind, maker) in [
             (Role::Scout, UnitKind::Infantry, Role::Barracks),
-            (Role::Tank, UnitKind::Vehicle, Role::Factory),
+            (Role::RocketLauncher, UnitKind::Vehicle, Role::Factory),
             (Role::AirDrone, UnitKind::Aircraft, Role::Hangar),
         ] {
             assert_eq!(role.kind(), kind);
@@ -4376,6 +4570,43 @@ mod tests {
             assert_eq!((new.role, new.owner, new.color), (role, 1, TeamColor::Red));
         }
         assert_eq!(Role::Barracks.made_in(), None);
+    }
+
+    #[test]
+    fn a_building_makes_what_its_house_makes_and_every_barracks_scouts_and_engineers() {
+        for (house, own, other) in [
+            (
+                Faction::A,
+                [Role::LightInfantry, Role::SandBike],
+                Role::Tank,
+            ),
+            (
+                Faction::H,
+                [Role::RocketInfantry, Role::DiskSaw],
+                Role::SandBike,
+            ),
+            (
+                Faction::O,
+                [Role::SuicideInfantry, Role::SiegeTank],
+                Role::KInfantry,
+            ),
+        ] {
+            let mut units = base_of(0);
+            for unit in &mut units {
+                unit.house = house;
+            }
+            for role in own
+                .into_iter()
+                .chain([Role::Scout, Role::Engineer, Role::Mpv])
+            {
+                assert!(has_free_maker(&units, role, 0), "{house:?} {role:?}");
+            }
+            assert!(!has_free_maker(&units, other, 0), "{house:?} {other:?}");
+            assert!(!start_making(&mut units, other, 0));
+            let new = units.len();
+            assert!(produce(&mut units, open_ground(), own[1], 0, 70));
+            assert_eq!(units[new].house, house, "made by its house");
+        }
     }
 
     #[test]
@@ -4397,7 +4628,13 @@ mod tests {
     fn a_vehicle_comes_out_of_the_factory_door_and_drives_away_from_it() {
         let mut units = base_of(0);
         let factory = *units.iter().find(|u| u.role == Role::Factory).unwrap();
-        assert!(produce(&mut units, open_ground(), Role::Tank, 0, 50));
+        assert!(produce(
+            &mut units,
+            open_ground(),
+            Role::RocketLauncher,
+            0,
+            50
+        ));
         let tank = *units.last().unwrap();
         assert_eq!(tank.x, factory.x);
         let touching = factory.radius() + tank.radius();
@@ -4467,7 +4704,7 @@ mod tests {
 
     #[test]
     fn striders_are_vehicles_made_in_a_factory_whose_stride_grows_as_they_walk() {
-        for role in [Role::Strider, Role::HeavyStrider] {
+        for role in [Role::Mongoose, Role::Minotaurus] {
             assert_eq!(role.kind(), UnitKind::Vehicle);
             assert_eq!(role.made_in(), Some(Role::Factory));
             let mut unit = produced(role);
@@ -4568,7 +4805,7 @@ mod tests {
         );
         assert_eq!(units[barracks].orders_for(Role::Sniper), 1);
         assert!(
-            start_making(&mut units, Role::Tank, 0),
+            start_making(&mut units, Role::RocketLauncher, 0),
             "the factory is not"
         );
         assert_eq!(units.len(), known, "nothing appears yet");
@@ -4699,7 +4936,7 @@ mod tests {
         ] {
             assert!(role.build_seconds() > 0.0, "{role:?}");
         }
-        assert!(Role::HeavyStrider.build_seconds() > Role::Tank.build_seconds());
+        assert!(Role::Minotaurus.build_seconds() > Role::Tank.build_seconds());
         assert!(Role::Tank.build_seconds() > Role::Scout.build_seconds());
     }
 
@@ -4870,6 +5107,39 @@ mod tests {
     fn open_ground() -> &'static Terrain {
         static OPEN: std::sync::OnceLock<Terrain> = std::sync::OnceLock::new();
         OPEN.get_or_init(|| Terrain::open_with_ruins(Vec::new()))
+    }
+
+    #[test]
+    fn a_laser_tank_glides_off_sideways_at_once_turning_its_nose_slowly_meanwhile() {
+        let mut glider = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        glider.role = Role::LaserTank;
+        glider.heading = 0.0;
+        glider.destination = (0.0, 66.0);
+        let mut tank = Unit::for_test(10.0, 60.0, UnitKind::Vehicle);
+        tank.role = Role::Tank;
+        tank.heading = 0.0;
+        tank.destination = (10.0, 66.0);
+        let mut units = [glider, tank];
+        advance(&mut units, open_ground(), &[0], 0.25);
+        assert!(units[0].z > 60.5, "off at once: {}", units[0].z);
+        assert!(units[1].z < 60.1, "a tank turns first");
+        assert!(
+            units[0].heading > 0.1 && units[0].heading < 0.5,
+            "{}",
+            units[0].heading
+        );
+    }
+
+    #[test]
+    fn a_recons_legs_step_as_it_turns_on_the_spot() {
+        let mut recon = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        recon.role = Role::Recon;
+        recon.heading = 0.0;
+        recon.destination = (-6.0, 60.0);
+        let mut units = [recon];
+        advance(&mut units, open_ground(), &[0], 0.2);
+        assert!(units[0].x > -0.01, "still turning around");
+        assert!(units[0].stride > 0.1, "{}", units[0].stride);
     }
 
     #[test]

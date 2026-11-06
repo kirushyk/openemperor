@@ -1,11 +1,12 @@
 //! What an opponent does with the army it makes: it gathers what comes out at a rally point in
 //! front of its base, holds it there until there are enough, then sends them all off together
 //! against the nearest enemy base, fighting whatever they meet on the way. Meanwhile whatever
-//! is still at home turns on enemies that come too close.
+//! is still at home turns on enemies that come too close. It starts from nothing but its MCV:
+//! it deploys that where it stands and builds its base around it, one building at a time.
 
 use crate::battlefield::Terrain;
 use crate::game::OpponentKind;
-use crate::units::{self, Unit};
+use crate::units::{self, Role, Unit};
 
 /// Seconds between one look at the battle and the next.
 const THINK_SECONDS: f32 = 1.0;
@@ -17,6 +18,24 @@ const RALLY_REACH: f32 = 6.0;
 const GUARD_REACH: f32 = 14.0;
 /// The largest army an opponent waits for before setting off.
 const WAVE_AT_MOST: usize = 30;
+/// What an opponent builds from its MCV, in order. It always builds the first of these it has
+/// fewer of than the list holds up to there, so it also builds again what it loses.
+const BUILD_ORDER: [Role; 10] = [
+    Role::Barracks,
+    Role::Factory,
+    Role::GunTower,
+    Role::Tower,
+    Role::Hangar,
+    Role::LandingPad,
+    Role::GunTower,
+    Role::Tower,
+    Role::Factory,
+    Role::Barracks,
+];
+/// How far from its MCV an opponent looks for room for a building, ring by ring, and how many
+/// places it tries on each ring.
+const BUILD_RINGS: [f32; 5] = [3.4, 5.8, 8.2, 10.6, 13.0];
+const BUILD_TRIES: usize = 12;
 
 /// One opponent's plan.
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +51,8 @@ pub struct Strategy {
     think_in: f32,
     /// Seconds of battle before its first attack may set off, however many have gathered.
     first_attack_in: f32,
+    /// What its MCV is building and the seconds left, if anything.
+    pub building: Option<(Role, f32)>,
 }
 
 impl Strategy {
@@ -49,7 +70,65 @@ impl Strategy {
             attackers: Vec::new(),
             think_in: THINK_SECONDS,
             first_attack_in,
+            building: None,
         }
+    }
+
+    /// Deploys its MCV where it has stopped, and works on its base from there: once a building
+    /// is done and there is room for it near the MCV, it is returned, with this id, to go up.
+    pub fn grow(
+        &mut self,
+        units: &mut [Unit],
+        terrain: &Terrain,
+        dt: f32,
+        id: u32,
+    ) -> Option<Unit> {
+        let owner = self.owner;
+        let mcv = units
+            .iter()
+            .position(|u| u.alive && u.owner == owner && u.role == Role::Mcv)?;
+        if !units[mcv].deployed {
+            if !units[mcv].is_moving() {
+                units::switch_deployed(&mut units[mcv]);
+            }
+            return None;
+        }
+        let (role, left) = match self.building {
+            Some(building) => building,
+            None => {
+                let role = self.next_building(units)?;
+                (role, role.build_seconds())
+            }
+        };
+        let left = left - dt;
+        self.building = Some((role, left));
+        if left > 0.0 {
+            return None;
+        }
+        // Done: it waits for room, if there is none just now.
+        let maker = units[mcv];
+        let at = room_near(units, terrain, (maker.x, maker.z))?;
+        self.building = None;
+        let mut building = units::new_building(terrain, at, role, (owner, maker.color), id);
+        building.house = maker.house;
+        Some(building)
+    }
+
+    /// The first building of the build order it has fewer of than the order asks for so far.
+    fn next_building(&self, units: &[Unit]) -> Option<Role> {
+        let has = |role: Role| {
+            units
+                .iter()
+                .filter(|u| u.alive && u.owner == self.owner && u.role == role)
+                .count()
+        };
+        (0..BUILD_ORDER.len())
+            .map(|i| BUILD_ORDER[i])
+            .enumerate()
+            .find_map(|(i, role)| {
+                let wanted = BUILD_ORDER[..=i].iter().filter(|&&r| r == role).count();
+                (has(role) < wanted).then_some(role)
+            })
     }
 
     /// Where its buildings stand, on average, if it has any.
@@ -193,6 +272,18 @@ impl Strategy {
             units::send_to_spot(units, i, at, terrain);
         }
     }
+}
+
+/// The nearest place around a point with room for a building, ring by ring.
+fn room_near(units: &[Unit], terrain: &Terrain, (x, z): (f32, f32)) -> Option<(f32, f32)> {
+    BUILD_RINGS.iter().enumerate().find_map(|(ring, &reach)| {
+        (0..BUILD_TRIES).find_map(|n| {
+            // Each ring starts a little further round, so that rings do not line up.
+            let angle = (n as f32 + ring as f32 * 0.5) / BUILD_TRIES as f32 * std::f32::consts::TAU;
+            let at = (x + reach * angle.cos(), z + reach * angle.sin());
+            units::can_place_building(units, terrain, at).then_some(at)
+        })
+    })
 }
 
 /// The middle of some units, if there are any.

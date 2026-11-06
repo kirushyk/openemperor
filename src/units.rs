@@ -10,6 +10,7 @@ use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
 
 /// About how tall a unit stands, in world units.
 pub const HEIGHT: f32 = 0.5;
+#[cfg(test)]
 const SPACING: f32 = 1.2;
 /// A unit this close to its destination has reached it.
 const ARRIVED: f32 = 0.12;
@@ -143,8 +144,8 @@ impl UnitKind {
 }
 
 const BUILDING_RADIUS: f32 = 1.2;
-/// The radius of an MPV on its tracks: far bigger than any other vehicle.
-const MPV_RADIUS: f32 = 1.0;
+/// The radius of an MCV on its tracks: far bigger than any other vehicle.
+const MCV_RADIUS: f32 = 1.0;
 /// How high the deck of a landing pad is, which is where a machine on it sits.
 pub const PAD_TOP: f32 = 0.14;
 /// How far a landing pad's deck reaches each way from its middle.
@@ -162,9 +163,11 @@ const PAD_BESIDE: f32 = 2.8;
 /// How far from a pad a machine waiting for it no longer counts as beside it.
 const PAD_WAITS: f32 = 4.5;
 /// How far along the row of a group's buildings its landing pad stands, past the hangar.
+#[cfg(test)]
 const PAD_ALONG: f32 = -5.5;
-/// How far along the row of a group's buildings its MPV stands, past the barracks.
-const MPV_ALONG: f32 = 5.6;
+/// How far along the row of a group's buildings its MCV stands, past the barracks.
+#[cfg(test)]
+const MCV_ALONG: f32 = 5.6;
 /// How much of its health something must have lost to smoke, to show black stains, and to burn.
 pub const SMOKES_PAST: f32 = 0.25;
 pub const STAINS_PAST: f32 = 0.4;
@@ -176,7 +179,9 @@ const DOOR_MARGIN: f32 = 0.2;
 /// How far out of a factory's door a new vehicle drives.
 const DRIVE_OUT: f32 = 2.5;
 /// How far behind a group's middle its buildings stand, and how far apart.
+#[cfg(test)]
 const BUILDINGS_BEHIND: f32 = 3.6;
+#[cfg(test)]
 const BUILDING_SPREAD: f32 = 3.0;
 /// How high aircraft fly, in world units.
 const CRUISE_ALTITUDE: f32 = 4.0;
@@ -225,7 +230,7 @@ pub enum Role {
     RepairVehicle,
     /// The huge main vehicle on four tracks. It deploys into the building that lets its owner
     /// build buildings, and packs up again to drive somewhere else.
-    Mpv,
+    Mcv,
     /// Lobs shells in a ballistic arc.
     Catapult,
     /// Fires a salvo of rockets from its two racks, then reloads for a long time.
@@ -306,7 +311,7 @@ impl Role {
             | Role::MortarInfantry => UnitKind::Infantry,
             Role::Tank
             | Role::RepairVehicle
-            | Role::Mpv
+            | Role::Mcv
             | Role::SandBike
             | Role::DiskSaw
             | Role::FlameTank
@@ -337,7 +342,7 @@ impl Role {
             Role::KInfantry => "K Infantry",
             Role::Tank => "Tank",
             Role::RepairVehicle => "Repair Vehicle",
-            Role::Mpv => "MPV",
+            Role::Mcv => "MCV",
             Role::Catapult => "Catapult",
             Role::RocketLauncher => "Rocket Launcher",
             Role::Mongoose => "Mongoose",
@@ -384,7 +389,7 @@ impl Role {
             Role::FlameTank => WeaponKind::Flame,
             Role::HugeTank => WeaponKind::Cannon,
             Role::Scout
-            | Role::Mpv
+            | Role::Mcv
             | Role::SuicideInfantry
             | Role::Barracks
             | Role::Factory
@@ -422,7 +427,7 @@ impl Role {
             Role::LaserTank => 260.0,
             Role::SiegeTank => 380.0,
             Role::RepairVehicle => 200.0,
-            Role::Mpv => 1200.0,
+            Role::Mcv => 1200.0,
             Role::Catapult | Role::RocketLauncher => 180.0,
             Role::Mongoose => 220.0,
             Role::Minotaurus => 450.0,
@@ -438,7 +443,7 @@ impl Role {
     fn speed(self) -> f32 {
         match self {
             Role::Scout => 4.0,
-            Role::Mpv => 1.8,
+            Role::Mcv => 1.8,
             Role::SandBike => 6.5,
             Role::HugeTank => 2.6,
             Role::Recon => 6.0,
@@ -478,7 +483,7 @@ impl Role {
             Role::RocketLauncher | Role::Ornithopter | Role::AirDefensePlatform => 11.0,
             Role::AdvancedCarryall => 12.0,
             Role::Minotaurus | Role::Destroyer => 15.0,
-            Role::Mpv => 25.0,
+            Role::Mcv => 25.0,
             Role::LandingPad => 10.0,
             Role::Barracks => 15.0,
             Role::Factory | Role::Hangar => 20.0,
@@ -502,12 +507,12 @@ impl Role {
                 | Role::MortarInfantry
                 | Role::SuicideInfantry
                 | Role::SiegeTank
-                | Role::Mpv
+                | Role::Mcv
         )
     }
 
     /// Whether a building of this house can make it. Every barracks makes scouts and
-    /// engineers, every factory MPVs and rocket launchers, which no house has been given yet,
+    /// engineers, every factory MCVs and rocket launchers, which no house has been given yet,
     /// and every hangar the same aircraft.
     pub fn made_by(self, house: Faction) -> bool {
         match self {
@@ -530,7 +535,7 @@ impl Role {
     /// The radius of the sphere it collides with, as it comes out.
     pub fn radius(self) -> f32 {
         match self {
-            Role::Mpv => MPV_RADIUS,
+            Role::Mcv => MCV_RADIUS,
             Role::HugeTank => 0.65,
             Role::SiegeTank => 0.55,
             Role::Recon => 0.4,
@@ -587,6 +592,7 @@ impl Role {
         }
     }
 
+    #[cfg(test)]
     fn for_kind(kind: UnitKind) -> Self {
         match kind {
             UnitKind::Infantry => Role::LightInfantry,
@@ -612,11 +618,14 @@ const OPPONENT_RING: f32 = 29.4;
 /// How far map objects must stay from where groups start.
 const CLEARANCE: f32 = 9.0;
 /// A block of the player's this deep has a row of aircraft.
+#[cfg(test)]
 const ROWS_WITH_AIRCRAFT: usize = 4;
 /// How far to the side of its group's middle the player's tower stands.
+#[cfg(test)]
 const PLAYER_TOWER_OFFSET: f32 = -3.4;
 /// How far to the side of its group's middle an opponent's tower stands. Not so far that it
 /// leaves the land kept clear around the ring.
+#[cfg(test)]
 const OPPONENT_TOWER_OFFSET: f32 = 3.5;
 /// How high a tower's tubes are.
 pub const TUBE_HEIGHT: f32 = 1.26;
@@ -890,7 +899,7 @@ impl Unit {
         self.best_remaining = f32::INFINITY;
     }
 
-    /// The radius of the sphere it collides with: a deployed MPV's is a building's.
+    /// The radius of the sphere it collides with: a deployed MCV's is a building's.
     pub fn radius(&self) -> f32 {
         if self.kind == self.role.kind() {
             self.role.radius()
@@ -899,14 +908,14 @@ impl Unit {
         }
     }
 
-    /// Whether it can make this: a building makes the units made in it, and a deployed MPV
+    /// Whether it can make this: a building makes the units made in it, and a deployed MCV
     /// makes buildings and towers.
     pub fn can_make(&self, role: Role) -> bool {
         self.alive
             && role.made_by(self.house)
             && match role.made_in() {
                 Some(maker) => self.role == maker,
-                None => self.role == Role::Mpv && self.deployed,
+                None => self.role == Role::Mcv && self.deployed,
             }
     }
 
@@ -1222,6 +1231,7 @@ impl Unit {
 
 /// What a block's infantry carries: the player's mixes the three small arms by column, so
 /// that all of them are on the field, and opponents' have bullets.
+#[cfg(test)]
 fn infantry_weapon(owner: usize, column: usize) -> WeaponKind {
     match (owner, column % 3) {
         (0, 1) => WeaponKind::Missile,
@@ -1242,6 +1252,7 @@ pub fn are_enemies(teams: &[usize], a: usize, b: usize) -> bool {
 /// Who stands where in a block. Only the player has vehicles, in the block's last row, so
 /// that a skirmish's enemies can all be run over, and aircraft, in the first row of a block
 /// deep enough to spare one.
+#[cfg(test)]
 fn kind_in_block(owner: usize, row: usize, rows: usize) -> UnitKind {
     if owner != 0 {
         UnitKind::Infantry
@@ -1263,6 +1274,7 @@ pub fn are_friends(teams: &[usize], a: usize, b: usize) -> bool {
 }
 
 /// Places a block of units centered on a world point.
+#[cfg(test)]
 fn spawn_group(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
@@ -1348,6 +1360,7 @@ fn place_unit(
     });
 }
 
+#[cfg(test)]
 fn place_building(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
@@ -1576,6 +1589,7 @@ pub fn new_building(
 }
 
 /// Puts up an owner's three buildings in a row behind a group's middle.
+#[cfg(test)]
 fn place_base(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
@@ -1600,14 +1614,14 @@ fn place_base(
         center.1 + behind.1 * BUILDINGS_BEHIND + across_z * PAD_ALONG,
     );
     place_building(units, terrain, pad, Role::LandingPad, side);
-    // The MPV stands deployed at the other end of the row: it is what makes this a base.
-    let mpv = (
-        center.0 + behind.0 * BUILDINGS_BEHIND + across_x * MPV_ALONG,
-        center.1 + behind.1 * BUILDINGS_BEHIND + across_z * MPV_ALONG,
+    // The MCV stands deployed at the other end of the row: it is what makes this a base.
+    let mcv = (
+        center.0 + behind.0 * BUILDINGS_BEHIND + across_x * MCV_ALONG,
+        center.1 + behind.1 * BUILDINGS_BEHIND + across_z * MCV_ALONG,
     );
-    place_building(units, terrain, mpv, Role::Mpv, side);
-    if let Some(mpv) = units.last_mut() {
-        switch_deployed(mpv);
+    place_building(units, terrain, mcv, Role::Mcv, side);
+    if let Some(mcv) = units.last_mut() {
+        switch_deployed(mcv);
     }
 }
 
@@ -1660,7 +1674,7 @@ pub fn order_land(units: &mut [Unit], pad: usize) {
 pub fn switch_deployed(unit: &mut Unit) {
     unit.deployed = !unit.deployed;
     unit.destination = (unit.x, unit.z);
-    if unit.role == Role::Mpv {
+    if unit.role == Role::Mcv {
         // Deployed, it is a building in every way, until it packs up again.
         unit.kind = if unit.deployed {
             UnitKind::Building
@@ -1682,10 +1696,41 @@ pub fn switch_deployed(unit: &mut Unit) {
     unit.destination = (unit.x, unit.z);
 }
 
-/// The player gets a block between two towers at the map's middle and another block a long
+/// Each side starts with nothing but its MCV, packed up and ready to drive: the player's at the
+/// map's middle, each opponent's evenly around a ring. `colors` holds the player's, then the
+/// opponents'.
+pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
+    let mut units = Vec::new();
+    let Starts { middle_z, ring, .. } = starts(terrain.size());
+    let opponents = colors.len() - 1;
+    for (owner, &color) in colors.iter().enumerate() {
+        let at = if owner == 0 {
+            (0.0, middle_z)
+        } else {
+            // The ring starts in the north.
+            let angle = (owner - 1) as f32 / opponents as f32 * TAU;
+            let (sin, cos) = angle.sin_cos();
+            (ring * sin, middle_z - ring * cos)
+        };
+        let id = units.len() as u32;
+        place_unit(
+            &mut units,
+            terrain,
+            at,
+            Role::Mcv,
+            WeaponKind::Unarmed,
+            (owner, color),
+            id,
+        );
+    }
+    units
+}
+
+/// A battle well under way, for tests: the player gets a block between two towers at the map's middle and another block a long
 /// scroll away. Each opponent gets one block between two towers, evenly around a ring.
 /// `colors` holds the player's, then the opponents'.
-pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
+#[cfg(test)]
+pub fn spawn_bases(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
     let mut units = Vec::new();
     let player = (0, colors[0]);
     let Starts {
@@ -1936,7 +1981,7 @@ pub fn set_gathering(units: &mut [Unit], point: (f32, f32)) {
     for unit in units.iter_mut().filter(|u| {
         u.selected
             && u.kind == UnitKind::Building
-            && !matches!(u.role, Role::LandingPad | Role::Mpv)
+            && !matches!(u.role, Role::LandingPad | Role::Mcv)
     }) {
         unit.gathering = Some(point);
     }
@@ -3047,7 +3092,7 @@ mod tests {
 
     #[test]
     fn every_unit_has_a_weapon_and_all_of_them_are_on_the_players_side() {
-        let units = spawn(terrain(0), &COLORS);
+        let units = spawn_bases(terrain(0), &COLORS);
         let own: Vec<_> = units.iter().filter(|u| u.owner == 0).collect();
         for weapon in [
             WeaponKind::Bullet,
@@ -3075,7 +3120,7 @@ mod tests {
 
     #[test]
     fn every_unit_has_its_own_id_and_full_health() {
-        let units = spawn(terrain(0), &COLORS);
+        let units = spawn_bases(terrain(0), &COLORS);
         for (i, a) in units.iter().enumerate() {
             assert_eq!(a.health, a.max_health());
             assert!(units[i + 1..].iter().all(|b| b.id != a.id));
@@ -3334,7 +3379,7 @@ mod tests {
 
     #[test]
     fn everyone_starts_with_aircraft_in_the_air() {
-        let units = spawn(terrain(0), &COLORS);
+        let units = spawn_bases(terrain(0), &COLORS);
         let planes: Vec<_> = units
             .iter()
             .filter(|u| u.kind == UnitKind::Aircraft)
@@ -3489,7 +3534,7 @@ mod tests {
 
     #[test]
     fn everyone_starts_with_a_flame_tower_as_well_in_their_color() {
-        let units = spawn(terrain(0), &COLORS);
+        let units = spawn_bases(terrain(0), &COLORS);
         for (owner, &color) in COLORS.iter().enumerate() {
             let flame: Vec<_> = units
                 .iter()
@@ -3504,7 +3549,7 @@ mod tests {
 
     #[test]
     fn everyone_starts_with_one_tower_of_their_color_with_missiles() {
-        let units = spawn(terrain(0), &COLORS);
+        let units = spawn_bases(terrain(0), &COLORS);
         for (owner, &color) in COLORS.iter().enumerate() {
             let towers: Vec<_> = units
                 .iter()
@@ -3524,7 +3569,7 @@ mod tests {
         for map in 0..crate::game::MAPS.len() {
             for count in 2..=colors.len() {
                 let terrain = terrain(map);
-                for unit in spawn(terrain, &colors[..count])
+                for unit in spawn_bases(terrain, &colors[..count])
                     .iter()
                     .filter(|u| u.kind.is_building())
                 {
@@ -4310,7 +4355,7 @@ mod tests {
     fn every_opponent_has_aircraft_at_the_start_and_they_stay_up() {
         let terrain = crate::battlefield::terrain(0);
         let colors = [TeamColor::Blue, TeamColor::Red];
-        let units = spawn(terrain, &colors);
+        let units = spawn_bases(terrain, &colors);
         let of_opponent = |role| units.iter().any(|u| u.owner == 1 && u.role == role);
         assert!(of_opponent(Role::AdvancedCarryall) && of_opponent(Role::AirDrone));
     }
@@ -4617,7 +4662,7 @@ mod tests {
             }
             for role in own
                 .into_iter()
-                .chain([Role::Scout, Role::Engineer, Role::Mpv])
+                .chain([Role::Scout, Role::Engineer, Role::Mcv])
             {
                 assert!(has_free_maker(&units, role, 0), "{house:?} {role:?}");
             }
@@ -4698,7 +4743,7 @@ mod tests {
     #[test]
     fn everyone_starts_with_all_three_buildings_on_land_and_an_engineer_can_take_them() {
         let terrain = terrain(0);
-        let units = spawn(terrain, &COLORS);
+        let units = spawn_bases(terrain, &COLORS);
         for owner in 0..COLORS.len() {
             for role in [
                 Role::Barracks,
@@ -5007,7 +5052,7 @@ mod tests {
 
     #[test]
     fn opponents_have_no_vehicles_and_the_player_has_vehicles_that_are_heavy() {
-        let units = spawn(terrain(0), &COLORS);
+        let units = spawn_bases(terrain(0), &COLORS);
         assert!(
             units
                 .iter()
@@ -6057,7 +6102,7 @@ mod tests {
                 })
                 .unwrap();
             let terrain = crate::battlefield::terrain(map);
-            let units = spawn(terrain, &[TeamColor::Blue, TeamColor::Red, TeamColor::Cyan]);
+            let units = spawn_bases(terrain, &[TeamColor::Blue, TeamColor::Red, TeamColor::Cyan]);
             let opponent = units.iter().find(|u| u.owner == 1).unwrap();
             for unit in units.iter().filter(|u| u.altitude <= 0.0) {
                 assert!(terrain.can_walk(unit.x, unit.z), "{size:?}: {unit:?}");
@@ -6099,7 +6144,7 @@ mod tests {
 
     #[test]
     fn everyone_gets_units_in_their_own_color_on_the_map() {
-        let units = spawn(terrain(0), &COLORS);
+        let units = spawn_bases(terrain(0), &COLORS);
         for (owner, &color) in COLORS.iter().enumerate() {
             let own: Vec<_> = units.iter().filter(|u| u.owner == owner).collect();
             assert!(!own.is_empty());
@@ -6123,7 +6168,7 @@ mod tests {
             TeamColor::Yellow,
             TeamColor::LightPink,
         ]);
-        let units = spawn(terrain(1), &colors);
+        let units = spawn_bases(terrain(1), &colors);
         for (i, a) in units.iter().enumerate() {
             for b in units[i + 1..].iter().filter(|b| b.altitude == a.altitude) {
                 assert!(
@@ -6140,7 +6185,7 @@ mod tests {
         for map in 0..crate::game::MAPS.len() {
             for count in 2..=colors.len() {
                 let terrain = terrain(map);
-                for unit in spawn(terrain, &colors[..count]) {
+                for unit in spawn_bases(terrain, &colors[..count]) {
                     for piece in terrain.ruins() {
                         let gap_x = (unit.x - piece.x).abs() - unit.radius() - piece.half_x;
                         let gap_z = (unit.z - piece.z).abs() - unit.radius() - piece.half_z;
@@ -6157,7 +6202,7 @@ mod tests {
     #[test]
     fn units_stand_on_the_terrain() {
         let terrain = terrain(0);
-        for unit in spawn(terrain, &COLORS) {
+        for unit in spawn_bases(terrain, &COLORS) {
             assert_eq!(unit.y, terrain.height_at(unit.x, unit.z));
         }
     }
@@ -6165,7 +6210,7 @@ mod tests {
     #[test]
     fn the_players_groups_are_more_than_a_screen_apart() {
         let view = View::new(Camera::centered(), 2880.0, 1800.0);
-        let units = spawn(terrain(0), &COLORS);
+        let units = spawn_bases(terrain(0), &COLORS);
         let far = units.iter().find(|u| u.x >= SECOND_GROUP_X - 3.0).unwrap();
         let (x, _) = view.project(far.x, far.y, far.z).unwrap();
         assert!(x > 2880.0, "starts off screen: {x}");

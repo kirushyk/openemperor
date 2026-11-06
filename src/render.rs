@@ -1863,7 +1863,7 @@ fn bounds(unit: &Unit) -> (Point, f32) {
         (_, Role::Minotaurus) => 1.35,
         (_, Role::Mongoose) => 0.8,
         // Its pipe stands high once it is deployed.
-        (_, Role::Mpv) => 2.4,
+        (_, Role::Mcv) => 2.4,
         // Its cannon stands high once it is deployed.
         (_, Role::SiegeTank) => 2.3,
         // It may have a vehicle hanging under it.
@@ -1923,8 +1923,8 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
     if unit.role == Role::LandingPad {
         draw_searchlight(canvas, game, view, unit);
     }
-    if unit.role == Role::Mpv {
-        draw_mpv_lights(canvas, game, view, unit);
+    if unit.role == Role::Mcv {
+        draw_mcv_lights(canvas, game, view, unit);
     }
     draw_seen_model(canvas, game, unit, seen);
     if matches!(seen, Seen::Near | Seen::Far) {
@@ -1998,9 +1998,9 @@ fn draw_beams(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: 
     }
 }
 
-/// What lights an MPV: its sweeping searchlight, and once deployed the smoke from its pipe and
+/// What lights an MCV: its sweeping searchlight, and once deployed the smoke from its pipe and
 /// the red glares that blink in turn either side of it.
-fn draw_mpv_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+fn draw_mcv_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
     const PUFFS: usize = 7;
     let faction = unit.house;
     let time = game.battle_time();
@@ -2008,19 +2008,19 @@ fn draw_mpv_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
         canvas,
         game,
         view,
-        &models::mpv_searchlight(unit, faction, time),
+        &models::mcv_searchlight(unit, faction, time),
     );
     if !unit.deployed {
         return;
     }
-    let (x, y, z) = models::mpv_pipe_top(unit, faction);
+    let (x, y, z) = models::mcv_pipe_top(unit, faction);
     for i in 0..PUFFS {
         // Each puff rises, drifts with the wind and spreads as it fades.
         let age = (time * 0.3 + i as f32 / PUFFS as f32 + unit.id as f32 * 0.13).fract();
         let at = (x + age * 1.1, y + 0.1 + age * 2.2, z + age * 0.4);
         draw_puff(canvas, view, at, 0.18 + age * 0.55, 1.0 - age, true);
     }
-    for (i, glare) in models::mpv_glares(unit, faction).into_iter().enumerate() {
+    for (i, glare) in models::mcv_glares(unit, faction).into_iter().enumerate() {
         let blink = (time * 2.5 + i as f32 * PI).sin().max(0.0);
         draw_glare(
             canvas,
@@ -2228,8 +2228,8 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
     let (forward_x, forward_z) = (unit.heading.cos(), unit.heading.sin());
     let ahead = |by: f32| (unit.x + forward_x * by, unit.z + forward_z * by);
     let mut part = |footprint, heights, color| draw_turned_box(canvas, footprint, heights, color);
-    if unit.role == Role::Mpv {
-        models::draw_mpv(canvas, unit, unit.house, game.battle_time(), color);
+    if unit.role == Role::Mcv {
+        models::draw_mcv(canvas, unit, unit.house, game.battle_time(), color);
         return;
     }
     match unit.kind {

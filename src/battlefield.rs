@@ -2029,7 +2029,7 @@ mod tests {
             let terrain = terrain(map_on(planet));
             let colors = [crate::game::TeamColor::Blue; 8];
             for count in 2..=colors.len() {
-                for unit in crate::units::spawn(terrain, &colors[..count]) {
+                for unit in crate::units::spawn_bases(terrain, &colors[..count]) {
                     assert!(
                         (unit.y - GROUND_HEIGHT).abs() < 0.001,
                         "{planet:?} with {count}: {unit:?}"

@@ -697,7 +697,7 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         // The searchlight on a tower's roof.
         Role::Tower | Role::GunTower => &[[0.14, 1.5, 0.0]],
         // A big headlamp on the front of each front track pod.
-        Role::Mpv => &[[1.02, 0.34, -0.66], [1.02, 0.34, 0.66]],
+        Role::Mcv => &[[1.02, 0.34, -0.66], [1.02, 0.34, 0.66]],
         Role::SandBike => &[[0.43, 0.2, 0.0]],
         Role::DiskSaw => &[[0.4, 0.24, -0.15], [0.4, 0.24, 0.15]],
         Role::FlameTank => &[[0.43, 0.2, 0.0]],
@@ -716,7 +716,7 @@ fn lamp_radius(role: Role) -> f32 {
         Role::AdvancedCarryall => 0.045,
         Role::Minotaurus => 0.035,
         Role::Tower | Role::GunTower => 0.045,
-        Role::Mpv => 0.075,
+        Role::Mcv => 0.075,
         _ => 0.026,
     }
 }
@@ -736,7 +736,7 @@ pub struct Beam {
 pub fn beams(unit: &Unit) -> Vec<Beam> {
     let spots = lamp_spots(unit.role);
     let flies_only = matches!(unit.role, Role::Ornithopter | Role::Destroyer);
-    // A deployed MPV puts out its headlamps.
+    // A deployed MCV puts out its headlamps.
     if spots.is_empty() || flies_only && unit.is_grounded() || unit.deployed {
         return Vec::new();
     }
@@ -750,7 +750,7 @@ pub fn beams(unit: &Unit) -> Vec<Beam> {
         Role::AirDefensePlatform => (4.5, 0.8),
         Role::Ornithopter | Role::Destroyer => (5.0, 1.2),
         Role::Minotaurus => (3.5, 1.0),
-        Role::Mpv => (4.5, 1.5),
+        Role::Mcv => (4.5, 1.5),
         // A searchlight throws a long, narrow beam far over the ground as the tower looks out.
         Role::Tower | Role::GunTower => (8.0, 0.9),
         _ if spots.len() == 1 => (2.6, 1.0),
@@ -1746,8 +1746,8 @@ fn destroyer(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
     }
 }
 
-/// How high the roof of each house's MPV is, where its searchlight stands.
-fn mpv_roof(faction: Faction) -> f32 {
+/// How high the roof of each house's MCV is, where its searchlight stands.
+fn mcv_roof(faction: Faction) -> f32 {
     match faction {
         Faction::A => 1.2,
         Faction::H => 1.07,
@@ -1755,33 +1755,33 @@ fn mpv_roof(faction: Faction) -> f32 {
     }
 }
 
-/// Where an MPV's searchlight swivels, as [along, up, across].
-fn mpv_searchlight_spot(faction: Faction) -> [f32; 3] {
-    [-0.35, mpv_roof(faction) + 0.12, 0.0]
+/// Where an MCV's searchlight swivels, as [along, up, across].
+fn mcv_searchlight_spot(faction: Faction) -> [f32; 3] {
+    [-0.35, mcv_roof(faction) + 0.12, 0.0]
 }
 
-/// Where the top of a deployed MPV's pipe is, as [along, up, across].
-fn mpv_pipe_spot(faction: Faction) -> [f32; 3] {
-    [-0.72, mpv_roof(faction) + 1.05, 0.3]
+/// Where the top of a deployed MCV's pipe is, as [along, up, across].
+fn mcv_pipe_spot(faction: Faction) -> [f32; 3] {
+    [-0.72, mcv_roof(faction) + 1.05, 0.3]
 }
 
-/// Which way an MPV's searchlight points now, in the world: slowly round and round.
-fn mpv_sweep(unit: &Unit, time: f32) -> f32 {
-    time * MPV_SWEEP_SPEED + unit.id as f32 * 1.7
+/// Which way an MCV's searchlight points now, in the world: slowly round and round.
+fn mcv_sweep(unit: &Unit, time: f32) -> f32 {
+    time * MCV_SWEEP_SPEED + unit.id as f32 * 1.7
 }
 
-/// Radians per second an MPV's searchlight sweeps around.
-const MPV_SWEEP_SPEED: f32 = 0.45;
+/// Radians per second an MCV's searchlight sweeps around.
+const MCV_SWEEP_SPEED: f32 = 0.45;
 
-/// Where the top of a deployed MPV's pipe is in the world, where its smoke leaves.
-pub fn mpv_pipe_top(unit: &Unit, faction: Faction) -> Point {
-    let [x, y, z] = Place::on_ground(unit).point(mpv_pipe_spot(faction));
+/// Where the top of a deployed MCV's pipe is in the world, where its smoke leaves.
+pub fn mcv_pipe_top(unit: &Unit, faction: Faction) -> Point {
+    let [x, y, z] = Place::on_ground(unit).point(mcv_pipe_spot(faction));
     (x, y, z)
 }
 
-/// The red glares at the top of a deployed MPV's pipe, in the world, either side of it.
-pub fn mpv_glares(unit: &Unit, faction: Faction) -> [Point; 2] {
-    let [a, u, c] = mpv_pipe_spot(faction);
+/// The red glares at the top of a deployed MCV's pipe, in the world, either side of it.
+pub fn mcv_glares(unit: &Unit, faction: Faction) -> [Point; 2] {
+    let [a, u, c] = mcv_pipe_spot(faction);
     let place = Place::on_ground(unit);
     [-1.0, 1.0].map(|side| {
         let [x, y, z] = place.point([a, u - 0.12, c + side * 0.13]);
@@ -1789,10 +1789,10 @@ pub fn mpv_glares(unit: &Unit, faction: Faction) -> [Point; 2] {
     })
 }
 
-/// The beam of an MPV's searchlight: a long one, slowly sweeping the ground all around it.
-pub fn mpv_searchlight(unit: &Unit, faction: Faction, time: f32) -> Beam {
-    let [x, y, z] = Place::on_ground(unit).point(mpv_searchlight_spot(faction));
-    let (sin, cos) = mpv_sweep(unit, time).sin_cos();
+/// The beam of an MCV's searchlight: a long one, slowly sweeping the ground all around it.
+pub fn mcv_searchlight(unit: &Unit, faction: Faction, time: f32) -> Beam {
+    let [x, y, z] = Place::on_ground(unit).point(mcv_searchlight_spot(faction));
+    let (sin, cos) = mcv_sweep(unit, time).sin_cos();
     Beam {
         lens: (x + cos * 0.12, y, z + sin * 0.12),
         ahead: [cos, 0.0, sin],
@@ -1811,7 +1811,7 @@ const GLARE: Paint = Paint {
 /// The huge main vehicle: four linked tracks in pods, a big headlamp on the front of each front
 /// pod, a body in its house's style and a searchlight on the roof. Deployed, it stands on four
 /// legs with a smoking pipe at the back.
-pub fn draw_mpv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, color: [f32; 3]) {
+pub fn draw_mcv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, color: [f32; 3]) {
     let team = team(color);
     let model = &mut Model::new(canvas, Place::on_ground(unit));
     for (rear, front) in [(0.3, 0.95), (-0.95, -0.3)] {
@@ -1824,16 +1824,16 @@ pub fn draw_mpv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, c
             road_wheels: 3,
             links: 18,
         };
-        tracks(model, unit, &track, MPV_TRACKS_APART);
+        tracks(model, unit, &track, MCV_TRACKS_APART);
         // A fender over each pod.
         for side in [-1.0, 1.0] {
-            let middle = [(rear + front) / 2.0, 0.37, side * MPV_TRACKS_APART];
+            let middle = [(rear + front) / 2.0, 0.37, side * MCV_TRACKS_APART];
             model.bevel(middle, [0.42, 0.035, 0.16], 0.015, STEEL);
         }
     }
     // The chassis that ties the four pods together.
     model.bevel([0.0, 0.36, 0.0], [1.05, 0.12, 0.5], 0.03, GUNMETAL);
-    let roof = mpv_roof(faction);
+    let roof = mcv_roof(faction);
     match faction {
         Faction::A => {
             // Smooth and rounded: a lofted body with the owner's color along its top, and a
@@ -1932,12 +1932,12 @@ pub fn draw_mpv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, c
         }
     }
     // The searchlight on its swivel, pointing the way it sweeps.
-    let spot = mpv_searchlight_spot(faction);
+    let spot = mcv_searchlight_spot(faction);
     model.tube(
         tube([spot[0], roof, 0.0], [spot[0], spot[1], 0.0], 0.05).sides(8),
         GUNMETAL,
     );
-    let (sin, cos) = (mpv_sweep(unit, time) - unit.heading).sin_cos();
+    let (sin, cos) = (mcv_sweep(unit, time) - unit.heading).sin_cos();
     let base = model.place;
     let swivel = Place {
         origin: base.point(spot),
@@ -1946,8 +1946,8 @@ pub fn draw_mpv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, c
         across: base.way([-sin, 0.0, cos]),
     };
     model.at(swivel).lamp([0.1, 0.0, 0.0], 0.06);
-    for &lamp in lamp_spots(Role::Mpv) {
-        model.lamp(lamp, lamp_radius(Role::Mpv));
+    for &lamp in lamp_spots(Role::Mcv) {
+        model.lamp(lamp, lamp_radius(Role::Mcv));
     }
     if !unit.deployed {
         return;
@@ -1960,7 +1960,7 @@ pub fn draw_mpv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, c
         model.bevel(foot, [0.12, 0.04, 0.12], 0.015, GUNMETAL);
     }
     // The pipe, smoking from its top, with a red glare either side of it.
-    let top = mpv_pipe_spot(faction);
+    let top = mcv_pipe_spot(faction);
     let foot = [top[0], 0.85, top[2]];
     model.tube(tube(foot, top, 0.085).sides(10).ends(true, false), GUNMETAL);
     model.tube(
@@ -1977,8 +1977,8 @@ pub fn draw_mpv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, c
     }
 }
 
-/// How far an MPV's tracks are from its middle line.
-const MPV_TRACKS_APART: f32 = 0.66;
+/// How far an MCV's tracks are from its middle line.
+const MCV_TRACKS_APART: f32 = 0.66;
 
 /// A fast sand bike: a flat teardrop, round at the nose and drawn out to a point behind, on a
 /// wheel at each end, with a rifle on its nose.

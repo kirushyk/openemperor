@@ -91,8 +91,8 @@ const BOTTOM_VEHICLE_BUILDS: [Role; 3] =
 const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
 /// The Vehicles menu's cell for the Advanced Carryall, just above the bottom row.
 const CARRYALL_CELL: usize = BOTTOM_ROW_START - hud::GRID_COLUMNS;
-/// The Vehicles menu's cell for a spare MPV, beside the superweapon.
-const MPV_CELL: usize = SUPERWEAPON_CELL + 1;
+/// The Vehicles menu's cell for a spare MCV, beside the superweapon.
+const MCV_CELL: usize = SUPERWEAPON_CELL + 1;
 /// The Vehicles menu's cell for the Destroyer, just above the Ornithopter.
 const DESTROYER_CELL: usize = BOTTOM_ROW_START - 1;
 /// Seconds of battle before the superweapon can fire again.
@@ -1321,7 +1321,7 @@ pub struct Game {
     pub site: Site,
     /// Seconds until opponents next build something.
     opponent_random: u32,
-    /// Each opponent's plan for its army, in owner order from 1. None in the tutorial.
+    /// Each opponent's plan for its base and its army, in owner order from 1.
     strategies: Vec<Strategy>,
     pub combat: Combat,
     /// The superweapon is chosen and waiting for a click on the map.
@@ -1582,7 +1582,7 @@ impl Game {
                 .and_then(|(_, builds)| builds.get(cell))
                 .copied(),
             BuildTab::Vehicles if cell == CARRYALL_CELL => Some(Role::AdvancedCarryall),
-            BuildTab::Vehicles if cell == MPV_CELL => Some(Role::Mpv),
+            BuildTab::Vehicles if cell == MCV_CELL => Some(Role::Mcv),
             BuildTab::Vehicles if cell == DESTROYER_CELL => Some(Role::Destroyer),
             BuildTab::Vehicles => VEHICLE_CELLS
                 .iter()
@@ -1723,7 +1723,7 @@ impl Game {
     }
 
     /// Whether the player has what makes this: the building it is made in, or for a building a
-    /// deployed MPV.
+    /// deployed MCV.
     pub fn can_produce(&self, role: Role) -> bool {
         self.units.iter().any(|u| u.owner == 0 && u.can_make(role))
     }
@@ -1736,7 +1736,7 @@ impl Game {
             .any(|role| self.can_produce(role))
     }
 
-    /// Moves along the building on its way, while the player has a deployed MPV to build it.
+    /// Moves along the building on its way, while the player has a deployed MCV to build it.
     fn work_on_site(&mut self, dt: f32) {
         if let Site::Building(role, left) = self.site
             && self.can_produce(role)
@@ -1811,7 +1811,7 @@ impl Game {
                     Some(Role::Barracks) => "Needs a Barracks",
                     Some(Role::Factory) => "Needs a Factory",
                     Some(_) => "Needs a Hangar",
-                    None => "Needs a deployed MPV",
+                    None => "Needs a deployed MCV",
                 }
             });
         }
@@ -2324,11 +2324,12 @@ impl Game {
         self.site = Site::Idle;
         self.opponent_random = map as u32 * 2 + 1;
         self.strategies = (1..colors.len())
-            .filter(|_| self.battle_kind != BattleKind::Tutorial)
             .map(|owner| {
                 let kind = match self.battle_kind {
                     BattleKind::Skirmish => self.skirmish.opponents[owner - 1].kind,
-                    _ => OpponentKind::Competent,
+                    // The tutorial's enemy takes its time.
+                    BattleKind::Tutorial => OpponentKind::Defensive,
+                    BattleKind::Campaign => OpponentKind::Competent,
                 };
                 Strategy::new(owner, kind)
             })
@@ -2593,6 +2594,12 @@ impl Game {
                 if self.outcome.is_none() {
                     self.run_opponents();
                     for plan in &mut self.strategies {
+                        if let Some(building) =
+                            plan.grow(&mut self.units, terrain, dt, self.next_unit_id)
+                        {
+                            self.units.push(building);
+                            self.next_unit_id += 1;
+                        }
                         plan.think(&mut self.units, terrain, &self.teams, dt);
                     }
                     self.work_on_making(dt);
@@ -3584,6 +3591,7 @@ mod tests {
         drag(&mut game, SliderId::AiPlayers, ai.x_of(1));
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
+        with_bases(&mut game);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         // Towers and aircraft cannot be run over, so this enemy has none.
         game.units
@@ -3870,6 +3878,7 @@ mod tests {
         drag(&mut game, SliderId::AiPlayers, ai.x_of(1));
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
+        with_bases(&mut game);
         // Nobody fires on these without an order.
         game.units
             .retain(|u| u.owner != 1 || u.kind != UnitKind::Building);
@@ -5302,10 +5311,10 @@ mod tests {
                 .count()
         };
         let mut game = in_battle();
-        // Rocket engines are lit too, in orange, and landing pads and MPVs have searchlights,
-        // and a deployed MPV red glares.
+        // Rocket engines are lit too, in orange, and landing pads and MCVs have searchlights,
+        // and a deployed MCV red glares.
         game.units
-            .retain(|u| !u.kind.flies() && !matches!(u.role, Role::LandingPad | Role::Mpv));
+            .retain(|u| !u.kind.flies() && !matches!(u.role, Role::LandingPad | Role::Mcv));
         let lamps = |game: &Game| {
             let has_lamps =
                 |u: &&Unit| u.alive && matches!(u.kind, UnitKind::Vehicle | UnitKind::Tower);
@@ -5338,7 +5347,7 @@ mod tests {
         game.units
             .retain(|u| matches!(u.kind, UnitKind::Infantry | UnitKind::Building));
         game.units
-            .retain(|u| !matches!(u.role, Role::LandingPad | Role::Mpv));
+            .retain(|u| !matches!(u.role, Role::LandingPad | Role::Mcv));
         assert_eq!(lit(&game), 0);
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START));
@@ -6020,45 +6029,106 @@ mod tests {
     }
 
     #[test]
-    fn everyone_starts_with_a_deployed_mpv_that_packs_up_into_a_vehicle_and_back() {
-        let mut game = in_battle();
-        for owner in 0..game.teams.len() {
-            let mpvs: Vec<&Unit> = game
+    fn a_battle_starts_with_one_packed_up_mcv_each_and_opponents_grow_a_base_from_theirs() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        let owners = game.teams.len();
+        assert_eq!(game.units.len(), owners, "nothing but MCVs");
+        for (owner, unit) in game.units.iter().enumerate() {
+            assert_eq!((unit.owner, unit.role), (owner, Role::Mcv));
+            assert!(!unit.deployed && unit.kind == UnitKind::Vehicle);
+        }
+        let mcv = game.units[0];
+        assert!(
+            (game.camera.x - mcv.x).hypot(game.camera.z - mcv.z) < 3.0,
+            "in view"
+        );
+        for tab in [BuildTab::Infantry, BuildTab::Vehicles, BuildTab::Buildings] {
+            assert!(!game.tab_enabled(tab), "nothing to make {tab:?} yet");
+        }
+
+        while game.battle_time < 80.0 {
+            game.update(0.25);
+        }
+        assert!(!game.units[0].deployed, "the player deploys their own");
+        let has = |game: &Game, owner: usize, role: Role| {
+            game.units
+                .iter()
+                .filter(|u| u.alive && u.owner == owner && u.role == role)
+                .count()
+        };
+        for owner in 1..owners {
+            let mcv = game
                 .units
                 .iter()
-                .filter(|u| u.owner == owner && u.role == Role::Mpv)
-                .collect();
-            assert_eq!(mpvs.len(), 1, "owner {owner}");
-            assert!(mpvs[0].deployed && mpvs[0].kind == UnitKind::Building);
+                .find(|u| u.owner == owner && u.role == Role::Mcv);
+            assert!(mcv.is_some_and(|u| u.deployed), "owner {owner} deploys");
+            for role in [Role::Barracks, Role::Factory, Role::GunTower, Role::Tower] {
+                assert_eq!(
+                    has(&game, owner, role),
+                    1,
+                    "owner {owner} builds a {role:?}"
+                );
+            }
+            let soldiers = game
+                .units
+                .iter()
+                .filter(|u| u.owner == owner && u.kind == UnitKind::Infantry)
+                .count();
+            assert!(soldiers > 0, "owner {owner} makes an army");
         }
-        let mpv = mpv_of(&game);
-        let at = (game.units[mpv].x, game.units[mpv].z);
-        units::switch_deployed(&mut game.units[mpv]);
-        assert_eq!(game.units[mpv].kind, UnitKind::Vehicle);
+
+        // What it loses, it builds again.
+        game.units
+            .retain(|u| u.owner != 1 || u.role != Role::Barracks);
+        let back = game.battle_time + 40.0;
+        while game.battle_time < back {
+            game.update(0.25);
+        }
+        assert_eq!(has(&game, 1, Role::Barracks), 1);
+    }
+
+    #[test]
+    fn a_deployed_mcv_packs_up_into_a_vehicle_and_deploys_again() {
+        let mut game = in_battle();
+        for owner in 0..game.teams.len() {
+            let mcvs: Vec<&Unit> = game
+                .units
+                .iter()
+                .filter(|u| u.owner == owner && u.role == Role::Mcv)
+                .collect();
+            assert_eq!(mcvs.len(), 1, "owner {owner}");
+            assert!(mcvs[0].deployed && mcvs[0].kind == UnitKind::Building);
+        }
+        let mcv = mcv_of(&game);
+        let at = (game.units[mcv].x, game.units[mcv].z);
+        units::switch_deployed(&mut game.units[mcv]);
+        assert_eq!(game.units[mcv].kind, UnitKind::Vehicle);
         assert!(
-            game.units[mpv].radius() > UnitKind::Vehicle.radius(),
+            game.units[mcv].radius() > UnitKind::Vehicle.radius(),
             "huge"
         );
-        game.units[mpv].destination = (at.0, at.1 + 6.0);
+        game.units[mcv].destination = (at.0, at.1 + 6.0);
         for _ in 0..100 {
             game.update(0.05);
         }
-        let moved = (game.units[mpv].x - at.0).hypot(game.units[mpv].z - at.1);
+        let moved = (game.units[mcv].x - at.0).hypot(game.units[mcv].z - at.1);
         assert!(moved > 3.0, "it drives: {moved}");
-        units::switch_deployed(&mut game.units[mpv]);
-        assert_eq!(game.units[mpv].kind, UnitKind::Building);
-        assert!(!game.units[mpv].is_moving(), "and stays put");
+        units::switch_deployed(&mut game.units[mcv]);
+        assert_eq!(game.units[mcv].kind, UnitKind::Building);
+        assert!(!game.units[mcv].is_moving(), "and stays put");
         assert!(!crate::render::build(&game).is_empty());
     }
 
     #[test]
-    fn buildings_need_a_deployed_mpv_and_each_tab_something_that_makes_what_is_on_it() {
+    fn buildings_need_a_deployed_mcv_and_each_tab_something_that_makes_what_is_on_it() {
         let mut game = in_battle();
         for tab in [BuildTab::Infantry, BuildTab::Vehicles, BuildTab::Buildings] {
             assert!(game.tab_enabled(tab), "{tab:?}");
         }
-        let mpv = mpv_of(&game);
-        units::switch_deployed(&mut game.units[mpv]);
+        let mcv = mcv_of(&game);
+        units::switch_deployed(&mut game.units[mcv]);
         assert!(!game.tab_enabled(BuildTab::Buildings), "packed up");
         click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
         assert_eq!(
@@ -6070,10 +6140,10 @@ mod tests {
         click_hud(&mut game, Action::BuildCell(0));
         assert_eq!(game.site, Site::Idle, "nothing to build it");
 
-        units::switch_deployed(&mut game.units[mpv]);
+        units::switch_deployed(&mut game.units[mcv]);
         click_hud(&mut game, Action::BuildCell(0));
         assert!(matches!(game.site, Site::Building(Role::Barracks, _)));
-        units::switch_deployed(&mut game.units[mpv]);
+        units::switch_deployed(&mut game.units[mcv]);
         let before = game.site;
         game.update(1.0);
         assert_eq!(game.site, before, "its clock stops meanwhile");
@@ -6095,25 +6165,25 @@ mod tests {
     }
 
     #[test]
-    fn a_factory_makes_a_spare_mpv() {
+    fn a_factory_makes_a_spare_mcv() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         assert_eq!(
-            game.build_role(BuildTab::Vehicles, MPV_CELL),
-            Some(Role::Mpv)
+            game.build_role(BuildTab::Vehicles, MCV_CELL),
+            Some(Role::Mcv)
         );
-        click_hud(&mut game, Action::BuildCell(MPV_CELL));
+        click_hud(&mut game, Action::BuildCell(MCV_CELL));
         game.finish_all_making();
         let made = *game.units.last().unwrap();
-        assert_eq!((made.role, made.owner), (Role::Mpv, 0));
+        assert_eq!((made.role, made.owner), (Role::Mcv, 0));
         assert_eq!(made.kind, UnitKind::Vehicle);
         assert!(!made.deployed, "it comes out on its tracks");
     }
 
-    fn mpv_of(game: &Game) -> usize {
+    fn mcv_of(game: &Game) -> usize {
         game.units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::Mpv)
+            .position(|u| u.owner == 0 && u.role == Role::Mcv)
             .unwrap()
     }
 
@@ -6247,6 +6317,7 @@ mod tests {
         drag(&mut game, SliderId::AiPlayers, ai.x_of(1));
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
+        with_bases(&mut game);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         game.units
             .retain(|u| !(u.owner == 1 && u.kind == UnitKind::Building));
@@ -6407,7 +6478,7 @@ mod tests {
             Some("Minotaurus"),
             None,
             Some("Superweapon"),
-            Some("MPV"),
+            Some("MCV"),
         ]
         .into_iter()
         .enumerate()
@@ -7088,6 +7159,7 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         assert_eq!(game.screen, Screen::InGame);
+        with_bases(&mut game);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         game
     }
@@ -8581,8 +8653,22 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         assert_eq!(game.screen, Screen::InGame);
+        with_bases(&mut game);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         game
+    }
+
+    /// Swaps a battle's lone MCVs for bases already built and armies standing by them, the way a
+    /// battle well under way looks.
+    fn with_bases(game: &mut Game) {
+        let colors: Vec<TeamColor> = game.stats_rows().iter().map(|row| row.color).collect();
+        game.units = units::spawn_bases(battlefield::terrain(game.battle_map), &colors);
+        let houses: Vec<Faction> = (0..colors.len()).map(|o| game.faction_of(o)).collect();
+        for unit in &mut game.units {
+            unit.house = houses[unit.owner];
+        }
+        game.next_unit_id = game.units.len() as u32;
+        game.update_fog();
     }
 
     #[test]

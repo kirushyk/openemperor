@@ -896,6 +896,15 @@ impl Terrain {
     }
 
     /// The terrain's height under a world point, following its slopes.
+    /// The lowest ground anyone can stand on: the sand, or the land above water and lava.
+    pub fn floor(&self) -> f32 {
+        if self.planet.lower_is_solid() {
+            0.0
+        } else {
+            GROUND_HEIGHT
+        }
+    }
+
     pub fn height_at(&self, x: f32, z: f32) -> f32 {
         self.blend_at(x, z, Self::vertex_height)
     }

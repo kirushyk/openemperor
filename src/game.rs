@@ -1445,6 +1445,7 @@ impl Game {
                 self.units
                     .iter()
                     .filter(|u| u.alive && units::are_friends(teams, 0, u.owner)),
+                battlefield::terrain(self.battle_map).floor(),
             );
         }
     }

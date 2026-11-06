@@ -57,6 +57,16 @@ const SQUASH_LURE_AHEAD: f32 = 0.3;
 const ATTACK_REACH: f32 = 0.9;
 /// An engineer this far beyond touching a building takes it over.
 const CAPTURE_MARGIN: f32 = 0.3;
+/// How much farther something fires and sees for each world unit it stands above what it fires
+/// on or the lowest ground, and the most height that counts.
+const HIGH_GROUND_GAIN: f32 = 0.25;
+const HIGH_GROUND_MOST: f32 = 1.6;
+
+/// What standing this far above something multiplies how far it reaches by: nothing below.
+pub fn high_ground(above: f32) -> f32 {
+    1.0 + HIGH_GROUND_GAIN * above.clamp(0.0, HIGH_GROUND_MOST)
+}
+
 /// A unit after a target that covers less than this share of its usual step is wedged.
 const WEDGED_SHARE: f32 = 0.25;
 /// Rounds of separating overlapping units per step.
@@ -809,6 +819,16 @@ impl Unit {
             (_, UnitKind::Tower | UnitKind::Building) => TOWER_SIGHT,
         };
         own.max(self.weapon.range() + 1.0)
+    }
+
+    /// How far it sees from where it stands: farther the higher it is above the lowest ground.
+    pub fn sight_over(&self, floor: f32) -> f32 {
+        self.sight() * high_ground(self.y - floor)
+    }
+
+    /// How far it can fire at what stands at this height: farther down onto lower ground.
+    pub fn range_down_to(&self, height: f32) -> f32 {
+        self.weapon.range() * high_ground(self.y - height)
     }
 
     /// From 0, with no medal, up to 3.
@@ -2016,7 +2036,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
             continue;
         }
         let away = distance(goal, units[i].center());
-        let in_reach = away <= units[i].weapon.range() * ATTACK_REACH;
+        let in_reach = away <= units[i].range_down_to(goal.1) * ATTACK_REACH;
         // What never stops circles its target, firing as it goes.
         units[i].destination = if in_reach && !units[i].role.never_stops() {
             (x, z)

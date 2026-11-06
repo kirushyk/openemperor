@@ -39,19 +39,20 @@ impl Fog {
     }
 
     /// Sees the map anew from where the given units stand now.
-    pub fn update<'a>(&mut self, seers: impl Iterator<Item = &'a Unit>) {
+    /// Sees anew from these units, each the farther the higher it stands above the floor.
+    pub fn update<'a>(&mut self, seers: impl Iterator<Item = &'a Unit>, floor: f32) {
         for sight in &mut self.sights {
             if *sight == Sight::Visible {
                 *sight = Sight::Explored;
             }
         }
         for seer in seers {
-            self.see_around(seer);
+            self.see_around(seer, floor);
         }
     }
 
-    fn see_around(&mut self, seer: &Unit) {
-        let radius = seer.sight();
+    fn see_around(&mut self, seer: &Unit, floor: f32) {
+        let radius = seer.sight_over(floor);
         let (u, v) = world_to_grid(seer.x, seer.z);
         // A step along one grid axis covers 0.7 of a world unit, so this reaches far enough.
         let reach = radius * 1.5;
@@ -105,10 +106,29 @@ mod tests {
     }
 
     #[test]
+    fn from_higher_ground_a_unit_sees_farther() {
+        let mut high = unit_at(0.0, 60.0);
+        high.y = 1.2;
+        let beyond = high.sight() + 1.5;
+        let mut fog = Fog::new();
+        fog.update([unit_at(0.0, 60.0)].iter(), 0.0);
+        assert_eq!(fog.at(beyond, 60.0), Sight::Unexplored);
+        fog.update([high].iter(), 0.0);
+        assert_eq!(fog.at(beyond, 60.0), Sight::Visible, "from up there");
+        let mut fog = Fog::new();
+        fog.update([high].iter(), 1.2);
+        assert_eq!(
+            fog.at(beyond, 60.0),
+            Sight::Unexplored,
+            "not above the floor itself"
+        );
+    }
+
+    #[test]
     fn a_unit_sees_around_itself_as_far_as_its_sight_and_no_further() {
         let unit = unit_at(0.0, 60.0);
         let mut fog = Fog::new();
-        fog.update([unit].iter());
+        fog.update([unit].iter(), 0.0);
         assert_eq!(fog.at(0.0, 60.0), Sight::Visible);
         for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
             let near = unit.sight() - 1.0;
@@ -129,29 +149,29 @@ mod tests {
     #[test]
     fn what_nobody_sees_any_more_stays_explored_and_dimmed() {
         let mut fog = Fog::new();
-        fog.update([unit_at(0.0, 60.0)].iter());
-        fog.update([unit_at(30.0, 60.0)].iter());
+        fog.update([unit_at(0.0, 60.0)].iter(), 0.0);
+        fog.update([unit_at(30.0, 60.0)].iter(), 0.0);
         assert_eq!(fog.at(0.0, 60.0), Sight::Explored);
         assert_eq!(fog.at(30.0, 60.0), Sight::Visible);
         let dim = Sight::Explored.shade();
         assert!(dim > 0.0 && dim < Sight::Visible.shade());
 
-        fog.update([unit_at(0.0, 60.0)].iter());
+        fog.update([unit_at(0.0, 60.0)].iter(), 0.0);
         assert_eq!(fog.at(0.0, 60.0), Sight::Visible, "seen again");
     }
 
     #[test]
     fn nobody_left_means_nothing_is_visible_but_what_was_seen_is_remembered() {
         let mut fog = Fog::new();
-        fog.update([unit_at(0.0, 60.0)].iter());
-        fog.update([].iter());
+        fog.update([unit_at(0.0, 60.0)].iter(), 0.0);
+        fog.update([].iter(), 0.0);
         assert_eq!(fog.at(0.0, 60.0), Sight::Explored);
     }
 
     #[test]
     fn a_unit_near_a_corner_of_the_map_is_no_trouble_and_off_the_map_is_unknown() {
         let mut fog = Fog::new();
-        fog.update([unit_at(0.0, 0.0)].iter());
+        fog.update([unit_at(0.0, 0.0)].iter(), 0.0);
         assert_eq!(fog.at(0.0, 0.0), Sight::Visible);
         assert_eq!(fog.at(0.0, -5.0), Sight::Unexplored);
     }

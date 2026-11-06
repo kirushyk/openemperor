@@ -1466,7 +1466,9 @@ fn choose_aim(units: &[Unit], shooter: usize, teams: &[usize], terrain: &Terrain
     let unit = &units[shooter];
     if let Some(Target::Place(x, z)) = unit.target {
         let place = (x, terrain.height_at(x, z), z);
-        if unit.can_fire_at_ground() && distance(unit.center(), place) <= unit.weapon.range() {
+        if unit.can_fire_at_ground()
+            && distance(unit.center(), place) <= unit.range_down_to(place.1)
+        {
             return Some(Aim::Place(place));
         }
     }
@@ -1535,7 +1537,7 @@ fn choose_target(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usiz
             } else {
                 unit.can_attack(&units[t], teams)
             };
-            fit && distance(unit.center(), units[t].center()) <= unit.weapon.range()
+            fit && distance(unit.center(), units[t].center()) <= unit.range_down_to(units[t].y)
         })
         .or_else(|| nearest_enemy(units, shooter, teams))
 }
@@ -1575,9 +1577,10 @@ fn nearest_enemy(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usiz
     let owner = units[shooter].owner;
     let mut best = None;
     let weapon = units[shooter].weapon;
-    let mut best_distance = weapon.range();
+    let mut best_distance = f32::INFINITY;
     for (i, unit) in units.iter().enumerate() {
         if unit.alive
+            && distance(from, unit.center()) <= units[shooter].range_down_to(unit.y)
             && are_enemies(teams, owner, unit.owner)
             && !unit.hidden_from(owner, teams)
             && weapon.can_target(unit.height_as_target())
@@ -2223,6 +2226,27 @@ mod tests {
         unit.cooldown = 0.0;
         unit.heading = 0.0;
         unit
+    }
+
+    #[test]
+    fn from_higher_ground_a_unit_fires_farther_down_but_not_farther_up() {
+        let far = WeaponKind::Bullet.range() * 1.2;
+        for (shooter_y, target_y, hits) in [(0.0, 0.0, false), (1.2, 0.0, true), (0.0, 1.2, false)]
+        {
+            let mut rifle = shooter(WeaponKind::Bullet);
+            rifle.y = shooter_y;
+            let mut target = target_at(far, 60.0);
+            target.y = target_y;
+            let before = target.health;
+            let mut units = [rifle, target];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 2.0);
+            assert_eq!(
+                units[1].health < before,
+                hits,
+                "{shooter_y} onto {target_y}"
+            );
+        }
     }
 
     #[test]

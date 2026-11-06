@@ -88,8 +88,16 @@ impl Strategy {
             .iter()
             .position(|u| u.alive && u.owner == owner && u.role == Role::Mcv)?;
         if !units[mcv].deployed {
-            if !units[mcv].is_moving() {
+            if units[mcv].is_moving() {
+                return None;
+            }
+            if units::can_deploy_here(&units[mcv], terrain) {
                 units::switch_deployed(&mut units[mcv]);
+            } else if let Some(spot) =
+                units::deploy_spot_near(terrain, (units[mcv].x, units[mcv].z))
+            {
+                // Off the sand first, onto higher ground.
+                units[mcv].destination = spot;
             }
             return None;
         }

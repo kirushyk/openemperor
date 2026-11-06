@@ -140,6 +140,9 @@ const BUILDING_BUILDS: [Role; 6] = [
 /// does not bury the game in units.
 const OPPONENT_UNITS_AT_MOST: usize = 80;
 
+/// What the chat says when an MCV is told to deploy on the sand or lower ground.
+const CANNOT_DEPLOY: &str = "MCV needs higher ground to deploy";
+
 /// How long a chat line stays up, in seconds of battle.
 const CHAT_SECONDS: f32 = 12.0;
 
@@ -1736,6 +1739,15 @@ impl Game {
             .any(|role| self.can_produce(role))
     }
 
+    /// Deploys the selected units that can, or packs them up, saying so if an MCV cannot deploy
+    /// where it stands.
+    fn toggle_deploy(&mut self) {
+        let terrain = battlefield::terrain(self.battle_map);
+        if units::toggle_deploy(&mut self.units, terrain) {
+            self.post_chat(CANNOT_DEPLOY.to_string());
+        }
+    }
+
     /// Moves along the building on its way, while the player has a deployed MCV to build it.
     fn work_on_site(&mut self, dt: f32) {
         if let Site::Building(role, left) = self.site
@@ -1981,7 +1993,12 @@ impl Game {
             units::order_attack(&mut self.units, chosen, &self.teams);
         } else if let Some(unit) = self.deployable_under_cursor().filter(|_| !adding) {
             // So two clicks on one that is not selected yet select it, then switch it.
-            units::switch_deployed(&mut self.units[unit]);
+            let terrain = battlefield::terrain(self.battle_map);
+            if units::can_deploy_here(&self.units[unit], terrain) {
+                units::switch_deployed(&mut self.units[unit]);
+            } else {
+                self.post_chat(CANNOT_DEPLOY.to_string());
+            }
         } else if let Some(pad) = self.pad_under_cursor().filter(|_| !adding) {
             units::order_land(&mut self.units, pad);
         } else if let Some(picked) = self.unit_under_cursor() {
@@ -2740,9 +2757,7 @@ impl Game {
                     self.selection_anchor = None;
                 }
                 (Screen::InGame, Key::Tab) => self.stats_open = !self.stats_open,
-                (Screen::InGame, Key::Char('d' | 'D')) if !self.key_paused => {
-                    units::toggle_deploy(&mut self.units)
-                }
+                (Screen::InGame, Key::Char('d' | 'D')) if !self.key_paused => self.toggle_deploy(),
                 (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => {
                     self.select_among(|u| !u.kind.is_building());
                 }
@@ -2827,7 +2842,7 @@ impl Game {
             Action::BuildTab(tab) if self.tab_enabled(tab) => self.build_tab = tab,
             Action::BuildTab(_) => {}
             Action::BuildCell(cell) => self.activate_build_cell(cell),
-            Action::HudWide(DEPLOY_BUTTON) => units::toggle_deploy(&mut self.units),
+            Action::HudWide(DEPLOY_BUTTON) => self.toggle_deploy(),
             // Not designed yet: these buttons respond to hover but do nothing.
             Action::Multiplayer
             | Action::LoadGame
@@ -6014,7 +6029,7 @@ mod tests {
         assert_eq!(game.screen, Screen::InGame);
         press(&mut game, 1);
 
-        let (x, y) = clear_spot_on_screen();
+        let (x, y) = buildable_spot_on_screen(&game);
         let spot = game.view().ground_at(x, y).unwrap();
         game.handle(Event::MouseMove(x, y));
         assert!(game.placing_preview().unwrap().1, "{spot:?}");
@@ -6087,6 +6102,49 @@ mod tests {
             game.update(0.25);
         }
         assert_eq!(has(&game, 1, Role::Barracks), 1);
+    }
+
+    /// A spot on the sand with upper ground close enough to drive to.
+    fn sand_by_upland(terrain: &battlefield::Terrain) -> (f32, f32) {
+        (0..160)
+            .flat_map(|i| (0..160).map(move |j| (i as f32 * 0.5 - 40.0, j as f32 * 0.5 + 20.0)))
+            .find(|&(x, z)| {
+                terrain.can_walk(x, z)
+                    && !terrain.on_upper_ground(x, z)
+                    && units::deploy_spot_near(terrain, (x, z)).is_some()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn an_mcv_cannot_deploy_on_the_sand_and_an_opponents_drives_off_it_first() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        let terrain = battlefield::terrain(game.battle_map);
+        let sand = sand_by_upland(terrain);
+        for mcv in &mut game.units {
+            (mcv.x, mcv.z) = sand;
+            mcv.destination = sand;
+        }
+        game.units.truncate(2);
+        game.units[1].x += 0.01;
+        game.units[0].selected = true;
+        game.handle(Event::KeyDown(Key::Char('d')));
+        assert!(!game.units[0].deployed, "not on the sand");
+        assert_eq!(chat_texts(&game), [CANNOT_DEPLOY]);
+        let upland = units::deploy_spot_near(terrain, sand).unwrap();
+        (game.units[0].x, game.units[0].z) = upland;
+        game.units[0].destination = upland;
+        game.handle(Event::KeyDown(Key::Char('d')));
+        assert!(game.units[0].deployed, "up there it can");
+
+        for _ in 0..400 {
+            game.update(0.05);
+        }
+        let theirs = game.units[1];
+        assert!(theirs.deployed, "{theirs:?}");
+        assert!(terrain.on_upper_ground(theirs.x, theirs.z));
     }
 
     #[test]
@@ -6200,7 +6258,7 @@ mod tests {
             game.update(role.build_seconds() + 0.1);
             assert_eq!(game.site, Site::Ready(role));
             click_hud(&mut game, Action::BuildCell(cell));
-            let (x, y) = clear_spot_on_screen();
+            let (x, y) = buildable_spot_on_screen(&game);
             game.handle(Event::MouseMove(x, y));
             click_at(&mut game, x, y);
             let built = *game.units.last().unwrap();
@@ -6222,7 +6280,7 @@ mod tests {
         click_hud(&mut game, Action::BuildCell(0));
         game.update(Role::Barracks.build_seconds() + 0.1);
         click_hud(&mut game, Action::BuildCell(0));
-        let (x, y) = clear_spot_on_screen();
+        let (x, y) = buildable_spot_on_screen(&game);
         click_at(&mut game, x, y);
         assert!(game.can_produce(Role::Scout));
     }
@@ -6919,6 +6977,20 @@ mod tests {
 
     fn clear_spot_on_screen() -> (f32, f32) {
         (W / 2.0 - 800.0, H / 2.0 + 300.0)
+    }
+
+    /// A point on the screen over upper ground clear enough for a building, away from the HUD.
+    fn buildable_spot_on_screen(game: &Game) -> (f32, f32) {
+        let terrain = battlefield::terrain(game.battle_map);
+        (1..20)
+            .flat_map(|i| (1..12).map(move |j| (i as f32 * W / 20.0, j as f32 * H / 12.0)))
+            .filter(|&(x, y)| !hud::covers(x, y, W, H))
+            .find(|&(x, y)| {
+                game.view()
+                    .ground_at(x, y)
+                    .is_some_and(|at| units::can_place_building(&game.units, terrain, at))
+            })
+            .expect("somewhere to build")
     }
 
     #[test]

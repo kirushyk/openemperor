@@ -158,11 +158,12 @@ const LEAVES_PAD: f32 = 1.5;
 const OVER_PAD: f32 = 0.5;
 /// How close to a pad a machine short of rockets gets a full one to make way, or goes to it.
 const PAD_NEARBY: f32 = 10.0;
+/// How far out, in rings so far apart, an MCV on the sand looks for upper ground to deploy on.
+const DEPLOY_SEARCH_RINGS: usize = 14;
+const DEPLOY_SEARCH_STEP: f32 = 1.2;
 /// How far from its base's MCV a machine home from a mission sits down.
 const HOME_BESIDE: f32 = 3.2;
-/// How far above the lowest ground counts as higher ground to sit down on, and how far out, in
-/// rings so far apart, a machine looks for it.
-const HIGHER_GROUND: f32 = 0.35;
+/// How far out, in rings so far apart, a machine looks for higher ground to sit down on.
 const HIGHER_GROUND_RINGS: usize = 10;
 const HIGHER_GROUND_STEP: f32 = 1.5;
 /// How far from a pad a machine waits for it to be free.
@@ -1562,11 +1563,11 @@ fn spots_taken(units: &[Unit], flying: bool) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// Whether a new building could go up here: on land, clear of ruins and of everyone on the
-/// ground.
-pub fn can_place_building(units: &[Unit], terrain: &Terrain, (x, z): (f32, f32)) -> bool {
+/// Whether a building's footprint here lies all on the upper ground, which can be walked on:
+/// nothing is built on the sand, or the lower ground that stands for it on other planets.
+fn footprint_on_upper_ground(terrain: &Terrain, (x, z): (f32, f32)) -> bool {
     let radius = BUILDING_RADIUS;
-    let on_land = [
+    [
         (0.0, 0.0),
         (-radius, 0.0),
         (radius, 0.0),
@@ -1574,7 +1575,32 @@ pub fn can_place_building(units: &[Unit], terrain: &Terrain, (x, z): (f32, f32))
         (0.0, radius),
     ]
     .iter()
-    .all(|(dx, dz)| terrain.can_walk(x + dx, z + dz));
+    .all(|(dx, dz)| terrain.can_walk(x + dx, z + dz) && terrain.on_upper_ground(x + dx, z + dz))
+}
+
+/// Whether it could deploy where it stands: an MCV only on the upper ground, as a building.
+pub fn can_deploy_here(unit: &Unit, terrain: &Terrain) -> bool {
+    unit.deployed || unit.role != Role::Mcv || footprint_on_upper_ground(terrain, (unit.x, unit.z))
+}
+
+/// The nearest place around a point where an MCV could deploy, ring by ring.
+pub fn deploy_spot_near(terrain: &Terrain, (x, z): (f32, f32)) -> Option<(f32, f32)> {
+    (0..=DEPLOY_SEARCH_RINGS).find_map(|ring| {
+        let reach = ring as f32 * DEPLOY_SEARCH_STEP;
+        let tries = (6 * ring).max(1);
+        (0..tries).find_map(|n| {
+            let angle = n as f32 / tries as f32 * TAU;
+            let at = (x + reach * angle.cos(), z + reach * angle.sin());
+            footprint_on_upper_ground(terrain, at).then_some(at)
+        })
+    })
+}
+
+/// Whether a new building could go up here: on the upper ground, clear of ruins and of everyone
+/// on the ground.
+pub fn can_place_building(units: &[Unit], terrain: &Terrain, (x, z): (f32, f32)) -> bool {
+    let radius = BUILDING_RADIUS;
+    let on_land = footprint_on_upper_ground(terrain, (x, z));
     let clear_of_ruins = terrain.ruins().iter().all(|piece| {
         let (near_x, near_z) = nearest_on_footprint(piece, x, z);
         (near_x - x).hypot(near_z - z) > radius
@@ -1637,14 +1663,21 @@ fn place_base(
     }
 }
 
-/// Switches every selected K Infantry between its pistol and, standing still, its cannon.
-pub fn toggle_deploy(units: &mut [Unit]) {
+/// Deploys every selected unit that can, or packs it up again. Returns whether an MCV could not
+/// deploy where it stands.
+pub fn toggle_deploy(units: &mut [Unit], terrain: &Terrain) -> bool {
+    let mut refused = false;
     for unit in units
         .iter_mut()
         .filter(|u| u.selected && u.role.can_deploy())
     {
-        switch_deployed(unit);
+        if can_deploy_here(unit, terrain) {
+            switch_deployed(unit);
+        } else {
+            refused = true;
+        }
     }
+    refused
 }
 
 /// Sends the selected machines that load at landing pads to this one: the nearest of them lands
@@ -3077,9 +3110,7 @@ fn go_home_after_a_mission(units: &mut [Unit], i: usize, terrain: &Terrain) {
 /// The nearest place around a point on the higher ground above the sand, if the sand is
 /// where it would otherwise sit down.
 fn higher_ground_near(terrain: &Terrain, (x, z): (f32, f32)) -> Option<(f32, f32)> {
-    let high = |(x, z): (f32, f32)| {
-        terrain.can_walk(x, z) && terrain.height_at(x, z) > terrain.floor() + HIGHER_GROUND
-    };
+    let high = |(x, z): (f32, f32)| terrain.can_walk(x, z) && terrain.on_upper_ground(x, z);
     if high((x, z)) {
         return None;
     }
@@ -3859,7 +3890,7 @@ mod tests {
     fn k_infantry_deploys_into_a_cannon_stays_put_and_can_pack_up_again() {
         let mut units = [produced(Role::KInfantry)];
         units[0].selected = true;
-        toggle_deploy(&mut units);
+        toggle_deploy(&mut units, open_ground());
         assert!(units[0].deployed);
         assert_eq!(units[0].weapon, WeaponKind::Cannon);
 
@@ -3870,7 +3901,7 @@ mod tests {
         }
         assert_eq!((units[0].x, units[0].z), at, "dug in");
 
-        toggle_deploy(&mut units);
+        toggle_deploy(&mut units, open_ground());
         assert_eq!(units[0].weapon, WeaponKind::Pistol);
         order_move(&mut units, (10.0, 60.0), open_ground(), &[0]);
         advance(&mut units, open_ground(), &[0], 0.05);
@@ -3887,7 +3918,7 @@ mod tests {
         units[0].selected = true;
         units[1].selected = true;
         units[0].destination = (10.0, 60.0);
-        toggle_deploy(&mut units);
+        toggle_deploy(&mut units, open_ground());
         assert!(!units[0].is_moving());
         assert!(!units[1].deployed);
         assert!(!units[2].deployed);
@@ -3901,7 +3932,7 @@ mod tests {
         ];
         units[1].id = 7;
         units[0].selected = true;
-        toggle_deploy(&mut units);
+        toggle_deploy(&mut units, open_ground());
         order_attack(&mut units, 1, &TWO_SIDES);
         for _ in 0..40 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
@@ -5106,7 +5137,12 @@ mod tests {
 
     #[test]
     fn a_new_building_needs_clear_land() {
-        let terrain = open_ground();
+        assert!(
+            !can_place_building(&[], open_ground(), (0.0, 60.0)),
+            "not on the sand"
+        );
+        let upland = Terrain::open_upland();
+        let terrain = &upland;
         let units = base_of(0);
         let barracks = units.iter().find(|u| u.role == Role::Barracks).unwrap();
         assert!(!can_place_building(
@@ -5702,10 +5738,7 @@ mod tests {
         units[0].destination = sand;
         after_a_mission(&mut units, terrain);
         let unit = units[0];
-        assert!(
-            terrain.height_at(unit.x, unit.z) > HIGHER_GROUND,
-            "{unit:?}"
-        );
+        assert!(terrain.on_upper_ground(unit.x, unit.z), "{unit:?}");
         assert_eq!(unit.altitude, 0.0);
     }
 

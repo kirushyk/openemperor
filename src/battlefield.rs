@@ -604,6 +604,15 @@ impl Terrain {
         }
     }
 
+    /// Flat upper ground with nothing on it, where buildings may go up.
+    #[cfg(test)]
+    pub fn open_upland() -> Self {
+        Terrain {
+            is_ground: vec![true; GRID_POINTS],
+            ..Terrain::open_with_ruins(Vec::new())
+        }
+    }
+
     /// Flat sand with a mountain in the way, for testing how units get around it.
     #[cfg(test)]
     pub fn open_with_mountain(x: f32, z: f32, radius: f32) -> Self {
@@ -896,6 +905,18 @@ impl Terrain {
     }
 
     /// The terrain's height under a world point, following its slopes.
+    /// Whether a point is on the upper terrain: not on the sand, nor the lower ground that stands
+    /// for it on other planets, nor in water or lava.
+    pub fn on_upper_ground(&self, x: f32, z: f32) -> bool {
+        if !self.on_map(x, z) {
+            return false;
+        }
+        let (u, v) = world_to_grid(x, z);
+        let last = self.size.cells();
+        let (u, v) = (u.round() as usize, v.round() as usize);
+        self.is_ground(u.min(last), v.min(last))
+    }
+
     /// The lowest ground anyone can stand on: the sand, or the land above water and lava.
     pub fn floor(&self) -> f32 {
         if self.planet.lower_is_solid() {

@@ -235,6 +235,8 @@ pub enum Role {
     Tower,
     /// A tower that throws fire.
     FlameTower,
+    /// A tower with two machine guns side by side, firing fast at the ground and the air.
+    GunTower,
     /// Makes infantry.
     Barracks,
     /// Makes ground vehicles.
@@ -266,7 +268,7 @@ impl Role {
             | Role::AirDrone
             | Role::Ornithopter
             | Role::Destroyer => UnitKind::Aircraft,
-            Role::Tower | Role::FlameTower => UnitKind::Tower,
+            Role::Tower | Role::FlameTower | Role::GunTower => UnitKind::Tower,
             Role::Barracks | Role::Factory | Role::Hangar | Role::LandingPad => UnitKind::Building,
         }
     }
@@ -291,8 +293,9 @@ impl Role {
             Role::Destroyer => "Destroyer",
             Role::FlameInfantry => "Flame Infantry",
             Role::GasInfantry => "Gas Infantry",
-            Role::Tower => "Tower",
+            Role::Tower => "Rocket Tower",
             Role::FlameTower => "Flame Tower",
+            Role::GunTower => "Machine Gun Tower",
             Role::Barracks => "Barracks",
             Role::Factory => "Factory",
             Role::Hangar => "Hangar",
@@ -316,7 +319,7 @@ impl Role {
             Role::Tower | Role::Strider => WeaponKind::Missile,
             Role::HeavyStrider => WeaponKind::Bombard,
             Role::AdvancedCarryall => WeaponKind::Unarmed,
-            Role::AirDefensePlatform => WeaponKind::AutoGun,
+            Role::AirDefensePlatform | Role::GunTower => WeaponKind::AutoGun,
             Role::AirDrone => WeaponKind::AirMissile,
             Role::FlameInfantry | Role::FlameTower => WeaponKind::Flame,
             Role::GasInfantry => WeaponKind::Gas,
@@ -371,7 +374,9 @@ impl Role {
             Role::LandingPad => 10.0,
             Role::Barracks => 15.0,
             Role::Factory | Role::Hangar => 20.0,
-            Role::Tower | Role::FlameTower => 0.0,
+            Role::Tower => 12.0,
+            Role::GunTower => 10.0,
+            Role::FlameTower => 0.0,
         }
     }
 
@@ -845,8 +850,8 @@ impl Unit {
         (self.x, self.sphere_y(), self.z)
     }
 
-    /// Where its shots come from: a tower takes turns with the ends of its two tubes, and a
-    /// rocket launcher goes along its racks.
+    /// Where its shots come from: a tower takes turns with the ends of its two tubes or guns,
+    /// and a rocket launcher goes along its racks.
     pub fn muzzle(&self) -> (f32, f32, f32) {
         if self.role == Role::Strider {
             return (self.x, self.y + STRIDER_MUZZLE_HEIGHT, self.z);
@@ -889,6 +894,9 @@ impl Unit {
 
     /// Where gunfire comes out: at the end of the barrel, outside its body.
     pub fn gun_tip(&self) -> (f32, f32, f32) {
+        if self.role == Role::GunTower {
+            return self.muzzle();
+        }
         let base = self.y + self.altitude;
         let (ahead, up) = match (self.role, self.deployed) {
             (Role::KInfantry, true) => (0.75, 0.18),

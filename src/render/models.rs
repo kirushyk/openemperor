@@ -693,6 +693,8 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         Role::AirDefensePlatform => &[[0.41, 0.05, -0.27], [0.41, 0.05, 0.27]],
         Role::Ornithopter => &[[0.23, 0.08, 0.0]],
         Role::Destroyer => &[[0.45, 0.09, -0.06], [0.45, 0.09, 0.06]],
+        // The searchlight on a tower's roof.
+        Role::Tower | Role::GunTower => &[[0.14, 1.5, 0.0]],
         _ => &[],
     }
 }
@@ -702,6 +704,7 @@ fn lamp_radius(role: Role) -> f32 {
     match role {
         Role::AdvancedCarryall => 0.045,
         Role::HeavyStrider => 0.035,
+        Role::Tower | Role::GunTower => 0.045,
         _ => 0.026,
     }
 }
@@ -734,6 +737,8 @@ pub fn beams(unit: &Unit) -> Vec<Beam> {
         Role::AirDefensePlatform => (4.5, 0.8),
         Role::Ornithopter | Role::Destroyer => (5.0, 1.2),
         Role::HeavyStrider => (3.5, 1.0),
+        // A searchlight throws a long, narrow beam far over the ground as the tower looks out.
+        Role::Tower | Role::GunTower => (8.0, 0.9),
         _ if spots.len() == 1 => (2.6, 1.0),
         _ => (2.6, 0.75),
     };

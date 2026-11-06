@@ -2049,6 +2049,12 @@ fn draw_flames(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit:
     }
 }
 
+/// The steel case of a tower's searchlight, and the glass at its front.
+const SEARCHLIGHT_HOUSING: [f32; 3] = [0.3, 0.31, 0.33];
+const SEARCHLIGHT_LENS: [f32; 3] = [1.0, 0.98, 0.88];
+/// A machine gun's dark steel.
+const GUNMETAL: [f32; 3] = [0.22, 0.23, 0.25];
+
 /// Where a landing pad's searchlight is, relative to the pad's middle, and how high.
 const SEARCHLIGHT: (f32, f32, f32) = (0.72, 1.28, -0.72);
 
@@ -2209,6 +2215,46 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
                 // One fat nozzle, with the color of fire on its way out.
                 let nozzle = (ahead_x, ahead_z, 0.3, 0.1, unit.heading);
                 part(nozzle, height, FIRE_COLOR);
+                return;
+            }
+            // A searchlight on the roof, turning with the head.
+            let roof = unit.y + head_base + 0.34;
+            let (lamp_x, lamp_z) = ahead(0.05);
+            part(
+                (lamp_x, lamp_z, 0.08, 0.07, unit.heading),
+                (roof, roof + 0.12),
+                SEARCHLIGHT_HOUSING,
+            );
+            let (lens_x, lens_z) = ahead(0.135);
+            part(
+                (lens_x, lens_z, 0.006, 0.055, unit.heading),
+                (roof + 0.015, roof + 0.105),
+                SEARCHLIGHT_LENS,
+            );
+            if unit.role == Role::GunTower {
+                // Two machine guns side by side on a breech block.
+                let right = (-forward_z, forward_x);
+                let (breech_x, breech_z) = ahead(0.14);
+                let breech = (
+                    breech_x,
+                    breech_z,
+                    0.12,
+                    units::TUBE_SPREAD + 0.06,
+                    unit.heading,
+                );
+                let gun_height = unit.y + units::TUBE_HEIGHT;
+                part(breech, (gun_height - 0.08, gun_height + 0.07), GUNMETAL);
+                for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
+                    let (x, z) = ahead(0.45);
+                    let barrel = (
+                        x + right.0 * side,
+                        z + right.1 * side,
+                        0.25,
+                        0.03,
+                        unit.heading,
+                    );
+                    part(barrel, (gun_height - 0.03, gun_height + 0.03), GUNMETAL);
+                }
                 return;
             }
             for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
@@ -2619,6 +2665,8 @@ fn short_name(role: Role) -> &'static str {
         Role::Ornithopter => "Ornith",
         Role::Destroyer => "Destroy",
         Role::LandingPad => "Pad",
+        Role::Tower => "R Tower",
+        Role::GunTower => "MG Twr",
         Role::FlameInfantry => "Flame",
         Role::GasInfantry => "Gas",
         _ => role.name(),

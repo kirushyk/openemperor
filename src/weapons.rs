@@ -980,7 +980,11 @@ impl Combat {
             | WeaponKind::Sniper
             | WeaponKind::Pistol
             | WeaponKind::Cannon
-            | WeaponKind::AutoGun => strike(units, i, target, to, weapon, teams),
+            | WeaponKind::AutoGun => {
+                strike(units, i, target, to, weapon, teams);
+                // A machine gun tower's two guns take turns.
+                units[i].second_tube ^= units[i].kind == UnitKind::Tower;
+            }
             WeaponKind::Flame | WeaponKind::Gas => self.spray(units, i, teams, forced),
             WeaponKind::Laser => {
                 strike(units, i, target, to, weapon, teams);
@@ -2627,6 +2631,32 @@ mod tests {
             "from the other tube"
         );
         assert!(units[1].health < 100.0);
+    }
+
+    #[test]
+    fn a_machine_gun_tower_fires_its_two_guns_in_turn_at_the_ground_and_the_air() {
+        let mut gun_tower = tower();
+        gun_tower.role = Role::GunTower;
+        gun_tower.weapon = WeaponKind::AutoGun;
+        for target in [target_at(6.0, 60.0), plane_at(5.0, 60.0)] {
+            let mut units = [gun_tower, target];
+            let mut combat = Combat::default();
+            let mut fired_from = Vec::new();
+            for _ in 0..60 {
+                let known = combat.flares.len();
+                combat.advance(&mut units, &TEAMS, flat(), 0.05);
+                if combat.flares.len() > known {
+                    fired_from.push(combat.flares.last().unwrap().at);
+                }
+            }
+            assert!(fired_from.len() >= 4, "fast: {fired_from:?}");
+            assert!(
+                distance(fired_from[0], fired_from[1]) > 0.3,
+                "from the other gun"
+            );
+            assert!(distance(fired_from[0], fired_from[2]) < 0.05, "and back");
+            assert!(units[1].health < units[1].max_health());
+        }
     }
 
     #[test]

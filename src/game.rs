@@ -71,11 +71,13 @@ const OPPONENT_BUILDS: [Role; 14] = [
     Role::Destroyer,
 ];
 /// What the Buildings menu makes, in order.
-const BUILDING_BUILDS: [Role; 4] = [
+const BUILDING_BUILDS: [Role; 6] = [
     Role::Barracks,
     Role::Factory,
     Role::Hangar,
     Role::LandingPad,
+    Role::Tower,
+    Role::GunTower,
 ];
 /// How much an opponent has standing at most before it stops making more, so that a long battle
 /// does not bury the game in units.
@@ -2729,7 +2731,7 @@ impl Game {
     /// Makes what the cell makes, or gets the superweapon ready to aim.
     fn activate_build_cell(&mut self, cell: usize) {
         if let Some(role) = Game::build_role(self.build_tab, cell) {
-            if role.kind() == UnitKind::Building {
+            if role.kind().is_building() {
                 self.click_building(role);
                 return;
             }
@@ -4024,7 +4026,7 @@ mod tests {
         let tower = tower_of(&game, 0);
         game.units[tower].alive = false;
         game.update(0.01);
-        assert_eq!(chat_texts(&game), ["Tower lost"]);
+        assert_eq!(chat_texts(&game), ["Rocket Tower lost"]);
 
         let mut game = in_battle();
         let enemy = game.units.iter().position(|u| u.owner == 1).unwrap();
@@ -5161,7 +5163,8 @@ mod tests {
     }
 
     #[test]
-    fn every_vehicle_shines_white_light_ahead_from_each_of_its_lamps_and_nothing_else_does() {
+    fn every_vehicle_and_tower_shines_white_light_ahead_from_each_of_its_lamps_and_nothing_else_does()
+     {
         let lights = |game: &Game| {
             crate::render::build(game)
                 .iter()
@@ -5174,8 +5177,9 @@ mod tests {
         game.units
             .retain(|u| !u.kind.flies() && u.role != Role::LandingPad);
         let lamps = |game: &Game| {
-            let is_vehicle = |u: &&Unit| u.alive && u.kind == UnitKind::Vehicle;
-            let vehicles = game.units.iter().filter(is_vehicle);
+            let has_lamps =
+                |u: &&Unit| u.alive && matches!(u.kind, UnitKind::Vehicle | UnitKind::Tower);
+            let vehicles = game.units.iter().filter(has_lamps);
             vehicles
                 .map(|u| crate::render::lamps_on(u.role))
                 .sum::<usize>()
@@ -5186,7 +5190,9 @@ mod tests {
             lamps(&game) * 3,
             "three bright corners of two triangles from each lens"
         );
-        game.units.retain(|u| u.kind != UnitKind::Vehicle);
+        // A flame tower has no searchlight.
+        game.units
+            .retain(|u| !matches!(u.kind, UnitKind::Vehicle) && u.role != Role::Tower);
         assert_eq!(lights(&game), 0);
     }
 
@@ -5883,6 +5889,31 @@ mod tests {
     }
 
     #[test]
+    fn rocket_and_machine_gun_towers_are_built_and_placed_like_other_buildings() {
+        for (cell, role, name) in [
+            (4, Role::Tower, "Rocket Tower"),
+            (5, Role::GunTower, "Machine Gun Tower"),
+        ] {
+            let mut game = in_battle();
+            click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+            assert_eq!(Game::build_role(BuildTab::Buildings, cell), Some(role));
+            click_hud(&mut game, Action::BuildCell(cell));
+            game.update(role.build_seconds() + 0.1);
+            assert_eq!(game.site, Site::Ready(role));
+            click_hud(&mut game, Action::BuildCell(cell));
+            let (x, y) = clear_spot_on_screen();
+            game.handle(Event::MouseMove(x, y));
+            click_at(&mut game, x, y);
+            let built = *game.units.last().unwrap();
+            assert_eq!((built.role, built.owner), (role, 0));
+            assert_eq!(built.kind, UnitKind::Tower);
+            assert_eq!(built.name(), name);
+            assert!(built.weapon.can_target(1.0), "it reaches the air too");
+            assert_eq!(crate::render::lamps_on(role), 1, "a searchlight");
+        }
+    }
+
+    #[test]
     fn a_lost_building_can_be_built_again_and_its_units_made_again() {
         let mut game = in_battle();
         game.units
@@ -6147,7 +6178,7 @@ mod tests {
             .project(tower.x, tower.pick_height(), tower.z)
             .unwrap();
         game.handle(Event::MouseMove(x, y));
-        assert_eq!(game.tip(), Some("Tower"), "one's own");
+        assert_eq!(game.tip(), Some("Rocket Tower"), "one's own");
         let (_, (x, y)) = enemy_beside_first_group(&mut game);
         game.handle(Event::MouseMove(x, y));
         assert_eq!(game.tip(), Some("Light Infantry"), "and enemies");

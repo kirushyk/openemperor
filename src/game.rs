@@ -6043,6 +6043,29 @@ mod tests {
     }
 
     #[test]
+    fn an_invisible_unit_shimmers_for_its_own_side_and_does_not_show_for_its_enemies() {
+        let mut game = in_battle();
+        let scout = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
+            .unwrap();
+        let cloaked = |game: &Game| {
+            crate::render::build_frame(game)
+                .objects
+                .iter()
+                .filter(|v| v.stain == crate::render::CLOAKED)
+                .count()
+        };
+        assert_eq!(cloaked(&game), 0);
+        game.units[scout].role = Role::Scout;
+        assert!(cloaked(&game) > 0, "its own side sees it shimmer");
+        game.units[scout].owner = 1;
+        assert!(!game.shows(&game.units[scout]), "its enemies not at all");
+        assert_eq!(cloaked(&game), 0);
+    }
+
+    #[test]
     fn a_battle_starts_with_one_packed_up_mcv_each_and_opponents_grow_a_base_from_theirs() {
         let mut game = in_setup();
         click_widget(&mut game, Action::StartBattle);

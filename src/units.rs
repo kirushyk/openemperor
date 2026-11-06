@@ -746,6 +746,8 @@ pub struct Unit {
     pub rockets_fired: u8,
     /// The landing pad it is going to or sitting on.
     pad: Option<Pad>,
+    /// Seconds an invisible unit stays seen after it last fired.
+    pub revealed: f32,
     /// Whether what lands has had something to go after since it was last sent anywhere: once
     /// that is over, it goes home instead of sitting down where it is.
     on_mission: bool,
@@ -930,10 +932,20 @@ impl Unit {
             }
     }
 
-    /// Whether this owner cannot see it at all: a scout is invisible to its enemies, though it
-    /// can still be caught in a blast or driven over.
+    /// Whether it can go invisible: a scout, and a sniper with all three medals.
+    pub fn can_cloak(&self) -> bool {
+        self.role == Role::Scout || (self.role == Role::Sniper && self.rank() >= 3)
+    }
+
+    /// Whether it is invisible now: it shows for a while each time it opens fire.
+    pub fn is_cloaked(&self) -> bool {
+        self.alive && self.can_cloak() && self.revealed <= 0.0
+    }
+
+    /// Whether this owner cannot see it at all: an invisible unit is hidden from its enemies,
+    /// though it can still be caught in a blast or driven over.
     pub fn hidden_from(&self, owner: usize, teams: &[usize]) -> bool {
-        self.role == Role::Scout && are_enemies(teams, owner, self.owner)
+        self.is_cloaked() && are_enemies(teams, owner, self.owner)
     }
 
     /// Tells it to go after a unit by id, as a click on that unit would.
@@ -1234,6 +1246,7 @@ impl Unit {
             rockets_fired: 0,
             pad: None,
             on_mission: false,
+            revealed: 0.0,
             reloading: 0.0,
             theft: None,
             stall: Stall::NOT_STALLED,
@@ -1367,6 +1380,7 @@ fn place_unit(
         rockets_fired: 0,
         pad: None,
         on_mission: false,
+        revealed: 0.0,
         reloading: 0.0,
         theft: None,
         stall: Stall::NOT_STALLED,

@@ -58,6 +58,7 @@ pub struct WorldVertex {
     /// On an object, how much it shines: 0 for not at all, through paint, to 1 for bare metal.
     pub level: f32,
     /// Where on its unit it is, for the backend to lay black stains by, and how black they go.
+    /// Below 0, the unit is invisible to its enemies and shimmers for its own side.
     pub stain: [f32; 3],
 }
 

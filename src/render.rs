@@ -1948,6 +1948,9 @@ fn draw_seen_model(canvas: &mut Canvas, game: &Game, unit: &Unit, seen: Seen) {
             }
             draw_unit_model(canvas, game, unit);
             stain_model(canvas, drawn, unit);
+            if unit.is_cloaked() {
+                cloak_model(canvas, drawn);
+            }
         }
         Seen::ShadowOnly => {
             let watchers = canvas.watchers;
@@ -2092,6 +2095,17 @@ fn draw_beam(canvas: &mut Canvas, game: &Game, view: &battlefield::View, beam: &
     canvas.deep_light(view, [(a, bright), (b, bright), (c, [0.0; 3])]);
     canvas.deep_light(view, [(a, bright), (c, [0.0; 3]), (d, [0.0; 3])]);
 }
+
+/// Marks what was just drawn of an invisible unit for the backend to draw as a shimmer of grey,
+/// blue and pink, every pixel its own and changing fast. Only its own side ever sees it.
+fn cloak_model(canvas: &mut Canvas, drawn: usize) {
+    for vertex in &mut canvas.objects[drawn..] {
+        vertex.stain = CLOAKED;
+    }
+}
+
+/// What an invisible unit's stains are set to, for the backend to know it by.
+pub const CLOAKED: [f32; 3] = [0.0, 0.0, -1.0];
 
 /// Marks what was just drawn of a unit with how black it has gone, and where on the unit each
 /// corner is, so that the stains stay put on it as it moves and turns.

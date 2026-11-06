@@ -83,6 +83,8 @@ const PARTICLES_ALIVE_AT_MOST: usize = 800;
 const PARTICLE_SECONDS: f32 = 0.9;
 const PARTICLE_GRAVITY: f32 = 7.0;
 const HEAVY_BLAST_RADIUS: f32 = 1.5;
+/// How long an invisible unit stays seen after it fires.
+pub const REVEAL_SECONDS: f32 = 4.0;
 /// How far a suicide infantry's explosion reaches, and how much it harms whoever it reaches.
 pub const SUICIDE_BLAST_RADIUS: f32 = 3.2;
 const SUICIDE_DAMAGE: f32 = 450.0;
@@ -930,6 +932,7 @@ impl Combat {
                 continue;
             }
             units[i].cooldown -= dt;
+            units[i].revealed = (units[i].revealed - dt).max(0.0);
             let salvo_over = |unit: &Unit| {
                 unit.weapon
                     .salvo()
@@ -968,6 +971,8 @@ impl Combat {
     fn shoot(&mut self, units: &mut [Unit], i: usize, aim: Aim, teams: &[usize]) {
         let weapon = units[i].weapon;
         units[i].cooldown = weapon.cooldown();
+        // Firing gives an invisible unit away for a while.
+        units[i].revealed = REVEAL_SECONDS;
         if units[i].role.rocket_load().is_some() {
             units[i].rockets_fired += 1;
         }
@@ -2334,6 +2339,32 @@ mod tests {
             assert!(fired_from.len() >= 2, "{role:?}");
             assert!(distance(fired_from[0], fired_from[1]) > 0.2, "{role:?}");
         }
+    }
+
+    #[test]
+    fn a_three_medal_sniper_is_invisible_until_it_opens_fire_and_then_for_a_while() {
+        let mut sniper = target_at(6.0, 60.0);
+        sniper.role = Role::Sniper;
+        sniper.weapon = WeaponKind::Sniper;
+        sniper.cooldown = 0.0;
+        let rifle = shooter(WeaponKind::Bullet);
+        assert!(rifle.can_attack(&sniper, &TEAMS), "seen without medals");
+        sniper.gain_experience(1000);
+        assert_eq!(sniper.rank(), 3);
+        assert!(sniper.is_cloaked());
+        assert!(!rifle.can_attack(&sniper, &TEAMS), "with three it is not");
+        let mut units = [rifle, sniper];
+        units[0].health = 1e9;
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.1);
+        assert!(units[1].revealed > 0.0, "it fired");
+        assert!(
+            units[0].can_attack(&units[1], &TEAMS),
+            "and gave itself away"
+        );
+        units[1].cooldown = 1e9;
+        run(&mut combat, &mut units, REVEAL_SECONDS + 0.1);
+        assert!(units[1].is_cloaked(), "gone again");
     }
 
     #[test]

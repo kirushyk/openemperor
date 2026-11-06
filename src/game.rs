@@ -47,6 +47,8 @@ const BOTTOM_VEHICLE_BUILDS: [Role; 3] =
 const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
 /// The Vehicles menu's cell for the Advanced Carryall, just above the bottom row.
 const CARRYALL_CELL: usize = BOTTOM_ROW_START - hud::GRID_COLUMNS;
+/// The Vehicles menu's cell for a spare MPV, beside the superweapon.
+const MPV_CELL: usize = SUPERWEAPON_CELL + 1;
 /// The Vehicles menu's cell for the Destroyer, just above the Ornithopter.
 const DESTROYER_CELL: usize = BOTTOM_ROW_START - 1;
 /// Seconds of battle before the superweapon can fire again.
@@ -1518,6 +1520,7 @@ impl Game {
         match tab {
             BuildTab::Infantry => INFANTRY_BUILDS.get(cell).copied(),
             BuildTab::Vehicles if cell == CARRYALL_CELL => Some(Role::AdvancedCarryall),
+            BuildTab::Vehicles if cell == MPV_CELL => Some(Role::Mpv),
             BuildTab::Vehicles if cell == DESTROYER_CELL => Some(Role::Destroyer),
             BuildTab::Vehicles => VEHICLE_BUILDS
                 .get(cell)
@@ -1655,14 +1658,25 @@ impl Game {
         }
     }
 
-    /// Whether the player has the building that makes this. Nothing is needed for a building.
+    /// Whether the player has what makes this: the building it is made in, or for a building a
+    /// deployed MPV.
     pub fn can_produce(&self, role: Role) -> bool {
-        role.made_in().is_none() || units::maker_of(&self.units, role, 0).is_some()
+        self.units.iter().any(|u| u.owner == 0 && u.can_make(role))
     }
 
-    /// Moves along the building on its way.
+    /// Whether a build tab can be used: the player has something that makes any of what is on
+    /// it. Otherwise it shows greyed out.
+    pub fn tab_enabled(&self, tab: BuildTab) -> bool {
+        (0..hud::GRID_ROWS * hud::GRID_COLUMNS)
+            .filter_map(|cell| Game::build_role(tab, cell))
+            .any(|role| self.can_produce(role))
+    }
+
+    /// Moves along the building on its way, while the player has a deployed MPV to build it.
     fn work_on_site(&mut self, dt: f32) {
-        if let Site::Building(role, left) = self.site {
+        if let Site::Building(role, left) = self.site
+            && self.can_produce(role)
+        {
             let left = left - dt;
             self.site = if left > 0.0 {
                 Site::Building(role, left)
@@ -1710,7 +1724,8 @@ impl Game {
         let side = (0, self.stats_rows().first()?.color);
         let building = units::new_building(terrain, at, role, side, self.next_unit_id);
         let can = units::can_place_building(&self.units, terrain, at)
-            && self.sight_at(at.0, at.1) != Sight::Unexplored;
+            && self.sight_at(at.0, at.1) != Sight::Unexplored
+            && self.can_produce(role);
         Some((building, can))
     }
 
@@ -1724,11 +1739,14 @@ impl Game {
                 return Some("Superweapon");
             }
             return Game::build_role(self.build_tab, cell).map(|role| {
-                match role.made_in().filter(|_| !self.can_produce(role)) {
+                if self.can_produce(role) {
+                    return role.name();
+                }
+                match role.made_in() {
                     Some(Role::Barracks) => "Needs a Barracks",
                     Some(Role::Factory) => "Needs a Factory",
                     Some(_) => "Needs a Hangar",
-                    None => role.name(),
+                    None => "Needs a deployed MPV",
                 }
             });
         }
@@ -1962,6 +1980,20 @@ impl Game {
         }
     }
 
+    /// The great house an owner's machines are built by. Outside a skirmish the enemy is of
+    /// the house after the player's.
+    pub fn faction_of(&self, owner: usize) -> Faction {
+        let player = match self.battle_kind {
+            BattleKind::Skirmish => self.skirmish.faction,
+            _ => self.faction.unwrap_or(Faction::A),
+        };
+        match (self.battle_kind, owner) {
+            (_, 0) => player,
+            (BattleKind::Skirmish, _) => self.skirmish.opponents[owner - 1].faction,
+            _ => player.next(),
+        }
+    }
+
     /// The player, then each opponent in this battle.
     pub fn stats_rows(&self) -> Vec<StatsRow> {
         let setup = &self.skirmish;
@@ -2027,7 +2059,7 @@ impl Game {
                 self.combat.shoot_down(unit);
             } else {
                 self.combat
-                    .explode_destroyed(unit.center(), unit.kind.radius() * 2.0, overkill);
+                    .explode_destroyed(unit.center(), unit.radius() * 2.0, overkill);
             }
             if unit.owner == 0 {
                 self.lost.count(unit);
@@ -2716,7 +2748,8 @@ impl Game {
             Action::CycleOpponentAlly(slot, ally) => {
                 cycle_ally(&mut self.skirmish.opponents[slot].allies, ally);
             }
-            Action::BuildTab(tab) => self.build_tab = tab,
+            Action::BuildTab(tab) if self.tab_enabled(tab) => self.build_tab = tab,
+            Action::BuildTab(_) => {}
             Action::BuildCell(cell) => self.activate_build_cell(cell),
             Action::HudWide(DEPLOY_BUTTON) => units::toggle_deploy(&mut self.units),
             // Not designed yet: these buttons respond to hover but do nothing.
@@ -2732,7 +2765,9 @@ impl Game {
     fn activate_build_cell(&mut self, cell: usize) {
         if let Some(role) = Game::build_role(self.build_tab, cell) {
             if role.kind().is_building() {
-                self.click_building(role);
+                if self.can_produce(role) {
+                    self.click_building(role);
+                }
                 return;
             }
             // There is no cost yet. A busy building queues it.
@@ -5173,9 +5208,10 @@ mod tests {
                 .count()
         };
         let mut game = in_battle();
-        // Rocket engines are lit too, in orange, and landing pads have searchlights.
+        // Rocket engines are lit too, in orange, and landing pads and MPVs have searchlights,
+        // and a deployed MPV red glares.
         game.units
-            .retain(|u| !u.kind.flies() && u.role != Role::LandingPad);
+            .retain(|u| !u.kind.flies() && !matches!(u.role, Role::LandingPad | Role::Mpv));
         let lamps = |game: &Game| {
             let has_lamps =
                 |u: &&Unit| u.alive && matches!(u.kind, UnitKind::Vehicle | UnitKind::Tower);
@@ -5207,7 +5243,8 @@ mod tests {
         let mut game = in_battle();
         game.units
             .retain(|u| matches!(u.kind, UnitKind::Infantry | UnitKind::Building));
-        game.units.retain(|u| u.role != Role::LandingPad);
+        game.units
+            .retain(|u| !matches!(u.role, Role::LandingPad | Role::Mpv));
         assert_eq!(lit(&game), 0);
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START));
@@ -5886,6 +5923,104 @@ mod tests {
         assert_eq!((built.role, built.owner), (Role::Factory, 0));
         assert_eq!((built.x, built.z), spot);
         assert_eq!(built.color, game.units[0].color);
+    }
+
+    #[test]
+    fn everyone_starts_with_a_deployed_mpv_that_packs_up_into_a_vehicle_and_back() {
+        let mut game = in_battle();
+        for owner in 0..game.teams.len() {
+            let mpvs: Vec<&Unit> = game
+                .units
+                .iter()
+                .filter(|u| u.owner == owner && u.role == Role::Mpv)
+                .collect();
+            assert_eq!(mpvs.len(), 1, "owner {owner}");
+            assert!(mpvs[0].deployed && mpvs[0].kind == UnitKind::Building);
+        }
+        let mpv = mpv_of(&game);
+        let at = (game.units[mpv].x, game.units[mpv].z);
+        units::switch_deployed(&mut game.units[mpv]);
+        assert_eq!(game.units[mpv].kind, UnitKind::Vehicle);
+        assert!(
+            game.units[mpv].radius() > UnitKind::Vehicle.radius(),
+            "huge"
+        );
+        game.units[mpv].destination = (at.0, at.1 + 6.0);
+        for _ in 0..100 {
+            game.update(0.05);
+        }
+        let moved = (game.units[mpv].x - at.0).hypot(game.units[mpv].z - at.1);
+        assert!(moved > 3.0, "it drives: {moved}");
+        units::switch_deployed(&mut game.units[mpv]);
+        assert_eq!(game.units[mpv].kind, UnitKind::Building);
+        assert!(!game.units[mpv].is_moving(), "and stays put");
+        assert!(!crate::render::build(&game).is_empty());
+    }
+
+    #[test]
+    fn buildings_need_a_deployed_mpv_and_each_tab_something_that_makes_what_is_on_it() {
+        let mut game = in_battle();
+        for tab in [BuildTab::Infantry, BuildTab::Vehicles, BuildTab::Buildings] {
+            assert!(game.tab_enabled(tab), "{tab:?}");
+        }
+        let mpv = mpv_of(&game);
+        units::switch_deployed(&mut game.units[mpv]);
+        assert!(!game.tab_enabled(BuildTab::Buildings), "packed up");
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        assert_eq!(
+            game.build_tab,
+            BuildTab::Infantry,
+            "a greyed tab does not open"
+        );
+        game.build_tab = BuildTab::Buildings;
+        click_hud(&mut game, Action::BuildCell(0));
+        assert_eq!(game.site, Site::Idle, "nothing to build it");
+
+        units::switch_deployed(&mut game.units[mpv]);
+        click_hud(&mut game, Action::BuildCell(0));
+        assert!(matches!(game.site, Site::Building(Role::Barracks, _)));
+        units::switch_deployed(&mut game.units[mpv]);
+        let before = game.site;
+        game.update(1.0);
+        assert_eq!(game.site, before, "its clock stops meanwhile");
+
+        let gone = |game: &mut Game, roles: &[Role]| {
+            game.units
+                .retain(|u| u.owner != 0 || !roles.contains(&u.role));
+        };
+        gone(&mut game, &[Role::Factory]);
+        assert!(
+            game.tab_enabled(BuildTab::Vehicles),
+            "the hangar still makes aircraft"
+        );
+        gone(&mut game, &[Role::Hangar]);
+        assert!(!game.tab_enabled(BuildTab::Vehicles));
+        assert!(game.tab_enabled(BuildTab::Infantry));
+        gone(&mut game, &[Role::Barracks]);
+        assert!(!game.tab_enabled(BuildTab::Infantry));
+    }
+
+    #[test]
+    fn a_factory_makes_a_spare_mpv() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        assert_eq!(
+            Game::build_role(BuildTab::Vehicles, MPV_CELL),
+            Some(Role::Mpv)
+        );
+        click_hud(&mut game, Action::BuildCell(MPV_CELL));
+        game.finish_all_making();
+        let made = *game.units.last().unwrap();
+        assert_eq!((made.role, made.owner), (Role::Mpv, 0));
+        assert_eq!(made.kind, UnitKind::Vehicle);
+        assert!(!made.deployed, "it comes out on its tracks");
+    }
+
+    fn mpv_of(game: &Game) -> usize {
+        game.units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Mpv)
+            .unwrap()
     }
 
     #[test]

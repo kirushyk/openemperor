@@ -4,6 +4,7 @@
 
 use super::{Canvas, Point, cross, knee_of, unit_vector};
 use crate::battlefield::SUN;
+use crate::game::Faction;
 use crate::platform::WorldVertex;
 use crate::units::{self, Role, Unit};
 use std::f32::consts::{PI, TAU};
@@ -695,6 +696,8 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         Role::Destroyer => &[[0.45, 0.09, -0.06], [0.45, 0.09, 0.06]],
         // The searchlight on a tower's roof.
         Role::Tower | Role::GunTower => &[[0.14, 1.5, 0.0]],
+        // A big headlamp on the front of each front track pod.
+        Role::Mpv => &[[1.02, 0.34, -0.66], [1.02, 0.34, 0.66]],
         _ => &[],
     }
 }
@@ -705,6 +708,7 @@ fn lamp_radius(role: Role) -> f32 {
         Role::AdvancedCarryall => 0.045,
         Role::HeavyStrider => 0.035,
         Role::Tower | Role::GunTower => 0.045,
+        Role::Mpv => 0.075,
         _ => 0.026,
     }
 }
@@ -724,7 +728,8 @@ pub struct Beam {
 pub fn beams(unit: &Unit) -> Vec<Beam> {
     let spots = lamp_spots(unit.role);
     let flies_only = matches!(unit.role, Role::Ornithopter | Role::Destroyer);
-    if spots.is_empty() || flies_only && unit.is_grounded() {
+    // A deployed MPV puts out its headlamps.
+    if spots.is_empty() || flies_only && unit.is_grounded() || unit.deployed {
         return Vec::new();
     }
     let place = if unit.kind == units::UnitKind::Aircraft {
@@ -737,6 +742,7 @@ pub fn beams(unit: &Unit) -> Vec<Beam> {
         Role::AirDefensePlatform => (4.5, 0.8),
         Role::Ornithopter | Role::Destroyer => (5.0, 1.2),
         Role::HeavyStrider => (3.5, 1.0),
+        Role::Mpv => (4.5, 1.5),
         // A searchlight throws a long, narrow beam far over the ground as the tower looks out.
         Role::Tower | Role::GunTower => (8.0, 0.9),
         _ if spots.len() == 1 => (2.6, 1.0),
@@ -1724,3 +1730,237 @@ fn destroyer(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
         }
     }
 }
+
+/// How high the roof of each house's MPV is, where its searchlight stands.
+fn mpv_roof(faction: Faction) -> f32 {
+    match faction {
+        Faction::A => 1.2,
+        Faction::H => 1.07,
+        Faction::O => 0.9,
+    }
+}
+
+/// Where an MPV's searchlight swivels, as [along, up, across].
+fn mpv_searchlight_spot(faction: Faction) -> [f32; 3] {
+    [-0.35, mpv_roof(faction) + 0.12, 0.0]
+}
+
+/// Where the top of a deployed MPV's pipe is, as [along, up, across].
+fn mpv_pipe_spot(faction: Faction) -> [f32; 3] {
+    [-0.72, mpv_roof(faction) + 1.05, 0.3]
+}
+
+/// Which way an MPV's searchlight points now, in the world: slowly round and round.
+fn mpv_sweep(unit: &Unit, time: f32) -> f32 {
+    time * MPV_SWEEP_SPEED + unit.id as f32 * 1.7
+}
+
+/// Radians per second an MPV's searchlight sweeps around.
+const MPV_SWEEP_SPEED: f32 = 0.45;
+
+/// Where the top of a deployed MPV's pipe is in the world, where its smoke leaves.
+pub fn mpv_pipe_top(unit: &Unit, faction: Faction) -> Point {
+    let [x, y, z] = Place::on_ground(unit).point(mpv_pipe_spot(faction));
+    (x, y, z)
+}
+
+/// The red glares at the top of a deployed MPV's pipe, in the world, either side of it.
+pub fn mpv_glares(unit: &Unit, faction: Faction) -> [Point; 2] {
+    let [a, u, c] = mpv_pipe_spot(faction);
+    let place = Place::on_ground(unit);
+    [-1.0, 1.0].map(|side| {
+        let [x, y, z] = place.point([a, u - 0.12, c + side * 0.13]);
+        (x, y, z)
+    })
+}
+
+/// The beam of an MPV's searchlight: a long one, slowly sweeping the ground all around it.
+pub fn mpv_searchlight(unit: &Unit, faction: Faction, time: f32) -> Beam {
+    let [x, y, z] = Place::on_ground(unit).point(mpv_searchlight_spot(faction));
+    let (sin, cos) = mpv_sweep(unit, time).sin_cos();
+    Beam {
+        lens: (x + cos * 0.12, y, z + sin * 0.12),
+        ahead: [cos, 0.0, sin],
+        right: [-sin, 0.0, cos],
+        half: 0.06,
+        reach: 9.0,
+        spread: 1.1,
+    }
+}
+
+const GLARE: Paint = Paint {
+    color: [1.0, 0.12, 0.08],
+    shine: 0.0,
+};
+
+/// The huge main vehicle: four linked tracks in pods, a big headlamp on the front of each front
+/// pod, a body in its house's style and a searchlight on the roof. Deployed, it stands on four
+/// legs with a smoking pipe at the back.
+pub fn draw_mpv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, color: [f32; 3]) {
+    let team = team(color);
+    let model = &mut Model::new(canvas, Place::on_ground(unit));
+    for (rear, front) in [(0.3, 0.95), (-0.95, -0.3)] {
+        let track = Track {
+            rear,
+            front,
+            height: 0.17,
+            radius: 0.15,
+            half_width: 0.13,
+            road_wheels: 3,
+            links: 18,
+        };
+        tracks(model, unit, &track, MPV_TRACKS_APART);
+        // A fender over each pod.
+        for side in [-1.0, 1.0] {
+            let middle = [(rear + front) / 2.0, 0.37, side * MPV_TRACKS_APART];
+            model.bevel(middle, [0.42, 0.035, 0.16], 0.015, STEEL);
+        }
+    }
+    // The chassis that ties the four pods together.
+    model.bevel([0.0, 0.36, 0.0], [1.05, 0.12, 0.5], 0.03, GUNMETAL);
+    let roof = mpv_roof(faction);
+    match faction {
+        Faction::A => {
+            // Smooth and rounded: a lofted body with the owner's color along its top, and a
+            // domed cab with a wide windscreen.
+            let rings = [
+                [-1.08, 0.72, 0.16, 0.46],
+                [-0.85, 0.74, 0.26, 0.56],
+                [0.35, 0.74, 0.28, 0.58],
+                [0.85, 0.7, 0.22, 0.5],
+                [1.08, 0.62, 0.1, 0.34],
+            ];
+            model.loft(Loft {
+                rings: &rings,
+                sides: 14,
+                paint: STEEL,
+                top: Some(team),
+            });
+            model.ball([0.45, 0.98, 0.0], [0.34, 0.22, 0.34], true, STEEL);
+            model.bevel([0.74, 0.98, 0.0], [0.03, 0.07, 0.24], 0.01, GLASS);
+            model.tube(tube([-0.35, 0.98, 0.0], [-0.35, roof, 0.0], 0.11), GUNMETAL);
+        }
+        Faction::H => {
+            // Brutal and angular: a heavy armored wedge with a ram in front, the owner's color
+            // on its side plates, and spikes along its top edges.
+            let corner = |a: f32, u: f32, c: f32| [a, u, c];
+            model.hexa(
+                [
+                    corner(-1.08, 0.46, -0.6),
+                    corner(1.0, 0.46, -0.6),
+                    corner(1.0, 0.46, 0.6),
+                    corner(-1.08, 0.46, 0.6),
+                    corner(-0.98, roof, -0.44),
+                    corner(0.5, roof, -0.44),
+                    corner(0.5, roof, 0.44),
+                    corner(-0.98, roof, 0.44),
+                ],
+                GUNMETAL,
+            );
+            model.hexa(
+                [
+                    corner(1.0, 0.18, -0.5),
+                    corner(1.22, 0.18, -0.5),
+                    corner(1.22, 0.18, 0.5),
+                    corner(1.0, 0.18, 0.5),
+                    corner(1.0, 0.5, -0.56),
+                    corner(1.08, 0.5, -0.56),
+                    corner(1.08, 0.5, 0.56),
+                    corner(1.0, 0.5, 0.56),
+                ],
+                STEEL,
+            );
+            for side in [-1.0, 1.0] {
+                model.block([-0.25, 0.72, side * 0.585], [0.55, 0.13, 0.012], team);
+                if model.fine {
+                    for along in [-0.8, -0.4, 0.0, 0.4] {
+                        let foot = [along, roof, side * 0.42];
+                        let tip = [along - 0.06, roof + 0.16, side * 0.5];
+                        model.tube(tube(foot, tip, 0.035).taper(0.0).sides(4), BRONZE);
+                    }
+                }
+            }
+            model.bevel([0.55, roof - 0.12, 0.0], [0.03, 0.06, 0.3], 0.0, GLASS);
+        }
+        Faction::O => {
+            // Low and sleek: a tapering wedge with swept fins in the owner's color and a raised
+            // module at the back.
+            let corner = |a: f32, u: f32, c: f32| [a, u, c];
+            model.hexa(
+                [
+                    corner(-1.06, 0.46, -0.58),
+                    corner(1.14, 0.46, -0.58),
+                    corner(1.14, 0.46, 0.58),
+                    corner(-1.06, 0.46, 0.58),
+                    corner(-0.92, 0.8, -0.36),
+                    corner(0.32, 0.8, -0.36),
+                    corner(0.32, 0.8, 0.36),
+                    corner(-0.92, 0.8, 0.36),
+                ],
+                STEEL,
+            );
+            model.bevel([-0.5, 0.85, 0.0], [0.38, 0.06, 0.3], 0.03, GUNMETAL);
+            for side in [-1.0, 1.0] {
+                let corners = [
+                    [-0.95, 0.62, side * 0.5],
+                    [-0.2, 0.62, side * 0.5],
+                    [-0.2, 0.64, side * 0.53],
+                    [-0.95, 0.64, side * 0.53],
+                    [-0.98, 0.98, side * 0.66],
+                    [-0.72, 0.98, side * 0.66],
+                    [-0.72, 1.0, side * 0.68],
+                    [-0.98, 1.0, side * 0.68],
+                ];
+                model.hexa(corners, team);
+            }
+            model.bevel([0.34, 0.7, 0.0], [0.03, 0.06, 0.26], 0.0, GLASS);
+        }
+    }
+    // The searchlight on its swivel, pointing the way it sweeps.
+    let spot = mpv_searchlight_spot(faction);
+    model.tube(
+        tube([spot[0], roof, 0.0], [spot[0], spot[1], 0.0], 0.05).sides(8),
+        GUNMETAL,
+    );
+    let (sin, cos) = (mpv_sweep(unit, time) - unit.heading).sin_cos();
+    let base = model.place;
+    let swivel = Place {
+        origin: base.point(spot),
+        along: base.way([cos, 0.0, sin]),
+        up: base.up,
+        across: base.way([-sin, 0.0, cos]),
+    };
+    model.at(swivel).lamp([0.1, 0.0, 0.0], 0.06);
+    for &lamp in lamp_spots(Role::Mpv) {
+        model.lamp(lamp, lamp_radius(Role::Mpv));
+    }
+    if !unit.deployed {
+        return;
+    }
+    // Four legs braced out to the ground at the corners.
+    for (along, side) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+        let hip = [along * 0.98, 0.42, side * 0.5];
+        let foot = [along * 1.32, 0.04, side * 0.98];
+        model.tube(tube(hip, foot, 0.05).sides(8), STEEL);
+        model.bevel(foot, [0.12, 0.04, 0.12], 0.015, GUNMETAL);
+    }
+    // The pipe, smoking from its top, with a red glare either side of it.
+    let top = mpv_pipe_spot(faction);
+    let foot = [top[0], 0.85, top[2]];
+    model.tube(tube(foot, top, 0.085).sides(10).ends(true, false), GUNMETAL);
+    model.tube(
+        tube([top[0], top[1] - 0.08, top[2]], top, 0.105).sides(10),
+        BRONZE,
+    );
+    model.tube(
+        tube(top, [top[0], top[1] + 0.002, top[2]], 0.07).sides(10),
+        BORE,
+    );
+    for side in [-1.0, 1.0] {
+        let at = [top[0], top[1] - 0.12, top[2] + side * 0.13];
+        model.ball(at, [0.03, 0.03, 0.03], false, GLARE);
+    }
+}
+
+/// How far an MPV's tracks are from its middle line.
+const MPV_TRACKS_APART: f32 = 0.66;

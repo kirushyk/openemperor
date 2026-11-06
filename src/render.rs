@@ -693,7 +693,7 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
             let flicker = 0.8 + 0.2 * (game.battle_time() * 17.0 + unit.id as f32).sin();
             PointLight {
                 place: [unit.x, unit.pick_height() + 0.5, unit.z],
-                radius: 3.0 + unit.kind.radius() * 2.0,
+                radius: 3.0 + unit.radius() * 2.0,
                 color: [0.9 * flicker, 0.42 * flicker, 0.1 * flicker],
                 unused: 0.0,
             }
@@ -1156,7 +1156,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             game,
             &view,
             (building.x, building.z),
-            building.kind.radius(),
+            building.radius(),
             color,
             (0.5, 0.5),
         );
@@ -1508,13 +1508,25 @@ fn draw_particle(
     view: &battlefield::View,
     particle: &crate::weapons::Particle,
 ) {
-    let (x, y, z) = particle.position;
     let life = particle.life;
     let grown = if particle.smoke {
         particle.size * (2.0 - life)
     } else {
         particle.size * (0.4 + 0.6 * life)
     };
+    draw_puff(canvas, view, particle.position, grown, life, particle.smoke);
+}
+
+/// A puff this big at a point: smoke covering what is behind it, or a spark adding its light,
+/// as strong as its life left.
+fn draw_puff(
+    canvas: &mut Canvas,
+    view: &battlefield::View,
+    (x, y, z): Point,
+    grown: f32,
+    life: f32,
+    smoke: bool,
+) {
     let (Some((mx, my, depth)), Some(above)) =
         (view.project_deep(x, y, z), view.project(x, y + grown, z))
     else {
@@ -1528,7 +1540,7 @@ fn draw_particle(
     };
     for i in 0..WEDGES {
         let corners = [(mx, my), rim(i), rim(i + 1)];
-        let (middle, edge) = if particle.smoke {
+        let (middle, edge) = if smoke {
             let dark = Vertex::new(corners[0], with_alpha(SMOKE, 0.85 * life));
             (dark, with_alpha(SMOKE, 0.0))
         } else {
@@ -1850,6 +1862,8 @@ fn bounds(unit: &Unit) -> (Point, f32) {
         (UnitKind::Infantry, _) => 0.7,
         (_, Role::HeavyStrider) => 1.35,
         (_, Role::Strider) => 0.8,
+        // Its pipe stands high once it is deployed.
+        (_, Role::Mpv) => 2.4,
         // It may have a vehicle hanging under it.
         (_, Role::AdvancedCarryall) => 1.4,
         (UnitKind::Vehicle | UnitKind::Aircraft, _) => 0.5,
@@ -1857,7 +1871,7 @@ fn bounds(unit: &Unit) -> (Point, f32) {
         (UnitKind::Building, _) => 1.6,
     };
     let middle = (unit.x, unit.y + unit.altitude + height / 2.0, unit.z);
-    (middle, unit.kind.radius() * 1.5 + height / 2.0)
+    (middle, unit.radius() * 1.5 + height / 2.0)
 }
 
 /// How much of a unit the camera can see: of it, or of its shadow on the ground.
@@ -1906,6 +1920,9 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
     draw_beams(canvas, game, view, unit);
     if unit.role == Role::LandingPad {
         draw_searchlight(canvas, game, view, unit);
+    }
+    if unit.role == Role::Mpv {
+        draw_mpv_lights(canvas, game, view, unit);
     }
     draw_seen_model(canvas, game, unit, seen);
     if matches!(seen, Seen::Near | Seen::Far) {
@@ -1974,8 +1991,72 @@ fn draw_drone_flame(canvas: &mut Canvas, game: &Game, view: &battlefield::View, 
 /// Each of a machine's lamps' beams: an additive white trapezium from its lens, narrow there
 /// and brightest, to the ground ahead, wide there and fading to nothing.
 fn draw_beams(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
-    let terrain = battlefield::terrain(game.battle_map);
     for beam in models::beams(unit) {
+        draw_beam(canvas, game, view, &beam);
+    }
+}
+
+/// What lights an MPV: its sweeping searchlight, and once deployed the smoke from its pipe and
+/// the red glares that blink in turn either side of it.
+fn draw_mpv_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    const PUFFS: usize = 7;
+    let faction = game.faction_of(unit.owner);
+    let time = game.battle_time();
+    draw_beam(
+        canvas,
+        game,
+        view,
+        &models::mpv_searchlight(unit, faction, time),
+    );
+    if !unit.deployed {
+        return;
+    }
+    let (x, y, z) = models::mpv_pipe_top(unit, faction);
+    for i in 0..PUFFS {
+        // Each puff rises, drifts with the wind and spreads as it fades.
+        let age = (time * 0.3 + i as f32 / PUFFS as f32 + unit.id as f32 * 0.13).fract();
+        let at = (x + age * 1.1, y + 0.1 + age * 2.2, z + age * 0.4);
+        draw_puff(canvas, view, at, 0.18 + age * 0.55, 1.0 - age, true);
+    }
+    for (i, glare) in models::mpv_glares(unit, faction).into_iter().enumerate() {
+        let blink = (time * 2.5 + i as f32 * PI).sin().max(0.0);
+        draw_glare(
+            canvas,
+            view,
+            glare,
+            0.06 + 0.1 * blink,
+            [0.9 * blink, 0.05 * blink, 0.02],
+        );
+    }
+}
+
+/// A round glow of light, brightest in its middle.
+fn draw_glare(canvas: &mut Canvas, view: &battlefield::View, at: Point, size: f32, glow: [f32; 3]) {
+    const WEDGES: usize = 8;
+    let (x, y, z) = at;
+    let (Some((mx, my, depth)), Some(above)) =
+        (view.project_deep(x, y, z), view.project(x, y + size, z))
+    else {
+        return;
+    };
+    let reach = (my - above.1).abs().max(1.0);
+    let rim = |i: usize| {
+        let (sin, cos) = (i as f32 / WEDGES as f32 * TAU).sin_cos();
+        (mx + reach * cos, my + reach * sin)
+    };
+    for i in 0..WEDGES {
+        canvas.effects.extend([
+            EffectVertex::of(Vertex::light((mx, my), glow), depth),
+            EffectVertex::of(Vertex::new(rim(i), [0.0; 4]), depth),
+            EffectVertex::of(Vertex::new(rim(i + 1), [0.0; 4]), depth),
+        ]);
+    }
+}
+
+/// One lamp's beam: a trapezium of light from its lens to the ground ahead, fading as it goes.
+fn draw_beam(canvas: &mut Canvas, game: &Game, view: &battlefield::View, beam: &models::Beam) {
+    let terrain = battlefield::terrain(game.battle_map);
+    {
         let (x, y, z) = beam.lens;
         let lens = |by: f32| (x + beam.right[0] * by, y, z + beam.right[2] * by);
         let far = |by: f32| {
@@ -2016,7 +2097,7 @@ fn stain_model(canvas: &mut Canvas, drawn: usize, unit: &Unit) {
 /// Flames standing on what is badly damaged: blades of light licking up from it, more of them
 /// on what is bigger.
 fn draw_flames(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
-    let size = unit.kind.radius().max(0.4);
+    let size = unit.radius().max(0.4);
     let count = (size * 4.0) as usize + 2;
     let time = game.battle_time();
     let top = unit.pick_height();
@@ -2142,6 +2223,11 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
     let (forward_x, forward_z) = (unit.heading.cos(), unit.heading.sin());
     let ahead = |by: f32| (unit.x + forward_x * by, unit.z + forward_z * by);
     let mut part = |footprint, heights, color| draw_turned_box(canvas, footprint, heights, color);
+    if unit.role == Role::Mpv {
+        let faction = game.faction_of(unit.owner);
+        models::draw_mpv(canvas, unit, faction, game.battle_time(), color);
+        return;
+    }
     match unit.kind {
         UnitKind::Infantry => {
             let barrel = |by: f32, half: f32, thick: f32| {
@@ -2436,7 +2522,7 @@ fn draw_turned_box(
 
 fn draw_selected_ring(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
     const SIDES: usize = 16;
-    let radius = unit.kind.radius() + 0.1;
+    let radius = unit.radius() + 0.1;
     let thickness = (2.0 * ui_scale(game.height)).max(1.0);
     let point = |i: usize| {
         let (sin, cos) = (i as f32 / SIDES as f32 * TAU).sin_cos();
@@ -2615,7 +2701,9 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
             continue;
         };
         let selected = kind == game.build_tab;
-        let hovered = game.hovered() == Some(tab.action);
+        // A tab with nothing to make it greys out and does not light up.
+        let enabled = game.tab_enabled(kind);
+        let hovered = enabled && game.hovered() == Some(tab.action);
         let border = border_px(game.height);
         canvas.rect(
             tab.x,
@@ -2636,7 +2724,13 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
             tab.h - border * 2.0,
             fill,
         );
-        let color = if selected { GOLD } else { TEXT };
+        let color = if !enabled {
+            QUIET
+        } else if selected {
+            GOLD
+        } else {
+            TEXT
+        };
         draw_tab_symbol(
             canvas,
             kind,

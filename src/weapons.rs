@@ -747,7 +747,7 @@ impl Combat {
             unit.heading += wreck.spin * 0.4 * dt;
             let ground = terrain.height_at(unit.x, unit.z).max(0.0);
             if unit.y + unit.altitude <= ground {
-                hits.push((unit.x, ground, unit.z, unit.kind.radius()));
+                hits.push((unit.x, ground, unit.z, unit.radius()));
                 return false;
             }
             wreck.owed += SMOKE_PER_SECOND * dt;
@@ -850,7 +850,7 @@ impl Combat {
         for unit in units.iter().filter(|u| u.wear() > SMOKES_PAST) {
             let wear = unit.wear();
             // Bigger things show it in more places at once.
-            let size = unit.kind.radius().max(0.4);
+            let size = unit.radius().max(0.4);
             let smokes = SMOKE_PER_SECOND * wear * size * dt;
             let flames = if wear > BURNS_PAST {
                 FLAMES_PER_SECOND * size * dt
@@ -1094,8 +1094,8 @@ impl Combat {
             let away = dx.hypot(dz);
             // A big target counts from as far around as its side reaches.
             let off_center = turn_between(unit.heading, dz.atan2(dx)).abs();
-            let widened = half_angle + (other.kind.radius() / away.max(0.0001)).min(1.0).asin();
-            if away <= reach + other.kind.radius() && off_center <= widened {
+            let widened = half_angle + (other.radius() / away.max(0.0001)).min(1.0).asin();
+            if away <= reach + other.radius() && off_center <= widened {
                 hit(units, index, unit.weapon, Shooter::of(&unit), teams);
             }
         }
@@ -1130,8 +1130,7 @@ impl Combat {
             missile.fuel -= dt;
 
             let reached = target.filter(|&t| {
-                distance(missile.position, units[t].center())
-                    <= units[t].kind.radius() + MISSILE_FUSE
+                distance(missile.position, units[t].center()) <= units[t].radius() + MISSILE_FUSE
             });
             let (x, y, z) = missile.position;
             let reached_place = missile.place.is_some_and(|place| {
@@ -1141,7 +1140,7 @@ impl Combat {
             if reached_place {
                 // Whoever stands at the place it was sent to is hurt, whoever they are.
                 for index in 0..units.len() {
-                    let reach = MISSILE_BLAST_RADIUS + units[index].kind.radius();
+                    let reach = MISSILE_BLAST_RADIUS + units[index].radius();
                     if units[index].alive
                         && distance(missile.position, units[index].center()) <= reach
                     {
@@ -1155,7 +1154,7 @@ impl Combat {
                     // It hurts the shooter's enemies around its target as well, by half.
                     let damage = missile.weapon.damage() * missile.shooter.power * 0.5;
                     for index in (0..units.len()).filter(|&index| index != t) {
-                        let reach = HEAVY_BLAST_RADIUS + units[index].kind.radius();
+                        let reach = HEAVY_BLAST_RADIUS + units[index].radius();
                         if units[index].alive
                             && are_enemies(teams, missile.shooter.owner, units[index].owner)
                             && distance(missile.position, units[index].center()) <= reach
@@ -1197,7 +1196,7 @@ impl Combat {
                     && (shell.hurts_all || are_enemies(teams, shell.shooter.owner, unit.owner))
                 {
                     let away = distance(shell.landing, unit.center());
-                    let reach = blast_radius + unit.kind.radius();
+                    let reach = blast_radius + unit.radius();
                     if away < reach {
                         let damage = shell.weapon.damage()
                             * shell.shooter.power
@@ -1275,7 +1274,7 @@ fn strike(
     }
     for index in 0..units.len() {
         let unit = units[index];
-        let touched = distance(at, unit.center()) <= unit.kind.radius() + PLACE_SHOT_SPREAD;
+        let touched = distance(at, unit.center()) <= unit.radius() + PLACE_SHOT_SPREAD;
         if index != firing && unit.alive && touched && weapon.can_target(unit.height_as_target()) {
             hit(units, index, weapon, shooter, teams);
         }
@@ -1461,7 +1460,7 @@ fn nearest_to_repair(units: &[Unit], repairer: usize, teams: &[usize]) -> Option
             && unit.can_be_repaired()
             && unit.health < unit.max_health()
             && are_friends(teams, owner, unit.owner)
-            && distance(from, unit.center()) <= reach + unit.kind.radius()
+            && distance(from, unit.center()) <= reach + unit.radius()
     };
     let sent_to = match units[repairer].target {
         Some(Target::Unit(id) | Target::Rescue(id)) => units

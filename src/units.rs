@@ -133,6 +133,8 @@ impl UnitKind {
 }
 
 const BUILDING_RADIUS: f32 = 1.2;
+/// The radius of an MPV on its tracks: far bigger than any other vehicle.
+const MPV_RADIUS: f32 = 1.0;
 /// How high the deck of a landing pad is, which is where a machine on it sits.
 pub const PAD_TOP: f32 = 0.14;
 /// How far a landing pad's deck reaches each way from its middle.
@@ -151,6 +153,8 @@ const PAD_BESIDE: f32 = 2.8;
 const PAD_WAITS: f32 = 4.5;
 /// How far along the row of a group's buildings its landing pad stands, past the hangar.
 const PAD_ALONG: f32 = -5.5;
+/// How far along the row of a group's buildings its MPV stands, past the barracks.
+const MPV_ALONG: f32 = 5.6;
 /// How much of its health something must have lost to smoke, to show black stains, and to burn.
 pub const SMOKES_PAST: f32 = 0.25;
 pub const STAINS_PAST: f32 = 0.4;
@@ -209,6 +213,9 @@ pub enum Role {
     Tank,
     /// Unarmed, and fixes friendly vehicles nearby.
     RepairVehicle,
+    /// The huge main vehicle on four tracks. It deploys into the building that lets its owner
+    /// build buildings, and packs up again to drive somewhere else.
+    Mpv,
     /// Lobs shells in a ballistic arc.
     Catapult,
     /// Fires a salvo of rockets from its two racks, then reloads for a long time.
@@ -259,6 +266,7 @@ impl Role {
             | Role::GasInfantry => UnitKind::Infantry,
             Role::Tank
             | Role::RepairVehicle
+            | Role::Mpv
             | Role::Catapult
             | Role::RocketLauncher
             | Role::Strider
@@ -282,6 +290,7 @@ impl Role {
             Role::KInfantry => "K Infantry",
             Role::Tank => "Tank",
             Role::RepairVehicle => "Repair Vehicle",
+            Role::Mpv => "MPV",
             Role::Catapult => "Catapult",
             Role::RocketLauncher => "Rocket Launcher",
             Role::Strider => "Strider",
@@ -306,9 +315,12 @@ impl Role {
     fn weapon(self) -> WeaponKind {
         match self {
             Role::LightInfantry => WeaponKind::Bullet,
-            Role::Scout | Role::Barracks | Role::Factory | Role::Hangar | Role::LandingPad => {
-                WeaponKind::Unarmed
-            }
+            Role::Scout
+            | Role::Mpv
+            | Role::Barracks
+            | Role::Factory
+            | Role::Hangar
+            | Role::LandingPad => WeaponKind::Unarmed,
             Role::Sniper => WeaponKind::Sniper,
             Role::Engineer | Role::KInfantry => WeaponKind::Pistol,
             Role::Tank => WeaponKind::Cannon,
@@ -333,6 +345,7 @@ impl Role {
             Role::Engineer => 80.0,
             Role::KInfantry => 120.0,
             Role::RepairVehicle => 200.0,
+            Role::Mpv => 1200.0,
             Role::Catapult | Role::RocketLauncher => 180.0,
             Role::Strider => 220.0,
             Role::HeavyStrider => 450.0,
@@ -348,6 +361,7 @@ impl Role {
     fn speed(self) -> f32 {
         match self {
             Role::Scout => 4.0,
+            Role::Mpv => 1.8,
             Role::Catapult | Role::RocketLauncher => 3.5,
             Role::Strider => 4.0,
             Role::HeavyStrider => 2.8,
@@ -371,6 +385,7 @@ impl Role {
             Role::RocketLauncher | Role::Ornithopter | Role::AirDefensePlatform => 11.0,
             Role::AdvancedCarryall => 12.0,
             Role::HeavyStrider | Role::Destroyer => 15.0,
+            Role::Mpv => 25.0,
             Role::LandingPad => 10.0,
             Role::Barracks => 15.0,
             Role::Factory | Role::Hangar => 20.0,
@@ -388,7 +403,15 @@ impl Role {
 
     /// Whether it can dig in where it stands.
     pub fn can_deploy(self) -> bool {
-        self == Role::KInfantry
+        matches!(self, Role::KInfantry | Role::Mpv)
+    }
+
+    /// The radius of the sphere it collides with, as it comes out.
+    pub fn radius(self) -> f32 {
+        match self {
+            Role::Mpv => MPV_RADIUS,
+            _ => self.kind().radius(),
+        }
     }
 
     /// For a flat building that what goes on the ground can cross: how far its deck reaches
@@ -721,6 +744,25 @@ impl Unit {
         self.best_remaining = f32::INFINITY;
     }
 
+    /// The radius of the sphere it collides with: a deployed MPV's is a building's.
+    pub fn radius(&self) -> f32 {
+        if self.kind == self.role.kind() {
+            self.role.radius()
+        } else {
+            self.kind.radius()
+        }
+    }
+
+    /// Whether it can make this: a building makes the units made in it, and a deployed MPV
+    /// makes buildings and towers.
+    pub fn can_make(&self, role: Role) -> bool {
+        self.alive
+            && match role.made_in() {
+                Some(maker) => self.role == maker,
+                None => self.role == Role::Mpv && self.deployed,
+            }
+    }
+
     /// Tells it to go after a unit by id, as a click on that unit would.
     pub fn go_after(&mut self, id: u32) {
         if self.target != Some(Target::Unit(id)) {
@@ -842,7 +884,7 @@ impl Unit {
 
     /// Its collision sphere's center height.
     fn sphere_y(&self) -> f32 {
-        self.y + self.altitude + self.kind.radius()
+        self.y + self.altitude + self.radius()
     }
 
     /// Its collision sphere's center, where shots aim.
@@ -1126,12 +1168,13 @@ fn place_building(
 fn building_footprint(building: &Unit) -> [(f32, f32); 8] {
     std::array::from_fn(|i| {
         let (sin, cos) = (i as f32 / 8.0 * TAU).sin_cos();
-        let reach = building.kind.radius() / 2.0;
+        let reach = building.radius() / 2.0;
         (building.x + reach * cos, building.z + reach * sin)
     })
 }
 
 /// The building of this owner that can make this role, if they have one.
+#[cfg(test)]
 pub fn maker_of(units: &[Unit], role: Role, owner: usize) -> Option<&Unit> {
     let made_in = role.made_in()?;
     units
@@ -1243,7 +1286,7 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
     let owner = maker.owner;
     let door = (
         maker.x,
-        maker.z + maker.kind.radius() + role.kind().radius() + DOOR_MARGIN,
+        maker.z + maker.radius() + role.radius() + DOOR_MARGIN,
     );
     let vehicle = role.kind() == UnitKind::Vehicle;
     let near = if vehicle {
@@ -1323,7 +1366,7 @@ pub fn can_place_building(units: &[Unit], terrain: &Terrain, (x, z): (f32, f32))
         && units
             .iter()
             .filter(|u| u.alive && u.altitude <= 0.0)
-            .all(|u| (u.x - x).hypot(u.z - z) > radius + u.kind.radius())
+            .all(|u| (u.x - x).hypot(u.z - z) > radius + u.radius())
 }
 
 /// A new building that has not been put anywhere yet.
@@ -1364,6 +1407,15 @@ fn place_base(
         center.1 + behind.1 * BUILDINGS_BEHIND + across_z * PAD_ALONG,
     );
     place_building(units, terrain, pad, Role::LandingPad, side);
+    // The MPV stands deployed at the other end of the row: it is what makes this a base.
+    let mpv = (
+        center.0 + behind.0 * BUILDINGS_BEHIND + across_x * MPV_ALONG,
+        center.1 + behind.1 * BUILDINGS_BEHIND + across_z * MPV_ALONG,
+    );
+    place_building(units, terrain, mpv, Role::Mpv, side);
+    if let Some(mpv) = units.last_mut() {
+        switch_deployed(mpv);
+    }
 }
 
 /// Switches every selected K Infantry between its pistol and, standing still, its cannon.
@@ -1414,6 +1466,18 @@ pub fn order_land(units: &mut [Unit], pad: usize) {
 /// Switches one K Infantry between its pistol and, standing still, its cannon.
 pub fn switch_deployed(unit: &mut Unit) {
     unit.deployed = !unit.deployed;
+    unit.destination = (unit.x, unit.z);
+    if unit.role == Role::Mpv {
+        // Deployed, it is a building in every way, until it packs up again.
+        unit.kind = if unit.deployed {
+            UnitKind::Building
+        } else {
+            UnitKind::Vehicle
+        };
+        unit.heavy = !unit.deployed;
+        unit.target = None;
+        return;
+    }
     unit.weapon = if unit.deployed {
         WeaponKind::Cannon
     } else {
@@ -1673,10 +1737,11 @@ fn order_layer(
 
 /// Tells every selected building that makes units where to send them.
 pub fn set_gathering(units: &mut [Unit], point: (f32, f32)) {
-    for unit in units
-        .iter_mut()
-        .filter(|u| u.selected && u.kind == UnitKind::Building && u.role != Role::LandingPad)
-    {
+    for unit in units.iter_mut().filter(|u| {
+        u.selected
+            && u.kind == UnitKind::Building
+            && !matches!(u.role, Role::LandingPad | Role::Mpv)
+    }) {
         unit.gathering = Some(point);
     }
 }
@@ -1749,7 +1814,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                 };
                 let other = units[other_index];
                 if matches!(target, Target::Unit(_)) && units[i].can_capture(&other, teams) {
-                    let touching = units[i].kind.radius() + other.kind.radius() + CAPTURE_MARGIN;
+                    let touching = units[i].radius() + other.radius() + CAPTURE_MARGIN;
                     if (other.x - x).hypot(other.z - z) <= touching {
                         (units[other_index].owner, units[other_index].color) =
                             (units[i].owner, units[i].color);
@@ -1882,7 +1947,7 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
         }
         let (dx, dz) = (other.x - unit.x, other.z - unit.z);
         let distance = dx.hypot(dz);
-        let range = unit.kind.radius() + other.kind.radius() + AVOID_MARGIN;
+        let range = unit.radius() + other.radius() + AVOID_MARGIN;
         if distance < range && dx * want_x + dz * want_z > 0.0 {
             sideways += (1.0 - distance / range) * 2.0;
         }
@@ -1896,7 +1961,7 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
         let (near_x, near_z) = nearest_on_footprint(piece, unit.x, unit.z);
         let (dx, dz) = (near_x - unit.x, near_z - unit.z);
         let distance = dx.hypot(dz);
-        let range = unit.kind.radius() + AVOID_MARGIN;
+        let range = unit.radius() + AVOID_MARGIN;
         if distance < range && dx * want_x + dz * want_z > 0.0 {
             sideways += (1.0 - distance / range) * 2.0;
         }
@@ -1935,7 +2000,7 @@ fn push_out_of_ruins(unit: &mut Unit, terrain: &Terrain) -> bool {
     if unit.kind.flies() || unit.kind.is_building() {
         return false;
     }
-    let radius = unit.kind.radius();
+    let radius = unit.radius();
     let mut touched = false;
     for piece in terrain.ruins() {
         let (near_x, near_z) = nearest_on_footprint(piece, unit.x, unit.z);
@@ -2035,7 +2100,7 @@ fn squash(units: &mut [Unit], teams: &[usize]) {
             }
             let (dx, dz) = (units[b].x - units[a].x, units[b].z - units[a].z);
             let dy = units[b].sphere_y() - units[a].sphere_y();
-            if dx.hypot(dz).hypot(dy) < units[a].kind.radius() + units[b].kind.radius() {
+            if dx.hypot(dz).hypot(dy) < units[a].radius() + units[b].radius() {
                 units[b].alive = false;
                 units[b].selected = false;
                 let value = units[b].kind.kill_value();
@@ -2070,7 +2135,7 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 }
                 let (dx, dz) = (units[b].x - units[a].x, units[b].z - units[a].z);
                 let dy = units[b].sphere_y() - units[a].sphere_y();
-                let touching = units[a].kind.radius() + units[b].kind.radius();
+                let touching = units[a].radius() + units[b].radius();
                 let flat = dx.hypot(dz);
                 if flat.hypot(dy) >= touching {
                     continue;
@@ -2195,7 +2260,7 @@ fn find_new_way(units: &mut [Unit], i: usize, terrain: &Terrain) {
                 && u.role.deck().is_none()
                 && (u.kind.is_building() || u.deployed || !u.is_moving())
         })
-        .map(|u| (u.x, u.z, u.kind.radius() + unit.kind.radius()))
+        .map(|u| (u.x, u.z, u.radius() + unit.radius()))
         .collect();
     let here = (unit.x, unit.z);
     let route = terrain.next_on_route_around(here, unit.destination, &obstacles);
@@ -2573,7 +2638,7 @@ fn alert_landers(units: &mut [Unit], teams: &[usize]) {
         let lander = units[i];
         let up_there = (
             lander.x,
-            lander.y + CRUISE_ALTITUDE + lander.kind.radius(),
+            lander.y + CRUISE_ALTITUDE + lander.radius(),
             lander.z,
         );
         // What is being loaded stays down until it is done, unless told otherwise.
@@ -4335,7 +4400,7 @@ mod tests {
         assert!(produce(&mut units, open_ground(), Role::Tank, 0, 50));
         let tank = *units.last().unwrap();
         assert_eq!(tank.x, factory.x);
-        let touching = factory.kind.radius() + tank.kind.radius();
+        let touching = factory.radius() + tank.radius();
         assert!((tank.z - factory.z - touching).abs() < 0.5, "at the door");
         assert!(tank.is_moving(), "on its way out");
         assert!(tank.destination.1 > tank.z);
@@ -4352,10 +4417,7 @@ mod tests {
         assert!(produce(&mut units, open_ground(), Role::Scout, 0, 50));
         let scout = units.last().unwrap();
         let away = (scout.x - barracks.x).hypot(scout.z - barracks.z);
-        assert!(
-            away > barracks.kind.radius() + scout.kind.radius(),
-            "{away}"
-        );
+        assert!(away > barracks.radius() + scout.radius(), "{away}");
         assert!(away < 4.0, "{away}");
         assert!(!scout.is_moving());
     }
@@ -4371,7 +4433,7 @@ mod tests {
         let sent = units.last().unwrap().destination;
         let away = (sent.0 - barracks.x).hypot(sent.1 - barracks.z);
         assert!(
-            away > barracks.kind.radius() + UnitKind::Vehicle.radius(),
+            away > barracks.radius() + UnitKind::Vehicle.radius(),
             "{away}"
         );
     }
@@ -4489,7 +4551,7 @@ mod tests {
         let sent = units.last().unwrap().destination;
         let away = (sent.0 - barracks.x).hypot(sent.1 - barracks.z);
         assert!(
-            away > barracks.kind.radius() + UnitKind::Vehicle.radius(),
+            away > barracks.radius() + UnitKind::Vehicle.radius(),
             "{away}"
         );
     }
@@ -4849,7 +4911,7 @@ mod tests {
                     let dy =
                         unit.sphere_y() - unit.sphere_y().clamp(piece.y, piece.y + piece.height);
                     let gap = (near_x - unit.x).hypot(near_z - unit.z).hypot(dy);
-                    assert!(gap > unit.kind.radius() * 0.5, "{unit:?} inside {piece:?}");
+                    assert!(gap > unit.radius() * 0.5, "{unit:?} inside {piece:?}");
                 }
             }
         }
@@ -4871,7 +4933,7 @@ mod tests {
                 let distance = (a.x - b.x)
                     .hypot(a.z - b.z)
                     .hypot(a.sphere_y() - b.sphere_y());
-                largest = largest.max(a.kind.radius() + b.kind.radius() - distance);
+                largest = largest.max(a.radius() + b.radius() - distance);
             }
         }
         largest
@@ -5775,7 +5837,7 @@ mod tests {
         for (i, a) in units.iter().enumerate() {
             for b in units[i + 1..].iter().filter(|b| b.altitude == a.altitude) {
                 assert!(
-                    (a.x - b.x).hypot(a.z - b.z) > a.kind.radius() + b.kind.radius(),
+                    (a.x - b.x).hypot(a.z - b.z) > a.radius() + b.radius(),
                     "{a:?} and {b:?}"
                 );
             }
@@ -5790,8 +5852,8 @@ mod tests {
                 let terrain = terrain(map);
                 for unit in spawn(terrain, &colors[..count]) {
                     for piece in terrain.ruins() {
-                        let gap_x = (unit.x - piece.x).abs() - unit.kind.radius() - piece.half_x;
-                        let gap_z = (unit.z - piece.z).abs() - unit.kind.radius() - piece.half_z;
+                        let gap_x = (unit.x - piece.x).abs() - unit.radius() - piece.half_x;
+                        let gap_z = (unit.z - piece.z).abs() - unit.radius() - piece.half_z;
                         assert!(
                             gap_x > 0.0 || gap_z > 0.0,
                             "map {map}: {unit:?} in {piece:?}"

@@ -1898,8 +1898,12 @@ impl Game {
         if !self.can_order_attack_here() {
             return None;
         }
-        self.unit_under_cursor()
-            .filter(|&unit| self.units[unit].selected && self.units[unit].role.can_deploy())
+        // An MCV on the lower ground cannot deploy there, so it offers no deploy cursor.
+        let terrain = battlefield::terrain(self.battle_map);
+        self.unit_under_cursor().filter(|&unit| {
+            let unit = &self.units[unit];
+            unit.selected && unit.role.can_deploy() && units::can_deploy_here(unit, terrain)
+        })
     }
 
     /// The player's landing pad under the cursor, if a click would land a selected machine on it.
@@ -1993,12 +1997,7 @@ impl Game {
             units::order_attack(&mut self.units, chosen, &self.teams);
         } else if let Some(unit) = self.deployable_under_cursor().filter(|_| !adding) {
             // So two clicks on one that is not selected yet select it, then switch it.
-            let terrain = battlefield::terrain(self.battle_map);
-            if units::can_deploy_here(&self.units[unit], terrain) {
-                units::switch_deployed(&mut self.units[unit]);
-            } else {
-                self.post_chat(CANNOT_DEPLOY.to_string());
-            }
+            units::switch_deployed(&mut self.units[unit]);
         } else if let Some(pad) = self.pad_under_cursor().filter(|_| !adding) {
             units::order_land(&mut self.units, pad);
         } else if let Some(picked) = self.unit_under_cursor() {
@@ -6130,12 +6129,32 @@ mod tests {
         game.units.truncate(2);
         game.units[1].x += 0.01;
         game.units[0].selected = true;
+        let hover = |game: &mut Game| {
+            let mcv = game.units[0];
+            game.camera.look_at(mcv.x, mcv.z);
+            let (px, py) = game
+                .view()
+                .project(mcv.x, mcv.pick_height(), mcv.z)
+                .unwrap();
+            game.handle(Event::MouseMove(px, py));
+            game.cursor_look()
+        };
+        assert_ne!(
+            hover(&mut game),
+            CursorLook::Deploy,
+            "no deploy cursor on the sand"
+        );
         game.handle(Event::KeyDown(Key::Char('d')));
         assert!(!game.units[0].deployed, "not on the sand");
         assert_eq!(chat_texts(&game), [CANNOT_DEPLOY]);
         let upland = units::deploy_spot_near(terrain, sand).unwrap();
         (game.units[0].x, game.units[0].z) = upland;
         game.units[0].destination = upland;
+        assert_eq!(
+            hover(&mut game),
+            CursorLook::Deploy,
+            "up there it offers one"
+        );
         game.handle(Event::KeyDown(Key::Char('d')));
         assert!(game.units[0].deployed, "up there it can");
 

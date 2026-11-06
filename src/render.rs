@@ -2055,25 +2055,42 @@ fn draw_glare(canvas: &mut Canvas, view: &battlefield::View, at: Point, size: f3
     }
 }
 
-/// One lamp's beam: a trapezium of light from its lens to the ground ahead, fading as it goes.
+/// One lamp's beam: a trapezium of light from its lens to the ground ahead, fading as it goes,
+/// turned to face the camera.
 fn draw_beam(canvas: &mut Canvas, game: &Game, view: &battlefield::View, beam: &models::Beam) {
     let terrain = battlefield::terrain(game.battle_map);
-    {
-        let (x, y, z) = beam.lens;
-        let lens = |by: f32| (x + beam.right[0] * by, y, z + beam.right[2] * by);
-        let far = |by: f32| {
-            let (fx, fz) = (
-                x + beam.ahead[0] * beam.reach + beam.right[0] * by,
-                z + beam.ahead[2] * beam.reach + beam.right[2] * by,
-            );
-            (fx, terrain.height_at(fx, fz).max(0.0) + OVER_GROUND, fz)
-        };
-        let (a, b) = (lens(-beam.half), lens(beam.half));
-        let (c, d) = (far(beam.spread), far(-beam.spread));
-        let bright = [HEADLIGHT; 3];
-        canvas.deep_light(view, [(a, bright), (b, bright), (c, [0.0; 3])]);
-        canvas.deep_light(view, [(a, bright), (c, [0.0; 3]), (d, [0.0; 3])]);
-    }
+    let (x, y, z) = beam.lens;
+    let (fx, fz) = (
+        x + beam.ahead[0] * beam.reach,
+        z + beam.ahead[2] * beam.reach,
+    );
+    let far_y = terrain.height_at(fx, fz).max(0.0) + OVER_GROUND;
+    // It turns about the line from its lens to the ground ahead to face the camera, so that it
+    // shows as wide as it can, whichever way it points.
+    let axis = [fx - x, far_y - y, fz - z];
+    let eye = view.position();
+    let middle = [(x + fx) / 2.0, (y + far_y) / 2.0, (z + fz) / 2.0];
+    let to_eye = [0, 1, 2].map(|i| eye[i] - middle[i]);
+    let side = cross(axis, to_eye);
+    let across = if side.iter().map(|c| c * c).sum::<f32>() > 1e-8 {
+        unit_vector(side)
+    } else {
+        beam.right
+    };
+    // Raised so that the lower of its far corners stays on the ground.
+    let far = (fx, far_y + beam.spread * across[1].abs(), fz);
+    let corner = |(cx, cy, cz): Point, by: f32| {
+        (
+            cx + across[0] * by,
+            cy + across[1] * by,
+            cz + across[2] * by,
+        )
+    };
+    let (a, b) = (corner(beam.lens, -beam.half), corner(beam.lens, beam.half));
+    let (c, d) = (corner(far, beam.spread), corner(far, -beam.spread));
+    let bright = [HEADLIGHT; 3];
+    canvas.deep_light(view, [(a, bright), (b, bright), (c, [0.0; 3])]);
+    canvas.deep_light(view, [(a, bright), (c, [0.0; 3]), (d, [0.0; 3])]);
 }
 
 /// Marks what was just drawn of a unit with how black it has gone, and where on the unit each

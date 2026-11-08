@@ -18,6 +18,8 @@ static Window g_window;
 static Atom g_wm_delete;
 static Cursor g_blank_cursor;
 static KeySym g_held_toggle_key = NoSymbol;
+/* A number key's event, waiting behind the key-down that the same press also makes. */
+static OeEvent g_number_key;
 static int32_t g_width, g_height;
 
 static VkInstance g_instance;
@@ -391,6 +393,11 @@ static void grab_pointer(void) {
 }
 
 int32_t oe_poll_event(OeEvent *event) {
+    if (g_number_key.kind != OE_EVENT_NONE) {
+        *event = g_number_key;
+        g_number_key.kind = OE_EVENT_NONE;
+        return 1;
+    }
     memset(event, 0, sizeof(*event));
     while (XPending(g_display)) {
         XEvent e;
@@ -469,6 +476,14 @@ int32_t oe_poll_event(OeEvent *event) {
                                                  : OE_KEY_OTHER;
                 if (event->a == OE_KEY_OTHER && length == 1 && typed[0] >= 0x20 && typed[0] <= 0x7E) {
                     event->b = typed[0];
+                }
+                /* Key codes 10 to 18 are the number row's 1 to 9, whatever the layout prints. */
+                if (e.xkey.keycode >= 10 && e.xkey.keycode <= 18) {
+                    g_number_key.kind = OE_EVENT_NUMBER_KEY;
+                    g_number_key.a = (int32_t)e.xkey.keycode - 9;
+                    g_number_key.b = (e.xkey.state & ControlMask) ? OE_HELD_CONTROL
+                                     : (e.xkey.state & ShiftMask) ? OE_HELD_SHIFT
+                                                                  : OE_HELD_NONE;
                 }
                 return 1;
             }

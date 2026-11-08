@@ -301,6 +301,8 @@ pub enum Role {
     Hangar,
     /// A deck where one ornithopter at a time lands to load rockets.
     LandingPad,
+    /// A house's own seat of power, without which its superweapon cannot fire.
+    Palace(Faction),
 }
 
 impl Role {
@@ -337,7 +339,9 @@ impl Role {
             | Role::Ornithopter
             | Role::Destroyer => UnitKind::Aircraft,
             Role::Tower | Role::FlameTower | Role::GunTower => UnitKind::Tower,
-            Role::Barracks | Role::Factory | Role::Hangar | Role::LandingPad => UnitKind::Building,
+            Role::Barracks | Role::Factory | Role::Hangar | Role::LandingPad | Role::Palace(_) => {
+                UnitKind::Building
+            }
         }
     }
 
@@ -380,6 +384,9 @@ impl Role {
             Role::Factory => "Factory",
             Role::Hangar => "Hangar",
             Role::LandingPad => "Landing Pad",
+            Role::Palace(Faction::A) => "Palace A",
+            Role::Palace(Faction::H) => "Palace H",
+            Role::Palace(Faction::O) => "Palace O",
         }
     }
 
@@ -402,7 +409,8 @@ impl Role {
             | Role::Barracks
             | Role::Factory
             | Role::Hangar
-            | Role::LandingPad => WeaponKind::Unarmed,
+            | Role::LandingPad
+            | Role::Palace(_) => WeaponKind::Unarmed,
             Role::Sniper => WeaponKind::Sniper,
             Role::Engineer | Role::KInfantry => WeaponKind::Pistol,
             Role::Tank => WeaponKind::Cannon,
@@ -443,6 +451,7 @@ impl Role {
             Role::AirDrone => 80.0,
             Role::Destroyer => 320.0,
             Role::LandingPad => 400.0,
+            Role::Palace(_) => 1200.0,
             Role::FlameTower => 500.0,
             _ => self.kind().max_health(),
         }
@@ -493,6 +502,7 @@ impl Role {
             Role::Minotaurus | Role::Destroyer => 15.0,
             Role::Mcv => 25.0,
             Role::LandingPad => 10.0,
+            Role::Palace(_) => 30.0,
             Role::Barracks => 15.0,
             Role::Factory | Role::Hangar => 20.0,
             Role::Tower => 12.0,
@@ -533,6 +543,7 @@ impl Role {
                 house == Faction::A
             }
             Role::Recon | Role::LaserTank | Role::SiegeTank => house == Faction::O,
+            Role::Palace(of) => house == of,
             Role::Tank | Role::DiskSaw | Role::FlameTank | Role::HugeTank | Role::Catapult => {
                 house == Faction::H
             }
@@ -653,7 +664,12 @@ const ROCKET_REACH: f32 = 0.3;
 pub const CANNON_SIDES: [f32; 4] = [-0.3, -0.14, 0.14, 0.3];
 /// How high its cannons are, and how far ahead of its middle they end.
 pub const CANNON_HEIGHT: f32 = 1.05;
-pub const CANNON_REACH: f32 = 0.7;
+pub const CANNON_REACH: f32 = 1.45;
+/// Seconds a building takes to go up once it has been placed.
+pub const CONSTRUCTION_SECONDS: f32 = 1.0;
+/// How many places on a building going up are being welded at once.
+pub const WELD_POINTS: usize = 4;
+
 /// Where a siege tank's cannon tip is, as [along, up], on its tracks and raised when deployed.
 pub const SIEGE_TIP: [f32; 2] = [1.05, 0.5];
 pub const SIEGE_RAISED_TIP: [f32; 2] = [0.97, 2.1];
@@ -748,6 +764,8 @@ pub struct Unit {
     pad: Option<Pad>,
     /// Seconds an invisible unit stays seen after it last fired.
     pub revealed: f32,
+    /// Seconds left until a building just placed is finished, and works.
+    pub constructing: f32,
     /// Whether what lands has had something to go after since it was last sent anywhere: once
     /// that is over, it goes home instead of sitting down where it is.
     on_mission: bool,
@@ -925,11 +943,44 @@ impl Unit {
     /// makes buildings and towers.
     pub fn can_make(&self, role: Role) -> bool {
         self.alive
+            && !self.is_under_construction()
             && role.made_by(self.house)
             && match role.made_in() {
                 Some(maker) => self.role == maker,
                 None => self.role == Role::Mcv && self.deployed,
             }
+    }
+
+    /// Whether it is a building still going up.
+    pub fn is_under_construction(&self) -> bool {
+        self.constructing > 0.0
+    }
+
+    /// How far along its construction is, from 0 to 1.
+    pub fn construction_done(&self) -> f32 {
+        1.0 - (self.constructing / CONSTRUCTION_SECONDS).clamp(0.0, 1.0)
+    }
+
+    /// How much of its height is up, from 0 to 1: it starts a moment after the cranes do and
+    /// is whole before they go.
+    pub fn raised(&self) -> f32 {
+        let t = ((self.construction_done() - 0.1) / 0.72).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    /// Where a building going up is being welded, climbing as it rises.
+    pub fn weld_points(&self) -> [Point; WELD_POINTS] {
+        let reach = if self.kind == UnitKind::Tower {
+            0.45
+        } else {
+            1.0
+        };
+        let rise = self.raised();
+        std::array::from_fn(|i| {
+            let (sin, cos) = (self.id as f32 * 2.4 + i as f32 * TAU / 4.0).sin_cos();
+            let height = 0.1 + (0.35 + 0.22 * i as f32) * rise;
+            (self.x + reach * cos, self.y + height, self.z + reach * sin)
+        })
     }
 
     /// Whether it can go invisible: a scout, and a sniper with all three medals.
@@ -1059,6 +1110,15 @@ impl Unit {
             && self.weapon.can_target(other.height_as_target())
     }
 
+    /// Whether it opens fire on another unit in range unprompted: what it can attack, and an
+    /// enemy scout too, which nobody can point out to it but which does not get past its guns.
+    pub fn fires_on_sight(&self, other: &Unit, teams: &[usize]) -> bool {
+        self.can_attack(other, teams)
+            || (other.role == Role::Scout
+                && are_enemies(teams, self.owner, other.owner)
+                && self.can_fire_on(other))
+    }
+
     /// Whether it could be at this spot. Aircraft only have to stay on the map.
     fn can_enter(&self, terrain: &Terrain, x: f32, z: f32) -> bool {
         if self.kind.flies() {
@@ -1170,7 +1230,7 @@ impl Unit {
             (Role::Sniper, _) => (0.56, 0.42),
             (Role::SandBike, _) => (0.5, 0.2),
             (Role::AirDefensePlatform, _) => (0.5, 0.175),
-            _ if self.kind == UnitKind::Infantry => (0.16, 0.4),
+            _ if self.kind == UnitKind::Infantry => (0.33, 0.4),
             _ if self.kind == UnitKind::Vehicle => (0.65, 0.375),
             _ => (0.3, HEIGHT * 0.8),
         };
@@ -1247,6 +1307,7 @@ impl Unit {
             pad: None,
             on_mission: false,
             revealed: 0.0,
+            constructing: 0.0,
             reloading: 0.0,
             theft: None,
             stall: Stall::NOT_STALLED,
@@ -1381,6 +1442,7 @@ fn place_unit(
         pad: None,
         on_mission: false,
         revealed: 0.0,
+        constructing: 0.0,
         reloading: 0.0,
         theft: None,
         stall: Stall::NOT_STALLED,
@@ -2042,7 +2104,7 @@ pub fn set_gathering(units: &mut [Unit], point: (f32, f32)) {
     for unit in units.iter_mut().filter(|u| {
         u.selected
             && u.kind == UnitKind::Building
-            && !matches!(u.role, Role::LandingPad | Role::Mcv)
+            && !matches!(u.role, Role::LandingPad | Role::Mcv | Role::Palace(_))
     }) {
         unit.gathering = Some(point);
     }
@@ -2959,7 +3021,7 @@ fn alert_landers(units: &mut [Unit], teams: &[usize]) {
         let is_loading = lander.is_on_pad() && lander.rockets_fired > 0;
         units[i].alerted = !is_loading
             && units.iter().any(|other| {
-                lander.can_attack(other, teams)
+                lander.fires_on_sight(other, teams)
                     && other.kind != UnitKind::Building
                     && distance(up_there, other.center()) <= lander.weapon.range()
             });
@@ -3152,6 +3214,9 @@ fn beside_pad(pad: Pad, id: u32) -> (f32, f32) {
 
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
+    for unit in units.iter_mut() {
+        unit.constructing = (unit.constructing - dt).max(0.0);
+    }
     tend_pads(units, terrain, dt);
     alert_landers(units, teams);
     rush_to_the_hurt(units, teams);

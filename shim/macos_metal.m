@@ -613,6 +613,25 @@ int32_t oe_init(const char *title, int32_t *width, int32_t *height) {
     }
 }
 
+/* A number key's event, waiting behind the key-down that the same press also makes. */
+static OeEvent g_number_key;
+
+/* The 1 to 9 at this place on the number row, whatever the layout prints, or 0. */
+static int32_t number_row_digit(unsigned short key_code) {
+    switch (key_code) {
+        case 18: return 1;
+        case 19: return 2;
+        case 20: return 3;
+        case 21: return 4;
+        case 23: return 5;
+        case 22: return 6;
+        case 26: return 7;
+        case 28: return 8;
+        case 25: return 9;
+        default: return 0;
+    }
+}
+
 static int32_t translate(NSEvent *e, OeEvent *out) {
     switch (e.type) {
         case NSEventTypeMouseMoved:
@@ -681,6 +700,13 @@ static int32_t translate(NSEvent *e, OeEvent *out) {
                 unichar c = [e.characters characterAtIndex:0];
                 if (c >= 0x20 && c <= 0x7E) out->b = c;
             }
+            int32_t digit = number_row_digit(e.keyCode);
+            if (digit && !e.ARepeat && !(e.modifierFlags & NSEventModifierFlagCommand)) {
+                g_number_key = (OeEvent){.kind = OE_EVENT_NUMBER_KEY, .a = digit};
+                g_number_key.b = (e.modifierFlags & NSEventModifierFlagControl) ? OE_HELD_CONTROL
+                                 : (e.modifierFlags & NSEventModifierFlagShift) ? OE_HELD_SHIFT
+                                                                                : OE_HELD_NONE;
+            }
             return 1;
         default:
             return 0;
@@ -689,6 +715,11 @@ static int32_t translate(NSEvent *e, OeEvent *out) {
 
 int32_t oe_poll_event(OeEvent *event) {
     @autoreleasepool {
+        if (g_number_key.kind != OE_EVENT_NONE) {
+            *event = g_number_key;
+            g_number_key.kind = OE_EVENT_NONE;
+            return 1;
+        }
         *event = (OeEvent){0};
 
         /* Release the cursor while another app is in front (Cmd-Tab). */

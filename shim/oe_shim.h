@@ -21,7 +21,15 @@ enum {
     OE_EVENT_FOCUS = 7,      /* a = 1 when the game gains focus, 0 when it loses it */
     OE_EVENT_WHEEL = 8,      /* y = notches turned, positive away from the player */
     OE_EVENT_RIGHT_DOWN = 9, /* right button; on a Mac trackpad, a two-finger click or tap */
-    OE_EVENT_CONTROL = 10    /* a = 1 when a Control key is pressed, 0 when it is let go */
+    OE_EVENT_CONTROL = 10,   /* a = 1 when a Control key is pressed, 0 when it is let go */
+    OE_EVENT_NUMBER_KEY = 11 /* a = 1 to 9, by place on the number row; b = OE_HELD_*.
+                              * Comes as well as the OE_EVENT_KEY_DOWN for that key. */
+};
+
+enum {
+    OE_HELD_NONE = 0,
+    OE_HELD_SHIFT = 1,
+    OE_HELD_CONTROL = 2 /* whether or not Shift is held too */
 };
 
 enum {

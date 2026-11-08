@@ -4,9 +4,10 @@
 //! is still at home turns on enemies that come too close. It starts from nothing but its MCV:
 //! it deploys that where it stands and builds its base around it, one building at a time.
 
-use crate::battlefield::Terrain;
+use crate::battlefield::{Terrain, next_random};
 use crate::game::OpponentKind;
 use crate::units::{self, Role, Unit};
+use crate::weapons::WeaponKind;
 
 /// Seconds between one look at the battle and the next.
 const THINK_SECONDS: f32 = 1.0;
@@ -36,6 +37,10 @@ const BUILD_ORDER: [Role; 10] = [
 /// places it tries on each ring.
 const BUILD_RINGS: [f32; 5] = [3.4, 5.8, 8.2, 10.6, 13.0];
 const BUILD_TRIES: usize = 12;
+/// The chance, each look at the battle, that a siege tank with an enemy in its deployed reach
+/// deploys, and that a deployed one with nobody left in reach packs up.
+const SIEGE_DEPLOY_CHANCE: f32 = 0.2;
+const SIEGE_PACK_UP_CHANCE: f32 = 0.25;
 
 /// One opponent's plan.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +58,8 @@ pub struct Strategy {
     first_attack_in: f32,
     /// What its MCV is building and the seconds left, if anything.
     pub building: Option<(Role, f32)>,
+    /// What its chances are drawn from.
+    random: u32,
 }
 
 impl Strategy {
@@ -71,6 +78,7 @@ impl Strategy {
             think_in: THINK_SECONDS,
             first_attack_in,
             building: None,
+            random: owner as u32 * 2 + 1,
         }
     }
 
@@ -185,10 +193,13 @@ impl Strategy {
         let (Some(base), Some(rally)) = (self.base(units), self.rally(units, teams)) else {
             return;
         };
+        self.work_siege_tanks(units, teams);
         let owner = self.owner;
+        // What is deployed stays where it is, out of the army's orders until it packs up.
         let soldier = |u: &Unit| {
             u.alive
                 && u.owner == owner
+                && !u.deployed
                 && !u.kind.is_building()
                 && u.weapon.is_armed()
                 && u.has_rockets()
@@ -238,6 +249,31 @@ impl Strategy {
         for i in 0..units.len() {
             if self.attackers.contains(&units[i].id) && soldier(&units[i]) {
                 self.press_on(units, i, terrain, teams);
+            }
+        }
+    }
+
+    /// Now and then deploys a siege tank that has an enemy in its deployed reach, and packs up
+    /// one that has nobody left in it, so that it can move on.
+    fn work_siege_tanks(&mut self, units: &mut [Unit], teams: &[usize]) {
+        for i in 0..units.len() {
+            let unit = units[i];
+            if !unit.alive || unit.owner != self.owner || unit.role != Role::SiegeTank {
+                continue;
+            }
+            let mut set_up = unit;
+            set_up.weapon = WeaponKind::Siege;
+            let in_reach = units.iter().any(|u| {
+                set_up.can_attack(u, teams)
+                    && (u.x - unit.x).hypot(u.z - unit.z) <= WeaponKind::Siege.range()
+            });
+            let chance = match (unit.deployed, in_reach) {
+                (false, true) => SIEGE_DEPLOY_CHANCE,
+                (true, false) => SIEGE_PACK_UP_CHANCE,
+                _ => continue,
+            };
+            if next_random(&mut self.random) < chance {
+                units::switch_deployed(&mut units[i]);
             }
         }
     }
@@ -308,4 +344,70 @@ fn nearest(units: &[Unit], (x, z): (f32, f32), fit: impl Fn(&Unit) -> bool) -> O
             let away = |u: &Unit| (u.x - x).hypot(u.z - z);
             away(&units[a]).total_cmp(&away(&units[b]))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::units::UnitKind;
+
+    const TEAMS: [usize; 2] = [0, 1];
+
+    /// An opponent's base and siege tank in the open, and an enemy this far from the tank.
+    fn siege_at(enemy_away: f32) -> [Unit; 3] {
+        let mut base = Unit::for_test(30.0, 60.0, UnitKind::Building);
+        base.id = 1;
+        base.owner = 1;
+        let mut tank = Unit::for_test(30.0, 60.0, UnitKind::Vehicle);
+        tank.id = 2;
+        tank.owner = 1;
+        tank.role = Role::SiegeTank;
+        tank.weapon = WeaponKind::Cannon;
+        let mut enemy = Unit::for_test(30.0 + enemy_away, 60.0, UnitKind::Infantry);
+        enemy.id = 3;
+        [base, tank, enemy]
+    }
+
+    fn think_for(strategy: &mut Strategy, units: &mut [Unit], seconds: usize) {
+        let terrain = crate::battlefield::terrain(0);
+        for _ in 0..seconds {
+            strategy.think(units, terrain, &TEAMS, THINK_SECONDS);
+        }
+    }
+
+    #[test]
+    fn a_siege_tank_deploys_sometimes_with_an_enemy_in_reach_and_packs_up_when_there_is_none() {
+        let mut units = siege_at(WeaponKind::Siege.range() - 1.0);
+        let mut strategy = Strategy::new(1, OpponentKind::Competent);
+        think_for(&mut strategy, &mut units, 60);
+        assert!(units[1].deployed, "it sets up");
+        assert_eq!(units[1].weapon, WeaponKind::Siege);
+        units[2].alive = false;
+        think_for(&mut strategy, &mut units, 60);
+        assert!(!units[1].deployed, "and moves on");
+    }
+
+    #[test]
+    fn a_siege_tank_with_nobody_in_reach_stays_on_its_tracks() {
+        let mut units = siege_at(WeaponKind::Siege.range() + 1.0);
+        let mut strategy = Strategy::new(1, OpponentKind::Competent);
+        think_for(&mut strategy, &mut units, 60);
+        assert!(!units[1].deployed);
+    }
+
+    #[test]
+    fn a_deployed_siege_tank_takes_no_marching_orders() {
+        let mut units = siege_at(WeaponKind::Siege.range() - 1.0);
+        units::switch_deployed(&mut units[1]);
+        let stays = units[1].destination;
+        let mut strategy = Strategy::new(1, OpponentKind::Competent);
+        strategy.random = 2;
+        strategy.think(
+            &mut units,
+            crate::battlefield::terrain(0),
+            &TEAMS,
+            THINK_SECONDS,
+        );
+        assert_eq!(units[1].destination, stays);
+    }
 }

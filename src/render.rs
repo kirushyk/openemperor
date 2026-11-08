@@ -1149,6 +1149,15 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             draw_flames(canvas, game, &view, &wreck.unit);
         }
     }
+    for ragdoll in game
+        .combat
+        .ragdolls
+        .iter()
+        .filter(|r| game.sight_at(r.joints[0].0, r.joints[0].2) == Sight::Visible)
+    {
+        let [r, g, b, _] = team_color(ragdoll.unit.color);
+        models::draw_ragdoll(canvas, ragdoll, [r, g, b]);
+    }
     if let Some((building, can)) = game.placing_preview() {
         let color = if can { PLACE_OK } else { PLACE_NOT };
         draw_draped_disc(
@@ -1919,8 +1928,10 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
     let shaken_unit = is_fighting.then(|| shaken(game, unit, 2.0));
     let unit = shaken_unit.as_ref().unwrap_or(unit);
     // Beams reach far past what they come from, so they show even when it does not.
-    draw_beams(canvas, game, view, unit);
-    if unit.role == Role::LandingPad {
+    if !unit.is_under_construction() {
+        draw_beams(canvas, game, view, unit);
+    }
+    if unit.role == Role::LandingPad && !unit.is_under_construction() {
         draw_searchlight(canvas, game, view, unit);
     }
     if unit.role == Role::Mcv {
@@ -1946,7 +1957,7 @@ fn draw_seen_model(canvas: &mut Canvas, game: &Game, unit: &Unit, seen: Seen) {
             if seen == Seen::Far {
                 canvas.detail = models::Detail::Low;
             }
-            draw_unit_model(canvas, game, unit);
+            draw_standing_model(canvas, game, unit);
             stain_model(canvas, drawn, unit);
             if unit.is_cloaked() {
                 cloak_model(canvas, drawn);
@@ -1956,7 +1967,7 @@ fn draw_seen_model(canvas: &mut Canvas, game: &Game, unit: &Unit, seen: Seen) {
             let watchers = canvas.watchers;
             canvas.detail = models::Detail::Low;
             canvas.watchers = watchers.map(|w| models::Watchers { camera: false, ..w });
-            draw_unit_model(canvas, game, unit);
+            draw_standing_model(canvas, game, unit);
             canvas.watchers = watchers;
             let shadow: Vec<WorldVertex> = canvas.objects.drain(drawn..).collect();
             canvas.casters.extend(shadow);
@@ -1964,6 +1975,20 @@ fn draw_seen_model(canvas: &mut Canvas, game: &Game, unit: &Unit, seen: Seen) {
         Seen::Unseen => {}
     }
     canvas.detail = models::Detail::Full;
+}
+
+/// A unit's model as it stands now: a building going up is only as tall as it has got, with
+/// the cranes and scaffolding that are putting it up.
+fn draw_standing_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
+    let drawn = canvas.objects.len();
+    draw_unit_model(canvas, game, unit);
+    if unit.is_under_construction() {
+        let raised = unit.raised();
+        for vertex in &mut canvas.objects[drawn..] {
+            vertex.y = unit.y + (vertex.y - unit.y) * raised;
+        }
+        models::draw_construction(canvas, unit);
+    }
 }
 
 /// The flame burning out of an air drone's nozzle, flickering.
@@ -2163,9 +2188,6 @@ fn draw_flames(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit:
     }
 }
 
-/// The dull olive of infantry's packs and launchers.
-const INFANTRY_GEAR: [f32; 3] = [0.3, 0.32, 0.22];
-
 /// The steel case of a tower's searchlight, and the glass at its front.
 const SEARCHLIGHT_HOUSING: [f32; 3] = [0.3, 0.31, 0.33];
 const SEARCHLIGHT_LENS: [f32; 3] = [1.0, 0.98, 0.88];
@@ -2264,100 +2286,7 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
         return;
     }
     match unit.kind {
-        UnitKind::Infantry => {
-            let barrel = |by: f32, half: f32, thick: f32| {
-                let (x, z) = ahead(by);
-                (x, z, half, thick, unit.heading)
-            };
-            let dark = color.map(|c| c * 0.5);
-            let y = unit.y;
-            match (unit.role, unit.deployed) {
-                (Role::KInfantry, true) => {
-                    let base = (unit.x, unit.z, 0.3, 0.22, unit.heading);
-                    part(base, (y, y + 0.22), color);
-                    part(barrel(0.45, 0.3, 0.05), (y + 0.14, y + 0.22), dark);
-                }
-                (Role::KInfantry, false) => {
-                    let body = (unit.x, unit.z, 0.17, 0.17, unit.heading);
-                    part(body, (y, y + 0.66), color);
-                }
-                (Role::Scout, _) => {
-                    let body = (unit.x, unit.z, 0.1, 0.1, unit.heading);
-                    part(body, (y, y + 0.45), color);
-                }
-                (Role::Sniper, _) => {
-                    let body = (unit.x, unit.z, 0.1, 0.1, unit.heading);
-                    part(body, (y, y + 0.6), color);
-                    part(barrel(0.3, 0.26, 0.02), (y + 0.4, y + 0.44), dark);
-                }
-                (Role::FlameInfantry | Role::GasInfantry, _) => {
-                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
-                    part(body, (y, y + 0.6), color);
-                    // A tank on the back and a nozzle out front, in the color of what it sprays.
-                    let spray_color = if unit.role == Role::GasInfantry {
-                        GAS_COLOR
-                    } else {
-                        FIRE_COLOR
-                    };
-                    part(barrel(-0.17, 0.05, 0.09), (y + 0.2, y + 0.5), spray_color);
-                    part(barrel(0.22, 0.12, 0.03), (y + 0.32, y + 0.38), dark);
-                }
-                (Role::RegularInfantry, _) => {
-                    // Stockier, with a helmet and a rifle.
-                    let body = (unit.x, unit.z, 0.15, 0.15, unit.heading);
-                    part(body, (y, y + 0.58), color);
-                    let helmet = (unit.x, unit.z, 0.12, 0.12, unit.heading);
-                    part(helmet, (y + 0.58, y + 0.66), dark);
-                    part(barrel(0.2, 0.14, 0.02), (y + 0.36, y + 0.4), dark);
-                }
-                (Role::RocketInfantry, _) => {
-                    // A launcher tube resting on the shoulder, longer behind than in front.
-                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
-                    part(body, (y, y + 0.6), color);
-                    part(
-                        barrel(0.04, 0.26, 0.045),
-                        (y + 0.52, y + 0.62),
-                        INFANTRY_GEAR,
-                    );
-                    part(barrel(0.3, 0.012, 0.05), (y + 0.51, y + 0.63), [0.05; 3]);
-                }
-                (Role::SuicideInfantry, _) => {
-                    // A belt of charges around the middle and a red detonator on the chest.
-                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
-                    part(body, (y, y + 0.6), color);
-                    let belt = (unit.x, unit.z, 0.16, 0.16, unit.heading);
-                    part(belt, (y + 0.24, y + 0.38), INFANTRY_GEAR);
-                    part(
-                        barrel(0.15, 0.03, 0.04),
-                        (y + 0.42, y + 0.48),
-                        [0.95, 0.08, 0.05],
-                    );
-                }
-                (Role::MortarInfantry, true) => {
-                    // Kneeling behind a mortar tube raised high on its base plate.
-                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
-                    part(body, (y, y + 0.36), color);
-                    part(barrel(0.3, 0.12, 0.12), (y, y + 0.04), INFANTRY_GEAR);
-                    part(barrel(0.32, 0.04, 0.04), (y + 0.04, y + 0.5), dark);
-                }
-                (Role::MortarInfantry, false) => {
-                    // The mortar tube carried on the back.
-                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
-                    part(body, (y, y + 0.6), color);
-                    part(barrel(-0.16, 0.04, 0.04), (y + 0.2, y + 0.66), dark);
-                }
-                (Role::Engineer, _) => {
-                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
-                    part(body, (y, y + 0.5), color);
-                    let hat = (unit.x, unit.z, 0.18, 0.18, unit.heading);
-                    part(hat, (y + 0.5, y + 0.58), [0.95, 0.85, 0.3]);
-                }
-                _ => {
-                    let body = (unit.x, unit.z, 0.13, 0.13, unit.heading);
-                    part(body, (y, y + 0.6), color);
-                }
-            }
-        }
+        UnitKind::Infantry => models::draw_infantry(canvas, unit, game.battle_time(), color),
         UnitKind::Vehicle | UnitKind::Aircraft => {
             models::draw_machine(canvas, unit, game.battle_time(), color);
         }
@@ -2543,6 +2472,32 @@ fn draw_building(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
             part((x, z, 1.05, 0.85), (y, y + 0.85), walls);
             (0.85, 0.45, 0.55)
         }
+        // A keep between four corner turrets.
+        Role::Palace(Faction::A) => {
+            part((x, z, 1.15, 0.95), (y, y + 0.7), walls);
+            part((x, z, 0.6, 0.5), (y + 0.7, y + 1.5), roof);
+            for (side_x, side_z) in [(-1.0, -0.8), (1.0, -0.8), (-1.0, 0.8), (1.0, 0.8)] {
+                part((x + side_x, z + side_z, 0.2, 0.2), (y, y + 1.1), walls);
+            }
+            (0.95, 0.3, 0.45)
+        }
+        // A stepped pyramid.
+        Role::Palace(Faction::H) => {
+            part((x, z, 1.25, 1.05), (y, y + 0.45), walls);
+            part((x, z, 0.9, 0.75), (y + 0.45, y + 0.9), roof);
+            part((x, z, 0.55, 0.45), (y + 0.9, y + 1.35), walls);
+            part((x, z, 0.25, 0.2), (y + 1.35, y + 1.7), roof);
+            (1.05, 0.3, 0.35)
+        }
+        // A long hall under two thin spires.
+        Role::Palace(Faction::O) => {
+            part((x, z, 1.3, 0.7), (y, y + 0.8), walls);
+            part((x, z, 1.1, 0.45), (y + 0.8, y + 1.0), roof);
+            for side in [-0.8, 0.8] {
+                part((x + side, z, 0.1, 0.1), (y + 1.0, y + 2.2), walls);
+            }
+            (0.7, 0.35, 0.5)
+        }
         _ => {
             part((x, z, 1.1, 0.9), (y, y + 0.6), walls);
             part((x, z, 0.9, 0.9), (y + 0.6, y + 0.76), roof);
@@ -2727,7 +2682,8 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
         draw_button(canvas, game, cell);
         let (cx, cy) = (cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
         if game.build_tab == BuildTab::Vehicles && i == SUPERWEAPON_CELL {
-            let ready = game.superweapon_allowed() && game.strike_recharge <= 0.0;
+            let armed = game.superweapon().is_some();
+            let ready = armed && game.strike_recharge <= 0.0;
             let color = if !ready {
                 QUIET
             } else if game.aiming_strike {
@@ -2736,7 +2692,7 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
                 GOLD
             };
             draw_radiation_symbol(canvas, cx, cy, cell.w * 0.7, color);
-            if game.superweapon_allowed() && game.strike_recharge > 0.0 {
+            if armed && game.strike_recharge > 0.0 {
                 let seconds = (game.strike_recharge.ceil() as i32).to_string();
                 canvas.text_centered(&seconds, cx, cy, small_text_px(game.height), TEXT);
             }
@@ -2838,6 +2794,7 @@ fn short_name(role: Role) -> &'static str {
         Role::Ornithopter => "Ornith",
         Role::Destroyer => "Destroy",
         Role::LandingPad => "Pad",
+        Role::Palace(_) => "Palace",
         Role::Tower => "R Tower",
         Role::GunTower => "MG Twr",
         Role::FlameInfantry => "Flame",

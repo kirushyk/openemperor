@@ -102,6 +102,15 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 push_event(e);
                 return 0;
             }
+            if (wp >= '1' && wp <= '9') {
+                e.kind = OE_EVENT_NUMBER_KEY;
+                e.a = (int32_t)(wp - '0');
+                e.b = GetKeyState(VK_CONTROL) < 0 ? OE_HELD_CONTROL
+                      : GetKeyState(VK_SHIFT) < 0 ? OE_HELD_SHIFT
+                                                  : OE_HELD_NONE;
+                push_event(e);
+                e = (OeEvent){0};
+            }
             e.kind = OE_EVENT_KEY_DOWN;
             e.a = wp == VK_ESCAPE ? OE_KEY_ESCAPE
                   : wp == VK_BACK ? OE_KEY_BACKSPACE

@@ -6,7 +6,11 @@ use super::{Canvas, Point, cross, knee_of, unit_vector};
 use crate::battlefield::SUN;
 use crate::game::Faction;
 use crate::platform::WorldVertex;
-use crate::units::{self, Role, Unit};
+use crate::units::{self, Role, Unit, UnitKind};
+use crate::weapons::{
+    RAGDOLL_CHEST, RAGDOLL_ELBOWS, RAGDOLL_FEET, RAGDOLL_HANDS, RAGDOLL_HEAD, RAGDOLL_KNEES,
+    RAGDOLL_PELVIS, RAGDOLL_SECONDS, RAGDOLL_SINK_SECONDS, Ragdoll,
+};
 use std::f32::consts::{PI, TAU};
 
 /// What a surface is made of: its color, and how much it shines, from 0 for none through paint
@@ -57,6 +61,31 @@ const ROCKET: Paint = Paint {
 const BEACON: Paint = Paint {
     color: [1.0, 0.62, 0.1],
     shine: 0.0,
+};
+const CRANE_YELLOW: Paint = Paint {
+    color: [0.93, 0.7, 0.08],
+    shine: 0.35,
+};
+/// The dull olive of infantry's packs and launchers.
+const INFANTRY_GEAR: Paint = Paint {
+    color: [0.3, 0.32, 0.22],
+    shine: 0.1,
+};
+const SKIN: Paint = Paint {
+    color: [0.72, 0.56, 0.42],
+    shine: 0.05,
+};
+const BOOTS: Paint = Paint {
+    color: [0.1, 0.09, 0.08],
+    shine: 0.1,
+};
+const HARD_HAT: Paint = Paint {
+    color: [0.95, 0.85, 0.3],
+    shine: 0.35,
+};
+const DETONATOR: Paint = Paint {
+    color: [0.95, 0.08, 0.05],
+    shine: 0.3,
 };
 /// How much the owner's paint shines: a soft, wide sheen.
 const PAINT_SHINE: f32 = 0.35;
@@ -809,6 +838,557 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
     }
 }
 
+/// A square lattice between two points, thinning from one half width to another: four chords,
+/// a ring at each bay and, with the detail for it, a diagonal across each face.
+fn lattice(
+    model: &mut Model,
+    from: [f32; 3],
+    to: [f32; 3],
+    (near, far): (f32, f32),
+    bays: usize,
+    paint: Paint,
+) {
+    const ROD: f32 = 0.014;
+    let way = [0, 1, 2].map(|i| to[i] - from[i]);
+    let length = unit_vector(way);
+    let other = if length[1].abs() < 0.9 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let u = unit_vector(cross(length, other));
+    let v = cross(length, u);
+    let corner = |bay: usize, which: usize| {
+        let t = bay as f32 / bays as f32;
+        let half = near + (far - near) * t;
+        let (su, sv) = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)][which % 4];
+        [0, 1, 2].map(|i| from[i] + way[i] * t + (u[i] * su + v[i] * sv) * half)
+    };
+    for which in 0..4 {
+        model.bar(corner(0, which), corner(bays, which), ROD, paint);
+        for bay in 0..=bays {
+            model.bar(corner(bay, which), corner(bay, which + 1), ROD * 0.7, paint);
+        }
+        if model.fine {
+            for bay in 0..bays {
+                let (a, b) = if bay % 2 == 0 {
+                    (corner(bay, which), corner(bay + 1, which + 1))
+                } else {
+                    (corner(bay, which + 1), corner(bay + 1, which))
+                };
+                model.bar(a, b, ROD * 0.7, paint);
+            }
+        }
+    }
+}
+
+/// One side of the scaffolding, this high: posts, a ledger every level and cross braces.
+fn scaffold(model: &mut Model, from: [f32; 2], to: [f32; 2], height: f32) {
+    const LEVEL: f32 = 0.5;
+    const ROD: f32 = 0.013;
+    if height <= 0.02 {
+        return;
+    }
+    let bays = (((to[0] - from[0]).hypot(to[1] - from[1]) / 0.75).ceil() as usize).max(1);
+    let at = |bay: usize, y: f32| {
+        let t = bay as f32 / bays as f32;
+        [
+            from[0] + (to[0] - from[0]) * t,
+            y,
+            from[1] + (to[1] - from[1]) * t,
+        ]
+    };
+    for bay in 0..=bays {
+        model.bar(at(bay, 0.0), at(bay, height), ROD, STEEL);
+    }
+    let levels = (height / LEVEL).ceil() as usize;
+    let level = |n: usize| (n as f32 * LEVEL).min(height);
+    for n in 1..=levels {
+        model.bar(at(0, level(n)), at(bays, level(n)), ROD, STEEL);
+        if model.fine {
+            for bay in 0..bays {
+                let (low, high) = (level(n - 1), level(n));
+                let (a, b) = if (bay + n) % 2 == 0 {
+                    (at(bay, low), at(bay + 1, high))
+                } else {
+                    (at(bay + 1, low), at(bay, high))
+                };
+                model.bar(a, b, ROD * 0.7, STEEL);
+            }
+        }
+    }
+}
+
+/// A tower crane on its truss mast, its jib turned this way, as much put up as `appear` says.
+fn crane(
+    model: &mut Model,
+    [a, c]: [f32; 2],
+    height: f32,
+    jib: f32,
+    slew: f32,
+    done: f32,
+    appear: f32,
+) {
+    let mast = height * appear;
+    model.bevel([a, 0.05, c], [0.32, 0.05, 0.32], 0.02, GUNMETAL);
+    lattice(
+        model,
+        [a, 0.08, c],
+        [a, mast, c],
+        (0.13, 0.13),
+        7,
+        CRANE_YELLOW,
+    );
+    let (sin, cos) = slew.sin_cos();
+    let jib = jib * appear;
+    let at = |reach: f32, up: f32| [a + cos * reach, mast + up, c + sin * reach];
+    model.bevel([a, mast + 0.08, c], [0.17, 0.09, 0.17], 0.02, GUNMETAL);
+    // The arrow, thinning to its tip, and the short arm behind that balances it.
+    lattice(
+        model,
+        at(0.12, 0.16),
+        at(jib, 0.16),
+        (0.11, 0.025),
+        8,
+        CRANE_YELLOW,
+    );
+    lattice(
+        model,
+        at(-0.12, 0.16),
+        at(-jib * 0.36, 0.16),
+        (0.08, 0.06),
+        3,
+        CRANE_YELLOW,
+    );
+    model.tube(
+        tube(at(-jib * 0.36, 0.08), at(-jib * 0.2, 0.08), 0.13)
+            .sides(4)
+            .faceted(),
+        GUNMETAL,
+    );
+    // The top of the tower and the ties from it that hold both arms up.
+    let peak = at(0.0, 0.85 * appear);
+    model.bar(at(0.0, 0.16), peak, 0.022, CRANE_YELLOW);
+    model.bar(peak, at(jib * 0.72, 0.2), 0.007, STEEL);
+    model.bar(peak, at(-jib * 0.33, 0.2), 0.007, STEEL);
+    // The trolley running along the arrow, and what it hoists.
+    let reach = jib * (0.45 + 0.35 * (done * TAU).sin());
+    let hook_up = mast * (0.42 + 0.3 * (done * TAU * 1.5).cos());
+    let trolley = at(reach, 0.08);
+    model.bevel(trolley, [0.08, 0.035, 0.08], 0.01, GUNMETAL);
+    let hook = [trolley[0], hook_up, trolley[2]];
+    model.bar(trolley, hook, 0.006, BORE);
+    model.bevel(hook, [0.05, 0.05, 0.05], 0.01, CRANE_YELLOW);
+    let girder = |reach: f32| [hook[0] + cos * reach, hook[1] - 0.08, hook[2] + sin * reach];
+    model.bar(girder(-0.4), girder(0.4), 0.035, STEEL);
+}
+
+/// What puts a building up in its one second: two cranes turning opposite ways and, on all
+/// four sides, scaffolding that goes up and comes down again.
+pub fn draw_construction(canvas: &mut Canvas, unit: &Unit) {
+    let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+    let done = unit.construction_done();
+    let place = Place {
+        origin: [unit.x, unit.y, unit.z],
+        along: [1.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+        across: [0.0, 0.0, 1.0],
+    };
+    let model = &mut Model::new(canvas, place);
+    let (half_a, half_c, top, size) = if unit.kind == UnitKind::Tower {
+        (0.75, 0.75, 1.5, 0.72)
+    } else {
+        (1.55, 1.3, 2.1, 1.0)
+    };
+    let corners = [
+        [-half_a, -half_c],
+        [half_a, -half_c],
+        [half_a, half_c],
+        [-half_a, half_c],
+    ];
+    for side in 0..4 {
+        // Each side a little after the one before, so that they do not move as one.
+        let late = side as f32 * 0.05;
+        let turn = ((done - late) / 0.85).clamp(0.0, 1.0);
+        let height = top * (turn * PI).sin();
+        scaffold(model, corners[side], corners[(side + 1) % 4], height);
+    }
+    let appear = smooth((done.min(1.0 - done) / 0.14).min(1.0));
+    let out = 0.55;
+    crane(
+        model,
+        [-half_a - out, -half_c - out],
+        3.4 * size,
+        3.0 * size,
+        0.4 + done * TAU * 0.75,
+        done,
+        appear,
+    );
+    crane(
+        model,
+        [half_a + out, half_c + out],
+        2.9 * size,
+        2.6 * size,
+        3.6 - done * TAU * 0.75,
+        (done + 0.3) % 1.0,
+        appear,
+    );
+}
+
+/// Where a soldier's hands are, as [along, up, across], with across positive to its right.
+struct Grip {
+    right: [f32; 3],
+    left: [f32; 3],
+}
+
+/// A hand hanging at the side, swinging as the soldier walks.
+fn hanging_hand(across: f32, swing: f32) -> [f32; 3] {
+    [0.03 + swing, 0.27, across]
+}
+
+fn rifle_stock(model: &mut Model, up: f32) {
+    model.bar([-0.02, up - 0.008, 0.02], [0.08, up, 0.02], 0.016, GUNMETAL);
+}
+
+/// Draws what a soldier carries, from a place that bobs with it, and says where its hands go.
+fn soldier_gear(model: &mut Model, unit: &Unit, team: Paint, swing: f32) -> Grip {
+    match (unit.role, unit.deployed) {
+        (Role::Sniper, _) => {
+            model.tube(
+                tube([0.05, 0.42, 0.02], [0.56, 0.42, 0.02], 0.009).sides(6),
+                GUNMETAL,
+            );
+            model.bar([0.02, 0.41, 0.02], [0.26, 0.42, 0.02], 0.02, GUNMETAL);
+            model.tube(
+                tube([0.1, 0.46, 0.02], [0.25, 0.46, 0.02], 0.016).sides(6),
+                BORE,
+            );
+            rifle_stock(model, 0.41);
+            for side in [-0.03, 0.03] {
+                model.bar(
+                    [0.42, 0.42, 0.02],
+                    [0.44, 0.3, 0.02 + side],
+                    0.004,
+                    GUNMETAL,
+                );
+            }
+            Grip {
+                right: [0.1, 0.395, 0.04],
+                left: [0.27, 0.4, 0.015],
+            }
+        }
+        (Role::RegularInfantry, _) => {
+            model.bevel([0.17, 0.4, 0.02], [0.11, 0.028, 0.018], 0.006, GUNMETAL);
+            model.tube(
+                tube([0.28, 0.405, 0.02], [0.33, 0.405, 0.02], 0.014).sides(6),
+                BORE,
+            );
+            model.ball([0.18, 0.35, 0.02], [0.05, 0.05, 0.03], false, INFANTRY_GEAR);
+            rifle_stock(model, 0.4);
+            Grip {
+                right: [0.09, 0.385, 0.04],
+                left: [0.25, 0.385, 0.01],
+            }
+        }
+        (Role::KInfantry, true) => {
+            model.bevel([0.05, 0.1, 0.0], [0.3, 0.08, 0.2], 0.02, INFANTRY_GEAR);
+            model.tube(
+                tube([0.05, 0.2, 0.0], [0.75, 0.18, 0.0], 0.04).sides(8),
+                GUNMETAL,
+            );
+            model.tube(
+                tube([0.68, 0.183, 0.0], [0.75, 0.18, 0.0], 0.055).sides(8),
+                STEEL,
+            );
+            model.bevel([0.12, 0.25, 0.0], [0.1, 0.06, 0.1], 0.01, GUNMETAL);
+            Grip {
+                right: [0.14, 0.27, 0.09],
+                left: [0.14, 0.27, -0.09],
+            }
+        }
+        (Role::MortarInfantry, true) => {
+            model.bevel([0.3, 0.02, 0.0], [0.14, 0.02, 0.14], 0.005, INFANTRY_GEAR);
+            model.tube(
+                tube([0.26, 0.04, 0.0], [0.38, 0.52, 0.0], 0.04).sides(8),
+                GUNMETAL,
+            );
+            model.bar([0.32, 0.02, 0.1], [0.34, 0.26, 0.015], 0.008, GUNMETAL);
+            model.bar([0.32, 0.02, -0.1], [0.34, 0.26, -0.015], 0.008, GUNMETAL);
+            Grip {
+                right: [0.3, 0.3, 0.045],
+                left: [0.33, 0.38, -0.045],
+            }
+        }
+        (Role::KInfantry | Role::MortarInfantry, false) => {
+            if unit.role == Role::MortarInfantry {
+                model.tube(
+                    tube([-0.13, 0.22, 0.0], [-0.18, 0.66, 0.0], 0.04).sides(8),
+                    GUNMETAL,
+                );
+            }
+            model.bevel([0.2, 0.425, 0.02], [0.05, 0.016, 0.01], 0.003, GUNMETAL);
+            model.bar([0.16, 0.42, 0.02], [0.15, 0.38, 0.02], 0.009, GUNMETAL);
+            Grip {
+                right: [0.15, 0.39, 0.03],
+                left: hanging_hand(-0.13, -swing),
+            }
+        }
+        (Role::RocketInfantry, _) => {
+            let tip = [0.34, 0.56, 0.1];
+            model.tube(
+                tube([-0.26, 0.55, 0.1], tip, 0.05)
+                    .sides(8)
+                    .ends(false, false),
+                INFANTRY_GEAR,
+            );
+            model.tube(tube([0.335, 0.56, 0.1], tip, 0.042).sides(8), BORE);
+            model.bevel([0.12, 0.49, 0.1], [0.03, 0.03, 0.012], 0.005, GUNMETAL);
+            Grip {
+                right: [0.05, 0.48, 0.1],
+                left: [0.2, 0.5, 0.09],
+            }
+        }
+        (Role::FlameInfantry | Role::GasInfantry, _) => {
+            let [r, g, b] = if unit.role == Role::GasInfantry {
+                super::GAS_COLOR
+            } else {
+                super::FIRE_COLOR
+            };
+            let tanks = Paint {
+                color: [r, g, b],
+                shine: 0.4,
+            };
+            for side in [-0.05, 0.05] {
+                model.tube(
+                    tube([-0.14, 0.24, side], [-0.14, 0.52, side], 0.045).sides(8),
+                    tanks,
+                );
+            }
+            model.bar([-0.12, 0.26, 0.04], [0.1, 0.37, 0.04], 0.008, RUBBER);
+            model.tube(
+                tube([0.06, 0.385, 0.03], [0.32, 0.385, 0.02], 0.016).sides(6),
+                GUNMETAL,
+            );
+            model.tube(
+                tube([0.31, 0.385, 0.02], [0.36, 0.385, 0.02], 0.028).sides(6),
+                tanks,
+            );
+            Grip {
+                right: [0.1, 0.375, 0.04],
+                left: [0.24, 0.375, 0.01],
+            }
+        }
+        (Role::SuicideInfantry, _) => {
+            for n in 0..6 {
+                let (sin, cos) = (n as f32 / 6.0 * TAU).sin_cos();
+                let at = [cos * 0.09, 0.33, sin * 0.09];
+                model.tube(
+                    tube([at[0], 0.26, at[2]], [at[0], 0.4, at[2]], 0.026).sides(6),
+                    INFANTRY_GEAR,
+                );
+            }
+            let raised = [0.13, 0.62, 0.11];
+            model.bevel(raised, [0.018, 0.035, 0.018], 0.004, DETONATOR);
+            Grip {
+                right: raised,
+                left: hanging_hand(-0.13, -swing),
+            }
+        }
+        (Role::Scout, _) => {
+            for side in [-0.03, 0.03] {
+                model.tube(
+                    tube([0.09, 0.56, side], [0.17, 0.56, side], 0.02).sides(6),
+                    BORE,
+                );
+            }
+            model.bevel([-0.1, 0.4, 0.0], [0.04, 0.08, 0.06], 0.01, INFANTRY_GEAR);
+            model.bar([-0.1, 0.48, 0.03], [-0.13, 0.82, 0.03], 0.003, GUNMETAL);
+            Grip {
+                right: [0.12, 0.54, 0.05],
+                left: [0.12, 0.54, -0.05],
+            }
+        }
+        (Role::Engineer, _) => {
+            let carried = hanging_hand(-0.14, -swing * 0.4);
+            model.bevel(
+                [carried[0], carried[1] - 0.07, carried[2]],
+                [0.075, 0.05, 0.035],
+                0.01,
+                team,
+            );
+            model.bar([0.15, 0.37, 0.11], [0.3, 0.42, 0.11], 0.01, STEEL);
+            model.bevel([0.31, 0.425, 0.11], [0.025, 0.03, 0.012], 0.004, STEEL);
+            Grip {
+                right: [0.15, 0.37, 0.11],
+                left: carried,
+            }
+        }
+        _ => {
+            model.bevel([0.16, 0.4, 0.02], [0.095, 0.018, 0.012], 0.004, GUNMETAL);
+            model.tube(
+                tube([0.25, 0.402, 0.02], [0.33, 0.402, 0.02], 0.008).sides(6),
+                GUNMETAL,
+            );
+            model.bar([0.16, 0.38, 0.02], [0.18, 0.33, 0.02], 0.012, BORE);
+            rifle_stock(model, 0.4);
+            Grip {
+                right: [0.09, 0.385, 0.04],
+                left: [0.23, 0.385, 0.01],
+            }
+        }
+    }
+}
+
+/// What a soldier wears on its head, around a head at this height.
+fn headgear(model: &mut Model, role: Role, up: f32, team: Paint) {
+    match role {
+        Role::Engineer => {
+            model.ball([0.0, up + 0.02, 0.0], [0.082, 0.055, 0.082], true, HARD_HAT);
+        }
+        Role::RegularInfantry | Role::KInfantry | Role::RocketInfantry => {
+            model.ball(
+                [0.0, up + 0.015, 0.0],
+                [0.066, 0.056, 0.066],
+                true,
+                GUNMETAL,
+            );
+        }
+        Role::FlameInfantry | Role::GasInfantry => {
+            model.ball([0.0, up, 0.0], [0.066, 0.066, 0.066], false, INFANTRY_GEAR);
+            model.block([0.055, up + 0.005, 0.0], [0.018, 0.02, 0.04], GLASS);
+        }
+        Role::Sniper | Role::Scout => {
+            model.ball([0.0, up + 0.012, 0.0], [0.06, 0.04, 0.06], true, team);
+            model.block([0.06, up + 0.02, 0.0], [0.03, 0.005, 0.04], team);
+        }
+        _ => {
+            model.ball([0.0, up + 0.018, 0.0], [0.058, 0.046, 0.058], true, team);
+        }
+    }
+}
+
+/// A soldier on two jointed legs, its arms reaching for what it carries: it steps and swings as
+/// it walks, breathes as it waits and kneels when it has dug in.
+pub fn draw_infantry(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]) {
+    const PACE: f32 = 9.0;
+    const THIGH: f32 = 0.16;
+    const SHIN: f32 = 0.16;
+    const UPPER_ARM: f32 = 0.15;
+    const FOREARM: f32 = 0.15;
+    let team = team(color);
+    let place = Place::on_ground(unit);
+    let model = &mut Model::new(canvas, place);
+    let kneeling = unit.deployed && matches!(unit.role, Role::KInfantry | Role::MortarInfantry);
+    let phase = unit.stride * PACE;
+    let walking = unit.is_moving() && !kneeling;
+    let (bob, swing, breath) = if walking {
+        (phase.sin().abs() * 0.014, phase.sin() * 0.09, 0.0)
+    } else {
+        let breath = (time * 2.2 + unit.id as f32 * 1.3).sin() * 0.006;
+        (0.0, 0.0, breath)
+    };
+    let small = if unit.role == Role::Scout { 0.9 } else { 1.0 };
+    let hip_up = if kneeling { 0.17 } else { 0.3 * small + bob };
+    let lean = if walking { 0.03 } else { 0.0 };
+    let chest = [lean, hip_up + 0.2 * small + breath, 0.0];
+    for (side, step, ahead) in [(-0.055, 0.0, 0.14), (0.055, PI, -0.2)] {
+        let (foot_a, lift) = if kneeling {
+            (ahead, 0.0)
+        } else if walking {
+            let turn = phase + step;
+            (turn.sin() * 0.12, turn.cos().max(0.0) * 0.07)
+        } else {
+            (0.0, 0.0)
+        };
+        let (knee_a, knee_u) = super::knee_of((0.0, hip_up), (foot_a, lift + 0.03), THIGH, SHIN);
+        let hip = [0.0, hip_up, side];
+        let knee = [knee_a, knee_u, side];
+        let ankle = [foot_a, lift + 0.03, side];
+        model.tube(tube(hip, knee, 0.037).taper(0.03).sides(6), team);
+        model.tube(tube(knee, ankle, 0.029).taper(0.023).sides(6), BOOTS);
+        model.bevel(
+            [foot_a + 0.025, lift + 0.018, side],
+            [0.052, 0.018, 0.028],
+            0.006,
+            BOOTS,
+        );
+    }
+    let waist = [0.0, hip_up, 0.0];
+    model.tube(tube(waist, chest, 0.07).taper(0.085).sides(8), team);
+    let head_up = chest[1] + 0.1 * small;
+    model.tube(
+        tube(chest, [lean + 0.004, head_up - 0.03, 0.0], 0.026).sides(6),
+        SKIN,
+    );
+    model.ball(
+        [lean + 0.01, head_up, 0.0],
+        [0.05, 0.056, 0.05],
+        false,
+        SKIN,
+    );
+    let rise = chest[1] - 0.5;
+    let moved = place.moved([0.0, rise, 0.0]);
+    let grip = soldier_gear(&mut model.at(moved), unit, team, swing);
+    headgear(
+        &mut model.at(place.moved([lean + 0.01, 0.0, 0.0])),
+        unit.role,
+        head_up,
+        team,
+    );
+    for (hand, side) in [(grip.right, 0.1), (grip.left, -0.1)] {
+        let hand = [hand[0], hand[1] + rise, hand[2]];
+        let shoulder = [lean, chest[1] - 0.005, side];
+        let (elbow_a, elbow_u) = super::knee_of(
+            (hand[0], hand[1]),
+            (shoulder[0], shoulder[1]),
+            FOREARM,
+            UPPER_ARM,
+        );
+        let elbow = [
+            elbow_a,
+            elbow_u,
+            (hand[2] + shoulder[2]) / 2.0 + side * 0.25,
+        ];
+        model.ball(shoulder, [0.036; 3], false, team);
+        model.tube(tube(shoulder, elbow, 0.026).taper(0.022).sides(6), team);
+        model.tube(tube(elbow, hand, 0.021).taper(0.018).sides(6), team);
+        model.ball(hand, [0.024; 3], false, SKIN);
+    }
+}
+
+/// A fallen soldier as its joints lie now, sinking away at the end.
+pub fn draw_ragdoll(canvas: &mut Canvas, ragdoll: &Ragdoll, color: [f32; 3]) {
+    let team = team(color);
+    let sink = (ragdoll.age - (RAGDOLL_SECONDS - RAGDOLL_SINK_SECONDS)).max(0.0) * 0.4;
+    let place = Place {
+        origin: [0.0, -sink, 0.0],
+        along: [1.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+        across: [0.0, 0.0, 1.0],
+    };
+    let model = &mut Model::new(canvas, place);
+    let joint = |i: usize| {
+        let (x, y, z) = ragdoll.joints[i];
+        [x, y, z]
+    };
+    let chest = joint(RAGDOLL_CHEST);
+    let pelvis = joint(RAGDOLL_PELVIS);
+    let head = joint(RAGDOLL_HEAD);
+    model.tube(tube(pelvis, chest, 0.07).taper(0.085).sides(8), team);
+    model.tube(tube(chest, head, 0.026).sides(6), SKIN);
+    model.ball(head, [0.05, 0.056, 0.05], false, SKIN);
+    for side in 0..2 {
+        let (elbow, hand) = (joint(RAGDOLL_ELBOWS[side]), joint(RAGDOLL_HANDS[side]));
+        model.tube(tube(chest, elbow, 0.026).taper(0.022).sides(6), team);
+        model.tube(tube(elbow, hand, 0.021).taper(0.018).sides(6), team);
+        model.ball(hand, [0.024; 3], false, SKIN);
+        let (knee, foot) = (joint(RAGDOLL_KNEES[side]), joint(RAGDOLL_FEET[side]));
+        model.tube(tube(pelvis, knee, 0.037).taper(0.03).sides(6), team);
+        model.tube(tube(knee, foot, 0.029).taper(0.023).sides(6), BOOTS);
+        model.ball(foot, [0.04, 0.025, 0.04], false, BOOTS);
+    }
+}
+
 /// Where the nozzle of an air drone is, as [along, up, across].
 pub const DRONE_NOZZLE: [f32; 3] = [-0.31, 0.065, 0.0];
 
@@ -1141,6 +1721,9 @@ fn rocket_launcher(model: &mut Model, unit: &Unit, team: Paint) {
 
 /// How a striding unit's legs are built: how far apart, how long, and how far they swing.
 struct Legs {
+    /// How high the hips stand, as a share of the length of the leg: low, for thighs that lie
+    /// nearly flat out of them.
+    stand: f32,
     side: f32,
     thigh: f32,
     shin: f32,
@@ -1156,7 +1739,7 @@ struct Legs {
 /// Two legs with knees under a striding unit, stepping in turn as it walks: round thighs and
 /// shins on ball joints, pistons beside them, and three toes on each foot.
 fn legs(model: &mut Model, unit: &Unit, legs: &Legs) {
-    let hip_height = (legs.thigh + legs.shin) * 0.92;
+    let hip_height = (legs.thigh + legs.shin) * legs.stand;
     let moving = unit.is_moving();
     let scale = legs.thigh / 0.3;
     for (side, step) in [(-legs.side, 0.0), (legs.side, PI)] {
@@ -1218,6 +1801,7 @@ fn strider(model: &mut Model, unit: &Unit, team: Paint) {
         model,
         unit,
         &Legs {
+            stand: 0.92,
             side: 0.15,
             thigh: 0.3,
             shin: 0.28,
@@ -1277,18 +1861,21 @@ fn strider(model: &mut Model, unit: &Unit, team: Paint) {
 /// A walking gun platform: a broad body on two big legs with armored knees, a raised painted
 /// top, a sensor head with two lamps, four cannons that slide back as they fire, and exhausts.
 fn heavy_strider(model: &mut Model, unit: &Unit, team: Paint) {
-    const RECOIL_TRAVEL: f32 = 0.25;
-    const BARREL_HALF: f32 = 0.28;
+    /// How far a cannon runs back into its sleeve when it fires.
+    const RECOIL_TRAVEL: f32 = 0.55;
+    /// Longer all told than the body it is mounted on.
+    const BARREL_HALF: f32 = 0.525;
     legs(
         model,
         unit,
         &Legs {
-            side: 0.3,
-            thigh: 0.48,
-            shin: 0.46,
-            swing: 0.34,
-            pace: 3.2,
-            width: 0.12,
+            stand: 0.54,
+            side: 0.34,
+            thigh: 0.62,
+            shin: 1.05,
+            swing: 0.3,
+            pace: 2.6,
+            width: 0.19,
             knee_caps: Some(team),
             pistons: 2,
         },
@@ -1326,7 +1913,7 @@ fn heavy_strider(model: &mut Model, unit: &Unit, team: Paint) {
             GUNMETAL,
         );
         model.tube(
-            tube([0.43, height, side], [0.56, height, side], 0.046),
+            tube([0.43, height, side], [0.82, height, side], 0.05),
             STEEL,
         );
     }

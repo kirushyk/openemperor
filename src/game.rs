@@ -3,11 +3,11 @@
 use crate::battlefield::{self, Camera};
 use crate::fog::{Fog, Sight};
 use crate::hud::{self, DEPLOY_BUTTON};
-use crate::platform::{Event, Key};
+use crate::platform::{Event, Key, Modifier};
 use crate::strategy::Strategy;
 use crate::units::{self, Role, Unit, UnitKind};
-use crate::weapons::Combat;
 use crate::weapons::OVERKILL_BLOWS_APART;
+use crate::weapons::{Combat, Superweapon};
 
 pub const INTRO_SECONDS: f32 = 3.0;
 pub const LOADING_SECONDS: f32 = 2.0;
@@ -136,6 +136,8 @@ const BUILDING_BUILDS: [Role; 6] = [
     Role::Tower,
     Role::GunTower,
 ];
+/// The Buildings menu's cell for the player's house's palace, after the rest.
+const PALACE_CELL: usize = BUILDING_BUILDS.len();
 /// How much an opponent has standing at most before it stops making more, so that a long battle
 /// does not bury the game in units.
 const OPPONENT_UNITS_AT_MOST: usize = 80;
@@ -1338,6 +1340,8 @@ pub struct Game {
     menu_seconds: f32,
     /// Whether a Control key is down, which turns clicks into attack orders.
     control_held: bool,
+    /// The ids of the units assigned to each of the number keys 1 to 9.
+    control_groups: [Vec<u32>; 9],
     /// New units get ids never used in this battle, so a missile cannot chase the wrong one.
     next_unit_id: u32,
     pub build_tab: BuildTab,
@@ -1402,6 +1406,7 @@ impl Game {
             selection_anchor: None,
             menu_seconds: 0.0,
             control_held: false,
+            control_groups: Default::default(),
             next_unit_id: 0,
             build_tab: BuildTab::Infantry,
             energy: STARTING_ENERGY,
@@ -1593,8 +1598,25 @@ impl Game {
                 .and_then(|i| vehicle_builds(house).get(i))
                 .or_else(|| BOTTOM_VEHICLE_BUILDS.get(cell.checked_sub(BOTTOM_ROW_START)?))
                 .copied(),
+            BuildTab::Buildings if cell == PALACE_CELL => {
+                self.superweapon_allowed().then_some(Role::Palace(house))
+            }
             BuildTab::Buildings => BUILDING_BUILDS.get(cell).copied(),
         }
+    }
+
+    /// What the player's palace can fire, if they have one and superweapons are allowed. A
+    /// captured palace brings the superweapon of the house that built it.
+    pub fn superweapon(&self) -> Option<Superweapon> {
+        self.units
+            .iter()
+            .filter(|u| {
+                self.superweapon_allowed() && u.alive && u.owner == 0 && !u.is_under_construction()
+            })
+            .find_map(|u| match u.role {
+                Role::Palace(house) => Some(Superweapon::of(house)),
+                _ => None,
+            })
     }
 
     /// Each opponent keeps all its buildings busy, starting something at random the moment one
@@ -1725,6 +1747,28 @@ impl Game {
         }
     }
 
+    /// With Control assigns the selected to a number key. Otherwise selects those still left
+    /// on it, wherever they are, on top of the present selection with Shift. A key with none
+    /// left changes nothing.
+    fn use_control_group(&mut self, number: usize, modifier: Option<Modifier>) {
+        if modifier == Some(Modifier::Control) {
+            let selected: Vec<u32> = self.selected_units().iter().map(|u| u.id).collect();
+            if !selected.is_empty() {
+                self.control_groups[number - 1] = selected;
+            }
+            return;
+        }
+        let group = &self.control_groups[number - 1];
+        let in_group = |u: &Unit| u.alive && u.is_selectable() && group.contains(&u.id);
+        if !self.units.iter().any(in_group) {
+            return;
+        }
+        let adding = modifier == Some(Modifier::Shift);
+        for unit in &mut self.units {
+            unit.selected = in_group(unit) || (adding && unit.selected);
+        }
+    }
+
     /// Whether the player has what makes this: the building it is made in, or for a building a
     /// deployed MCV.
     pub fn can_produce(&self, role: Role) -> bool {
@@ -1813,7 +1857,11 @@ impl Game {
         }
         if let Some(Action::BuildCell(cell)) = self.hovered() {
             if self.build_tab == BuildTab::Vehicles && cell == SUPERWEAPON_CELL {
-                return Some("Superweapon");
+                return Some(match self.superweapon() {
+                    Some(weapon) => weapon.name(),
+                    None if self.superweapon_allowed() => "Needs a Palace",
+                    None => "Superweapon",
+                });
             }
             return self.build_role(self.build_tab, cell).map(|role| {
                 if self.can_produce(role) {
@@ -1922,7 +1970,7 @@ impl Game {
             !u.deployed
                 && match u.kind {
                     UnitKind::Tower => false,
-                    UnitKind::Building => u.role != Role::LandingPad,
+                    UnitKind::Building => !matches!(u.role, Role::LandingPad | Role::Palace(_)),
                     _ => true,
                 }
         };
@@ -1956,7 +2004,8 @@ impl Game {
         if self.selection_anchor.is_none() {
             return;
         }
-        if let Some((building, true)) = self.placing_preview() {
+        if let Some((mut building, true)) = self.placing_preview() {
+            building.constructing = units::CONSTRUCTION_SECONDS;
             self.units.push(building);
             self.next_unit_id += 1;
             self.site = Site::Idle;
@@ -1969,8 +2018,9 @@ impl Game {
             return;
         }
         if self.aiming_strike {
-            if let Some((target_x, target_z)) = self.view().ground_at(self.mouse.0, self.mouse.1) {
-                self.combat.launch_strike(target_x, target_z);
+            let target = self.view().ground_at(self.mouse.0, self.mouse.1);
+            if let (Some(weapon), Some((target_x, target_z))) = (self.superweapon(), target) {
+                self.combat.launch_superweapon(weapon, target_x, target_z);
                 self.strike_recharge = SUPERWEAPON_RECHARGE;
                 self.aiming_strike = false;
             }
@@ -2136,7 +2186,9 @@ impl Game {
             // Up in the air and not hit hard, it comes down in one piece. Otherwise it goes up
             // here, the harder it was hit past dead the more so.
             let overkill = unit.overkill();
-            if unit.kind.flies() && !unit.is_grounded() && overkill < OVERKILL_BLOWS_APART {
+            if unit.kind == UnitKind::Infantry {
+                self.combat.drop_body(unit);
+            } else if unit.kind.flies() && !unit.is_grounded() && overkill < OVERKILL_BLOWS_APART {
                 self.combat.shoot_down(unit);
             } else {
                 self.combat
@@ -2336,6 +2388,7 @@ impl Game {
         self.fog = self.fog_allowed().then(Fog::new);
         self.update_fog();
         self.carried.clear();
+        self.control_groups = Default::default();
         self.following = None;
         self.site = Site::Idle;
         self.opponent_random = map as u32 * 2 + 1;
@@ -2602,8 +2655,11 @@ impl Game {
             units::carry(&mut self.units, &mut self.carried, terrain, &self.teams, dt);
             let was_recharging = self.strike_recharge > 0.0;
             self.strike_recharge = (self.strike_recharge - dt).max(0.0);
-            if was_recharging && self.strike_recharge <= 0.0 && self.superweapon_allowed() {
+            if was_recharging && self.strike_recharge <= 0.0 && self.superweapon().is_some() {
                 self.post_chat("Superweapon ready".to_string());
+            }
+            if self.superweapon().is_none() {
+                self.aiming_strike = false;
             }
             if self.screen == Screen::InGame {
                 self.settle_casualties();
@@ -2671,6 +2727,11 @@ impl Game {
                 }
             }
             Event::Control(held) => self.control_held = held,
+            Event::NumberKey(number, modifier) => {
+                if self.screen == Screen::InGame && !self.key_paused {
+                    self.use_control_group(number, modifier);
+                }
+            }
             Event::RightDown => {
                 if self.aiming_strike {
                     // Only calls off the superweapon; the selection stands.
@@ -2864,7 +2925,7 @@ impl Game {
             units::start_making(&mut self.units, role, 0);
         } else if self.build_tab == BuildTab::Vehicles
             && cell == SUPERWEAPON_CELL
-            && self.superweapon_allowed()
+            && self.superweapon().is_some()
             && self.strike_recharge <= 0.0
         {
             self.aiming_strike = true;
@@ -3762,7 +3823,154 @@ mod tests {
         }
     }
 
+    /// Gives the player a palace of their house.
+    fn give_palace(game: &mut Game) {
+        let mut palace = *game.units.iter().find(|u| u.owner == 0).unwrap();
+        palace.role = Role::Palace(game.faction_of(0));
+        palace.kind = UnitKind::Building;
+        palace.selected = false;
+        palace.id = game.next_unit_id;
+        game.next_unit_id += 1;
+        game.units.push(palace);
+    }
+
+    #[test]
+    fn each_house_builds_its_own_palace_which_brings_its_own_superweapon() {
+        for house in [Faction::A, Faction::H, Faction::O] {
+            let mut game = in_battle_as(house);
+            assert_eq!(
+                game.build_role(BuildTab::Buildings, PALACE_CELL),
+                Some(Role::Palace(house))
+            );
+            assert!(Role::Palace(house).made_by(house));
+            assert_eq!(game.superweapon(), None, "none without a palace");
+            give_palace(&mut game);
+            assert_eq!(game.superweapon(), Some(Superweapon::of(house)));
+        }
+    }
+
+    #[test]
+    fn a_house_cannot_build_another_houses_palace() {
+        assert!(!Role::Palace(Faction::A).made_by(Faction::H));
+        assert!(!Role::Palace(Faction::H).made_by(Faction::O));
+        assert!(!Role::Palace(Faction::O).made_by(Faction::A));
+    }
+
+    #[test]
+    fn the_superweapon_cannot_be_aimed_without_a_palace() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
+        assert!(!game.aiming_strike);
+    }
+
+    #[test]
+    fn losing_the_palace_calls_off_the_aiming() {
+        let mut game = in_battle();
+        pick_superweapon(&mut game);
+        assert!(game.aiming_strike);
+        game.units.retain(|u| !matches!(u.role, Role::Palace(_)));
+        game.update(0.01);
+        assert!(!game.aiming_strike);
+    }
+
+    #[test]
+    fn no_palace_is_on_offer_with_superweapons_turned_off() {
+        let mut game = in_battle();
+        game.skirmish.superweapons = false;
+        assert_eq!(game.build_role(BuildTab::Buildings, PALACE_CELL), None);
+    }
+
+    #[test]
+    fn a_building_placed_takes_a_second_to_go_up_and_only_then_works() {
+        let mut game = in_battle();
+        game.site = Site::Placing(Role::Barracks);
+        let (x, y) = buildable_spot_on_screen(&game);
+        click_at(&mut game, x, y);
+        assert_eq!(game.site, Site::Idle);
+        let barracks = game
+            .units
+            .iter()
+            .rposition(|u| u.owner == 0 && u.role == Role::Barracks)
+            .unwrap();
+        assert!(game.units[barracks].is_under_construction());
+        assert!(!game.units[barracks].can_make(Role::Scout));
+        let objects = |game: &Game| crate::render::build_frame(game).objects.len();
+        game.update(0.5);
+        let with_cranes = objects(&game);
+        let left = std::mem::take(&mut game.units[barracks].constructing);
+        assert!(with_cranes > objects(&game), "cranes are up");
+        game.units[barracks].constructing = left;
+        assert!(
+            game.combat.particles.iter().any(|p| !p.smoke),
+            "and it is being welded"
+        );
+        game.update(0.6);
+        assert!(!game.units[barracks].is_under_construction());
+        assert!(game.units[barracks].can_make(Role::Scout));
+    }
+
+    #[test]
+    fn dead_infantry_leave_a_body_and_no_explosion_of_their_own() {
+        let mut game = in_battle();
+        let soldier = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
+            .unwrap();
+        game.units[soldier].alive = false;
+        let flashes = game.combat.blasts.len();
+        game.update(0.01);
+        assert_eq!(game.combat.ragdolls.len(), 1);
+        assert_eq!(game.combat.blasts.len(), flashes);
+    }
+
+    #[test]
+    fn every_soldier_draws_in_every_stance_and_its_body_when_it_falls() {
+        let mut game = in_battle();
+        let soldier = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
+            .unwrap();
+        for role in [
+            Role::LightInfantry,
+            Role::Scout,
+            Role::Sniper,
+            Role::Engineer,
+            Role::KInfantry,
+            Role::RegularInfantry,
+            Role::RocketInfantry,
+            Role::FlameInfantry,
+            Role::GasInfantry,
+            Role::SuicideInfantry,
+            Role::MortarInfantry,
+        ] {
+            for deployed in [false, true] {
+                game.units[soldier].role = role;
+                game.units[soldier].deployed = deployed;
+                assert!(!crate::render::build(&game).is_empty(), "{role:?}");
+            }
+        }
+        game.units[soldier].deployed = false;
+        let mut body = game.units[soldier];
+        (body.x, body.z) = (game.camera.x, game.camera.z);
+        game.combat.drop_body(&body);
+        let without = {
+            let mut bare = game.combat.clone();
+            bare.ragdolls.clear();
+            let with = std::mem::replace(&mut game.combat, bare);
+            let count = crate::render::build_frame(&game).objects.len();
+            game.combat = with;
+            count
+        };
+        assert!(crate::render::build_frame(&game).objects.len() > without);
+    }
+
     fn pick_superweapon(game: &mut Game) {
+        if game.superweapon().is_none() {
+            give_palace(game);
+        }
         click_hud(game, Action::BuildTab(BuildTab::Vehicles));
         click_hud(game, Action::BuildCell(SUPERWEAPON_CELL));
     }
@@ -3770,6 +3978,7 @@ mod tests {
     #[test]
     fn the_superweapon_lives_in_the_vehicles_menu_only() {
         let mut game = in_battle();
+        give_palace(&mut game);
         click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
         assert!(!game.aiming_strike, "not on the infantry tab");
         click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
@@ -4200,6 +4409,7 @@ mod tests {
     #[test]
     fn the_superweapon_reports_ready_when_it_has_recharged_and_not_before() {
         let mut game = in_battle();
+        give_palace(&mut game);
         game.update(1.0);
         assert!(
             chat_texts(&game).is_empty(),
@@ -5306,6 +5516,7 @@ mod tests {
             );
         }
         let mut game = in_battle();
+        give_palace(&mut game);
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         assert!(!game.aiming_strike);
         let before = game.units.len();
@@ -5601,7 +5812,11 @@ mod tests {
     fn whatever_is_destroyed_goes_up_in_an_explosion_with_particles_that_draw() {
         let mut game = in_battle();
         let before = crate::render::build(&game).len();
-        let on_ground = game.units.iter().position(|u| u.altitude <= 0.0).unwrap();
+        let on_ground = game
+            .units
+            .iter()
+            .position(|u| u.altitude <= 0.0 && u.kind != UnitKind::Infantry)
+            .unwrap();
         game.units[on_ground].alive = false;
         game.update(0.01);
         assert!(!game.combat.particles.is_empty());
@@ -6324,6 +6539,8 @@ mod tests {
         click_hud(&mut game, Action::BuildCell(0));
         let (x, y) = buildable_spot_on_screen(&game);
         click_at(&mut game, x, y);
+        assert!(!game.can_produce(Role::Scout), "still going up");
+        game.update(units::CONSTRUCTION_SECONDS + 0.01);
         assert!(game.can_produce(Role::Scout));
     }
 
@@ -6545,6 +6762,7 @@ mod tests {
     #[test]
     fn tip_text_names_units_under_the_cursor_and_what_buttons_make() {
         let mut game = in_battle();
+        give_palace(&mut game);
         let cell = |i: usize| {
             hud::all_buttons(W, H)
                 .into_iter()
@@ -6577,7 +6795,7 @@ mod tests {
             Some("Mongoose"),
             Some("Minotaurus"),
             None,
-            Some("Superweapon"),
+            Some("Superweapon A"),
             Some("MCV"),
         ]
         .into_iter()
@@ -8754,6 +8972,116 @@ mod tests {
             play.y - (bar.y + bar.h) < 30.0 * ui_scale(H),
             "play is just under the bar"
         );
+    }
+
+    /// The ids of the first two of the player's units that can be selected in groups.
+    fn two_soldiers(game: &Game) -> (u32, u32) {
+        let mut soldiers = game
+            .units
+            .iter()
+            .filter(|u| u.is_selected_in_groups())
+            .map(|u| u.id);
+        (soldiers.next().unwrap(), soldiers.next().unwrap())
+    }
+
+    fn select_ids(game: &mut Game, ids: &[u32]) {
+        for unit in &mut game.units {
+            unit.selected = ids.contains(&unit.id);
+        }
+    }
+
+    fn selected_ids(game: &Game) -> Vec<u32> {
+        game.selected_units().iter().map(|u| u.id).collect()
+    }
+
+    #[test]
+    fn a_number_key_selects_those_assigned_to_it_even_out_of_view() {
+        let mut game = in_battle();
+        let (first, second) = two_soldiers(&game);
+        select_ids(&mut game, &[first]);
+        game.handle(Event::NumberKey(1, Some(Modifier::Control)));
+        select_ids(&mut game, &[second]);
+
+        let enemy = game.units.iter().find(|u| u.owner == 1).copied().unwrap();
+        game.camera.look_at(enemy.x, enemy.z);
+        game.handle(Event::NumberKey(1, None));
+        assert_eq!(selected_ids(&game), [first]);
+    }
+
+    #[test]
+    fn shift_and_a_number_key_adds_to_the_selection() {
+        let mut game = in_battle();
+        let (first, second) = two_soldiers(&game);
+        select_ids(&mut game, &[first]);
+        game.handle(Event::NumberKey(9, Some(Modifier::Control)));
+        select_ids(&mut game, &[second]);
+        game.handle(Event::NumberKey(9, Some(Modifier::Shift)));
+        assert_eq!(selected_ids(&game), [first, second]);
+    }
+
+    #[test]
+    fn assigning_a_number_key_replaces_what_it_held() {
+        let mut game = in_battle();
+        let (first, second) = two_soldiers(&game);
+        select_ids(&mut game, &[first]);
+        game.handle(Event::NumberKey(2, Some(Modifier::Control)));
+        select_ids(&mut game, &[second]);
+        game.handle(Event::NumberKey(2, Some(Modifier::Control)));
+        select_ids(&mut game, &[]);
+        game.handle(Event::NumberKey(2, None));
+        assert_eq!(selected_ids(&game), [second]);
+    }
+
+    #[test]
+    fn assigning_with_nothing_selected_keeps_what_the_key_held() {
+        let mut game = in_battle();
+        let (first, _) = two_soldiers(&game);
+        select_ids(&mut game, &[first]);
+        game.handle(Event::NumberKey(3, Some(Modifier::Control)));
+        select_ids(&mut game, &[]);
+        game.handle(Event::NumberKey(3, Some(Modifier::Control)));
+        game.handle(Event::NumberKey(3, None));
+        assert_eq!(selected_ids(&game), [first]);
+    }
+
+    #[test]
+    fn a_number_key_with_none_left_keeps_the_selection() {
+        let mut game = in_battle();
+        let (first, second) = two_soldiers(&game);
+        select_ids(&mut game, &[first]);
+        game.handle(Event::NumberKey(4, Some(Modifier::Control)));
+        game.units.retain(|u| u.id != first);
+        select_ids(&mut game, &[second]);
+        game.handle(Event::NumberKey(4, None));
+        assert_eq!(
+            selected_ids(&game),
+            [second],
+            "an empty key changes nothing"
+        );
+        game.handle(Event::NumberKey(5, None));
+        assert_eq!(selected_ids(&game), [second], "as does one never assigned");
+    }
+
+    #[test]
+    fn number_keys_do_nothing_while_paused() {
+        let mut game = in_battle();
+        let (first, second) = two_soldiers(&game);
+        select_ids(&mut game, &[first]);
+        game.handle(Event::NumberKey(1, Some(Modifier::Control)));
+        select_ids(&mut game, &[second]);
+        game.handle(Event::KeyDown(Key::Pause));
+        game.handle(Event::NumberKey(1, None));
+        assert_eq!(selected_ids(&game), [second]);
+    }
+
+    #[test]
+    fn a_new_battle_forgets_the_number_keys() {
+        let mut game = in_battle();
+        let (first, _) = two_soldiers(&game);
+        select_ids(&mut game, &[first]);
+        game.handle(Event::NumberKey(1, Some(Modifier::Control)));
+        game.start_battle(0, None, BattleKind::Tutorial);
+        assert!(game.control_groups[0].is_empty());
     }
 
     fn in_battle() -> Game {

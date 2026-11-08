@@ -245,6 +245,13 @@ pub enum Key {
     Other,
 }
 
+/// A modifier held while a number key is pressed. Control wins if both are down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Modifier {
+    Shift,
+    Control,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     Quit,
@@ -262,6 +269,8 @@ pub enum Event {
     RightDown,
     /// A Control key pressed or let go.
     Control(bool),
+    /// 1 to 9 pressed on the number row, as well as the `KeyDown` for the same press.
+    NumberKey(usize, Option<Modifier>),
 }
 
 /// Mirrors `OeWorld` in `shim/oe_shim.h`.
@@ -347,6 +356,14 @@ impl Platform {
                 8 => Event::Wheel(raw.y),
                 9 => Event::RightDown,
                 10 => Event::Control(raw.a != 0),
+                11 => Event::NumberKey(
+                    raw.a as usize,
+                    match raw.b {
+                        1 => Some(Modifier::Shift),
+                        2 => Some(Modifier::Control),
+                        _ => None,
+                    },
+                ),
                 _ => continue,
             };
             return Some(event);

@@ -1158,6 +1158,14 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         let [r, g, b, _] = team_color(ragdoll.unit.color);
         models::draw_ragdoll(canvas, ragdoll, [r, g, b]);
     }
+    for shatter in game
+        .combat
+        .shatters
+        .iter()
+        .filter(|s| game.sight_at(s.unit.x, s.unit.z) == Sight::Visible)
+    {
+        draw_shatter(canvas, game, &view, shatter);
+    }
     if let Some((building, can)) = game.placing_preview() {
         let color = if can { PLACE_OK } else { PLACE_NOT };
         draw_draped_disc(
@@ -1975,6 +1983,98 @@ fn draw_seen_model(canvas: &mut Canvas, game: &Game, unit: &Unit, seen: Seen) {
         Seen::Unseen => {}
     }
     canvas.detail = models::Detail::Full;
+}
+
+/// A destroyed vehicle's model, every face of it, its triangles flying apart.
+fn draw_shatter(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    shatter: &crate::weapons::Shatter,
+) {
+    let seen = seen_by(view, &shatter.unit);
+    if !matches!(seen, Seen::Near | Seen::Far) {
+        return;
+    }
+    if seen == Seen::Far {
+        canvas.detail = models::Detail::Low;
+    }
+    let drawn = canvas.objects.len();
+    // Once they tumble, any face of it can come to be seen.
+    let watchers = canvas.watchers.take();
+    draw_unit_model(canvas, game, &shatter.unit);
+    canvas.watchers = watchers;
+    canvas.detail = models::Detail::Full;
+    let terrain = battlefield::terrain(game.battle_map);
+    break_apart(&mut canvas.objects[drawn..], shatter, terrain);
+}
+
+/// Pulls a model's triangles in for a moment, then throws each its own way, spinning, while
+/// they cool from a glow to char, fall to the ground and shrink away.
+fn break_apart(
+    triangles: &mut [WorldVertex],
+    shatter: &crate::weapons::Shatter,
+    terrain: &battlefield::Terrain,
+) {
+    const IMPLODE_SECONDS: f32 = 0.1;
+    const PULLED_IN: f32 = 0.4;
+    const GRAVITY: f32 = 9.0;
+    const DRAG: f32 = 2.2;
+    const SHRINKS_FROM: f32 = 0.35;
+    const GLOW_SECONDS: f32 = 0.3;
+    const CHAR_SECONDS: f32 = 0.9;
+    const CHAR: f32 = 0.05;
+    let (unit, age) = (&shatter.unit, shatter.age);
+    let (cx, cy, cz) = unit.center();
+    let center = [cx, cy, cz];
+    let pull = (age / IMPLODE_SECONDS).min(1.0);
+    let flight = (age - IMPLODE_SECONDS).max(0.0);
+    let scale = ((1.0 - age / crate::weapons::SHATTER_SECONDS) / SHRINKS_FROM).clamp(0.0, 1.0);
+    let glow = (1.0 - age / GLOW_SECONDS).max(0.0);
+    let charred = (age / CHAR_SECONDS).min(1.0);
+    for (n, triangle) in triangles.chunks_exact_mut(3).enumerate() {
+        let mut seed =
+            (n as u32 + 1).wrapping_mul(0x9E37_79B1) ^ unit.id.wrapping_mul(0x85EB_CA77) | 1;
+        let mut next = || battlefield::next_random(&mut seed);
+        let middle = [
+            (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
+            (triangle[0].y + triangle[1].y + triangle[2].y) / 3.0,
+            (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
+        ];
+        let from = [0, 1, 2].map(|i| middle[i] - center[i]);
+        let way = unit_vector([
+            from[0] + (next() - 0.5) * 0.8,
+            from[1] + 0.25 + next() * 0.7,
+            from[2] + (next() - 0.5) * 0.8,
+        ]);
+        let speed = 3.0 + next() * 9.0;
+        let thrown = speed * (1.0 - (-DRAG * flight).exp()) / DRAG;
+        let axis = unit_vector([next() - 0.5, next() - 0.5, next() - 0.5]);
+        let (sin, cos) = ((6.0 + next() * 22.0) * flight).sin_cos();
+        let turned = |v: [f32; 3]| {
+            let across = cross(axis, v);
+            let along = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
+            [0, 1, 2].map(|i| v[i] * cos + across[i] * sin + axis[i] * along * (1.0 - cos))
+        };
+        let mut at =
+            [0, 1, 2].map(|i| center[i] + from[i] * (1.0 - PULLED_IN * pull) + way[i] * thrown);
+        at[1] -= 0.5 * GRAVITY * flight * flight;
+        at[1] = at[1].max(terrain.height_at(at[0], at[2]) + 0.02);
+        for vertex in triangle {
+            let [x, y, z] = turned([
+                vertex.x - middle[0],
+                vertex.y - middle[1],
+                vertex.z - middle[2],
+            ]);
+            vertex.x = at[0] + x * scale;
+            vertex.y = at[1] + y * scale;
+            vertex.z = at[2] + z * scale;
+            vertex.normal = turned(vertex.normal);
+            vertex.r += (CHAR - vertex.r) * charred + 1.3 * glow;
+            vertex.g += (CHAR - vertex.g) * charred + 0.5 * glow;
+            vertex.b += (CHAR - vertex.b) * charred;
+        }
+    }
 }
 
 /// A unit's model as it stands now: a building going up is only as tall as it has got, with

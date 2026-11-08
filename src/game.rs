@@ -2188,6 +2188,8 @@ impl Game {
             let overkill = unit.overkill();
             if unit.kind == UnitKind::Infantry {
                 self.combat.drop_body(unit);
+            } else if unit.kind == UnitKind::Vehicle {
+                self.combat.blow_up_vehicle(unit);
             } else if unit.kind.flies() && !unit.is_grounded() && overkill < OVERKILL_BLOWS_APART {
                 self.combat.shoot_down(unit);
             } else {
@@ -2653,12 +2655,13 @@ impl Game {
             self.combat
                 .advance(&mut self.units, &self.teams, terrain, dt);
             units::carry(&mut self.units, &mut self.carried, terrain, &self.teams, dt);
-            let was_recharging = self.strike_recharge > 0.0;
-            self.strike_recharge = (self.strike_recharge - dt).max(0.0);
-            if was_recharging && self.strike_recharge <= 0.0 && self.superweapon().is_some() {
-                self.post_chat("Superweapon ready".to_string());
-            }
-            if self.superweapon().is_none() {
+            if self.superweapon().is_some() {
+                let was_recharging = self.strike_recharge > 0.0;
+                self.strike_recharge = (self.strike_recharge - dt).max(0.0);
+                if was_recharging && self.strike_recharge <= 0.0 {
+                    self.post_chat("Superweapon ready".to_string());
+                }
+            } else {
                 self.aiming_strike = false;
             }
             if self.screen == Screen::InGame {
@@ -3875,6 +3878,17 @@ mod tests {
     }
 
     #[test]
+    fn the_superweapon_only_recharges_while_there_is_a_palace() {
+        let mut game = in_battle();
+        game.strike_recharge = 10.0;
+        game.update(1.0);
+        assert_eq!(game.strike_recharge, 10.0, "no palace, no countdown");
+        give_palace(&mut game);
+        game.update(1.0);
+        assert_eq!(game.strike_recharge, 9.0);
+    }
+
+    #[test]
     fn no_palace_is_on_offer_with_superweapons_turned_off() {
         let mut game = in_battle();
         game.skirmish.superweapons = false;
@@ -3908,6 +3922,42 @@ mod tests {
         game.update(0.6);
         assert!(!game.units[barracks].is_under_construction());
         assert!(game.units[barracks].can_make(Role::Scout));
+    }
+
+    #[test]
+    fn a_destroyed_vehicle_goes_up_in_a_big_blast_and_its_pieces_fly_then_are_gone() {
+        let mut game = in_battle();
+        let vehicle = game
+            .units
+            .iter()
+            .position(|u| u.kind == UnitKind::Vehicle && u.role != Role::Mcv)
+            .unwrap();
+        let building = game
+            .units
+            .iter()
+            .position(|u| u.kind == UnitKind::Building)
+            .unwrap();
+        let mut plain = Combat::default();
+        let radius = game.units[building].radius();
+        plain.explode_destroyed(game.units[building].center(), radius * 2.0, 0.0);
+
+        let (x, z) = (game.camera.x, game.camera.z);
+        game.units[vehicle].x = x;
+        game.units[vehicle].z = z;
+        game.units[vehicle].alive = false;
+        game.update(0.01);
+        assert_eq!(game.combat.shatters.len(), 1);
+        assert!(game.combat.particles.len() > plain.particles.len() * 2);
+
+        game.update(0.3);
+        let objects = |game: &Game| crate::render::build_frame(game).objects.len();
+        let with_pieces = objects(&game);
+        let pieces = std::mem::take(&mut game.combat.shatters);
+        assert!(with_pieces > objects(&game), "its triangles still show");
+        game.combat.shatters = pieces;
+
+        game.update(crate::weapons::SHATTER_SECONDS);
+        assert!(game.combat.shatters.is_empty());
     }
 
     #[test]

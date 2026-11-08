@@ -520,6 +520,18 @@ pub struct Particle {
     fade: f32,
 }
 
+/// How long the pieces of a destroyed vehicle stay in the air and on the ground.
+pub const SHATTER_SECONDS: f32 = 2.4;
+const SHATTERS_AT_MOST: usize = 16;
+
+/// A destroyed vehicle coming apart, its model's triangles flying from where it stood.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shatter {
+    /// What it was, for its model.
+    pub unit: Unit,
+    pub age: f32,
+}
+
 /// The joints of a fallen soldier, as `Ragdoll::joints` holds them.
 pub const RAGDOLL_HEAD: usize = 0;
 pub const RAGDOLL_CHEST: usize = 1;
@@ -561,6 +573,9 @@ const RAGDOLL_POSE: [[f32; 3]; RAGDOLL_JOINTS] = [
 pub const RAGDOLL_SECONDS: f32 = 6.0;
 pub const RAGDOLL_SINK_SECONDS: f32 = 1.0;
 const RAGDOLLS_AT_MOST: usize = 60;
+const RAGDOLL_GRAVITY: f32 = 15.0;
+/// The share of soldiers thrown by an explosion that go head over heels.
+const RAGDOLL_SALTO_CHANCE: f32 = 0.5;
 
 /// A fallen soldier: joints flung about, held together only by its bones.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -609,6 +624,7 @@ pub struct Combat {
     pub streaks: Vec<GunStreak>,
     pub wrecks: Vec<Wreck>,
     pub ragdolls: Vec<Ragdoll>,
+    pub shatters: Vec<Shatter>,
     /// How long until each of the map's vents goes up, from when it is found to have any.
     vent_waits: Vec<f32>,
     /// Where the next explosion's scatter comes from.
@@ -923,6 +939,56 @@ impl Combat {
         self.particles.retain(|p| p.life > 0.0);
     }
 
+    /// A vehicle goes up in a big blast with a fireball, a cloud of smoke and a spray of
+    /// sparks, and comes apart.
+    pub fn blow_up_vehicle(&mut self, unit: &Unit) {
+        const SMOKE: usize = 40;
+        const FIRE: usize = 70;
+        const SPARKS: usize = 90;
+        let center = unit.center();
+        let size = unit.radius().max(0.4);
+        self.explode_destroyed(center, size * 3.5, unit.overkill());
+        let excess =
+            (self.particles.len() + SMOKE + FIRE + SPARKS).saturating_sub(PARTICLES_ALIVE_AT_MOST);
+        self.particles.drain(..excess.min(self.particles.len()));
+        let mut random = self.random | 1;
+        let mut next = || next_random(&mut random);
+        // The smoke goes first, so that the fire shows through it.
+        for i in 0..SMOKE + FIRE + SPARKS {
+            let (smoke, flame) = (i < SMOKE, (SMOKE..SMOKE + FIRE).contains(&i));
+            let angle = next() * TAU;
+            let (out, rise, width, lasts) = if smoke {
+                (0.5 + next() * 1.5, 0.8 + next() * 1.6, 0.6, 1.8)
+            } else if flame {
+                (1.0 + next() * 4.0, 1.5 + next() * 3.5, 0.42, 0.55)
+            } else {
+                (6.0 + next() * 11.0, 3.0 + next() * 9.0, 0.075, 0.7)
+            };
+            let reach = next() * size;
+            self.particles.push(Particle {
+                position: (
+                    center.0 + angle.cos() * reach,
+                    center.1,
+                    center.2 + angle.sin() * reach,
+                ),
+                velocity: (angle.cos() * out, rise, angle.sin() * out),
+                size: (0.6 + next()) * width,
+                smoke,
+                flame,
+                life: 1.0,
+                fade: 1.0 / (lasts * (0.6 + next() * 0.8)),
+            });
+        }
+        self.random = random;
+        if self.shatters.len() >= SHATTERS_AT_MOST {
+            self.shatters.remove(0);
+        }
+        self.shatters.push(Shatter {
+            unit: *unit,
+            age: 0.0,
+        });
+    }
+
     /// Leaves a dead soldier's body to flop: thrown away from an explosion that has only just
     /// gone off around it, and otherwise crumpling backwards where it stood.
     pub fn drop_body(&mut self, unit: &Unit) {
@@ -944,6 +1010,12 @@ impl Combat {
             )
         });
         let mut random = self.random | 1;
+        let salto = next_random(&mut random) < RAGDOLL_SALTO_CHANCE;
+        let flip_way = if next_random(&mut random) < 0.5 {
+            1.0
+        } else {
+            -1.0
+        };
         let mut wobble = |by: f32| (next_random(&mut random) - 0.5) * by;
         let velocities: [Point; RAGDOLL_JOINTS] = match blast {
             Some((at, radius)) => {
@@ -955,15 +1027,29 @@ impl Combat {
                     (-cos, -sin)
                 };
                 let near = (1.0 - distance(at, center) / (radius + MARGIN)).max(0.3);
-                let throw = (3.5 + 6.0 * near) * radius.clamp(0.8, 2.0);
-                let rise = 4.0 + 6.0 * near;
+                let throw = 1.2 + 2.3 * near;
+                let rise = 3.5 + 3.0 * near;
+                // Turning once around its middle in the time it is in the air.
+                let spin = if salto {
+                    flip_way * TAU * RAGDOLL_GRAVITY / (2.0 * rise)
+                } else {
+                    0.0
+                };
+                let (axis_x, axis_z) = (-way_z * spin, way_x * spin);
+                let (hub_x, hub_y, hub_z) = (unit.x, unit.y + 0.35, unit.z);
                 std::array::from_fn(|i| {
-                    // The top half goes faster, which sets it tumbling.
-                    let tumble = 0.75 + joints[i].1.min(unit.y + 0.7) - unit.y;
+                    let (x, y, z) = joints[i];
+                    let (out_x, out_y, out_z) = (x - hub_x, y - hub_y, z - hub_z);
+                    // Without a salto, the top half going a little faster still tips it over.
+                    let tumble = if salto {
+                        1.0
+                    } else {
+                        0.85 + (y - unit.y) * 0.3
+                    };
                     (
-                        way_x * throw * tumble + wobble(1.6),
-                        rise * tumble + wobble(1.6),
-                        way_z * throw * tumble + wobble(1.6),
+                        way_x * throw * tumble - axis_z * out_y + wobble(0.5),
+                        rise * tumble + axis_z * out_x - axis_x * out_z + wobble(0.5),
+                        way_z * throw * tumble + axis_x * out_y + wobble(0.5),
                     )
                 })
             }
@@ -993,7 +1079,6 @@ impl Combat {
     /// Lets fallen soldiers fall, their bones holding them together, until the ground stops
     /// them and they have lain there long enough.
     fn flop_ragdolls(&mut self, terrain: &Terrain, dt: f32) {
-        const GRAVITY: f32 = 15.0;
         const STIFFNESS_PASSES: usize = 5;
         const GROUND_GRIP: f32 = 0.8;
         const JOINT_RADIUS: f32 = 0.035;
@@ -1007,7 +1092,7 @@ impl Combat {
             }
             let before = doll.joints;
             for (joint, velocity) in doll.joints.iter_mut().zip(&mut doll.velocities) {
-                velocity.1 -= GRAVITY * dt;
+                velocity.1 -= RAGDOLL_GRAVITY * dt;
                 joint.0 += velocity.0 * dt;
                 joint.1 += velocity.1 * dt;
                 joint.2 += velocity.2 * dt;
@@ -1067,6 +1152,10 @@ impl Combat {
         self.show_wear(units, dt);
         self.fall_wrecks(terrain, dt);
         self.flop_ragdolls(terrain, dt);
+        self.shatters.retain_mut(|shatter| {
+            shatter.age += dt;
+            shatter.age < SHATTER_SECONDS
+        });
         self.weld(units, dt);
     }
 
@@ -2673,6 +2762,45 @@ mod tests {
             let apart = distance(doll.joints[a], doll.joints[b]);
             assert!((apart - rest).abs() < rest * 0.15, "held together");
         }
+    }
+
+    #[test]
+    fn a_soldier_right_on_top_of_an_explosion_does_not_land_far_away() {
+        let soldier = target_at(4.0, 60.0);
+        let mut combat = Combat::default();
+        combat.explode((3.9, 0.3, 60.0), 3.0);
+        combat.drop_body(&soldier);
+        for _ in 0..180 {
+            combat.flop_ragdolls(flat(), 1.0 / 60.0);
+        }
+        let pelvis = combat.ragdolls[0].joints[RAGDOLL_PELVIS];
+        assert!((pelvis.0 - 4.0).hypot(pelvis.2 - 60.0) < 3.5, "{pelvis:?}");
+    }
+
+    #[test]
+    fn about_half_of_those_thrown_go_head_over_heels() {
+        const TRIES: usize = 40;
+        let mut combat = Combat::default();
+        let mut went_over = 0;
+        for _ in 0..TRIES {
+            let soldier = target_at(4.0, 60.0);
+            combat.blasts.clear();
+            combat.explode((3.0, 0.3, 60.0), 2.0);
+            combat.ragdolls.clear();
+            combat.drop_body(&soldier);
+            let mut over = false;
+            for _ in 0..50 {
+                combat.flop_ragdolls(flat(), 1.0 / 60.0);
+                let doll = &combat.ragdolls[0];
+                let (head, pelvis) = (doll.joints[RAGDOLL_HEAD], doll.joints[RAGDOLL_PELVIS]);
+                over |= pelvis.1 > 0.4 && head.1 < pelvis.1;
+            }
+            went_over += usize::from(over);
+        }
+        assert!(
+            (TRIES / 4..=TRIES * 3 / 4).contains(&went_over),
+            "{went_over}"
+        );
     }
 
     #[test]

@@ -73,7 +73,7 @@ fn vehicle_builds(house: Faction) -> &'static [Role] {
             Role::RocketLauncher,
             Role::DiskSaw,
             Role::FlameTank,
-            Role::HugeTank,
+            Role::HugeWalker,
         ],
         Faction::O => &[
             Role::Recon,
@@ -117,7 +117,7 @@ const OPPONENT_BUILDS: [Role; 25] = [
     Role::Catapult,
     Role::DiskSaw,
     Role::FlameTank,
-    Role::HugeTank,
+    Role::HugeWalker,
     Role::Recon,
     Role::LaserTank,
     Role::SiegeTank,
@@ -128,16 +128,19 @@ const OPPONENT_BUILDS: [Role; 25] = [
     Role::Destroyer,
 ];
 /// What the Buildings menu makes, in order.
-const BUILDING_BUILDS: [Role; 6] = [
+const BUILDING_BUILDS: [Role; 4] = [
     Role::Barracks,
     Role::Factory,
     Role::Hangar,
     Role::LandingPad,
-    Role::Tower,
-    Role::GunTower,
 ];
-/// The Buildings menu's cell for the player's house's palace, after the rest.
-const PALACE_CELL: usize = BUILDING_BUILDS.len();
+/// The Buildings menu's cell for the player's house's palace, after the rest and the house's
+/// two armed towers.
+const PALACE_CELL: usize = BUILDING_BUILDS.len() + 2;
+/// The Buildings menu's cell for an outpost, after the palace.
+const OUTPOST_CELL: usize = PALACE_CELL + 1;
+/// How long before the superweapon is ready the launcher on top of a palace starts to open.
+const LAUNCHER_OPENS_SECONDS: f32 = 3.0;
 /// How much an opponent has standing at most before it stops making more, so that a long battle
 /// does not bury the game in units.
 const OPPONENT_UNITS_AT_MOST: usize = 80;
@@ -165,6 +168,14 @@ pub enum Outcome {
 }
 
 /// The cursor's looks.
+/// A press of the button on the map while something is being placed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PlacingPress {
+    from: (f32, f32),
+    /// Whether it has been dragged far enough to turn what is being placed.
+    turned: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorLook {
     Arrow,
@@ -199,6 +210,17 @@ pub enum Site {
 pub struct ChatLine {
     pub text: String,
     posted_at: f32,
+}
+
+/// What one of the little squares of a building being placed shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaceSquare {
+    /// The building can go here.
+    Free,
+    /// It can go here, and this is where what it makes comes out.
+    Exit,
+    /// Sand, a cliff, something standing there, or too far from any building.
+    Blocked,
 }
 
 /// What a click with Control held would order.
@@ -394,29 +416,13 @@ pub struct Opponent {
 
 pub const OPPONENT_SLOTS: usize = 7;
 /// Named after the planet each is on; `battlefield::MAP_PLANETS` lists those.
-pub const MAPS: [&str; 22] = [
-    "A Map 1 (S)",
-    "A Map 2 (S)",
-    "A Map 3 (S)",
-    "A Map 4 (S)",
-    "A Map 5 (S)",
-    "C Map 1 (S)",
-    "D Map 1 (S)",
-    "G Map 1 (S)",
-    "S Map 1 (S)",
-    "T Map 1 (S)",
-    "A Map 6 (M)",
-    "C Map 2 (M)",
-    "D Map 2 (M)",
-    "G Map 2 (M)",
-    "S Map 2 (M)",
-    "T Map 2 (M)",
-    "A Map 7 (L)",
-    "C Map 3 (L)",
-    "D Map 3 (L)",
-    "G Map 3 (L)",
-    "S Map 3 (L)",
-    "T Map 3 (L)",
+pub const MAPS: [&str; 6] = [
+    "A Map 1 (L)",
+    "C Map 1 (L)",
+    "D Map 1 (L)",
+    "G Map 1 (L)",
+    "S Map 1 (L)",
+    "T Map 1 (L)",
 ];
 pub const COMMANDER_NAME_MAX: usize = 16;
 
@@ -1315,9 +1321,6 @@ pub struct Game {
     pub campaign_mission: usize,
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
-    /// Where on the map a press on the minimap would send the selected, and the cursor's place
-    /// at that press, until it turns into a drag that moves the camera instead.
-    minimap_order: Option<((f32, f32), (f32, f32))>,
     pub units: Vec<Unit>,
     /// Vehicles carryalls hold, which are out of `units` meanwhile.
     pub carried: Vec<units::Carried>,
@@ -1326,6 +1329,14 @@ pub struct Game {
     pub site: Site,
     /// Seconds until opponents next build something.
     opponent_random: u32,
+    /// Which way what is being placed will look.
+    placing_facing: units::Facing,
+    /// The press of the button on the map while placing something, until it is let go.
+    placing_press: Option<PlacingPress>,
+    /// Where the next battle's sides are placed from.
+    start_random: u32,
+    /// The place the player's base started.
+    home: (f32, f32),
     /// Each opponent's plan for its base and its army, in owner order from 1.
     strategies: Vec<Strategy>,
     pub combat: Combat,
@@ -1361,6 +1372,12 @@ pub struct Game {
 }
 
 impl Game {
+    /// Gives this run its own placing of the sides at the start of its battles.
+    pub fn with_start_seed(mut self, seed: u32) -> Self {
+        self.start_random = seed | 1;
+        self
+    }
+
     pub fn new(width: f32, height: f32) -> Self {
         Game {
             screen: Screen::Intro,
@@ -1393,12 +1410,15 @@ impl Game {
             lost: Casualties::default(),
             campaign_mission: 0,
             minimap_dragging: false,
-            minimap_order: None,
             units: Vec::new(),
             carried: Vec::new(),
             following: None,
             site: Site::Idle,
             opponent_random: 1,
+            start_random: 1,
+            placing_facing: units::Facing::default(),
+            placing_press: None,
+            home: (0.0, battlefield::MapSize::L.middle_z()),
             strategies: Vec::new(),
             combat: Combat::default(),
             aiming_strike: false,
@@ -1445,9 +1465,36 @@ impl Game {
                 || self.sight_at(unit.x, unit.z) == Sight::Visible)
     }
 
+    /// Whether a unit is against the player.
+    pub fn is_enemy_of_player(&self, unit: &Unit) -> bool {
+        units::are_enemies(&self.teams, 0, unit.owner)
+    }
+
+    /// Whether the player has a finished outpost, whose radar sees the whole map and puts
+    /// enemies on the minimap.
+    pub fn has_outpost(&self) -> bool {
+        self.units.iter().any(|u| {
+            u.alive && u.owner == 0 && u.role == Role::Outpost && !u.is_under_construction()
+        })
+    }
+
+    /// How far the launcher on top of this palace is open, from 0 to 1: it opens as the
+    /// player's superweapon comes ready.
+    pub fn launcher_open(&self, palace: &Unit) -> f32 {
+        if palace.owner != 0 || palace.is_under_construction() || !self.superweapon_allowed() {
+            return 0.0;
+        }
+        1.0 - (self.strike_recharge / LAUNCHER_OPENS_SECONDS).min(1.0)
+    }
+
     /// Sees the map anew from where the player's and allies' units stand now.
     fn update_fog(&mut self) {
+        let outpost = self.has_outpost();
         if let Some(fog) = &mut self.fog {
+            if outpost {
+                fog.see_everything();
+                return;
+            }
             let teams = &self.teams;
             fog.update(
                 self.units
@@ -1463,7 +1510,7 @@ impl Game {
         self.battle_kind != BattleKind::Skirmish || self.skirmish.superweapons
     }
 
-    fn view(&self) -> battlefield::View {
+    pub fn view(&self) -> battlefield::View {
         battlefield::View::new(self.camera, self.width, self.height)
     }
 
@@ -1601,7 +1648,11 @@ impl Game {
             BuildTab::Buildings if cell == PALACE_CELL => {
                 self.superweapon_allowed().then_some(Role::Palace(house))
             }
-            BuildTab::Buildings => BUILDING_BUILDS.get(cell).copied(),
+            BuildTab::Buildings if cell == OUTPOST_CELL => Some(Role::Outpost),
+            BuildTab::Buildings => BUILDING_BUILDS
+                .into_iter()
+                .chain(Role::towers_of(house))
+                .nth(cell),
         }
     }
 
@@ -1712,14 +1763,15 @@ impl Game {
         self.work_on_making(0.0);
     }
 
-    /// Keeps the camera on the unit it follows, and lets go once that is no longer there.
+    /// Keeps the camera on the unit it follows, and lets go once that is no longer there, or
+    /// has become a building, which there is no following.
     fn follow_with_camera(&mut self) {
         let Some(id) = self.following else {
             return;
         };
         match self.units.iter().find(|u| u.alive && u.id == id) {
-            Some(unit) => self.camera.look_at(unit.x, unit.z),
-            None => self.following = None,
+            Some(unit) if !unit.kind.is_building() => self.camera.look_at(unit.x, unit.z),
+            _ => self.following = None,
         }
     }
 
@@ -1745,6 +1797,14 @@ impl Game {
         for unit in &mut self.units {
             unit.selected = wanted(unit) && (whole_map || on_screen(unit));
         }
+    }
+
+    /// The number key a unit is under, the lowest one if it is under several.
+    pub fn group_number(&self, id: u32) -> Option<usize> {
+        self.control_groups
+            .iter()
+            .position(|group| group.contains(&id))
+            .map(|group| group + 1)
     }
 
     /// With Control assigns the selected to a number key. Otherwise selects those still left
@@ -1776,11 +1836,13 @@ impl Game {
     }
 
     /// Whether a build tab can be used: the player has something that makes any of what is on
-    /// it. Otherwise it shows greyed out.
+    /// it, or for the Vehicles tab a palace, as the superweapon is there. Otherwise it shows
+    /// greyed out.
     pub fn tab_enabled(&self, tab: BuildTab) -> bool {
-        (0..hud::GRID_ROWS * hud::GRID_COLUMNS)
-            .filter_map(|cell| self.build_role(tab, cell))
-            .any(|role| self.can_produce(role))
+        (tab == BuildTab::Vehicles && self.superweapon().is_some())
+            || (0..hud::GRID_ROWS * hud::GRID_COLUMNS)
+                .filter_map(|cell| self.build_role(tab, cell))
+                .any(|role| self.can_produce(role))
     }
 
     /// Deploys the selected units that can, or packs them up, saying so if an MCV cannot deploy
@@ -1814,9 +1876,17 @@ impl Game {
             Site::Ready(ready) if ready == role => {
                 self.aiming_strike = false;
                 self.site = Site::Placing(role);
+                self.placing_facing = units::Facing::default();
+                self.placing_press = None;
             }
             _ => {}
         }
+    }
+
+    /// Whether this building has to wait for another one on its way: only one goes up at a
+    /// time, and there is no queue.
+    pub fn is_held_up_by_site(&self, role: Role) -> bool {
+        role.made_in().is_none() && self.site != Site::Idle && !self.site_of(role)
     }
 
     /// The building on its way, if it is of this role.
@@ -1834,19 +1904,80 @@ impl Game {
         self.site == Site::Ready(role) || self.site == Site::Placing(role)
     }
 
-    /// The building about to be placed where the cursor is, and whether it can go there.
-    pub fn placing_preview(&self) -> Option<(Unit, bool)> {
+    /// The building waiting to be placed and the grid squares it would take with the cursor
+    /// where it is.
+    /// With the button held down, a drag far enough towards one of the screen's corners turns
+    /// what is being placed to look that way.
+    fn turn_what_is_being_placed(&mut self) {
+        const DRAG_TO_TURN: f32 = 24.0;
+        let far_enough = DRAG_TO_TURN * ui_scale(self.height);
+        let mouse = self.mouse;
+        let Some(press) = &mut self.placing_press else {
+            return;
+        };
+        let (dx, dy) = (mouse.0 - press.from.0, mouse.1 - press.from.1);
+        if dx.hypot(dy) >= far_enough {
+            press.turned = true;
+            self.placing_facing = units::Facing::of_drag(dx, dy);
+        }
+    }
+
+    /// The place on the land itself under the cursor, up on what stands high too.
+    pub fn land_under_cursor(&self) -> Option<(f32, f32)> {
+        let terrain = battlefield::terrain(self.battle_map);
+        self.view().land_at(terrain, self.mouse.0, self.mouse.1)
+    }
+
+    fn placing_plot(&self) -> Option<(Role, units::Plot)> {
         let Site::Placing(role) = self.site else {
             return None;
         };
-        let at = self.view().ground_at(self.mouse.0, self.mouse.1)?;
+        // Held down and dragged, the squares stay where they were pressed and only turn.
+        let (x, y) = self.placing_press.map_or(self.mouse, |press| press.from);
+        let terrain = battlefield::terrain(self.battle_map);
+        let at = self.view().land_at(terrain, x, y)?;
+        Some((role, role.plot_facing(at, self.placing_facing)))
+    }
+
+    /// The grid squares of the building being placed and what each shows: blocked unless it
+    /// is free land the player has seen, near enough to one of their buildings.
+    pub fn placing_squares(&self) -> Vec<((i32, i32), PlaceSquare)> {
+        let Some((role, plot)) = self.placing_plot() else {
+            return Vec::new();
+        };
+        let terrain = battlefield::terrain(self.battle_map);
+        let reachable = self.can_produce(role) && units::is_near_building_of(&self.units, plot, 0);
+        plot.cells()
+            .map(|(u, v)| {
+                let (x, z) = battlefield::grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+                let can = reachable
+                    && units::cell_is_free(&self.units, terrain, (u, v))
+                    && self.sight_at(x, z) != Sight::Unexplored;
+                let square = if !can {
+                    PlaceSquare::Blocked
+                } else if role.is_exit(plot, self.placing_facing, (u, v)) {
+                    PlaceSquare::Exit
+                } else {
+                    PlaceSquare::Free
+                };
+                ((u, v), square)
+            })
+            .collect()
+    }
+
+    /// The building about to be placed, on its squares, and whether it can go there.
+    pub fn placing_preview(&self) -> Option<(Unit, bool)> {
+        let (role, plot) = self.placing_plot()?;
         let terrain = battlefield::terrain(self.battle_map);
         let side = (0, self.stats_rows().first()?.color);
-        let mut building = units::new_building(terrain, at, role, side, self.next_unit_id);
+        let mut building =
+            units::new_building(terrain, plot.center(), role, side, self.next_unit_id);
         building.house = self.faction_of(0);
-        let can = units::can_place_building(&self.units, terrain, at)
-            && self.sight_at(at.0, at.1) != Sight::Unexplored
-            && self.can_produce(role);
+        building.facing = self.placing_facing;
+        let can = self
+            .placing_squares()
+            .iter()
+            .all(|&(_, square)| square != PlaceSquare::Blocked);
         Some((building, can))
     }
 
@@ -1900,9 +2031,7 @@ impl Game {
         if !selected.iter().any(|s| s.can_fire_at_ground()) {
             return None;
         }
-        self.view()
-            .ground_at(self.mouse.0, self.mouse.1)
-            .map(AttackOrder::Place)
+        self.land_under_cursor().map(AttackOrder::Place)
     }
 
     /// What the cursor should look like: what a click here would make the selected units do.
@@ -2004,6 +2133,11 @@ impl Game {
         if self.selection_anchor.is_none() {
             return;
         }
+        // A drag has only turned what is being placed; the click to put it down is still to come.
+        if self.placing_press.take().is_some_and(|press| press.turned) {
+            self.selection_anchor = None;
+            return;
+        }
         if let Some((mut building, true)) = self.placing_preview() {
             building.constructing = units::CONSTRUCTION_SECONDS;
             self.units.push(building);
@@ -2018,7 +2152,7 @@ impl Game {
             return;
         }
         if self.aiming_strike {
-            let target = self.view().ground_at(self.mouse.0, self.mouse.1);
+            let target = self.land_under_cursor();
             if let (Some(weapon), Some((target_x, target_z))) = (self.superweapon(), target) {
                 self.combat.launch_superweapon(weapon, target_x, target_z);
                 self.strike_recharge = SUPERWEAPON_RECHARGE;
@@ -2047,7 +2181,7 @@ impl Game {
             units::order_attack(&mut self.units, chosen, &self.teams);
         } else if let Some(unit) = self.deployable_under_cursor().filter(|_| !adding) {
             // So two clicks on one that is not selected yet select it, then switch it.
-            units::switch_deployed(&mut self.units[unit]);
+            units::start_deploying(&mut self.units[unit]);
         } else if let Some(pad) = self.pad_under_cursor().filter(|_| !adding) {
             units::order_land(&mut self.units, pad);
         } else if let Some(picked) = self.unit_under_cursor() {
@@ -2059,7 +2193,7 @@ impl Game {
             }
         } else if adding {
             // Nothing picked, nothing to add.
-        } else if let Some(target) = self.view().ground_at(self.mouse.0, self.mouse.1) {
+        } else if let Some(target) = self.land_under_cursor() {
             units::order_move(
                 &mut self.units,
                 target,
@@ -2082,6 +2216,7 @@ impl Game {
         let reach = PICK_RADIUS * ui_scale(self.height);
         let mut best = None;
         let mut best_distance = reach;
+        let mut on_building: Option<(usize, f32)> = None;
         let wanted = |unit: &Unit| self.shows(unit) && wanted(unit);
         for (i, unit) in self.units.iter().enumerate().filter(|(_, u)| wanted(u)) {
             let Some((x, y)) = view.project(unit.x, unit.pick_height(), unit.z) else {
@@ -2091,9 +2226,47 @@ impl Game {
             if distance <= best_distance {
                 best = Some((i, distance));
                 best_distance = distance;
+            } else if unit.kind.is_building()
+                && on_building.is_none_or(|(_, nearest)| distance < nearest)
+                && self.cursor_is_on_building(&view, unit)
+            {
+                on_building = Some((i, distance));
             }
         }
-        best
+        best.or(on_building)
+    }
+
+    /// Whether the cursor is anywhere on a building as it shows: on its base, its roof or the
+    /// walls between them.
+    fn cursor_is_on_building(&self, view: &battlefield::View, unit: &Unit) -> bool {
+        const WALLS_SHARE_OF_TOP: f32 = 0.7;
+        let plot = unit.role.plot_facing((unit.x, unit.z), unit.facing);
+        let (low_u, low_v) = (plot.u as f32, plot.v as f32);
+        let (high_u, high_v) = (low_u + plot.cols as f32, low_v + plot.rows as f32);
+        let ground = [
+            (low_u, low_v),
+            (high_u, low_v),
+            (high_u, high_v),
+            (low_u, high_v),
+        ]
+        .map(|(u, v)| battlefield::grid_to_world(u, v));
+        let top = unit.y + unit.role.building_top() * WALLS_SHARE_OF_TOP;
+        let corners_at = |y: f32| -> Option<Vec<(f32, f32)>> {
+            ground.iter().map(|&(x, z)| view.project(x, y, z)).collect()
+        };
+        let (Some(base), Some(roof)) = (corners_at(unit.y), corners_at(top)) else {
+            return false;
+        };
+        (0..4)
+            .map(|i| {
+                let j = (i + 1) % 4;
+                [base[i], base[j], roof[j], roof[i]]
+            })
+            .chain([
+                [base[0], base[1], base[2], base[3]],
+                [roof[0], roof[1], roof[2], roof[3]],
+            ])
+            .any(|face| is_in_convex(face, self.mouse))
     }
 
     pub fn player_money(&self) -> i32 {
@@ -2288,36 +2461,8 @@ impl Game {
             battlefield::minimap_to_world(rect, self.middle_z(), self.mouse.0, self.mouse.1)
         {
             self.minimap_dragging = true;
-            if self.minimap_click_gives_order() {
-                self.minimap_order = Some(((x, z), self.mouse));
-            } else {
-                self.camera.look_at(x, z);
-                self.following = None;
-            }
-        }
-    }
-
-    /// Whether a click on the minimap sends the selected there: whatever can move, and buildings
-    /// that send what they make. Otherwise it moves the camera.
-    fn minimap_click_gives_order(&self) -> bool {
-        !self.aiming_strike
-            && !matches!(self.site, Site::Placing(_))
-            && self
-                .selected_units()
-                .iter()
-                .any(|u| u.kind != UnitKind::Tower)
-    }
-
-    /// Sends the selected to where the minimap was clicked, if it was not dragged.
-    fn finish_minimap_order(&mut self) {
-        if let Some((target, _)) = self.minimap_order.take() {
-            units::order_move(
-                &mut self.units,
-                target,
-                battlefield::terrain(self.battle_map),
-                &self.teams,
-            );
-            units::set_gathering(&mut self.units, target);
+            self.camera.look_at(x, z);
+            self.following = None;
         }
     }
 
@@ -2325,13 +2470,6 @@ impl Game {
     fn drag_battle_minimap(&mut self) {
         if !self.minimap_dragging || self.key_paused {
             return;
-        }
-        if let Some((_, pressed_at)) = self.minimap_order {
-            let moved = (self.mouse.0 - pressed_at.0).hypot(self.mouse.1 - pressed_at.1);
-            if moved <= CLICK_SLOP * ui_scale(self.height) {
-                return;
-            }
-            self.minimap_order = None;
         }
         self.following = None;
         let rect = hud::minimap_rect(self.width, self.height);
@@ -2345,9 +2483,9 @@ impl Game {
         }
     }
 
-    /// Where the H key sends the selected: a fixed place for now, where the player's base starts.
+    /// Where the H key sends the selected: the place the player's base started.
     fn home(&self) -> (f32, f32) {
-        (0.0, self.middle_z())
+        self.home
     }
 
     /// How far south of the north corner the middle of the battle's map is.
@@ -2381,7 +2519,11 @@ impl Game {
         let colors: Vec<TeamColor> = self.stats_rows().iter().map(|row| row.color).collect();
         self.teams = (0..colors.len()).collect();
         self.reported_defeated = vec![false; colors.len()];
-        self.units = units::spawn(battlefield::terrain(map), &colors);
+        self.units = units::spawn(battlefield::terrain(map), &colors, &mut self.start_random);
+        if let Some(&Unit { x, z, .. }) = self.units.first() {
+            self.home = (x, z);
+            self.camera.look_at(x, z);
+        }
         let houses: Vec<Faction> = (0..colors.len()).map(|o| self.faction_of(o)).collect();
         for unit in &mut self.units {
             unit.house = houses[unit.owner];
@@ -2654,6 +2796,7 @@ impl Game {
             units::advance(&mut self.units, terrain, &self.teams, dt);
             self.combat
                 .advance(&mut self.units, &self.teams, terrain, dt);
+            self.combat.stir_tornados(terrain, dt);
             units::carry(&mut self.units, &mut self.carried, terrain, &self.teams, dt);
             if self.superweapon().is_some() {
                 let was_recharging = self.strike_recharge > 0.0;
@@ -2780,6 +2923,7 @@ impl Game {
                 self.mouse = (x, y);
                 self.drag_to(x);
                 self.drag_battle_minimap();
+                self.turn_what_is_being_placed();
             }
             Event::MouseDown => {
                 self.name_focused = false;
@@ -2790,6 +2934,13 @@ impl Game {
                     self.click_battle_minimap();
                     if !self.minimap_dragging {
                         self.begin_selection();
+                        if matches!(self.site, Site::Placing(_)) && self.selection_anchor.is_some()
+                        {
+                            self.placing_press = Some(PlacingPress {
+                                from: self.mouse,
+                                turned: false,
+                            });
+                        }
                     }
                 }
             }
@@ -2797,7 +2948,6 @@ impl Game {
             Event::MouseUp | Event::ShiftMouseUp => {
                 self.dragging = None;
                 self.minimap_dragging = false;
-                self.finish_minimap_order();
                 self.finish_selection(event == Event::ShiftMouseUp);
                 let pressed = self.pressed.take();
                 if self.screen == Screen::Intro {
@@ -2945,13 +3095,21 @@ impl Game {
         self.pressed = None;
         self.dragging = None;
         self.minimap_dragging = false;
-        self.minimap_order = None;
         self.selection_anchor = None;
         self.confirming = None;
         self.name_focused = false;
         self.close_lists();
         self.screen_elapsed = 0.0;
     }
+}
+
+/// Whether a point is inside a convex shape, whichever way round its corners go.
+fn is_in_convex(corners: [(f32, f32); 4], (x, y): (f32, f32)) -> bool {
+    let sides = (0..4).map(|i| {
+        let (a, b) = (corners[i], corners[(i + 1) % 4]);
+        (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0)
+    });
+    sides.clone().all(|side| side >= 0.0) || sides.clone().all(|side| side <= 0.0)
 }
 
 #[cfg(test)]
@@ -3889,6 +4047,20 @@ mod tests {
     }
 
     #[test]
+    fn a_palace_opens_the_vehicles_tab_without_a_factory_or_hangar() {
+        let mut game = in_battle();
+        game.units
+            .retain(|u| u.owner != 0 || !matches!(u.role, Role::Factory | Role::Hangar));
+        assert!(!game.tab_enabled(BuildTab::Vehicles));
+        give_palace(&mut game);
+        assert!(game.tab_enabled(BuildTab::Vehicles));
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        assert_eq!(game.build_tab, BuildTab::Vehicles);
+        click_hud(&mut game, Action::BuildCell(SUPERWEAPON_CELL));
+        assert!(game.aiming_strike);
+    }
+
+    #[test]
     fn no_palace_is_on_offer_with_superweapons_turned_off() {
         let mut game = in_battle();
         game.skirmish.superweapons = false;
@@ -3899,7 +4071,7 @@ mod tests {
     fn a_building_placed_takes_a_second_to_go_up_and_only_then_works() {
         let mut game = in_battle();
         game.site = Site::Placing(Role::Barracks);
-        let (x, y) = buildable_spot_on_screen(&game);
+        let (x, y) = buildable_spot_on_screen(&mut game);
         click_at(&mut game, x, y);
         assert_eq!(game.site, Site::Idle);
         let barracks = game
@@ -3958,6 +4130,48 @@ mod tests {
 
         game.update(crate::weapons::SHATTER_SECONDS);
         assert!(game.combat.shatters.is_empty());
+    }
+
+    #[test]
+    fn placing_shows_little_squares_on_the_grid_and_not_the_building() {
+        let mut game = in_battle();
+        game.site = Site::Placing(Role::Factory);
+        let (x, y) = buildable_spot_on_screen(&mut game);
+        game.handle(Event::MouseMove(x, y));
+        let squares = game.placing_squares();
+        assert_eq!(squares.len(), 30);
+        assert!(squares.iter().all(|&(_, s)| s != PlaceSquare::Blocked));
+        let exits: Vec<_> = squares
+            .iter()
+            .filter(|&&(_, s)| s == PlaceSquare::Exit)
+            .map(|&(cell, _)| cell)
+            .collect();
+        assert_eq!(exits.len(), 2, "the factory's way out shows");
+        let last_row = squares.iter().map(|&((_, v), _)| v).max().unwrap();
+        assert!(exits.iter().all(|&(_, v)| v == last_row));
+        let objects = crate::render::build_frame(&game).objects.len();
+        game.site = Site::Idle;
+        assert!(game.placing_squares().is_empty());
+        assert_eq!(
+            crate::render::build_frame(&game).objects.len(),
+            objects,
+            "no model of it"
+        );
+    }
+
+    #[test]
+    fn nothing_can_be_placed_far_from_every_building() {
+        let mut game = in_battle();
+        game.units.retain(|u| !u.kind.is_building() || u.owner != 0);
+        game.site = Site::Placing(Role::Tower);
+        game.handle(Event::MouseMove(W / 2.0, H / 2.0));
+        assert!(!game.placing_squares().is_empty());
+        assert!(
+            game.placing_squares()
+                .iter()
+                .all(|&(_, s)| s == PlaceSquare::Blocked)
+        );
+        assert!(!game.placing_preview().unwrap().1);
     }
 
     #[test]
@@ -4829,7 +5043,6 @@ mod tests {
             .find(|&map| battlefield::terrain(map).size() == MapSize::L)
             .unwrap();
         let mut game = in_setup();
-        assert_eq!(battlefield::terrain(game.skirmish.map).size(), MapSize::S);
         click_widget(&mut game, Action::MapDropdown);
         click(&mut game, Action::SelectMap(l));
         assert_eq!(game.skirmish.map, l);
@@ -4837,11 +5050,14 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         assert_eq!(game.battle_map, l);
-        assert_eq!(game.camera.z, MapSize::L.middle_z());
-        assert_eq!(game.home(), (0.0, MapSize::L.middle_z()));
         assert!(!crate::render::build(&game).is_empty());
-        let player = game.units.iter().find(|u| u.owner == 0).unwrap();
-        assert!((player.z - MapSize::L.middle_z()).abs() < 15.0);
+        let player = *game.units.iter().find(|u| u.owner == 0).unwrap();
+        assert_eq!(game.home(), (player.x, player.z));
+        assert_eq!((game.camera.x, game.camera.z), (player.x, player.z));
+        assert!(
+            player.x.hypot(player.z - MapSize::L.middle_z()) > 40.0,
+            "not in the middle: {player:?}"
+        );
     }
 
     #[test]
@@ -5513,7 +5729,7 @@ mod tests {
             assert_eq!(new.owner, 0);
             assert_eq!(new.color, game.units[0].color);
             let tower = game.units[tower_of(&game, 0)];
-            assert!((new.x - tower.x).hypot(new.z - tower.z) < 8.0, "{new:?}");
+            assert!((new.x - tower.x).hypot(new.z - tower.z) < 12.0, "{new:?}");
             assert!(
                 game.units[..before].iter().all(|u| u.id != new.id),
                 "its id is its own"
@@ -5542,7 +5758,7 @@ mod tests {
                     "Rocket Launcher",
                     "Disk Saw",
                     "Flame Tank",
-                    "Huge Tank",
+                    "Huge Walker",
                 ][..],
             ),
             (
@@ -5579,10 +5795,13 @@ mod tests {
     fn every_vehicle_and_tower_shines_white_light_ahead_from_each_of_its_lamps_and_nothing_else_does()
      {
         let lights = |game: &Game| {
-            crate::render::build(game)
-                .iter()
-                .filter(|v| v.a == 0.0 && v.r > 0.0)
+            let frame = crate::render::build(game);
+            let lit = || frame.iter().filter(|v| v.a == 0.0 && v.r > 0.0);
+            // A beam stopped by a building ends part way to full brightness.
+            let brightest = lit().map(|v| v.r).fold(0.0, f32::max);
+            lit()
                 .inspect(|v| assert_eq!((v.r, v.g), (v.b, v.b), "white"))
+                .filter(|v| v.r == brightest)
                 .count()
         };
         let mut game = in_battle();
@@ -6293,8 +6512,10 @@ mod tests {
         assert_eq!(game.screen, Screen::InGame);
         press(&mut game, 1);
 
-        let (x, y) = buildable_spot_on_screen(&game);
-        let spot = game.view().ground_at(x, y).unwrap();
+        let (x, y) = buildable_spot_on_screen(&mut game);
+        let known = ours(&game);
+        let terrain = battlefield::terrain(game.battle_map);
+        let spot = game.view().land_at(terrain, x, y).unwrap();
         game.handle(Event::MouseMove(x, y));
         assert!(game.placing_preview().unwrap().1, "{spot:?}");
         assert!(!crate::render::build(&game).is_empty());
@@ -6303,7 +6524,7 @@ mod tests {
         assert_eq!(ours(&game), known + 1);
         let built = *game.units.last().unwrap();
         assert_eq!((built.role, built.owner), (Role::Factory, 0));
-        assert_eq!((built.x, built.z), spot);
+        assert_eq!((built.x, built.z), Role::Factory.plot_at(spot).center());
         assert_eq!(built.color, game.units[0].color);
     }
 
@@ -6366,7 +6587,8 @@ mod tests {
                 .iter()
                 .find(|u| u.owner == owner && u.role == Role::Mcv);
             assert!(mcv.is_some_and(|u| u.deployed), "owner {owner} deploys");
-            for role in [Role::Barracks, Role::Factory, Role::GunTower, Role::Tower] {
+            let [lesser, greater] = Role::towers_of(mcv.unwrap().house);
+            for role in [Role::Barracks, Role::Factory, lesser, greater] {
                 assert_eq!(
                     has(&game, owner, role),
                     1,
@@ -6444,12 +6666,19 @@ mod tests {
             "up there it offers one"
         );
         game.handle(Event::KeyDown(Key::Char('d')));
-        assert!(game.units[0].deployed, "up there it can");
-
-        for _ in 0..400 {
+        for _ in 0..60 {
             game.update(0.05);
         }
-        let theirs = game.units[1];
+        assert!(game.units[0].deployed, "up there it can");
+
+        let their_mcv = game.units[1].id;
+        for _ in 0..3000 {
+            game.update(0.05);
+            if game.units.iter().any(|u| u.id == their_mcv && u.deployed) {
+                break;
+            }
+        }
+        let theirs = *game.units.iter().find(|u| u.id == their_mcv).unwrap();
         assert!(theirs.deployed, "{theirs:?}");
         assert!(terrain.on_upper_ground(theirs.x, theirs.z));
     }
@@ -6553,10 +6782,61 @@ mod tests {
     }
 
     #[test]
+    fn each_house_builds_its_own_two_towers_of_two_by_two() {
+        for house in [Faction::A, Faction::H, Faction::O] {
+            let game = in_battle_as(house);
+            let towers = Role::towers_of(house);
+            for (i, role) in towers.into_iter().enumerate() {
+                let cell = BUILDING_BUILDS.len() + i;
+                assert_eq!(game.build_role(BuildTab::Buildings, cell), Some(role));
+                assert!(role.made_by(house));
+                assert_eq!(role.kind(), UnitKind::Tower);
+                assert_eq!(role.plot_size(), (2, 2));
+                assert!(role.build_seconds() > 0.0, "{role:?}");
+            }
+            for other in [Faction::A, Faction::H, Faction::O] {
+                let foreign = Role::towers_of(other).iter().any(|r| r.made_by(house));
+                assert_eq!(foreign, other == house);
+            }
+            assert_eq!(
+                game.build_role(BuildTab::Buildings, PALACE_CELL),
+                Some(Role::Palace(house))
+            );
+        }
+    }
+
+    #[test]
+    fn only_one_building_goes_up_at_a_time_and_the_others_are_greyed_out() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        let (first, second) = (Role::Barracks, Role::Factory);
+        assert!(!game.is_held_up_by_site(second), "nothing on its way");
+        click_hud(&mut game, Action::BuildCell(0));
+        assert_eq!(game.site, Site::Building(first, first.build_seconds()));
+        assert!(game.is_held_up_by_site(second));
+        assert!(!game.is_held_up_by_site(first), "it shows its own progress");
+        assert!(
+            !game.is_held_up_by_site(Role::LightInfantry),
+            "a unit waits for no site"
+        );
+        click_hud(&mut game, Action::BuildCell(1));
+        assert_eq!(
+            game.site,
+            Site::Building(first, first.build_seconds()),
+            "no queue"
+        );
+        game.update(first.build_seconds() + 0.1);
+        assert_eq!(game.site, Site::Ready(first));
+        assert!(game.is_held_up_by_site(second), "until it is placed");
+        click_hud(&mut game, Action::BuildCell(1));
+        assert_eq!(game.site, Site::Ready(first));
+    }
+
+    #[test]
     fn rocket_and_machine_gun_towers_are_built_and_placed_like_other_buildings() {
         for (cell, role, name) in [
-            (4, Role::Tower, "Rocket Tower"),
-            (5, Role::GunTower, "Machine Gun Tower"),
+            (4, Role::GunPost, "Machine Gun Post"),
+            (5, Role::Tower, "Rocket Tower"),
         ] {
             let mut game = in_battle();
             click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
@@ -6565,15 +6845,13 @@ mod tests {
             game.update(role.build_seconds() + 0.1);
             assert_eq!(game.site, Site::Ready(role));
             click_hud(&mut game, Action::BuildCell(cell));
-            let (x, y) = buildable_spot_on_screen(&game);
+            let (x, y) = buildable_spot_on_screen(&mut game);
             game.handle(Event::MouseMove(x, y));
             click_at(&mut game, x, y);
             let built = *game.units.last().unwrap();
             assert_eq!((built.role, built.owner), (role, 0));
             assert_eq!(built.kind, UnitKind::Tower);
             assert_eq!(built.name(), name);
-            assert!(built.weapon.can_target(1.0), "it reaches the air too");
-            assert_eq!(crate::render::lamps_on(role), 1, "a searchlight");
         }
     }
 
@@ -6587,7 +6865,7 @@ mod tests {
         click_hud(&mut game, Action::BuildCell(0));
         game.update(Role::Barracks.build_seconds() + 0.1);
         click_hud(&mut game, Action::BuildCell(0));
-        let (x, y) = buildable_spot_on_screen(&game);
+        let (x, y) = buildable_spot_on_screen(&mut game);
         click_at(&mut game, x, y);
         assert!(!game.can_produce(Role::Scout), "still going up");
         game.update(units::CONSTRUCTION_SECONDS + 0.01);
@@ -7002,6 +7280,25 @@ mod tests {
     }
 
     #[test]
+    fn following_lets_go_of_an_mcv_once_it_has_deployed_and_never_takes_a_building() {
+        let mut game = in_battle();
+        let mcv = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Vehicle)
+            .unwrap();
+        game.units[mcv].role = Role::Mcv;
+        game.units[mcv].selected = true;
+        game.handle(Event::KeyDown(Key::Char('f')));
+        assert!(game.following.is_some(), "it can be followed on its tracks");
+        units::switch_deployed(&mut game.units[mcv]);
+        game.update(0.05);
+        assert_eq!(game.following, None, "deployed, it is a building");
+        game.handle(Event::KeyDown(Key::Char('f')));
+        assert_eq!(game.following, None, "and stays that way");
+    }
+
+    #[test]
     fn the_f_key_keeps_the_camera_on_the_selected_unit_until_pressed_again() {
         let mut game = in_battle();
         game.handle(Event::KeyDown(Key::Char('f')));
@@ -7048,10 +7345,8 @@ mod tests {
         assert!(game.following.is_some());
         let (x, y, size) = hud::minimap_rect(W, H);
         click_at(&mut game, x + size / 3.0, y + size / 2.0);
-        assert!(
-            game.following.is_some(),
-            "a click sends it, and the camera goes along"
-        );
+        assert_eq!(game.following, None, "a click takes the camera away");
+        game.handle(Event::KeyDown(Key::Char('f')));
         game.handle(Event::MouseDown);
         game.handle(Event::MouseMove(x + size / 2.0, y + size / 2.0));
         assert_eq!(game.following, None, "a drag takes the camera away");
@@ -7290,15 +7585,38 @@ mod tests {
     }
 
     /// A point on the screen over upper ground clear enough for a building, away from the HUD.
-    fn buildable_spot_on_screen(game: &Game) -> (f32, f32) {
+    fn buildable_spot_on_screen(game: &mut Game) -> (f32, f32) {
         let terrain = battlefield::terrain(game.battle_map);
-        (1..20)
-            .flat_map(|i| (1..12).map(move |j| (i as f32 * W / 20.0, j as f32 * H / 12.0)))
+        // The base standing by the map's middle is on the sand: put up a tower on upper ground.
+        let at = battlefield::start_spots(terrain.size())[5];
+        let (x, z) = at;
+        if !game.units.iter().any(|u| u.owner == 0 && (u.x, u.z) == at) {
+            let tower = game
+                .units
+                .iter()
+                .position(|u| u.kind == UnitKind::Tower && u.owner == 0);
+            let mut outpost = game.units[tower.unwrap()];
+            (outpost.x, outpost.z, outpost.destination) = (x, z, at);
+            outpost.y = terrain.height_at(x, z);
+            outpost.id = game.next_unit_id;
+            game.next_unit_id += 1;
+            game.units.push(outpost);
+        }
+        game.camera.look_at(x, z);
+        game.update_fog();
+        let role = match game.site {
+            Site::Placing(role) | Site::Ready(role) => role,
+            _ => Role::Factory,
+        };
+        (1..100)
+            .flat_map(|i| (1..60).map(move |j| (i as f32 * W / 100.0, j as f32 * H / 60.0)))
             .filter(|&(x, y)| !hud::covers(x, y, W, H))
             .find(|&(x, y)| {
-                game.view()
-                    .ground_at(x, y)
-                    .is_some_and(|at| units::can_place_building(&game.units, terrain, at))
+                game.view().land_at(terrain, x, y).is_some_and(|at| {
+                    let plot = role.plot_facing(at, game.placing_facing);
+                    units::can_place_building(&game.units, terrain, plot)
+                        && units::is_near_building_of(&game.units, plot, 0)
+                })
             })
             .expect("somewhere to build")
     }
@@ -8167,7 +8485,7 @@ mod tests {
             .filter(|u| u.owner == 0)
             .map(|u| u.x)
             .fold(f32::MIN, f32::max);
-        for _ in 0..40 {
+        for _ in 0..400 {
             game.update(0.05);
             let (sx, _) = game.view().project(far_x, 0.0, game.camera.z).unwrap();
             if sx < W - 100.0 {
@@ -8650,14 +8968,10 @@ mod tests {
     fn open_dropdown_blocks_what_is_under_it_and_closes_on_outside_click() {
         let mut game = in_setup();
         click_widget(&mut game, Action::MapDropdown);
-        // The list covers the difficulty radios, so this click picks a map instead.
-        let hard = setup_widgets(W, H)
-            .into_iter()
-            .find(|b| b.action == Action::SetDifficulty(Difficulty::Hard))
-            .unwrap();
+        let item = map_items(W, H)[0];
         game.handle(Event::MouseMove(
-            hard.x + hard.w / 2.0,
-            hard.y + hard.h / 2.0,
+            item.x + item.w / 2.0,
+            item.y + item.h / 2.0,
         ));
         assert!(matches!(game.hovered(), Some(Action::SelectMap(_))));
 
@@ -9125,6 +9439,139 @@ mod tests {
     }
 
     #[test]
+    fn a_unit_knows_the_lowest_number_key_it_is_under() {
+        let mut game = in_battle();
+        let (first, second) = two_soldiers(&game);
+        assert_eq!(game.group_number(first), None);
+        select_ids(&mut game, &[first]);
+        game.handle(Event::NumberKey(4, Some(Modifier::Control)));
+        game.handle(Event::NumberKey(2, Some(Modifier::Control)));
+        assert_eq!(game.group_number(first), Some(2));
+        assert_eq!(game.group_number(second), None);
+    }
+
+    #[test]
+    fn dragging_while_placing_turns_the_squares_and_the_next_click_builds_it_that_way() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        game.site = Site::Placing(Role::Factory);
+        // Somewhere there is room for it the way it will end up.
+        game.placing_facing = units::Facing::RightBottom;
+        let (x, y) = buildable_spot_on_screen(&mut game);
+        game.placing_facing = units::Facing::LeftBottom;
+        let before = game.units.len();
+        game.handle(Event::MouseMove(x, y));
+        let exits = |game: &Game| {
+            game.placing_squares()
+                .iter()
+                .filter(|(_, square)| *square == PlaceSquare::Exit)
+                .count()
+        };
+        let plain = game.placing_plot().unwrap().1;
+
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseMove(x + 60.0, y - 60.0));
+        assert_eq!(
+            game.placing_plot().unwrap().1.u,
+            plain.u,
+            "the squares stay put"
+        );
+        assert_eq!(game.placing_facing, units::Facing::RightTop);
+        game.handle(Event::MouseMove(x + 60.0, y + 60.0));
+        assert_eq!(game.placing_facing, units::Facing::RightBottom);
+        assert_eq!(exits(&game), 2);
+        let turned = game.placing_plot().unwrap().1;
+        assert_eq!((turned.cols, turned.rows), (plain.rows, plain.cols));
+        game.handle(Event::MouseUp);
+        assert_eq!(game.units.len(), before, "a drag builds nothing");
+        assert_eq!(game.site, Site::Placing(Role::Factory), "still placing");
+
+        game.handle(Event::MouseMove(x, y));
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+        assert_eq!(game.units.len(), before + 1, "the next click does");
+        let built = *game.units.last().unwrap();
+        assert_eq!(built.facing, units::Facing::RightBottom);
+        assert_eq!(
+            (built.plot().unwrap().cols, built.plot().unwrap().rows),
+            (5, 6)
+        );
+    }
+
+    #[test]
+    fn the_cursors_for_orders_lie_flat_on_the_map() {
+        let mut game = cursor_on_open_ground();
+        let soldier = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
+            .unwrap();
+        game.units[soldier].selected = true;
+        // From low down, where a thing lying flat looks much wider than it is tall.
+        for _ in 0..400 {
+            game.camera.zoom_by(1.0);
+            game.camera.ease_zoom(0.05);
+        }
+        game.units.retain(|u| !u.kind.is_building());
+        assert_eq!(game.cursor_look(), CursorLook::Move);
+        let drawn = crate::render::build(&game);
+        // Its ring goes all the way round: as tall as it is wide only if it faces the screen.
+        let cursor = |near: f32| {
+            let (mx, my) = game.mouse;
+            let around: Vec<_> = drawn
+                .iter()
+                .rev()
+                .take(600)
+                .filter(|v| (v.x - mx).hypot(v.y - my) < near)
+                .collect();
+            let reach = |value: fn(&&crate::platform::Vertex) -> f32| {
+                let (low, high) = around
+                    .iter()
+                    .map(value)
+                    .fold((f32::MAX, f32::MIN), |(a, b), c| (a.min(c), b.max(c)));
+                high - low
+            };
+            (reach(|v| v.x), reach(|v| v.y))
+        };
+        let (wide, tall) = cursor(120.0);
+        assert!(tall < wide * 0.85, "{wide} {tall}");
+    }
+
+    #[test]
+    fn an_explosion_adds_balls_of_light_over_it() {
+        let mut game = cursor_on_open_ground();
+        let before = crate::render::build_frame(&game).effects.len();
+        let at = (game.camera.x, 0.5, game.camera.z);
+        game.combat.explode(at, 1.0);
+        game.combat.particles.clear();
+        let effects = crate::render::build_frame(&game).effects;
+        let added: Vec<_> = effects[before..].iter().filter(|v| v.a == 0.0).collect();
+        assert!(added.len() > 100, "{}", added.len());
+    }
+
+    #[test]
+    fn a_tornado_shows_as_a_see_through_funnel() {
+        let mut game = cursor_on_open_ground();
+        let terrain = battlefield::terrain(game.battle_map);
+        let before = crate::render::build_frame(&game).effects.len();
+        let mut combat = Combat::default();
+        for _ in 0..4000 {
+            combat.stir_tornados(terrain, 0.05);
+            if combat.tornados.iter().any(|t| t.life < 0.8) {
+                break;
+            }
+        }
+        let tornado = *combat.tornados.iter().find(|t| t.life < 0.8).unwrap();
+        game.camera.look_at(tornado.at.0, tornado.at.2);
+        game.update_fog();
+        let before = before.min(crate::render::build_frame(&game).effects.len());
+        game.combat.tornados = vec![tornado];
+        let effects = crate::render::build_frame(&game).effects;
+        assert!(effects.len() >= before + 9 * 14 * 6, "{}", effects.len());
+        assert!(effects.iter().any(|v| v.a > 0.0 && v.a < 0.7));
+    }
+
+    #[test]
     fn a_new_battle_forgets_the_number_keys() {
         let mut game = in_battle();
         let (first, _) = two_soldiers(&game);
@@ -9160,17 +9607,19 @@ mod tests {
             unit.house = houses[unit.owner];
         }
         game.next_unit_id = game.units.len() as u32;
+        game.home = (0.0, game.middle_z());
+        game.camera = Camera::centered();
         game.update_fog();
     }
 
     #[test]
-    fn play_uses_the_selected_map_and_a_centered_camera() {
+    fn play_uses_the_selected_map_and_looks_at_the_players_mcv() {
         let mut game = in_setup();
         click_widget(&mut game, Action::MapDropdown);
         click(&mut game, Action::SelectMap(2));
         click_widget(&mut game, Action::StartBattle);
         assert_eq!(game.battle_map, 2);
-        assert_eq!(game.camera, Camera::centered());
+        assert_eq!((game.camera.x, game.camera.z), game.home());
     }
 
     #[test]
@@ -9279,22 +9728,100 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_the_minimap_sends_the_selected_there_and_leaves_the_camera() {
+    fn a_click_on_the_minimap_moves_the_camera_there_and_gives_no_order() {
         let mut game = in_battle();
         let tank = tank_of(&game);
         game.units[tank].selected = true;
-        let other = game.units[tank + 1];
-        let camera = (game.camera.x, game.camera.z);
+        let stays = game.units[tank].destination;
         let (at, world) = minimap_point();
         click_at(&mut game, at.0, at.1);
-        assert_eq!((game.camera.x, game.camera.z), camera);
-        let sent = game.units[tank].destination;
-        assert!(
-            (sent.0 - world.0).hypot(sent.1 - world.1) < 5.0,
-            "{sent:?} {world:?}"
-        );
+        let mut expected = game.camera;
+        expected.look_at(world.0, world.1);
+        assert_eq!((game.camera.x, game.camera.z), (expected.x, expected.z));
+        assert_eq!(game.units[tank].destination, stays);
         assert!(game.units[tank].selected, "the selection stands");
-        assert_eq!(game.units[tank + 1].destination, other.destination);
+    }
+
+    #[test]
+    fn a_click_anywhere_on_a_building_selects_it_not_only_at_its_middle() {
+        let mut game = in_battle();
+        let i = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Factory)
+            .unwrap();
+        let unit = game.units[i];
+        game.camera.look_at(unit.x, unit.z);
+        let view = game.view();
+        let (middle_x, middle_y) = view.project(unit.x, unit.pick_height(), unit.z).unwrap();
+        let plot = unit.role.plot_facing((unit.x, unit.z), unit.facing);
+        let (x, z) = battlefield::grid_to_world(
+            plot.u as f32 + plot.cols as f32 - 0.5,
+            plot.v as f32 + plot.rows as f32 / 2.0,
+        );
+        let (edge_x, edge_y) = view.project(x, unit.y, z).unwrap();
+        let reach = PICK_RADIUS * ui_scale(game.height);
+        assert!(
+            (edge_x - middle_x).hypot(edge_y - middle_y) > reach,
+            "out of the old reach"
+        );
+        game.handle(Event::MouseMove(edge_x, edge_y));
+        assert_eq!(
+            game.unit_near_cursor(|_| true).map(|(found, _)| found),
+            Some(i)
+        );
+    }
+
+    #[test]
+    fn an_outpost_shows_the_whole_map_and_goes_on_the_buildings_menu_of_every_house() {
+        for house in [Faction::A, Faction::H, Faction::O] {
+            let game = in_battle_as(house);
+            assert_eq!(
+                game.build_role(BuildTab::Buildings, OUTPOST_CELL),
+                Some(Role::Outpost)
+            );
+            assert!(Role::Outpost.made_by(house));
+        }
+        let mut game = in_battle();
+        game.fog = Some(Fog::new());
+        game.update_fog();
+        let (x, z) = (game.units[0].x + 60.0, game.units[0].z + 60.0);
+        assert_ne!(game.sight_at(x, z), Sight::Visible);
+        assert!(!game.has_outpost());
+        let at = (game.units[0].x, game.units[0].z);
+        let outpost = units::new_building(
+            battlefield::terrain(game.battle_map),
+            at,
+            Role::Outpost,
+            (0, game.units[0].color),
+            9_999,
+        );
+        game.units.push(outpost);
+        let last = game.units.len() - 1;
+        game.units[last].constructing = 0.0;
+        assert!(game.has_outpost());
+        game.update_fog();
+        assert_eq!(game.sight_at(x, z), Sight::Visible);
+        game.units[last].alive = false;
+        game.update_fog();
+        assert_eq!(
+            game.sight_at(x, z),
+            Sight::Explored,
+            "the radar went with it"
+        );
+    }
+
+    #[test]
+    fn a_palaces_launcher_opens_as_the_superweapon_comes_ready() {
+        let mut game = in_battle();
+        give_palace(&mut game);
+        let palace = *game.units.last().unwrap();
+        game.strike_recharge = 60.0;
+        assert_eq!(game.launcher_open(&palace), 0.0);
+        game.strike_recharge = LAUNCHER_OPENS_SECONDS / 2.0;
+        assert!(game.launcher_open(&palace) > 0.0 && game.launcher_open(&palace) < 1.0);
+        game.strike_recharge = 0.0;
+        assert_eq!(game.launcher_open(&palace), 1.0);
     }
 
     #[test]
@@ -9323,20 +9850,6 @@ mod tests {
         let (at, _) = minimap_point();
         click_at(&mut game, at.0, at.1);
         assert_ne!((game.camera.x, game.camera.z), camera);
-    }
-
-    #[test]
-    fn a_click_on_the_minimap_sets_a_selected_buildings_gathering_point() {
-        let mut game = in_battle();
-        let barracks = game
-            .units
-            .iter()
-            .position(|u| u.owner == 0 && u.role == Role::Barracks)
-            .unwrap();
-        game.units[barracks].selected = true;
-        let (at, world) = minimap_point();
-        click_at(&mut game, at.0, at.1);
-        assert_eq!(game.units[barracks].gathering, Some(world));
     }
 
     #[test]
@@ -9505,7 +10018,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_battle_recenters_the_camera() {
+    fn a_new_battle_brings_the_camera_back_to_the_players_mcv() {
         let mut game = in_battle();
         game.handle(Event::MouseMove(W - 1.0, H / 2.0));
         game.update(0.5);
@@ -9513,7 +10026,7 @@ mod tests {
         click(&mut game, Action::SinglePlayer);
         click(&mut game, Action::Tutorial);
         game.update(LOADING_SECONDS);
-        assert_eq!(game.camera, Camera::centered());
+        assert_eq!((game.camera.x, game.camera.z), game.home());
     }
 
     #[test]

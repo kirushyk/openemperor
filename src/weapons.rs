@@ -6,17 +6,19 @@
 
 use crate::battlefield::{Terrain, next_random};
 use crate::game::Faction;
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 use crate::units::{
-    BURNS_PAST, CANNON_SIDES, Point, ROCKET_SIDES, Role, SMOKES_PAST, TUBE_HEIGHT, Target, Unit,
-    UnitKind, are_enemies, are_friends, distance, substeps, turn_between,
+    BURNS_PAST, CANNON_SIDES, CONSTRUCTION_DOWN, CONSTRUCTION_UP, Point, ROCKET_SIDES, Role,
+    SMOKES_PAST, TUBE_HEIGHT, Target, Unit, UnitKind, are_enemies, are_friends, distance, substeps,
+    turn_between,
 };
 
 /// A unit with nothing in range looks again this often, in seconds.
 const RETARGET_SECONDS: f32 = 0.25;
 
 const MISSILE_SPEED: f32 = 9.0;
+const PLASMA_SPEED: f32 = 20.0;
 /// Radians per second a missile can turn: fast targets can out-turn it.
 const MISSILE_TURN: f32 = 2.5;
 const MISSILE_FUEL_SECONDS: f32 = 4.0;
@@ -42,6 +44,10 @@ const TRACER_SECONDS: f32 = 0.2;
 
 /// How long a rocket launcher takes to reload once its whole salvo has gone, in seconds.
 const ROCKET_RELOAD_SECONDS: f32 = 8.0;
+/// How long a rocket tower reloads after its two rockets.
+const TOWER_RELOAD_SECONDS: f32 = 3.5;
+/// How long a huge walker's rockets come after one another.
+const WALKER_ROCKET_GAP_SECONDS: f32 = 0.3;
 
 /// Radians per second whatever must face its target turns towards it.
 const AIM_TURN: f32 = 2.0;
@@ -52,7 +58,11 @@ const AIM_ALIGNMENT: f32 = 0.1;
 /// Radians per second a missile tower raises or lowers its tubes.
 const TUBE_PITCH_SPEED: f32 = 1.2;
 /// How far above its target a missile tower points, so that its missiles clear the ground.
-const TUBE_LOFT: f32 = 0.3;
+const TUBE_LOFT: f32 = 0.15;
+/// How long a pop-up turret takes to come out of the ground, and to go back.
+const TURRET_POP_SECONDS: f32 = 0.6;
+/// How much more than that they are raised for a target at the far end of their range.
+const TUBE_LOFT_AT_RANGE: f32 = 0.5;
 /// The lowest and highest its tubes go.
 const TUBE_LOWEST: f32 = -0.3;
 const TUBE_HIGHEST: f32 = 1.2;
@@ -81,6 +91,26 @@ const PARTICLES_AT_LEAST: usize = 8;
 const PARTICLES_AT_MOST: usize = 80;
 /// More than this at once and new explosions throw out no more.
 const PARTICLES_ALIVE_AT_MOST: usize = 800;
+/// How many wisps of vapor and dust can hang in the air at once.
+const WISPS_ALIVE_AT_MOST: usize = 600;
+/// How many tongues of fire a flame tower's blast is made of at once.
+const FLAMELETS_ALIVE_AT_MOST: usize = 400;
+const FLAMELETS_PER_GUSH: usize = 14;
+/// How high a flame tower's fire comes down to at the end of its reach.
+const FLAMELET_FALLS_TO: f32 = 0.4;
+/// How far a rocket tower reaches, and the machine gun tower that matches it.
+const ROCKET_TOWER_RANGE: f32 = 12.0;
+/// How far from where it burst a cistern's own small blast reaches.
+const CISTERN_BLAST_RADIUS: f32 = 0.6;
+/// Radians per second a cistern tumbles through the air.
+const CISTERN_TUMBLE: f32 = 9.0;
+const GAS_CLOUD_RADIUS: f32 = 2.5;
+const GAS_CLOUD_SECONDS: f32 = 3.0;
+/// Enough to kill any infantry within about a second.
+const GAS_DAMAGE_PER_SECOND: f32 = 200.0;
+/// How many wisps of vapor a bursting cistern throws out at once, and then each second.
+const GAS_VAPOR_AT_BURST: f32 = 40.0;
+const GAS_VAPOR_PER_SECOND: f32 = 40.0;
 const PARTICLE_SECONDS: f32 = 0.9;
 const PARTICLE_GRAVITY: f32 = 7.0;
 const HEAVY_BLAST_RADIUS: f32 = 1.5;
@@ -117,7 +147,7 @@ pub const SUICIDE_BLAST_RADIUS: f32 = 3.2;
 const SUICIDE_DAMAGE: f32 = 450.0;
 /// How far ahead of a disk saw's middle its blade spins, how far it reaches from there, and
 /// how much it harms the infantry it cuts each second.
-pub const SAW_AHEAD: f32 = 0.62;
+pub const SAW_AHEAD: f32 = 0.42;
 const SAW_REACH: f32 = 0.42;
 const SAW_DAMAGE_PER_SECOND: f32 = 260.0;
 /// Which way a flame tank's two flamethrowers point from its nose: ten and two o'clock.
@@ -181,6 +211,18 @@ pub enum WeaponKind {
     Flame,
     /// Like flame, in green: reaches farther and wider, but hurts less.
     Gas,
+    /// A rocket tower's: two missiles in quick turn from its two tubes, then a long reload.
+    TowerRockets,
+    /// A post's machine gun: rapid and weak, short-reaching, and only for the ground.
+    PostGun,
+    /// A tower's twin machine guns: rapid and weak, reaching as far as a rocket tower.
+    TowerGun,
+    /// A small cistern lobbed at infantry, bursting into a cloud of gas on what it touches.
+    Cistern,
+    /// A laser firing often and weakly, not very far.
+    RapidLaser,
+    /// A huge walker's: bolts of plasma flying fast and straight, hurting all around them.
+    Plasma,
     /// Fixes friendly vehicles nearby instead of harming anyone.
     Repair,
     /// Carries nothing.
@@ -191,7 +233,13 @@ impl WeaponKind {
     pub fn range(self) -> f32 {
         match self {
             WeaponKind::Bullet => 7.0,
-            WeaponKind::Missile => 12.0,
+            WeaponKind::Missile | WeaponKind::TowerRockets | WeaponKind::TowerGun => {
+                ROCKET_TOWER_RANGE
+            }
+            WeaponKind::PostGun => 6.0,
+            WeaponKind::Plasma => 11.0,
+            WeaponKind::Cistern => 8.0,
+            WeaponKind::RapidLaser => 7.0,
             WeaponKind::Laser => 9.0,
             WeaponKind::Mortar => 16.0,
             WeaponKind::Rockets | WeaponKind::HeavyRockets => 13.0,
@@ -221,6 +269,8 @@ impl WeaponKind {
             | WeaponKind::Bullet
             | WeaponKind::Sniper
             | WeaponKind::Pistol
+            | WeaponKind::PostGun
+            | WeaponKind::Cistern
             | WeaponKind::Cannon => altitude <= 0.0,
             WeaponKind::Flame | WeaponKind::Gas => altitude <= SPRAY_CEILING,
             WeaponKind::AirMissile => altitude > 0.0,
@@ -236,7 +286,7 @@ impl WeaponKind {
             WeaponKind::Bullet => Some(7.0),
             WeaponKind::Sniper => Some(9.0),
             WeaponKind::Cannon => Some(16.0),
-            WeaponKind::AutoGun => Some(6.0),
+            WeaponKind::AutoGun | WeaponKind::PostGun | WeaponKind::TowerGun => Some(6.0),
             _ => None,
         }
     }
@@ -250,6 +300,11 @@ impl WeaponKind {
         )
     }
 
+    /// Whether it is ever aimed at this kind of unit: a cistern is only meant for infantry.
+    pub fn goes_for(self, kind: UnitKind) -> bool {
+        self != WeaponKind::Cistern || kind == UnitKind::Infantry
+    }
+
     /// Whether it can harm anyone.
     pub fn is_armed(self) -> bool {
         !matches!(self, WeaponKind::Unarmed | WeaponKind::Repair)
@@ -260,6 +315,7 @@ impl WeaponKind {
         match self {
             WeaponKind::Rockets => Some((ROCKET_SIDES.len(), ROCKET_RELOAD_SECONDS)),
             WeaponKind::HeavyRockets => Some((2, ROCKET_RELOAD_SECONDS)),
+            WeaponKind::TowerRockets => Some((2, TOWER_RELOAD_SECONDS)),
             WeaponKind::Bombard => Some((CANNON_SIDES.len(), BOMBARD_CALM_SECONDS)),
             _ => None,
         }
@@ -287,7 +343,12 @@ impl WeaponKind {
             WeaponKind::Sniper => 3.5,
             WeaponKind::Pistol => 1.5,
             WeaponKind::Cannon => 3.0,
-            WeaponKind::AutoGun => 0.2,
+            WeaponKind::AutoGun | WeaponKind::TowerGun => 0.2,
+            WeaponKind::PostGun => 0.25,
+            WeaponKind::Cistern => 3.5,
+            WeaponKind::RapidLaser => 0.3,
+            WeaponKind::Plasma => 1.1,
+            WeaponKind::TowerRockets => 0.35,
             WeaponKind::AirMissile => 3.0,
             WeaponKind::Flame | WeaponKind::Gas => 0.15,
             WeaponKind::Repair => 0.4,
@@ -307,7 +368,11 @@ impl WeaponKind {
             WeaponKind::Sniper => 90.0,
             WeaponKind::Pistol => 8.0,
             WeaponKind::Cannon => 80.0,
-            WeaponKind::AutoGun => 6.0,
+            WeaponKind::AutoGun | WeaponKind::PostGun | WeaponKind::TowerGun => 6.0,
+            WeaponKind::Cistern => 5.0,
+            WeaponKind::RapidLaser => 9.0,
+            WeaponKind::Plasma => 140.0,
+            WeaponKind::TowerRockets => 45.0,
             WeaponKind::AirMissile => 60.0,
             WeaponKind::Flame => 10.0,
             WeaponKind::Gas => 6.0,
@@ -323,6 +388,8 @@ impl WeaponKind {
                 | WeaponKind::Pistol
                 | WeaponKind::Sniper
                 | WeaponKind::AutoGun
+                | WeaponKind::PostGun
+                | WeaponKind::TowerGun
                 | WeaponKind::Gas,
                 UnitKind::Vehicle | UnitKind::Tower | UnitKind::Building,
             ) => self.damage() * 0.25,
@@ -378,6 +445,12 @@ pub struct Shell {
     shooter: Shooter,
 }
 
+impl Missile {
+    pub fn is_plasma(&self) -> bool {
+        self.weapon == WeaponKind::Plasma
+    }
+}
+
 impl Shell {
     /// Where it is along its ballistic arc.
     pub fn position(&self) -> Point {
@@ -408,6 +481,20 @@ impl Shell {
     #[cfg(test)]
     pub fn landing(&self) -> Point {
         self.landing
+    }
+
+    /// How far round a cistern has tumbled on its way, if this is one.
+    pub fn cistern_turn(&self) -> Option<f32> {
+        (self.weapon == WeaponKind::Cistern).then_some(self.elapsed * CISTERN_TUMBLE)
+    }
+
+    /// Whether a cistern in flight has just touched someone it is meant to hurt.
+    fn bursts_on(&self, unit: &Unit, teams: &[usize]) -> bool {
+        unit.alive
+            && unit.is_grounded()
+            && unit.id != self.shooter.id
+            && (self.hurts_all || are_enemies(teams, self.shooter.owner, unit.owner))
+            && distance(self.position(), unit.center()) <= unit.radius()
     }
 }
 
@@ -520,6 +607,70 @@ pub struct Particle {
     fade: f32,
 }
 
+/// A little whirlwind wandering over the land. It is only a sight: it hurts nobody.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tornado {
+    pub at: Point,
+    heading: f32,
+    /// From 1 when it spins up down to 0.
+    pub life: f32,
+    /// How much life it loses each second.
+    fade: f32,
+    /// Keeps tornados from all turning alike.
+    pub phase: f32,
+}
+
+/// One tongue of a flame tower's blast, adding its light to what is behind it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flamelet {
+    pub position: Point,
+    velocity: Point,
+    /// How wide it is, in world units.
+    pub size: f32,
+    /// How near the middle of the cone it set off: 1 right down the middle, 0 at the edge.
+    pub heat: f32,
+    /// From 1 when it is made down to 0.
+    pub life: f32,
+    /// How much life it loses each second.
+    fade: f32,
+}
+
+/// One of a huge walker's rockets, waiting for its turn to leave the rack.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WalkerRocket {
+    walker_id: u32,
+    tube: usize,
+    /// Seconds until it goes.
+    wait: f32,
+    target_id: u32,
+    place: Option<Point>,
+}
+
+/// What is left where a cistern burst: it chokes infantry until it thins out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GasCloud {
+    center: Point,
+    /// Seconds left.
+    life: f32,
+    /// Thrown by order at a place or a friend, it spares nobody.
+    hurts_all: bool,
+    shooter: Shooter,
+}
+
+/// A soft wisp hanging in the air: vapor off a wing, or dust off the sand.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wisp {
+    pub position: Point,
+    velocity: Point,
+    /// How wide it is, in world units.
+    pub size: f32,
+    pub color: [f32; 3],
+    /// From 1 when it is made down to 0.
+    pub life: f32,
+    /// How much life it loses each second.
+    fade: f32,
+}
+
 /// How long the pieces of a destroyed vehicle stay in the air and on the ground.
 pub const SHATTER_SECONDS: f32 = 2.4;
 const SHATTERS_AT_MOST: usize = 16;
@@ -620,6 +771,15 @@ pub struct Combat {
     pub sprays: Vec<Spray>,
     pub blasts: Vec<Blast>,
     pub particles: Vec<Particle>,
+    pub wisps: Vec<Wisp>,
+    pub flamelets: Vec<Flamelet>,
+    gas_clouds: Vec<GasCloud>,
+    walker_rockets: Vec<WalkerRocket>,
+    pub tornados: Vec<Tornado>,
+    /// How long until another tornado may spin up.
+    tornado_wait: f32,
+    /// Where tornados get their wandering from, apart from the explosions' scatter.
+    tornado_random: u32,
     pub eruptions: Vec<Eruption>,
     pub streaks: Vec<GunStreak>,
     pub wrecks: Vec<Wreck>,
@@ -631,6 +791,11 @@ pub struct Combat {
     random: u32,
     pub strikes: Vec<Strike>,
     pub poison: Vec<PoisonZone>,
+}
+
+/// What dust thrown up from the land looks like: paler than the land, which would hide it.
+pub fn dust_color(terrain: &Terrain) -> [f32; 3] {
+    terrain.lowland_color().map(|c| c + (1.0 - c) * 0.35)
 }
 
 impl Combat {
@@ -828,7 +993,11 @@ impl Combat {
     /// Lets an aircraft fall from where it was shot down, with the way it had on it.
     pub fn shoot_down(&mut self, unit: &Unit) {
         let mut random = self.random | 1;
-        let along = if unit.is_moving() { unit.speed() } else { 0.0 };
+        let along = if unit.is_under_way() {
+            unit.speed()
+        } else {
+            0.0
+        };
         let (sin, cos) = unit.heading.sin_cos();
         let mut wreck = *unit;
         // It stays alive only for what it looks like: all burnt and on fire.
@@ -1157,13 +1326,222 @@ impl Combat {
             shatter.age < SHATTER_SECONDS
         });
         self.weld(units, dt);
+        self.raise_wisps(units, terrain, dt);
+        self.bite_with_drills(units, terrain, dt);
+    }
+
+    /// Sparks and dust thrown up from where an MCV is boring its drill into the ground.
+    fn bite_with_drills(&mut self, units: &[Unit], terrain: &Terrain, dt: f32) {
+        const SPARKS_PER_SECOND: f32 = 90.0;
+        const DUST_PER_SECOND: f32 = 120.0;
+        if !units.iter().any(Unit::drill_is_biting) {
+            return;
+        }
+        let dust = dust_color(terrain);
+        let mut random = self.random | 1;
+        for unit in units.iter().filter(|u| u.drill_is_biting()) {
+            let bite = unit.drill_bite();
+            let mut next = || next_random(&mut random);
+            for _ in 0..(SPARKS_PER_SECOND * dt + next()) as usize {
+                if self.particles.len() >= PARTICLES_ALIVE_AT_MOST {
+                    break;
+                }
+                let (sin, cos) = (next() * TAU).sin_cos();
+                let speed = 1.5 + next() * 3.5;
+                self.particles.push(Particle {
+                    position: bite,
+                    velocity: (cos * speed, 1.5 + next() * 3.5, sin * speed),
+                    size: (0.5 + next()) * 0.06,
+                    smoke: false,
+                    flame: false,
+                    life: 1.0,
+                    fade: 1.0 / (0.25 + next() * 0.35),
+                });
+            }
+            for _ in 0..(DUST_PER_SECOND * dt + next()) as usize {
+                if self.wisps.len() >= WISPS_ALIVE_AT_MOST {
+                    break;
+                }
+                let (sin, cos) = (next() * TAU).sin_cos();
+                let speed = 0.8 + next() * 1.6;
+                self.wisps.push(Wisp {
+                    position: bite,
+                    velocity: (cos * speed, 0.8 + next() * 1.8, sin * speed),
+                    size: 0.25 + next() * 0.25,
+                    color: dust,
+                    life: 1.0,
+                    fade: 0.9 + next() * 0.6,
+                });
+            }
+        }
+        self.random = random;
+    }
+
+    /// Spins up the odd tornado, walks those there are over the land, and throws up dust where
+    /// each touches the ground.
+    pub fn stir_tornados(&mut self, terrain: &Terrain, dt: f32) {
+        const AT_ONCE: usize = 3;
+        const SPEED: f32 = 2.0;
+        const DUST_PER_SECOND: f32 = 40.0;
+        let mut random = self.tornado_random | 1;
+        self.tornado_wait -= dt;
+        if self.tornado_wait <= 0.0 && self.tornados.len() < AT_ONCE {
+            self.tornado_wait = 4.0 + next_random(&mut random) * 8.0;
+            let (x, z) = terrain.random_point(&mut random);
+            if terrain.can_walk(x, z) {
+                self.tornados.push(Tornado {
+                    at: (x, terrain.height_at(x, z), z),
+                    heading: next_random(&mut random) * TAU,
+                    life: 1.0,
+                    fade: 1.0 / (18.0 + next_random(&mut random) * 16.0),
+                    phase: next_random(&mut random) * TAU,
+                });
+            }
+        }
+        let dust = dust_color(terrain);
+        let mut wisps = Vec::new();
+        for tornado in &mut self.tornados {
+            let mut next = || next_random(&mut random);
+            tornado.life -= tornado.fade * dt;
+            tornado.heading += (next() - 0.5) * 2.5 * dt;
+            let (sin, cos) = tornado.heading.sin_cos();
+            let (x, z) = (
+                tornado.at.0 + cos * SPEED * dt,
+                tornado.at.2 + sin * SPEED * dt,
+            );
+            if terrain.can_walk(x, z) {
+                tornado.at = (x, terrain.height_at(x, z), z);
+            } else {
+                tornado.heading += PI * (0.5 + next());
+            }
+            for _ in 0..(DUST_PER_SECOND * dt + next()) as usize {
+                let (sin, cos) = (next() * TAU).sin_cos();
+                let (reach, swirl) = (0.2 + next() * 0.6, 1.4 + next() * 1.2);
+                wisps.push(Wisp {
+                    position: (
+                        tornado.at.0 + cos * reach,
+                        tornado.at.1 + 0.08,
+                        tornado.at.2 + sin * reach,
+                    ),
+                    velocity: (
+                        -sin * swirl + cos * 0.5,
+                        0.5 + next() * 0.9,
+                        cos * swirl + sin * 0.5,
+                    ),
+                    size: 0.18 + next() * 0.18,
+                    color: dust,
+                    life: 1.0,
+                    fade: 1.0 + next() * 0.7,
+                });
+            }
+        }
+        self.tornados.retain(|t| t.life > 0.0);
+        self.tornado_random = random;
+        wisps.truncate(WISPS_ALIVE_AT_MOST.saturating_sub(self.wisps.len()));
+        self.wisps.append(&mut wisps);
+    }
+
+    /// Lets the wisps in the air drift and thin, and adds vapor behind the wing ends of the
+    /// carryalls under way and dust behind what rolls over the sand.
+    fn raise_wisps(&mut self, units: &[Unit], terrain: &Terrain, dt: f32) {
+        const VAPOR_PER_SECOND: f32 = 30.0;
+        const DUST_PER_SECOND: f32 = 14.0;
+        const EXHAUST_PER_SECOND: f32 = 9.0;
+        const VAPOR: [f32; 3] = [0.94, 0.96, 1.0];
+        for wisp in &mut self.wisps {
+            wisp.position.0 += wisp.velocity.0 * dt;
+            wisp.position.1 += wisp.velocity.1 * dt;
+            wisp.position.2 += wisp.velocity.2 * dt;
+            wisp.life -= wisp.fade * dt;
+        }
+        self.wisps.retain(|w| w.life > 0.0);
+        let leaves_vapor = |u: &Unit| u.role == Role::AdvancedCarryall && u.is_moving();
+        let smokes = |u: &Unit| {
+            u.role == Role::Factory
+                && u.house == Faction::H
+                && u.alive
+                && !u.is_under_construction()
+        };
+        let raises_dust =
+            |u: &Unit| u.role.rolls() && u.is_moving() && !terrain.on_upper_ground(u.x, u.z);
+        if !units
+            .iter()
+            .any(|u| leaves_vapor(u) || raises_dust(u) || smokes(u))
+        {
+            return;
+        }
+        let dust = dust_color(terrain);
+        let mut random = self.random | 1;
+        let mut wisps = Vec::new();
+        for unit in units {
+            let mut next = || next_random(&mut random);
+            if leaves_vapor(unit) {
+                for tip in unit.wing_tips() {
+                    for _ in 0..(VAPOR_PER_SECOND * dt + next()) as usize {
+                        wisps.push(Wisp {
+                            position: tip,
+                            velocity: (0.0, -0.1, 0.0),
+                            size: 0.07 + next() * 0.05,
+                            color: VAPOR,
+                            life: 1.0,
+                            fade: 1.1 + next() * 0.5,
+                        });
+                    }
+                }
+            }
+            if smokes(unit) {
+                for _ in 0..(EXHAUST_PER_SECOND * dt + next()) as usize {
+                    wisps.push(Wisp {
+                        position: unit.exhaust_tip(),
+                        velocity: (
+                            (next() - 0.5) * 0.3 + 0.15,
+                            0.8 + next() * 0.5,
+                            (next() - 0.5) * 0.3,
+                        ),
+                        size: 0.2 + next() * 0.16,
+                        color: [0.2 + next() * 0.14; 3],
+                        life: 1.0,
+                        fade: 0.3 + next() * 0.25,
+                    });
+                }
+            }
+            if raises_dust(unit) {
+                let (sin, cos) = unit.heading.sin_cos();
+                let reach = unit.radius();
+                for _ in 0..(DUST_PER_SECOND * dt + next()) as usize {
+                    let across = (next() - 0.5) * 2.0 * reach;
+                    wisps.push(Wisp {
+                        position: (
+                            unit.x - cos * reach - sin * across,
+                            unit.y + 0.08,
+                            unit.z - sin * reach + cos * across,
+                        ),
+                        velocity: (
+                            -cos * 0.4 + (next() - 0.5) * 0.5,
+                            0.3 + next() * 0.5,
+                            -sin * 0.4 + (next() - 0.5) * 0.5,
+                        ),
+                        size: 0.16 + next() * 0.14,
+                        color: dust,
+                        life: 1.0,
+                        fade: 1.0 + next() * 0.6,
+                    });
+                }
+            }
+        }
+        self.random = random;
+        let room = WISPS_ALIVE_AT_MOST.saturating_sub(self.wisps.len());
+        wisps.truncate(room);
+        self.wisps.append(&mut wisps);
     }
 
     /// Sparks and flashes from the few places being welded on what is going up.
     fn weld(&mut self, units: &[Unit], dt: f32) {
         const SPARKS_PER_SECOND: f32 = 110.0;
-        let welding =
-            |u: &&Unit| u.is_under_construction() && (0.08..=0.92).contains(&u.construction_done());
+        let welding = |u: &&Unit| {
+            u.is_under_construction()
+                && (CONSTRUCTION_UP..=CONSTRUCTION_DOWN).contains(&u.construction_done())
+        };
         if !units.iter().any(|u| welding(&u)) {
             return;
         }
@@ -1255,12 +1633,15 @@ impl Combat {
 
     fn step(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
         self.fire(units, teams, terrain, dt);
+        self.launch_walker_rockets(units, dt);
         self.set_off_suicides(units, teams);
+        self.set_off_walkers(units, terrain);
         cut_with_saws(units, teams, dt);
         self.fly_missiles(units, teams, terrain, dt);
         self.fly_shells(units, teams, dt);
         self.fall_strikes(units, terrain, dt);
         self.poison_land(units, dt);
+        self.linger_gas(units, teams, dt);
         heal_veterans(units, dt);
         ease_recoil(units, dt);
         fade(&mut self.beams, dt / BEAM_SECONDS, |b| &mut b.life);
@@ -1269,6 +1650,7 @@ impl Combat {
         fade(&mut self.sprays, dt / SPRAY_SECONDS, |s| &mut s.life);
         fade(&mut self.blasts, dt / BLAST_SECONDS, |b| &mut b.life);
         self.fly_particles(terrain, dt);
+        self.fly_flamelets(dt);
     }
 
     fn fire(&mut self, units: &mut [Unit], teams: &[usize], terrain: &Terrain, dt: f32) {
@@ -1322,7 +1704,11 @@ impl Combat {
         if units[i].role.rocket_load().is_some() {
             units[i].rockets_fired += 1;
         }
-        let from = units[i].muzzle();
+        let from = if weapon == WeaponKind::Plasma {
+            units[i].gun_tip()
+        } else {
+            units[i].muzzle()
+        };
         let shooter = Shooter::of(&units[i]);
         let (to, target) = match aim {
             Aim::Unit(t) => (units[t].center(), Some(t)),
@@ -1350,13 +1736,15 @@ impl Combat {
             | WeaponKind::Sniper
             | WeaponKind::Pistol
             | WeaponKind::Cannon
-            | WeaponKind::AutoGun => {
+            | WeaponKind::AutoGun
+            | WeaponKind::PostGun
+            | WeaponKind::TowerGun => {
                 strike(units, i, target, to, weapon, teams);
                 // Twin guns take turns.
                 units[i].second_tube ^= has_twin_guns(&units[i]);
             }
             WeaponKind::Flame | WeaponKind::Gas => self.spray(units, i, teams, forced),
-            WeaponKind::Laser => {
+            WeaponKind::Laser | WeaponKind::RapidLaser => {
                 strike(units, i, target, to, weapon, teams);
                 self.beams.push(Beam {
                     from,
@@ -1381,12 +1769,14 @@ impl Combat {
             WeaponKind::Missile
             | WeaponKind::AirMissile
             | WeaponKind::Rockets
-            | WeaponKind::HeavyRockets => {
+            | WeaponKind::HeavyRockets
+            | WeaponKind::TowerRockets
+            | WeaponKind::Plasma => {
                 // From the ground it is launched upward, so that it visibly rises and turns
                 // towards its target. From the air it has a clear shot.
                 let (dx, dz) = (to.0 - from.0, to.2 - from.2);
                 let flat = dx.hypot(dz).max(0.0001);
-                let direction = if units[i].altitude > 0.0 {
+                let direction = if units[i].altitude > 0.0 || weapon == WeaponKind::Plasma {
                     direction_to(from, to)
                 } else if units[i].role == Role::Tower {
                     // A tower's missiles leave the way its tubes point.
@@ -1406,8 +1796,17 @@ impl Combat {
                     fuel: MISSILE_FUEL_SECONDS,
                 });
                 units[i].second_tube = !units[i].second_tube;
+                if weapon == WeaponKind::Plasma && !units[i].second_tube {
+                    self.walker_rockets.extend((0..3).map(|tube| WalkerRocket {
+                        walker_id: units[i].id,
+                        tube,
+                        wait: tube as f32 * WALKER_ROCKET_GAP_SECONDS,
+                        target_id: target.map_or(NO_UNIT, |t| units[t].id),
+                        place: target.is_none().then_some(to),
+                    }));
+                }
             }
-            WeaponKind::Mortar | WeaponKind::Bombard | WeaponKind::Siege => {
+            WeaponKind::Mortar | WeaponKind::Bombard | WeaponKind::Siege | WeaponKind::Cistern => {
                 let flat = (to.0 - from.0).hypot(to.2 - from.2);
                 let (speed, arc) = match weapon {
                     WeaponKind::Bombard => (BOMBARD_SPEED, BOMBARD_ARC),
@@ -1471,6 +1870,10 @@ impl Combat {
                     hit(units, index, unit.weapon, Shooter::of(&unit), teams);
                 }
             }
+            if unit.role == Role::FlameTower {
+                self.gush_flamelets(unit.nozzle(nozzle), heading, reach, half_angle);
+                continue;
+            }
             self.sprays.push(Spray {
                 from: unit.nozzle(nozzle),
                 heading,
@@ -1480,6 +1883,152 @@ impl Combat {
                 life: 1.0,
             });
         }
+    }
+
+    /// A flame tower's blast: uneven tongues of fire, more of them down the middle of the cone.
+    fn gush_flamelets(&mut self, from: Point, heading: f32, reach: f32, half_angle: f32) {
+        let mut random = self.random | 1;
+        let mut next = || next_random(&mut random);
+        let room = FLAMELETS_ALIVE_AT_MOST.saturating_sub(self.flamelets.len());
+        for _ in 0..FLAMELETS_PER_GUSH.min(room) {
+            let off_center = next() + next() - 1.0;
+            let (sin, cos) = (heading + off_center * half_angle).sin_cos();
+            let fade = 1.6 + next() * 1.8;
+            let speed = reach * fade * (0.7 + next() * 0.4);
+            self.flamelets.push(Flamelet {
+                position: from,
+                velocity: (
+                    cos * speed,
+                    (FLAMELET_FALLS_TO - from.1) * fade * (0.5 + next()),
+                    sin * speed,
+                ),
+                size: 0.16 + next() * next() * 0.5,
+                heat: 1.0 - off_center.abs(),
+                life: 1.0,
+                fade,
+            });
+        }
+        self.random = random;
+    }
+
+    fn fly_flamelets(&mut self, dt: f32) {
+        for flamelet in &mut self.flamelets {
+            flamelet.position.0 += flamelet.velocity.0 * dt;
+            flamelet.position.1 += flamelet.velocity.1 * dt;
+            flamelet.position.2 += flamelet.velocity.2 * dt;
+            flamelet.life -= flamelet.fade * dt;
+        }
+        self.flamelets.retain(|f| f.life > 0.0);
+    }
+
+    /// A huge walker's rockets leave their tubes one by one, for as long as it is alive and
+    /// what they are meant for is there.
+    fn launch_walker_rockets(&mut self, units: &[Unit], dt: f32) {
+        let mut waiting = Vec::with_capacity(self.walker_rockets.len());
+        for mut rocket in std::mem::take(&mut self.walker_rockets) {
+            rocket.wait -= dt;
+            if rocket.wait > 0.0 {
+                waiting.push(rocket);
+                continue;
+            }
+            let walker = units.iter().find(|u| u.alive && u.id == rocket.walker_id);
+            let target = units.iter().find(|u| u.alive && u.id == rocket.target_id);
+            let (Some(walker), Some(goal)) =
+                (walker, rocket.place.or_else(|| target.map(Unit::center)))
+            else {
+                continue;
+            };
+            let position = walker.walker_rocket_tubes()[rocket.tube];
+            let (dx, dz) = (goal.0 - position.0, goal.2 - position.2);
+            let flat = dx.hypot(dz).max(0.0001);
+            self.missiles.push(Missile {
+                position,
+                direction: direction_to((0.0, 0.0, 0.0), (dx / flat, 0.8, dz / flat)),
+                weapon: WeaponKind::Rockets,
+                target_id: rocket.target_id,
+                place: rocket.place,
+                shooter: Shooter::of(walker),
+                fuel: MISSILE_FUEL_SECONDS,
+            });
+        }
+        self.walker_rockets = waiting;
+    }
+
+    /// Lets this much green vapor out over a cloud of gas, on average, drifting at this speed.
+    fn vent_gas(&mut self, (x, y, z): Point, amount: f32, speed: f32) {
+        let mut random = self.random | 1;
+        let mut next = || next_random(&mut random);
+        let room = WISPS_ALIVE_AT_MOST.saturating_sub(self.wisps.len());
+        for _ in 0..((amount + next()) as usize).min(room) {
+            let (sin, cos) = (next() * TAU).sin_cos();
+            let away = next().sqrt() * GAS_CLOUD_RADIUS * 0.7;
+            let drift = speed * (0.5 + next());
+            self.wisps.push(Wisp {
+                position: (x + cos * away, y + 0.1 + next() * 0.5, z + sin * away),
+                velocity: (cos * drift, 0.15 + next() * 0.45, sin * drift),
+                size: 0.3 + next() * 0.4,
+                color: [
+                    0.25 + next() * 0.3,
+                    0.75 + next() * 0.2,
+                    0.15 + next() * 0.2,
+                ],
+                life: 1.0,
+                fade: 0.7 + next() * 0.8,
+            });
+        }
+        self.random = random;
+    }
+
+    /// Clouds of gas choke the infantry in them, and keep giving off vapor while they last.
+    fn linger_gas(&mut self, units: &mut [Unit], teams: &[usize], dt: f32) {
+        for c in 0..self.gas_clouds.len() {
+            self.gas_clouds[c].life -= dt;
+            let cloud = self.gas_clouds[c];
+            let (x, _, z) = cloud.center;
+            for index in 0..units.len() {
+                let unit = units[index];
+                if unit.alive
+                    && unit.kind == UnitKind::Infantry
+                    && (cloud.hurts_all || are_enemies(teams, cloud.shooter.owner, unit.owner))
+                    && (unit.x - x).hypot(unit.z - z) <= GAS_CLOUD_RADIUS
+                {
+                    let damage = GAS_DAMAGE_PER_SECOND * cloud.shooter.power * dt;
+                    harm(units, index, damage, cloud.shooter, teams);
+                }
+            }
+            self.vent_gas(cloud.center, GAS_VAPOR_PER_SECOND * dt, 0.3);
+        }
+        self.gas_clouds.retain(|c| c.life > 0.0);
+    }
+
+    /// A deployed huge walker destroys itself, as the superweapon would destroy that place.
+    fn set_off_walkers(&mut self, units: &mut [Unit], terrain: &Terrain) {
+        for i in 0..units.len() {
+            if units[i].alive && units[i].deployed && units[i].role == Role::HugeWalker {
+                let (x, z) = (units[i].x, units[i].z);
+                hurt(&mut units[i], f32::INFINITY);
+                self.devastate(units, terrain, x, z);
+            }
+        }
+    }
+
+    /// What the superweapon does where it falls: burns everyone around, friend or foe, goes up
+    /// in the biggest of explosions and leaves the land poisoned.
+    fn devastate(&mut self, units: &mut [Unit], terrain: &Terrain, x: f32, z: f32) {
+        // Radiation does not care whose units stand there.
+        for unit in units.iter_mut().filter(|u| u.alive) {
+            let away = (unit.x - x).hypot(unit.z - z);
+            if away < STRIKE_RADIUS {
+                hurt(unit, STRIKE_DAMAGE * (1.0 - away / STRIKE_RADIUS * 0.5));
+            }
+        }
+        let ground = terrain.height_at(x, z).max(0.0);
+        self.explode_superweapon((x, ground, z), STRIKE_RADIUS);
+        self.poison.push(PoisonZone {
+            x,
+            z,
+            life: POISON_SECONDS,
+        });
     }
 
     /// A deployed suicide infantry blows up, harming everyone around it, friend or foe, and
@@ -1520,7 +2069,11 @@ impl Combat {
             }
             let (x, y, z) = missile.position;
             let (dx, dy, dz) = missile.direction;
-            let step = MISSILE_SPEED * dt;
+            let step = if missile.weapon == WeaponKind::Plasma {
+                PLASMA_SPEED * dt
+            } else {
+                MISSILE_SPEED * dt
+            };
             missile.position = (x + dx * step, y + dy * step, z + dz * step);
             missile.fuel -= dt;
 
@@ -1545,7 +2098,10 @@ impl Combat {
                 self.explode(missile.position, MISSILE_BLAST_RADIUS);
             } else if let Some(t) = reached {
                 hit(units, t, missile.weapon, missile.shooter, teams);
-                if missile.weapon == WeaponKind::HeavyRockets {
+                if matches!(
+                    missile.weapon,
+                    WeaponKind::HeavyRockets | WeaponKind::Plasma
+                ) {
                     // It hurts the shooter's enemies around its target as well, by half.
                     let damage = missile.weapon.damage() * missile.shooter.power * 0.5;
                     for index in (0..units.len()).filter(|&index| index != t) {
@@ -1575,11 +2131,20 @@ impl Combat {
         let mut flying = Vec::with_capacity(self.shells.len());
         for mut shell in std::mem::take(&mut self.shells) {
             shell.elapsed += dt;
-            if shell.elapsed < shell.duration {
+            let is_up = shell.elapsed < shell.duration;
+            let burst = shell.weapon == WeaponKind::Cistern
+                && units.iter().any(|u| shell.bursts_on(u, teams));
+            if is_up && !burst {
                 flying.push(shell);
                 continue;
             }
+            let landing = if is_up {
+                shell.position()
+            } else {
+                shell.landing
+            };
             let blast_radius = match shell.weapon {
+                WeaponKind::Cistern => CISTERN_BLAST_RADIUS,
                 WeaponKind::Bombard => BOMBARD_BLAST_RADIUS,
                 WeaponKind::Siege => BOMBARD_BLAST_RADIUS * 1.2,
                 _ => SHELL_BLAST_RADIUS,
@@ -1590,7 +2155,7 @@ impl Combat {
                 if unit.alive
                     && (shell.hurts_all || are_enemies(teams, shell.shooter.owner, unit.owner))
                 {
-                    let away = distance(shell.landing, unit.center());
+                    let away = distance(landing, unit.center());
                     let reach = blast_radius + unit.radius();
                     if away < reach {
                         let damage = shell.weapon.damage()
@@ -1600,7 +2165,17 @@ impl Combat {
                     }
                 }
             }
-            self.explode(shell.landing, blast_radius);
+            if shell.weapon == WeaponKind::Cistern {
+                self.vent_gas(landing, GAS_VAPOR_AT_BURST, 2.2);
+                self.gas_clouds.push(GasCloud {
+                    center: landing,
+                    life: GAS_CLOUD_SECONDS,
+                    hurts_all: shell.hurts_all,
+                    shooter: shell.shooter,
+                });
+            } else {
+                self.explode(landing, blast_radius);
+            }
         }
         self.shells = flying;
     }
@@ -1613,20 +2188,7 @@ impl Combat {
                 falling.push(strike);
                 continue;
             }
-            // Radiation does not care whose units stand there.
-            for unit in units.iter_mut().filter(|u| u.alive) {
-                let away = (unit.x - strike.x).hypot(unit.z - strike.z);
-                if away < STRIKE_RADIUS {
-                    hurt(unit, STRIKE_DAMAGE * (1.0 - away / STRIKE_RADIUS * 0.5));
-                }
-            }
-            let ground = terrain.height_at(strike.x, strike.z).max(0.0);
-            self.explode_superweapon((strike.x, ground, strike.z), STRIKE_RADIUS);
-            self.poison.push(PoisonZone {
-                x: strike.x,
-                z: strike.z,
-                life: POISON_SECONDS,
-            });
+            self.devastate(units, terrain, strike.x, strike.z);
         }
         self.strikes = falling;
     }
@@ -1730,9 +2292,21 @@ fn ease_recoil(units: &mut [Unit], dt: f32) {
 
 /// Units with a medal slowly win health back by themselves.
 fn heal_veterans(units: &mut [Unit], dt: f32) {
-    for unit in units.iter_mut().filter(|u| u.alive && u.rank() > 0) {
-        let healed = unit.health + VETERAN_HEALING * unit.rank() as f32 * dt;
-        unit.health = healed.min(unit.max_health());
+    for unit in units.iter_mut().filter(|u| u.alive) {
+        let healing = veteran_healing(unit);
+        if healing > 0.0 {
+            unit.health = (unit.health + healing * dt).min(unit.max_health());
+        }
+    }
+}
+
+/// How much health a unit gets back each second: from two medals up, or already from one in
+/// house O, and a good deal more with all three.
+fn veteran_healing(unit: &Unit) -> f32 {
+    match (unit.rank(), unit.house) {
+        (0, _) | (1, Faction::A | Faction::H) => 0.0,
+        (3.., _) => VETERAN_HEALING * 4.5,
+        (rank, _) => VETERAN_HEALING * rank as f32,
     }
 }
 
@@ -1749,7 +2323,7 @@ fn hurt(unit: &mut Unit, damage: f32) {
 fn must_turn_to_fire(unit: &Unit) -> bool {
     if matches!(
         unit.role,
-        Role::HugeTank | Role::DiskSaw | Role::SandBike | Role::FlameTank
+        Role::HugeWalker | Role::DiskSaw | Role::SandBike | Role::FlameTank
     ) {
         return true;
     }
@@ -1778,7 +2352,7 @@ fn spray_ways(unit: &Unit) -> &'static [f32] {
 
 /// Whether it fires two guns side by side in turn.
 fn has_twin_guns(unit: &Unit) -> bool {
-    matches!(unit.role, Role::GunTower | Role::DiskSaw | Role::HugeTank)
+    matches!(unit.role, Role::GunTower | Role::DiskSaw)
 }
 
 /// A disk saw's blade cuts down the enemy infantry it reaches.
@@ -1836,6 +2410,7 @@ fn turn_to_aim(units: &mut [Unit], index: usize, aim: Option<Aim>, dt: f32) -> b
             if units[index].kind.is_building() {
                 units[index].heading += TOWER_IDLE_TURN * dt;
                 pitch_tubes(&mut units[index], 0.0, dt);
+                pop_turret(&mut units[index], false, dt);
             }
             return false;
         }
@@ -1853,10 +2428,24 @@ fn turn_to_aim(units: &mut [Unit], index: usize, aim: Option<Aim>, dt: f32) -> b
     let unit = &mut units[index];
     let pitched = unit.role != Role::Tower || {
         let rise = goal.1 - unit.y - TUBE_HEIGHT;
-        let wanted = (rise.atan2(dx.hypot(dz)) + TUBE_LOFT).clamp(TUBE_LOWEST, TUBE_HIGHEST);
+        let flat = dx.hypot(dz);
+        let loft = TUBE_LOFT + TUBE_LOFT_AT_RANGE * (flat / unit.weapon.range()).min(1.0);
+        let wanted = (rise.atan2(flat) + loft).clamp(TUBE_LOWEST, TUBE_HIGHEST);
         pitch_tubes(unit, wanted, dt)
     };
-    pitched && (turn - turned).abs() <= AIM_ALIGNMENT
+    let open = pop_turret(unit, true, dt);
+    pitched && open && (turn - turned).abs() <= AIM_ALIGNMENT
+}
+
+/// Brings a pop-up turret up out of the ground or sinks it back. Returns whether it is up.
+fn pop_turret(unit: &mut Unit, up: bool, dt: f32) -> bool {
+    if !unit.role.pops_up() {
+        return true;
+    }
+    let wanted = if up { 1.0 } else { 0.0 };
+    let most = dt / TURRET_POP_SECONDS;
+    unit.popped += (wanted - unit.popped).clamp(-most, most);
+    unit.popped >= 1.0
 }
 
 /// Raises or lowers a missile tower's tubes towards a pitch. Returns whether they are there.
@@ -2236,7 +2825,7 @@ mod tests {
         machine.kind = UnitKind::Aircraft;
         machine.role = Role::Ornithopter;
         machine.weapon = WeaponKind::Unarmed;
-        machine.altitude = crate::units::PAD_TOP;
+        machine.sit_on_pad(99);
         let mut units = [shooter(WeaponKind::Bullet), machine];
         let health = units[1].health;
         let mut combat = Combat::default();
@@ -2402,6 +2991,55 @@ mod tests {
         assert!(some.0 > plain.0 && some.1 > plain.1 && some.2 > plain.2);
         assert!(huge.0 > some.0 && huge.2 > some.2);
         assert_eq!(huge, blown(50.0), "up to a point");
+    }
+
+    #[test]
+    fn house_o_units_heal_from_their_first_medal() {
+        let mut unit = shooter(WeaponKind::Unarmed);
+        unit.experience = 2;
+        unit.health = 50.0;
+        unit.house = Faction::O;
+        let mut units = [unit];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 10.0);
+        assert!(units[0].health > 50.0);
+    }
+
+    #[test]
+    fn a_drone_killed_in_the_air_keeps_flying_on_its_way_as_it_falls() {
+        let mut drone = Unit::for_test(0.0, 60.0, UnitKind::Aircraft);
+        drone.role = Role::AirDrone;
+        drone.heading = 0.0;
+        drone.altitude = 3.0;
+        drone.alive = false;
+        let mut combat = Combat::default();
+        combat.shoot_down(&drone);
+        let mut units: [Unit; 0] = [];
+        run(&mut combat, &mut units, 0.4);
+        let wreck = combat.wrecks[0].unit;
+        assert!(wreck.x > 2.5, "on along its way: {}", wreck.x);
+        assert!(wreck.altitude < 3.0, "and coming down");
+    }
+
+    #[test]
+    fn a_rocket_tower_fires_two_rockets_in_quick_turn_and_then_reloads() {
+        let mut tower = as_role(Role::Tower, 0.0, 60.0);
+        tower.heading = 0.0;
+        let mut units = [tower, target_at(6.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.shoot(&mut units, 0, Aim::Unit(1), &TEAMS);
+        assert_eq!(
+            units[0].cooldown,
+            WeaponKind::TowerRockets.cooldown(),
+            "soon"
+        );
+        combat.shoot(&mut units, 0, Aim::Unit(1), &TEAMS);
+        assert_eq!(combat.missiles.len(), 2);
+        assert_eq!(units[0].cooldown, TOWER_RELOAD_SECONDS, "then it reloads");
+        assert!(
+            distance(combat.missiles[0].position, combat.missiles[1].position) > 0.2,
+            "one from each tube"
+        );
     }
 
     #[test]
@@ -2665,8 +3303,8 @@ mod tests {
     }
 
     #[test]
-    fn a_huge_tank_and_a_disk_saw_fire_their_twin_guns_in_turn() {
-        for role in [Role::HugeTank, Role::DiskSaw] {
+    fn a_disk_saw_fires_its_twin_guns_in_turn() {
+        for role in [Role::DiskSaw] {
             let mut units = [as_role(role, 0.0, 60.0), target_at(4.0, 60.0)];
             let mut combat = Combat::default();
             let mut fired_from = Vec::new();
@@ -2875,6 +3513,90 @@ mod tests {
         for _ in 0..(seconds / 0.05).round() as usize {
             combat.advance(units, &TEAMS, flat(), 0.05);
         }
+    }
+
+    fn under_way(role: Role, kind: UnitKind) -> Unit {
+        let mut unit = Unit::for_test(0.0, 60.0, kind);
+        unit.role = role;
+        unit.weapon = WeaponKind::Unarmed;
+        unit.destination = (30.0, 60.0);
+        unit
+    }
+
+    #[test]
+    fn tornados_come_along_on_their_own_stay_on_the_land_and_throw_up_dust_then_die_down() {
+        let terrain = Terrain::open_with_mountain(0.0, 60.0, 6.0);
+        let mut combat = Combat::default();
+        let mut seen = false;
+        for _ in 0..2000 {
+            combat.stir_tornados(&terrain, 0.05);
+            for tornado in &combat.tornados {
+                seen = true;
+                assert!(terrain.can_walk(tornado.at.0, tornado.at.2), "{tornado:?}");
+            }
+        }
+        assert!(seen);
+        assert!(combat.tornados.len() <= 3);
+        assert!(!combat.wisps.is_empty(), "dust where it touches down");
+    }
+
+    #[test]
+    fn a_drill_throws_up_sparks_and_dust_only_while_it_bites() {
+        let mut mcv = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        mcv.role = Role::Mcv;
+        mcv.weapon = WeaponKind::Unarmed;
+        mcv.health = mcv.max_health();
+        let mut units = [mcv];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.2);
+        assert_eq!(combat, Combat::default(), "not while it drives");
+        units[0].deployment = crate::units::Deployment::Drilling;
+        units[0].constructing = crate::units::CONSTRUCTION_SECONDS * 0.5;
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.1);
+        assert!(!combat.particles.is_empty() && !combat.wisps.is_empty());
+    }
+
+    #[test]
+    fn a_carryall_under_way_trails_vapor_from_both_wing_ends_and_stopped_it_does_not() {
+        let mut units = [under_way(Role::AdvancedCarryall, UnitKind::Aircraft)];
+        units[0].altitude = 4.0;
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.5);
+        let tips = units[0].wing_tips();
+        assert_eq!(tips[0].1, tips[1].1, "level wings");
+        for tip in tips {
+            assert!(
+                combat.wisps.iter().any(|w| w.position.2 == tip.2),
+                "from {tip:?}"
+            );
+        }
+        let mut units = [under_way(Role::AdvancedCarryall, UnitKind::Aircraft)];
+        units[0].destination = (units[0].x, units[0].z);
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.5);
+        assert_eq!(combat.wisps, []);
+    }
+
+    #[test]
+    fn what_rolls_raises_dust_on_sand_and_what_walks_or_stands_does_not() {
+        let raised = |unit: Unit, terrain: &Terrain| {
+            let mut units = [unit];
+            let mut combat = Combat::default();
+            for _ in 0..10 {
+                combat.advance(&mut units, &TEAMS, terrain, 0.05);
+            }
+            !combat.wisps.is_empty()
+        };
+        let sand = flat();
+        let tank = under_way(Role::Tank, UnitKind::Vehicle);
+        assert!(raised(tank, sand), "tracks on sand");
+        assert!(raised(under_way(Role::SandBike, UnitKind::Vehicle), sand));
+        assert!(!raised(tank, &Terrain::open_upland()), "tracks on rock");
+        assert!(!raised(under_way(Role::Mongoose, UnitKind::Vehicle), sand));
+        let mut parked = tank;
+        parked.destination = (parked.x, parked.z);
+        assert!(!raised(parked, sand), "standing still");
     }
 
     #[test]
@@ -3717,11 +4439,13 @@ mod tests {
             "it faces south: {}",
             units[0].heading
         );
-        let (nozzle, center) = (combat.sprays[0].from, units[0].heading);
+        let (nozzle, center) = (units[0].muzzle(), units[0].heading);
         assert!(
             (nozzle.0 - center.cos() * 0.7).abs() < 0.01,
             "straight ahead of it"
         );
+        assert!(combat.sprays.is_empty(), "no wedge of flat color");
+        assert!(!combat.flamelets.is_empty(), "but tongues of fire");
     }
 
     #[test]
@@ -4005,12 +4729,19 @@ mod tests {
             units[0].health
         };
         assert_eq!(hurt_for_ten_seconds(0), 50.0);
-        let (one_medal, three) = (hurt_for_ten_seconds(2), hurt_for_ten_seconds(10));
-        assert!(one_medal > 50.0 && one_medal < 65.0, "slowly: {one_medal}");
-        assert!(three > one_medal, "faster with more medals");
+        assert_eq!(hurt_for_ten_seconds(2), 50.0, "one medal is not enough");
+        let (two_medals, three) = (hurt_for_ten_seconds(5), hurt_for_ten_seconds(10));
+        assert!(
+            two_medals > 50.0 && two_medals < 75.0,
+            "slowly: {two_medals}"
+        );
+        assert!(
+            three - 50.0 > (two_medals - 50.0) * 1.5,
+            "much faster with all three"
+        );
 
         let mut unit = shooter(WeaponKind::Unarmed);
-        unit.experience = 2;
+        unit.experience = 5;
         unit.health = unit.max_health() - 0.01;
         let mut units = [unit];
         let mut combat = Combat::default();
@@ -4149,6 +4880,192 @@ mod tests {
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
         }
         assert_eq!(units[0].tube_pitch, 0.0);
+    }
+
+    #[test]
+    fn a_gas_tower_only_aims_at_infantry() {
+        let tower = as_role(Role::GasTower, 0.0, 60.0);
+        let mut tank = target_at(4.0, 60.0);
+        tank.kind = UnitKind::Vehicle;
+        assert!(tower.can_attack(&target_at(4.0, 60.0), &TEAMS));
+        assert!(!tower.can_attack(&tank, &TEAMS));
+        assert!(!tower.can_fire_on(&tank));
+        let mut units = [tower, tank];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 6.0);
+        assert!(combat.shells.is_empty() && combat.wisps.is_empty());
+        assert_eq!(units[1].health, units[1].max_health());
+    }
+
+    #[test]
+    fn a_cistern_bursts_into_green_vapor_that_kills_infantry_and_barely_scratches_vehicles() {
+        let tower = as_role(Role::GasTower, 0.0, 60.0);
+        let soldier = target_at(5.0, 60.0);
+        let mut tank = target_at(5.5, 60.0);
+        tank.id = 3;
+        tank.kind = UnitKind::Vehicle;
+        let mut units = [tower, soldier, tank];
+        let mut combat = Combat::default();
+        let mut vapor_seen = false;
+        for _ in 0..120 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            vapor_seen |= combat.wisps.iter().any(|w| w.color[1] > w.color[0] * 1.3);
+        }
+        assert!(vapor_seen, "green vapor");
+        assert!(!units[1].alive, "the soldier is dead");
+        assert!(units[2].alive);
+        assert!(
+            units[2].max_health() - units[2].health <= WeaponKind::Cistern.damage() * 3.0,
+            "{}",
+            units[2].health
+        );
+    }
+
+    #[test]
+    fn a_cistern_bursts_on_what_it_touches_on_its_way() {
+        let thrower = shooter(WeaponKind::Cistern);
+        let mut units = [thrower, target_at(6.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert_eq!(combat.shells.len(), 1);
+        let (x, y, z) = combat.shells[0].position();
+        units[1].x = x;
+        units[1].y = y - crate::units::HEIGHT / 2.0;
+        units[1].z = z;
+        combat.advance(&mut units, &TEAMS, flat(), 0.01);
+        assert!(combat.shells.is_empty(), "it burst in the air");
+        assert_eq!(combat.gas_clouds.len(), 1);
+    }
+
+    #[test]
+    fn the_lesser_gun_post_stays_off_aircraft_and_the_machine_gun_tower_matches_rocket_reach() {
+        assert!(!WeaponKind::PostGun.can_target(1.0));
+        assert!(WeaponKind::TowerGun.can_target(1.0));
+        assert_eq!(
+            WeaponKind::TowerGun.range(),
+            as_role(Role::Tower, 0.0, 60.0).weapon.range()
+        );
+        assert!(WeaponKind::PostGun.range() < WeaponKind::Missile.range() * 0.75);
+        assert!(!WeaponKind::Flame.can_target(SPRAY_CEILING + 0.5));
+    }
+
+    #[test]
+    fn a_laser_tower_cannot_be_seen_until_it_fires_and_fires_often() {
+        let mut tower = as_role(Role::LaserTower, 0.0, 60.0);
+        tower.heading = 0.0;
+        assert!(tower.is_cloaked());
+        assert!(WeaponKind::RapidLaser.cooldown() < WeaponKind::Laser.cooldown() / 3.0);
+        assert!(WeaponKind::RapidLaser.range() < WeaponKind::Laser.range());
+        let mut units = [tower, target_at(4.0, 60.0)];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 2.0);
+        assert!(units[1].health < 100.0);
+        assert!(!units[0].is_cloaked(), "firing gave it away");
+    }
+
+    #[test]
+    fn a_flame_towers_fire_is_hottest_down_the_middle_and_all_of_it_dies_away() {
+        let mut flame = as_role(Role::FlameTower, 0.0, 60.0);
+        flame.heading = 0.0;
+        let mut units = [flame, target_at(3.0, 60.0)];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.4);
+        let heats: Vec<f32> = combat.flamelets.iter().map(|f| f.heat).collect();
+        assert!(heats.iter().any(|&h| h > 0.7) && heats.iter().any(|&h| h < 0.3));
+        let sizes = combat.flamelets.iter().map(|f| f.size);
+        let (least, most) = sizes.fold((f32::MAX, 0.0_f32), |(a, b), s| (a.min(s), b.max(s)));
+        assert!(most > least * 1.5, "uneven: {least} {most}");
+        units[0].alive = false;
+        run(&mut combat, &mut units, 1.0);
+        assert!(combat.flamelets.is_empty());
+    }
+
+    #[test]
+    fn a_huge_walker_fires_plasma_from_each_gun_in_turn_and_three_rockets_one_by_one() {
+        let walker = as_role(Role::HugeWalker, 0.0, 60.0);
+        assert_eq!(walker.weapon, WeaponKind::Plasma);
+        let mut units = [walker, target_at(5.0, 60.0)];
+        let mut combat = Combat::default();
+        combat.shoot(&mut units, 0, Aim::Unit(1), &TEAMS);
+        assert_eq!(combat.missiles.len(), 1, "one gun and no rockets yet");
+        let first = combat.missiles[0].position;
+        combat.shoot(&mut units, 0, Aim::Unit(1), &TEAMS);
+        let rockets = |c: &Combat| {
+            c.missiles
+                .iter()
+                .filter(|m| m.weapon == WeaponKind::Rockets)
+                .count()
+        };
+        assert_eq!(rockets(&combat), 0, "they wait their turn");
+        combat.launch_walker_rockets(&units, 0.01);
+        assert_eq!(rockets(&combat), 1, "one");
+        combat.launch_walker_rockets(&units, WALKER_ROCKET_GAP_SECONDS);
+        assert_eq!(rockets(&combat), 2, "by one");
+        combat.launch_walker_rockets(&units, WALKER_ROCKET_GAP_SECONDS);
+        assert_eq!(rockets(&combat), 3);
+        assert!(combat.walker_rockets.is_empty());
+        assert!(combat.missiles[1].is_plasma());
+        assert!(
+            distance(first, combat.missiles[1].position) > 1.0,
+            "the other gun"
+        );
+    }
+
+    #[test]
+    fn a_deployed_huge_walker_destroys_all_around_it_like_the_superweapon() {
+        let mut walker = as_role(Role::HugeWalker, 0.0, 60.0);
+        let mut friend = as_role(Role::LightInfantry, 3.0, 60.0);
+        friend.id = 5;
+        let far = target_at(0.0, 60.0 + STRIKE_RADIUS + 2.0);
+        crate::units::switch_deployed(&mut walker);
+        assert_eq!(walker.weapon, WeaponKind::Unarmed);
+        let mut units = [walker, friend, far];
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert!(!units[0].alive, "it goes");
+        assert!(!units[1].alive, "and takes its friends");
+        assert!(units[2].alive && units[2].health == units[2].max_health());
+        assert_eq!(combat.poison.len(), 1);
+    }
+
+    #[test]
+    fn an_o_turret_lies_sunk_comes_up_before_it_fires_and_sinks_again() {
+        for role in [Role::GasTower, Role::LaserTower] {
+            let turret = as_role(role, 0.0, 60.0);
+            let low = turret.muzzle().1;
+            let mut units = [turret, target_at(4.0, 60.0)];
+            let mut combat = Combat::default();
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            assert!(units[0].popped > 0.0 && units[0].popped < 1.0, "{role:?}");
+            assert!(
+                combat.shells.is_empty() && combat.beams.is_empty(),
+                "{role:?} not up yet"
+            );
+            run(&mut combat, &mut units, 1.0);
+            assert_eq!(units[0].popped, 1.0);
+            assert!(
+                !combat.shells.is_empty() || !combat.beams.is_empty(),
+                "{role:?}"
+            );
+            assert!(units[0].muzzle().1 > low);
+            units[1].alive = false;
+            run(&mut combat, &mut units, 1.0);
+            assert_eq!(units[0].popped, 0.0, "{role:?}");
+        }
+    }
+
+    #[test]
+    fn only_an_h_factory_with_nothing_going_up_smokes_from_its_pipe() {
+        let mut units = [as_role(Role::Factory, 0.0, 60.0)];
+        units[0].constructing = 0.0;
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 2.0);
+        assert!(combat.wisps.is_empty(), "this one is of house A");
+        units[0].house = Faction::H;
+        run(&mut combat, &mut units, 2.0);
+        let tip = units[0].exhaust_tip();
+        assert!(!combat.wisps.is_empty());
+        assert!(combat.wisps.iter().all(|w| w.position.1 >= tip.1));
     }
 
     fn heavy_strider_facing_east() -> Unit {

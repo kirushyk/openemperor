@@ -2,11 +2,14 @@
 
 #[cfg(test)]
 use crate::battlefield::MAP_MIDDLE_Z;
-use crate::battlefield::{MapSize, RuinPiece, Terrain};
+use crate::battlefield::{
+    CELL_SIDE, RuinPiece, START_SPOTS, Terrain, grid_to_world, next_random, start_spots,
+    world_to_grid,
+};
 use crate::game::{Faction, TeamColor};
 use crate::weapons::WeaponKind;
 use std::cmp::Ordering;
-use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI, TAU};
+use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 /// About how tall a unit stands, in world units.
 pub const HEIGHT: f32 = 0.5;
@@ -147,9 +150,9 @@ const BUILDING_RADIUS: f32 = 1.2;
 /// The radius of an MCV on its tracks: far bigger than any other vehicle.
 const MCV_RADIUS: f32 = 1.0;
 /// How high the deck of a landing pad is, which is where a machine on it sits.
-pub const PAD_TOP: f32 = 0.14;
+pub const PAD_TOP: f32 = 1.1;
 /// How far a landing pad's deck reaches each way from its middle.
-pub const PAD_DECK: f32 = 0.95;
+pub const PAD_DECK: (f32, f32) = (1.0, 0.68);
 /// How long a landing pad takes to load one rocket, in seconds.
 const RELOAD_SECONDS: f32 = 1.2;
 /// How far from its pad a machine with rockets left no longer counts as using it.
@@ -159,7 +162,7 @@ const OVER_PAD: f32 = 0.5;
 /// How close to a pad a machine short of rockets gets a full one to make way, or goes to it.
 const PAD_NEARBY: f32 = 10.0;
 /// How far out, in rings so far apart, an MCV on the sand looks for upper ground to deploy on.
-const DEPLOY_SEARCH_RINGS: usize = 14;
+const DEPLOY_SEARCH_RINGS: usize = 60;
 const DEPLOY_SEARCH_STEP: f32 = 1.2;
 /// How far from its base's MCV a machine home from a mission sits down.
 const HOME_BESIDE: f32 = 3.2;
@@ -170,12 +173,14 @@ const HIGHER_GROUND_STEP: f32 = 1.5;
 const PAD_BESIDE: f32 = 2.8;
 /// How far from a pad a machine waiting for it no longer counts as beside it.
 const PAD_WAITS: f32 = 4.5;
-/// How far along the row of a group's buildings its landing pad stands, past the hangar.
+/// How far to one side of a group's middle its landing pad stands, and how far ahead of it.
 #[cfg(test)]
-const PAD_ALONG: f32 = -5.5;
-/// How far along the row of a group's buildings its MCV stands, past the barracks.
+const PAD_ALONG: f32 = -5.0;
 #[cfg(test)]
-const MCV_ALONG: f32 = 5.6;
+const PAD_AHEAD: f32 = 2.2;
+/// How far to the other side its MCV stands.
+#[cfg(test)]
+const MCV_ALONG: f32 = 5.4;
 /// How much of its health something must have lost to smoke, to show black stains, and to burn.
 pub const SMOKES_PAST: f32 = 0.25;
 pub const STAINS_PAST: f32 = 0.4;
@@ -188,9 +193,9 @@ const DOOR_MARGIN: f32 = 0.2;
 const DRIVE_OUT: f32 = 2.5;
 /// How far behind a group's middle its buildings stand, and how far apart.
 #[cfg(test)]
-const BUILDINGS_BEHIND: f32 = 3.6;
+const BUILDINGS_BEHIND: f32 = 4.8;
 #[cfg(test)]
-const BUILDING_SPREAD: f32 = 3.0;
+const BUILDING_SPREAD: f32 = 4.6;
 /// How high aircraft fly, in world units.
 const CRUISE_ALTITUDE: f32 = 4.0;
 /// World units per second that whatever lands goes up and comes down.
@@ -275,7 +280,7 @@ pub enum Role {
     /// House H's tank with two flamethrowers, at ten and at two o'clock.
     FlameTank,
     /// House H's huge tank with twin cannons.
-    HugeTank,
+    HugeWalker,
     /// House O's quick scouting machine on four long insect legs.
     Recon,
     /// House O's laser tank, gliding over the ground: it goes any way at once, turning slowly
@@ -293,6 +298,14 @@ pub enum Role {
     FlameTower,
     /// A tower with two machine guns side by side, firing fast at the ground and the air.
     GunTower,
+    /// A short-reaching post with one machine gun, for what is on the ground.
+    GunPost,
+    /// A low round turret that pops up to throw cisterns of gas at infantry.
+    GasTower,
+    /// A low round turret nobody sees until it fires, popping up with a quick laser.
+    LaserTower,
+    /// Sees the whole map with its radar, and shows enemies on the minimap.
+    Outpost,
     /// Makes infantry.
     Barracks,
     /// Makes ground vehicles.
@@ -303,6 +316,132 @@ pub enum Role {
     LandingPad,
     /// A house's own seat of power, without which its superweapon cannot fire.
     Palace(Faction),
+}
+
+/// The grid squares a building takes up, lined up with the map's diamond: `cols` squares along
+/// the grid axis running south-east and `rows` along the one running south-west.
+/// Which of the map's four edges the front of a building looks towards.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Facing {
+    #[default]
+    LeftBottom,
+    LeftTop,
+    RightTop,
+    RightBottom,
+}
+
+impl Facing {
+    /// The one a drag across the screen points to.
+    pub fn of_drag(dx: f32, dy: f32) -> Self {
+        match (dx < 0.0, dy < 0.0) {
+            (true, false) => Facing::LeftBottom,
+            (true, true) => Facing::LeftTop,
+            (false, true) => Facing::RightTop,
+            (false, false) => Facing::RightBottom,
+        }
+    }
+
+    /// How far a building's model is turned, from how it is made, to look this way.
+    pub fn turn(self) -> f32 {
+        let quarters = match self {
+            Facing::LeftBottom => 0.0,
+            Facing::LeftTop => 1.0,
+            Facing::RightTop => 2.0,
+            Facing::RightBottom => 3.0,
+        };
+        FRAC_PI_4 + quarters * FRAC_PI_2
+    }
+
+    /// The way out of the front of a building, on the ground.
+    pub fn way_out(self) -> (f32, f32) {
+        let (sin, cos) = self.turn().sin_cos();
+        (-sin, cos)
+    }
+
+    /// Whether a building's width and depth are swapped on the grid.
+    fn swaps_sides(self) -> bool {
+        matches!(self, Facing::LeftTop | Facing::RightBottom)
+    }
+}
+
+/// How far along getting ready to work an MCV is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Deployment {
+    #[default]
+    Idle,
+    /// Coming round to face the map's left-bottom edge.
+    Turning,
+    /// Going down on its legs inside its scaffolding, boring its drill in.
+    Drilling,
+}
+
+/// How an MCV's drill stands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrillPose {
+    /// How far its nose is tipped down from level, in radians.
+    pub tilt: f32,
+    /// How far it has been driven along its length, from 0 to 1.
+    pub plunge: f32,
+    /// How far it has turned about its length, in radians.
+    pub spin: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Plot {
+    pub u: i32,
+    pub v: i32,
+    pub cols: i32,
+    pub rows: i32,
+}
+
+impl Plot {
+    /// How far along a line between two grid points it first comes to these squares, as a
+    /// share of the line; `None` if it never does, or starts inside them.
+    pub fn entered_by(self, from: (f32, f32), to: (f32, f32)) -> Option<f32> {
+        let (low_u, high_u) = (self.u as f32, (self.u + self.cols) as f32);
+        let (low_v, high_v) = (self.v as f32, (self.v + self.rows) as f32);
+        if (low_u..high_u).contains(&from.0) && (low_v..high_v).contains(&from.1) {
+            return None;
+        }
+        let slab = |start: f32, way: f32, low: f32, high: f32| {
+            if way.abs() < 1e-6 {
+                ((low..high).contains(&start)).then_some((0.0, 1.0))
+            } else {
+                let (a, b) = ((low - start) / way, (high - start) / way);
+                Some((a.min(b), a.max(b)))
+            }
+        };
+        let (enter_u, leave_u) = slab(from.0, to.0 - from.0, low_u, high_u)?;
+        let (enter_v, leave_v) = slab(from.1, to.1 - from.1, low_v, high_v)?;
+        let (enter, leave) = (enter_u.max(enter_v).max(0.0), leave_u.min(leave_v).min(1.0));
+        (enter <= leave).then_some(enter)
+    }
+
+    /// Each of its squares, by the grid corner nearest the map's north.
+    pub fn cells(self) -> impl Iterator<Item = (i32, i32)> {
+        (self.v..self.v + self.rows)
+            .flat_map(move |v| (self.u..self.u + self.cols).map(move |u| (u, v)))
+    }
+
+    /// Where its middle is in the world.
+    pub fn center(self) -> (f32, f32) {
+        grid_to_world(
+            self.u as f32 + self.cols as f32 / 2.0,
+            self.v as f32 + self.rows as f32 / 2.0,
+        )
+    }
+
+    fn contains(self, (u, v): (i32, i32)) -> bool {
+        (self.u..self.u + self.cols).contains(&u) && (self.v..self.v + self.rows).contains(&v)
+    }
+
+    /// How many empty squares lie between it and another, along whichever axis has the most.
+    fn gap_to(self, other: Plot) -> i32 {
+        let gap = |a: i32, a_size: i32, b: i32, b_size: i32| {
+            (b - (a + a_size)).max(a - (b + b_size)).max(0)
+        };
+        gap(self.u, self.cols, other.u, other.cols).max(gap(self.v, self.rows, other.v, other.rows))
+    }
 }
 
 impl Role {
@@ -325,7 +464,7 @@ impl Role {
             | Role::SandBike
             | Role::DiskSaw
             | Role::FlameTank
-            | Role::HugeTank
+            | Role::HugeWalker
             | Role::Recon
             | Role::LaserTank
             | Role::SiegeTank
@@ -338,10 +477,18 @@ impl Role {
             | Role::AirDrone
             | Role::Ornithopter
             | Role::Destroyer => UnitKind::Aircraft,
-            Role::Tower | Role::FlameTower | Role::GunTower => UnitKind::Tower,
-            Role::Barracks | Role::Factory | Role::Hangar | Role::LandingPad | Role::Palace(_) => {
-                UnitKind::Building
-            }
+            Role::Tower
+            | Role::FlameTower
+            | Role::GunTower
+            | Role::GunPost
+            | Role::GasTower
+            | Role::LaserTower => UnitKind::Tower,
+            Role::Barracks
+            | Role::Factory
+            | Role::Hangar
+            | Role::LandingPad
+            | Role::Outpost
+            | Role::Palace(_) => UnitKind::Building,
         }
     }
 
@@ -372,7 +519,7 @@ impl Role {
             Role::SandBike => "Sand Bike",
             Role::DiskSaw => "Disk Saw",
             Role::FlameTank => "Flame Tank",
-            Role::HugeTank => "Huge Tank",
+            Role::HugeWalker => "Huge Walker",
             Role::Recon => "Recon",
             Role::LaserTank => "Laser Tank",
             Role::SiegeTank => "Siege Tank",
@@ -380,6 +527,10 @@ impl Role {
             Role::Tower => "Rocket Tower",
             Role::FlameTower => "Flame Tower",
             Role::GunTower => "Machine Gun Tower",
+            Role::GunPost => "Machine Gun Post",
+            Role::GasTower => "Gas Tower",
+            Role::LaserTower => "Laser Tower",
+            Role::Outpost => "Outpost",
             Role::Barracks => "Barracks",
             Role::Factory => "Factory",
             Role::Hangar => "Hangar",
@@ -402,8 +553,9 @@ impl Role {
             Role::RocketInfantry => WeaponKind::Missile,
             Role::MortarInfantry => WeaponKind::Pistol,
             Role::FlameTank => WeaponKind::Flame,
-            Role::HugeTank => WeaponKind::Cannon,
+            Role::HugeWalker => WeaponKind::Plasma,
             Role::Scout
+            | Role::Outpost
             | Role::Mcv
             | Role::SuicideInfantry
             | Role::Barracks
@@ -418,10 +570,15 @@ impl Role {
             Role::Catapult => WeaponKind::Mortar,
             Role::RocketLauncher | Role::Ornithopter => WeaponKind::Rockets,
             Role::Destroyer => WeaponKind::HeavyRockets,
-            Role::Tower | Role::Mongoose => WeaponKind::Missile,
+            Role::Mongoose => WeaponKind::Missile,
+            Role::Tower => WeaponKind::TowerRockets,
             Role::Minotaurus => WeaponKind::Bombard,
             Role::AdvancedCarryall => WeaponKind::Unarmed,
-            Role::AirDefensePlatform | Role::GunTower => WeaponKind::AutoGun,
+            Role::AirDefensePlatform => WeaponKind::AutoGun,
+            Role::GunTower => WeaponKind::TowerGun,
+            Role::GunPost => WeaponKind::PostGun,
+            Role::GasTower => WeaponKind::Cistern,
+            Role::LaserTower => WeaponKind::RapidLaser,
             Role::AirDrone => WeaponKind::AirMissile,
             Role::FlameInfantry | Role::FlameTower => WeaponKind::Flame,
             Role::GasInfantry => WeaponKind::Gas,
@@ -438,7 +595,7 @@ impl Role {
             Role::SandBike => 160.0,
             Role::DiskSaw => 340.0,
             Role::FlameTank => 320.0,
-            Role::HugeTank => 700.0,
+            Role::HugeWalker => 2400.0,
             Role::Recon => 150.0,
             Role::LaserTank => 260.0,
             Role::SiegeTank => 380.0,
@@ -453,6 +610,7 @@ impl Role {
             Role::LandingPad => 400.0,
             Role::Palace(_) => 1200.0,
             Role::FlameTower => 500.0,
+            Role::GunPost | Role::GasTower | Role::LaserTower => 450.0,
             _ => self.kind().max_health(),
         }
     }
@@ -462,7 +620,7 @@ impl Role {
             Role::Scout => 4.0,
             Role::Mcv => 1.8,
             Role::SandBike => 6.5,
-            Role::HugeTank => 2.6,
+            Role::HugeWalker => 0.9,
             Role::Recon => 6.0,
             Role::LaserTank => 5.5,
             Role::SiegeTank => 3.0,
@@ -490,7 +648,7 @@ impl Role {
             Role::RocketInfantry | Role::MortarInfantry => 6.0,
             Role::SandBike => 6.0,
             Role::DiskSaw | Role::FlameTank => 10.0,
-            Role::HugeTank => 18.0,
+            Role::HugeWalker => 45.0,
             Role::Recon => 6.0,
             Role::LaserTank => 11.0,
             Role::SiegeTank => 16.0,
@@ -503,16 +661,15 @@ impl Role {
             Role::Mcv => 25.0,
             Role::LandingPad => 10.0,
             Role::Palace(_) => 30.0,
+            Role::Outpost => 20.0,
             Role::Barracks => 15.0,
             Role::Factory | Role::Hangar => 20.0,
-            Role::Tower => 12.0,
-            Role::GunTower => 10.0,
-            Role::FlameTower => 0.0,
+            Role::Tower | Role::GunTower | Role::LaserTower => 12.0,
+            Role::GunPost | Role::FlameTower | Role::GasTower => 8.0,
         }
     }
 
     /// Whether it is a building that makes units.
-    #[cfg(test)]
     pub fn makes_units(self) -> bool {
         matches!(self, Role::Barracks | Role::Factory | Role::Hangar)
     }
@@ -525,6 +682,7 @@ impl Role {
                 | Role::MortarInfantry
                 | Role::SuicideInfantry
                 | Role::SiegeTank
+                | Role::HugeWalker
                 | Role::Mcv
         )
     }
@@ -534,6 +692,9 @@ impl Role {
     /// and every hangar the same aircraft.
     pub fn made_by(self, house: Faction) -> bool {
         match self {
+            Role::GunPost | Role::Tower => house == Faction::A,
+            Role::FlameTower | Role::GunTower => house == Faction::H,
+            Role::GasTower | Role::LaserTower => house == Faction::O,
             Role::LightInfantry | Role::KInfantry | Role::Sniper => house == Faction::A,
             Role::RegularInfantry | Role::RocketInfantry | Role::FlameInfantry => {
                 house == Faction::H
@@ -544,19 +705,37 @@ impl Role {
             }
             Role::Recon | Role::LaserTank | Role::SiegeTank => house == Faction::O,
             Role::Palace(of) => house == of,
-            Role::Tank | Role::DiskSaw | Role::FlameTank | Role::HugeTank | Role::Catapult => {
+            Role::Tank | Role::DiskSaw | Role::FlameTank | Role::HugeWalker | Role::Catapult => {
                 house == Faction::H
             }
             _ => true,
         }
     }
 
+    /// The armed towers a house builds, the lesser tier first.
+    pub fn towers_of(house: Faction) -> [Role; 2] {
+        match house {
+            Faction::A => [Role::GunPost, Role::Tower],
+            Faction::H => [Role::FlameTower, Role::GunTower],
+            Faction::O => [Role::GasTower, Role::LaserTower],
+        }
+    }
+
+    /// Whether it lies sunk in the ground until it has something to fire at.
+    pub fn pops_up(self) -> bool {
+        matches!(self, Role::GasTower | Role::LaserTower)
+    }
+
     /// The radius of the sphere it collides with, as it comes out.
     pub fn radius(self) -> f32 {
         match self {
             Role::Mcv => MCV_RADIUS,
-            Role::HugeTank => 0.65,
+            Role::HugeWalker => 1.0,
+            Role::Palace(Faction::H) => 2.6,
+            Role::Outpost => 1.5,
             Role::SiegeTank => 0.55,
+            Role::Barracks => 2.0,
+            Role::Factory | Role::Hangar => 2.2,
             Role::Recon => 0.4,
             Role::DiskSaw => 0.5,
             Role::SandBike => 0.35,
@@ -564,12 +743,95 @@ impl Role {
         }
     }
 
-    /// For a flat building that what goes on the ground can cross: how far its deck reaches
-    /// each way from its middle, and how high its top is.
-    pub fn deck(self) -> Option<(f32, f32)> {
+    /// How many grid squares a building takes up along the map's two grid axes.
+    pub fn plot_size(self) -> (i32, i32) {
         match self {
-            Role::LandingPad => Some((PAD_DECK, PAD_TOP)),
-            _ => None,
+            Role::Barracks => (6, 4),
+            Role::Factory | Role::Hangar => (6, 5),
+            Role::Palace(Faction::H) => (6, 6),
+            Role::Palace(_) => (4, 3),
+            Role::Outpost => (4, 4),
+            Role::LandingPad => (3, 2),
+            Role::Mcv => (3, 3),
+            _ => (2, 2),
+        }
+    }
+
+    /// The squares it would take up with its middle as near this place as the grid allows,
+    /// looking the usual way.
+    pub fn plot_at(self, at: (f32, f32)) -> Plot {
+        self.plot_facing(at, Facing::default())
+    }
+
+    /// The squares it would take up with its middle as near this place as the grid allows,
+    /// looking this way.
+    pub fn plot_facing(self, (x, z): (f32, f32), facing: Facing) -> Plot {
+        let (cols, rows) = self.plot_size();
+        let (cols, rows) = if facing.swaps_sides() {
+            (rows, cols)
+        } else {
+            (cols, rows)
+        };
+        let (u, v) = world_to_grid(x, z);
+        Plot {
+            u: (u - cols as f32 / 2.0).round() as i32,
+            v: (v - rows as f32 / 2.0).round() as i32,
+            cols,
+            rows,
+        }
+    }
+
+    /// Whether this square of its plot is where what it makes comes out: the middle of the
+    /// side its door is on.
+    pub fn is_exit(self, plot: Plot, facing: Facing, (u, v): (i32, i32)) -> bool {
+        let middle_u = plot.u + plot.cols / 2;
+        let middle_v = plot.v + plot.rows / 2;
+        let along_u = (middle_u - 1..=middle_u).contains(&u);
+        let along_v = (middle_v - 1..=middle_v).contains(&v);
+        self.makes_units()
+            && match facing {
+                Facing::LeftBottom => v == plot.v + plot.rows - 1 && along_u,
+                Facing::RightTop => v == plot.v && along_u,
+                Facing::RightBottom => u == plot.u + plot.cols - 1 && along_v,
+                Facing::LeftTop => u == plot.u && along_v,
+            }
+    }
+
+    /// How many times its basic model it is drawn.
+    pub fn drawn_scale(self) -> f32 {
+        match self {
+            Role::Barracks | Role::Factory | Role::Hangar => 1.9,
+            Role::AdvancedCarryall => 2.0,
+            _ => 1.0,
+        }
+    }
+
+    /// Whether it runs on wheels or tracks, and so raises dust on sand.
+    pub fn rolls(self) -> bool {
+        self.kind() == UnitKind::Vehicle
+            && !matches!(
+                self,
+                Role::Mongoose
+                    | Role::Minotaurus
+                    | Role::HugeWalker
+                    | Role::Recon
+                    | Role::LaserTank
+            )
+    }
+
+    /// How high a building reaches, as it is drawn.
+    pub fn building_top(self) -> f32 {
+        match self {
+            Role::Barracks => 1.3,
+            Role::Factory => 2.85,
+            Role::Hangar => 1.65,
+            Role::Palace(Faction::H) => 5.9,
+            Role::Palace(_) => 2.2,
+            Role::Outpost => 2.0,
+            Role::GasTower | Role::LaserTower => 0.8,
+            Role::LandingPad => PAD_TOP + 0.6,
+            Role::Mcv => 2.4,
+            _ => TUBE_HEIGHT + 0.4,
         }
     }
 
@@ -629,13 +891,10 @@ const TURN_SPEED: f32 = 3.0;
 const GLIDER_TURN_SPEED: f32 = 1.0;
 /// How far a recon's legs step for each radian it turns on the spot.
 const LEGS_PER_TURN: f32 = 0.45;
-/// On a map of size S, the player's second group, far enough east to need scrolling to from the
-/// first.
-const SECOND_GROUP_X: f32 = 35.0;
-/// On a map of size S, how far from the middle each opponent's group stands.
-const OPPONENT_RING: f32 = 29.4;
-/// How far map objects must stay from where groups start.
-const CLEARANCE: f32 = 9.0;
+/// Which place for a base holds the player's second group in a battle set up for tests: off to
+/// the east, a long scroll from the first.
+#[cfg(test)]
+const SECOND_GROUP_SPOT: usize = 2;
 /// A block of the player's this deep has a row of aircraft.
 #[cfg(test)]
 const ROWS_WITH_AIRCRAFT: usize = 4;
@@ -654,6 +913,19 @@ const TUBE_REACH: f32 = 0.7;
 pub const TUBE_HINGE: f32 = 0.1;
 pub const TUBE_LENGTH: f32 = TUBE_REACH - TUBE_HINGE;
 pub const TUBE_SPREAD: f32 = 0.18;
+/// How far a pop-up turret's middle rises out of its base to fire.
+pub const TURRET_RISE: f32 = 0.32;
+/// How high a pop-up turret's gun is while it is sunk.
+const TURRET_MUZZLE_UP: f32 = 0.2;
+/// Where a huge walker's plasma guns end, as (ahead, up, to the side).
+pub const WALKER_PLASMA_TIP: (f32, f32, f32) = (1.45, 2.05, 0.82);
+/// Where its rocket tubes end, and how far to each side the three of them are.
+pub const WALKER_ROCKET_AHEAD: f32 = 0.05;
+pub const WALKER_ROCKET_UP: f32 = 2.82;
+pub const WALKER_ROCKET_SIDES: [f32; 3] = [-0.24, 0.0, 0.24];
+/// Where a factory's exhaust pipe stands on it, as (ahead, to the side), and how high it ends.
+pub const FACTORY_PIPE: [f32; 2] = [0.6, -0.4];
+pub const FACTORY_PIPE_TOP: f32 = 1.5;
 /// Where a rocket launcher's rockets lie from its middle, in the order they are fired: the left
 /// rack's three, then the right rack's.
 pub const ROCKET_SIDES: [f32; 6] = [-0.21, -0.14, -0.07, 0.07, 0.14, 0.21];
@@ -667,6 +939,16 @@ pub const CANNON_HEIGHT: f32 = 1.05;
 pub const CANNON_REACH: f32 = 1.45;
 /// Seconds a building takes to go up once it has been placed.
 pub const CONSTRUCTION_SECONDS: f32 = 1.0;
+/// The way an MCV faces to deploy: the map's left-bottom edge.
+const MCV_DEPLOY_HEADING: f32 = 3.0 * FRAC_PI_4;
+/// Where an MCV's drill is hinged, as [along, up].
+pub const MCV_DRILL_PIVOT: [f32; 2] = [1.0, 0.6];
+/// How far through its construction the scaffolding and cranes are up and work starts, and
+/// how far when work is over and they start to come down.
+pub const CONSTRUCTION_UP: f32 = 0.25;
+pub const CONSTRUCTION_DOWN: f32 = 0.75;
+/// How many empty squares may lie between a new building and the nearest of its owner's.
+pub const BUILD_REACH: i32 = 2;
 /// How many places on a building going up are being welded at once.
 pub const WELD_POINTS: usize = 4;
 
@@ -674,7 +956,7 @@ pub const WELD_POINTS: usize = 4;
 pub const SIEGE_TIP: [f32; 2] = [1.05, 0.5];
 pub const SIEGE_RAISED_TIP: [f32; 2] = [0.97, 2.1];
 /// How high a Strider's missiles leave from.
-const STRIDER_MUZZLE_HEIGHT: f32 = 0.66;
+const STRIDER_MUZZLE_HEIGHT: f32 = 0.86;
 
 /// What a unit was told to go after.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -764,8 +1046,14 @@ pub struct Unit {
     pad: Option<Pad>,
     /// Seconds an invisible unit stays seen after it last fired.
     pub revealed: f32,
+    /// How far a pop-up turret has come up: 0 sunk in the ground, 1 ready to fire.
+    pub popped: f32,
     /// Seconds left until a building just placed is finished, and works.
     pub constructing: f32,
+    /// Which way a building looks.
+    pub facing: Facing,
+    /// How far along an MCV is with deploying.
+    pub deployment: Deployment,
     /// Whether what lands has had something to go after since it was last sent anywhere: once
     /// that is over, it goes home instead of sitting down where it is.
     on_mission: bool,
@@ -780,7 +1068,12 @@ pub struct Unit {
 impl Unit {
     /// Whether it still has somewhere to go, or can never stop anyway.
     pub fn is_moving(&self) -> bool {
-        self.alive && (self.remaining() > ARRIVED || self.role.never_stops())
+        self.alive && self.is_under_way()
+    }
+
+    /// Whether it was on its way somewhere, alive or just shot down.
+    pub fn is_under_way(&self) -> bool {
+        self.remaining() > ARRIVED || self.role.never_stops()
     }
 
     /// How many of this role it is making or has waiting.
@@ -906,7 +1199,7 @@ impl Unit {
 
     /// Whether it is down: on the ground, or for what lands, sitting on the deck of a pad.
     pub fn is_grounded(&self) -> bool {
-        self.altitude <= 0.0 || (self.role.lands() && self.altitude <= PAD_TOP + 0.01)
+        self.altitude <= 0.0 || (self.role.lands() && self.is_on_pad())
     }
 
     /// How high it counts as being for what can reach it: what is down is on the ground.
@@ -951,6 +1244,18 @@ impl Unit {
             }
     }
 
+    /// Sits it on a landing pad right under it.
+    #[cfg(test)]
+    pub fn sit_on_pad(&mut self, id: u32) {
+        self.pad = Some(Pad {
+            id,
+            x: self.x,
+            z: self.z,
+            deck: FRAC_PI_4,
+        });
+        self.altitude = PAD_TOP;
+    }
+
     /// Whether it is a building still going up.
     pub fn is_under_construction(&self) -> bool {
         self.constructing > 0.0
@@ -961,31 +1266,99 @@ impl Unit {
         1.0 - (self.constructing / CONSTRUCTION_SECONDS).clamp(0.0, 1.0)
     }
 
-    /// How much of its height is up, from 0 to 1: it starts a moment after the cranes do and
-    /// is whole before they go.
+    /// How much of its height is up, from 0 to 1: it only grows once the scaffolding and
+    /// cranes are up, and is whole before they come down.
     pub fn raised(&self) -> f32 {
-        let t = ((self.construction_done() - 0.1) / 0.72).clamp(0.0, 1.0);
+        // An MCV deploys whole, inside its scaffolding.
+        if self.role == Role::Mcv {
+            return 1.0;
+        }
+        let work = CONSTRUCTION_DOWN - CONSTRUCTION_UP;
+        let t = ((self.construction_done() - CONSTRUCTION_UP) / work).clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
     }
 
     /// Where a building going up is being welded, climbing as it rises.
     pub fn weld_points(&self) -> [Point; WELD_POINTS] {
-        let reach = if self.kind == UnitKind::Tower {
-            0.45
-        } else {
-            1.0
-        };
-        let rise = self.raised();
+        let (cols, rows) = self.role.plot_size();
+        let reach = cols.min(rows) as f32 * CELL_SIDE * 0.42;
+        let rise = self.raised() * self.role.building_top();
         std::array::from_fn(|i| {
             let (sin, cos) = (self.id as f32 * 2.4 + i as f32 * TAU / 4.0).sin_cos();
-            let height = 0.1 + (0.35 + 0.22 * i as f32) * rise;
+            let height = 0.1 + (0.25 + 0.2 * i as f32) * rise;
             (self.x + reach * cos, self.y + height, self.z + reach * sin)
         })
     }
 
+    /// Where the ends of its wings are, leaning with it into its turns.
+    pub fn wing_tips(&self) -> [Point; 2] {
+        const WING_END: f32 = 0.5;
+        const WING_HEIGHT: f32 = 0.1;
+        let size = self.role.drawn_scale();
+        let (sin, cos) = self.heading.sin_cos();
+        let (bank_sin, bank_cos) = self.bank.sin_cos();
+        let height = self.y + self.altitude + WING_HEIGHT * size;
+        [-1.0, 1.0].map(|side| {
+            let out = side * WING_END * size;
+            (
+                self.x - sin * out * bank_cos,
+                height - out * bank_sin,
+                self.z + cos * out * bank_cos,
+            )
+        })
+    }
+
+    /// How an MCV's drill stands: level until it deploys, then tipped down to 45 degrees and
+    /// bored in, turning all the while.
+    pub fn drill_pose(&self) -> DrillPose {
+        const TILTED_BY: f32 = 0.4;
+        const TURNS: f32 = 5.0;
+        let smooth = |t: f32| {
+            let t = t.clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let done = if self.deployed {
+            1.0
+        } else if self.deployment == Deployment::Drilling {
+            self.construction_done()
+        } else {
+            0.0
+        };
+        DrillPose {
+            tilt: smooth(done / TILTED_BY) * FRAC_PI_4,
+            plunge: smooth((done - TILTED_BY) / (1.0 - TILTED_BY)),
+            spin: done * TURNS * TAU,
+        }
+    }
+
+    /// Whether an MCV's drill is biting into the ground now.
+    pub fn drill_is_biting(&self) -> bool {
+        const TOUCHES_AT: f32 = 0.2;
+        self.alive
+            && self.deployment == Deployment::Drilling
+            && self.construction_done() >= TOUCHES_AT
+    }
+
+    /// Where an MCV's drill goes into the ground.
+    pub fn drill_bite(&self) -> Point {
+        let [along, up] = MCV_DRILL_PIVOT;
+        let reach = along + up;
+        let (sin, cos) = self.heading.sin_cos();
+        (self.x + cos * reach, self.y + 0.05, self.z + sin * reach)
+    }
+
+    /// The grid squares it takes up, if it is a building.
+    pub fn plot(&self) -> Option<Plot> {
+        self.kind
+            .is_building()
+            .then(|| self.role.plot_facing((self.x, self.z), self.facing))
+    }
+
     /// Whether it can go invisible: a scout, and a sniper with all three medals.
     pub fn can_cloak(&self) -> bool {
-        self.role == Role::Scout || (self.role == Role::Sniper && self.rank() >= 3)
+        self.role == Role::Scout
+            || self.role == Role::LaserTower
+            || (self.role == Role::Sniper && self.rank() >= 3)
     }
 
     /// Whether it is invisible now: it shows for a while each time it opens fire.
@@ -1046,6 +1419,7 @@ impl Unit {
             && self.alive
             && other.alive
             && self.id != other.id
+            && self.weapon.goes_for(other.kind)
             && self.weapon.can_target(other.height_as_target())
     }
 
@@ -1107,6 +1481,7 @@ impl Unit {
             && !other.hidden_from(self.owner, teams)
             && self.has_rockets()
             && are_enemies(teams, self.owner, other.owner)
+            && self.weapon.goes_for(other.kind)
             && self.weapon.can_target(other.height_as_target())
     }
 
@@ -1141,6 +1516,11 @@ impl Unit {
     /// Where its shots come from: a tower takes turns with the ends of its two tubes or guns,
     /// and a rocket launcher goes along its racks.
     pub fn muzzle(&self) -> (f32, f32, f32) {
+        if self.role.pops_up() {
+            let (sin, cos) = self.heading.sin_cos();
+            let up = TURRET_MUZZLE_UP + TURRET_RISE * self.popped;
+            return (self.x + cos * 0.45, self.y + up, self.z + sin * 0.45);
+        }
         if self.role == Role::SiegeTank {
             let [ahead, up] = if self.deployed {
                 SIEGE_RAISED_TIP
@@ -1178,7 +1558,7 @@ impl Unit {
         if self.kind.is_building() {
             let (sin, cos) = self.heading.sin_cos();
             let side = match (self.role, self.second_tube) {
-                (Role::FlameTower, _) => 0.0,
+                (Role::FlameTower | Role::GunPost | Role::GasTower | Role::LaserTower, _) => 0.0,
                 (_, true) => TUBE_SPREAD,
                 (_, false) => -TUBE_SPREAD,
             };
@@ -1203,15 +1583,39 @@ impl Unit {
         (self.x + cos * 0.5, self.y + 0.3, self.z + sin * 0.5)
     }
 
+    /// Where a huge walker's rockets leave its rack, one to each tube.
+    pub fn walker_rocket_tubes(&self) -> [(f32, f32, f32); 3] {
+        let (sin, cos) = self.heading.sin_cos();
+        WALKER_ROCKET_SIDES.map(|side| {
+            (
+                self.x + cos * WALKER_ROCKET_AHEAD - sin * side,
+                self.y + WALKER_ROCKET_UP,
+                self.z + sin * WALKER_ROCKET_AHEAD + cos * side,
+            )
+        })
+    }
+
+    /// Where the smoke comes out of a factory's exhaust pipe, wherever it was turned.
+    pub fn exhaust_tip(&self) -> (f32, f32, f32) {
+        let size = self.role.drawn_scale();
+        let (sin, cos) = self.facing.turn().sin_cos();
+        let [ahead, across] = FACTORY_PIPE;
+        (
+            self.x + (ahead * cos - across * sin) * size,
+            self.y + FACTORY_PIPE_TOP * size,
+            self.z + (ahead * sin + across * cos) * size,
+        )
+    }
+
     /// Where gunfire comes out: at the end of the barrel, outside its body.
     pub fn gun_tip(&self) -> (f32, f32, f32) {
-        if matches!(self.role, Role::GunTower | Role::SiegeTank) {
+        if matches!(self.role, Role::GunTower | Role::GunPost | Role::SiegeTank) {
             return self.muzzle();
         }
         // Twin guns side by side, firing in turn.
         let twin = match self.role {
-            Role::DiskSaw => Some((0.5, 0.36, 0.2)),
-            Role::HugeTank => Some((1.05, 0.62, 0.13)),
+            Role::DiskSaw => Some((0.5, 0.36, 0.3)),
+            Role::HugeWalker => Some(WALKER_PLASMA_TIP),
             _ => None,
         };
         if let Some((ahead, up, side)) = twin {
@@ -1246,6 +1650,7 @@ impl Unit {
             match self.role {
                 Role::Mongoose => 0.5,
                 Role::Minotaurus => 0.9,
+                Role::HugeWalker => 2.0,
                 _ => HEIGHT / 2.0,
             }
         };
@@ -1307,7 +1712,10 @@ impl Unit {
             pad: None,
             on_mission: false,
             revealed: 0.0,
+            popped: 0.0,
             constructing: 0.0,
+            facing: Facing::default(),
+            deployment: Deployment::Idle,
             reloading: 0.0,
             theft: None,
             stall: Stall::NOT_STALLED,
@@ -1442,7 +1850,10 @@ fn place_unit(
         pad: None,
         on_mission: false,
         revealed: 0.0,
+        popped: 0.0,
         constructing: 0.0,
+        facing: Facing::default(),
+        deployment: Deployment::Idle,
         reloading: 0.0,
         theft: None,
         stall: Stall::NOT_STALLED,
@@ -1578,13 +1989,13 @@ pub fn finish_making(
 
 fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit, id: u32) -> bool {
     let owner = maker.owner;
-    let door = (
-        maker.x,
-        maker.z + maker.radius() + role.radius() + DOOR_MARGIN,
-    );
+    // Out along the grid, the way the building's door faces.
+    let (out_x, out_z) = maker.facing.way_out();
+    let out = maker.radius() + role.radius() + DOOR_MARGIN;
+    let door = (maker.x + out_x * out, maker.z + out_z * out);
     let vehicle = role.kind() == UnitKind::Vehicle;
     let near = if vehicle {
-        (door.0, door.1 + DRIVE_OUT)
+        (door.0 + out_x * DRIVE_OUT, door.1 + out_z * DRIVE_OUT)
     } else {
         door
     };
@@ -1606,7 +2017,7 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
     if let Some(new) = units.last_mut() {
         new.house = maker.house;
         if vehicle {
-            new.heading = FRAC_PI_2;
+            new.heading = out_z.atan2(out_x);
         }
         if let Some(way) = gathers_at.or(vehicle.then_some(spot)) {
             new.destination = way;
@@ -1672,21 +2083,47 @@ pub fn deploy_spot_near(terrain: &Terrain, (x, z): (f32, f32)) -> Option<(f32, f
     })
 }
 
-/// Whether a new building could go up here: on the upper ground, clear of ruins and of everyone
-/// on the ground.
-pub fn can_place_building(units: &[Unit], terrain: &Terrain, (x, z): (f32, f32)) -> bool {
-    let radius = BUILDING_RADIUS;
-    let on_land = footprint_on_upper_ground(terrain, (x, z));
+/// Whether a building could stand on this grid square: on the upper ground, clear of ruins, of
+/// other buildings' squares and of everyone on the ground.
+pub fn cell_is_free(units: &[Unit], terrain: &Terrain, (u, v): (i32, i32)) -> bool {
+    let (x, z) = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+    let half = CELL_SIDE / std::f32::consts::SQRT_2;
+    let on_land = [
+        (0.0, 0.0),
+        (-half, 0.0),
+        (half, 0.0),
+        (0.0, -half),
+        (0.0, half),
+    ]
+    .iter()
+    .all(|(dx, dz)| terrain.can_walk(x + dx, z + dz) && terrain.on_upper_ground(x + dx, z + dz));
     let clear_of_ruins = terrain.ruins().iter().all(|piece| {
         let (near_x, near_z) = nearest_on_footprint(piece, x, z);
-        (near_x - x).hypot(near_z - z) > radius
+        (near_x - x).hypot(near_z - z) > half
     });
     on_land
         && clear_of_ruins
         && units
             .iter()
-            .filter(|u| u.alive && u.altitude <= 0.0)
-            .all(|u| (u.x - x).hypot(u.z - z) > radius + u.radius())
+            .filter(|unit| unit.alive && unit.altitude <= 0.0)
+            .all(|unit| match unit.plot() {
+                Some(plot) => !plot.contains((u, v)),
+                None => (unit.x - x).hypot(unit.z - z) > unit.radius() + half * 0.7,
+            })
+}
+
+/// Whether a new building could go up on these squares, all of them being free.
+pub fn can_place_building(units: &[Unit], terrain: &Terrain, plot: Plot) -> bool {
+    plot.cells().all(|cell| cell_is_free(units, terrain, cell))
+}
+
+/// Whether these squares are close enough to one of this owner's buildings to build on.
+pub fn is_near_building_of(units: &[Unit], plot: Plot, owner: usize) -> bool {
+    units
+        .iter()
+        .filter(|u| u.alive && u.owner == owner)
+        .filter_map(Unit::plot)
+        .any(|theirs| plot.gap_to(theirs) <= BUILD_REACH)
 }
 
 /// A new building that has not been put anywhere yet.
@@ -1724,14 +2161,14 @@ fn place_base(
         place_building(units, terrain, at, role, side);
     }
     let pad = (
-        center.0 + behind.0 * BUILDINGS_BEHIND + across_x * PAD_ALONG,
-        center.1 + behind.1 * BUILDINGS_BEHIND + across_z * PAD_ALONG,
+        center.0 - behind.0 * PAD_AHEAD + across_x * PAD_ALONG,
+        center.1 - behind.1 * PAD_AHEAD + across_z * PAD_ALONG,
     );
     place_building(units, terrain, pad, Role::LandingPad, side);
     // The MCV stands deployed at the other end of the row: it is what makes this a base.
     let mcv = (
-        center.0 + behind.0 * BUILDINGS_BEHIND + across_x * MCV_ALONG,
-        center.1 + behind.1 * BUILDINGS_BEHIND + across_z * MCV_ALONG,
+        center.0 + across_x * MCV_ALONG,
+        center.1 + across_z * MCV_ALONG,
     );
     place_building(units, terrain, mcv, Role::Mcv, side);
     if let Some(mcv) = units.last_mut() {
@@ -1748,7 +2185,7 @@ pub fn toggle_deploy(units: &mut [Unit], terrain: &Terrain) -> bool {
         .filter(|u| u.selected && u.role.can_deploy())
     {
         if can_deploy_here(unit, terrain) {
-            switch_deployed(unit);
+            start_deploying(unit);
         } else {
             refused = true;
         }
@@ -1764,6 +2201,7 @@ pub fn order_land(units: &mut [Unit], pad: usize) {
         id: pad_unit.id,
         x: pad_unit.x,
         z: pad_unit.z,
+        deck: pad_unit.facing.turn(),
     };
     let mut taken = units
         .iter()
@@ -1792,6 +2230,16 @@ pub fn order_land(units: &mut [Unit], pad: usize) {
 }
 
 /// Switches one K Infantry between its pistol and, standing still, its cannon.
+/// Tells a unit to deploy or pack up: an MCV on the move turns and takes its time about it,
+/// and all else is done at once.
+pub fn start_deploying(unit: &mut Unit) {
+    match (unit.role, unit.deployed, unit.deployment) {
+        (Role::Mcv, false, Deployment::Idle) => unit.deployment = Deployment::Turning,
+        (Role::Mcv, false, _) => {}
+        _ => switch_deployed(unit),
+    }
+}
+
 pub fn switch_deployed(unit: &mut Unit) {
     unit.deployed = !unit.deployed;
     unit.destination = (unit.x, unit.z);
@@ -1811,33 +2259,48 @@ pub fn switch_deployed(unit: &mut Unit) {
         (Role::MortarInfantry, true) => WeaponKind::Mortar,
         (Role::SiegeTank, true) => WeaponKind::Siege,
         (Role::SiegeTank, false) => WeaponKind::Cannon,
-        (Role::SuicideInfantry, _) => WeaponKind::Unarmed,
+        (Role::SuicideInfantry | Role::HugeWalker, _) => WeaponKind::Unarmed,
         _ => WeaponKind::Pistol,
     };
     unit.destination = (unit.x, unit.z);
 }
 
-/// Each side starts with nothing but its MCV, packed up and ready to drive: the player's at the
-/// map's middle, each opponent's evenly around a ring. `colors` holds the player's, then the
-/// opponents'.
-pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
+/// Which of a map's places for bases each side starts on, the player's first. The player's is
+/// picked at random. One opponent stands opposite; two stand two places off, each side of the
+/// player; three more take the other corners or edges; any other number fall anywhere.
+pub fn start_slots(sides: usize, random: &mut u32) -> Vec<usize> {
+    let player = (next_random(random) * START_SPOTS as f32) as usize % START_SPOTS;
+    let at = |step: usize| (player + step) % START_SPOTS;
+    match sides {
+        2 => vec![player, at(4)],
+        3 => vec![player, at(2), at(6)],
+        4 => vec![player, at(2), at(4), at(6)],
+        _ => {
+            let mut others: Vec<usize> = (1..START_SPOTS).map(at).collect();
+            for i in (1..others.len()).rev() {
+                let j = (next_random(random) * (i + 1) as f32) as usize % (i + 1);
+                others.swap(i, j);
+            }
+            std::iter::once(player)
+                .chain(others)
+                .take(sides.min(START_SPOTS))
+                .collect()
+        }
+    }
+}
+
+/// Each side starts with nothing but its MCV, packed up and ready to drive, on a place for a
+/// base. `colors` holds the player's, then the opponents'.
+pub fn spawn(terrain: &Terrain, colors: &[TeamColor], random: &mut u32) -> Vec<Unit> {
     let mut units = Vec::new();
-    let Starts { middle_z, ring, .. } = starts(terrain.size());
-    let opponents = colors.len() - 1;
-    for (owner, &color) in colors.iter().enumerate() {
-        let at = if owner == 0 {
-            (0.0, middle_z)
-        } else {
-            // The ring starts in the north.
-            let angle = (owner - 1) as f32 / opponents as f32 * TAU;
-            let (sin, cos) = angle.sin_cos();
-            (ring * sin, middle_z - ring * cos)
-        };
+    let spots = start_spots(terrain.size());
+    let slots = start_slots(colors.len(), random);
+    for (owner, (&color, slot)) in colors.iter().zip(slots).enumerate() {
         let id = units.len() as u32;
         place_unit(
             &mut units,
             terrain,
-            at,
+            spots[slot],
             Role::Mcv,
             WeaponKind::Unarmed,
             (owner, color),
@@ -1847,18 +2310,17 @@ pub fn spawn(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
     units
 }
 
-/// A battle well under way, for tests: the player gets a block between two towers at the map's middle and another block a long
-/// scroll away. Each opponent gets one block between two towers, evenly around a ring.
-/// `colors` holds the player's, then the opponents'.
+/// A battle well under way, for tests: the player gets a block between two towers at the map's
+/// middle and another block on a place for a base, a long scroll away. Each opponent gets
+/// one block between two towers, on the others. `colors` holds the player's, then the opponents'.
 #[cfg(test)]
 pub fn spawn_bases(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
     let mut units = Vec::new();
     let player = (0, colors[0]);
-    let Starts {
-        middle_z,
-        second_x,
-        ring,
-    } = starts(terrain.size());
+    let middle_z = terrain.size().middle_z();
+    let spots = start_spots(terrain.size());
+    let second_group = spots[SECOND_GROUP_SPOT];
+    let opposing = (0..START_SPOTS).filter(|&spot| spot != SECOND_GROUP_SPOT);
     spawn_group(
         &mut units,
         terrain,
@@ -1881,13 +2343,12 @@ pub fn spawn_bases(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
         player,
     );
     place_base(&mut units, terrain, (0.0, middle_z), (0.0, 1.0), player);
-    spawn_group(&mut units, terrain, (second_x, middle_z), (4, 2), player);
-    let opponents = colors.len() - 1;
-    for (i, &color) in colors[1..].iter().enumerate() {
-        // The ring starts in the north, where it is clear of the player's second group.
-        let angle = i as f32 / opponents as f32 * TAU;
-        let (sin, cos) = angle.sin_cos();
-        let center = (ring * sin, middle_z - ring * cos);
+    spawn_group(&mut units, terrain, second_group, (4, 2), player);
+    for ((i, &color), spot) in colors[1..].iter().enumerate().zip(opposing) {
+        let center = spots[spot];
+        let (to_x, to_z) = (-center.0, middle_z - center.1);
+        let far = to_x.hypot(to_z);
+        let (sin, cos) = (-to_x / far, to_z / far);
         spawn_group(&mut units, terrain, center, (3, 2), (i + 1, color));
         let tower = (
             center.0 + OPPONENT_TOWER_OFFSET * cos,
@@ -1920,57 +2381,6 @@ pub fn spawn_bases(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
         }
     }
     units
-}
-
-/// Whether a point lies where a group can start, which must be land even on a planet whose
-/// lower terrain is water or lava. Opponents spread around the whole ring.
-pub fn needs_land(x: f32, z: f32, size: MapSize) -> bool {
-    const REACH: f32 = 7.3;
-    let (from_middle, from_second_group, from_ring) = from_starts(x, z, size);
-    from_middle < REACH || from_second_group < REACH || from_ring < REACH
-}
-
-/// Whether a map object may stand here, away from every place a group can start.
-pub fn keeps_clear(x: f32, z: f32, size: MapSize) -> bool {
-    let (from_middle, from_second_group, from_ring) = from_starts(x, z, size);
-    from_middle > CLEARANCE && from_second_group > CLEARANCE && from_ring > CLEARANCE * 0.8
-}
-
-/// Whether a ruin may stand here: further off than other map objects, as its walls reach out
-/// from where it stands, past a group's buildings to its landing pad.
-pub fn keeps_clear_for_ruin(x: f32, z: f32, size: MapSize) -> bool {
-    let (from_middle, from_second_group, from_ring) = from_starts(x, z, size);
-    let room = CLEARANCE + 1.0;
-    from_middle > room && from_second_group > room && from_ring > room
-}
-
-/// Where groups start on a map of some size.
-struct Starts {
-    middle_z: f32,
-    /// How far east of the middle the player's second group stands.
-    second_x: f32,
-    /// How far from the middle each opponent's group stands.
-    ring: f32,
-}
-
-fn starts(size: MapSize) -> Starts {
-    Starts {
-        middle_z: size.middle_z(),
-        second_x: SECOND_GROUP_X * size.scale(),
-        ring: OPPONENT_RING * size.scale(),
-    }
-}
-
-/// How far a point is from the player's group, the second group, and the opponents' ring.
-fn from_starts(x: f32, z: f32, size: MapSize) -> (f32, f32, f32) {
-    let start = starts(size);
-    let from_middle = x.hypot(z - start.middle_z);
-    let from_second_group = (x - start.second_x).hypot(z - start.middle_z);
-    (
-        from_middle,
-        from_second_group,
-        (from_middle - start.ring).abs(),
-    )
 }
 
 /// Up to `count` free spots near a point, nearest first, each far enough from the others
@@ -2300,11 +2710,9 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
         let other_layer = (other.altitude > 0.0) != (unit.altitude > 0.0);
         let building_to_capture =
             unit.target == Some(Target::Unit(other.id)) && unit.can_capture(other, teams);
-        // A flat building is crossed, not steered around.
         if other_index == index
             || !other.alive
             || other_layer
-            || other.role.deck().is_some()
             || building_to_capture
             || can_squash(unit, other, teams)
         {
@@ -2441,6 +2849,8 @@ struct Pad {
     id: u32,
     x: f32,
     z: f32,
+    /// The way its deck lies, as a heading.
+    deck: f32,
 }
 
 /// A point to pass through, and the destination it was found for.
@@ -2486,11 +2896,8 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 // And so are a machine and the pad it is using.
                 let using =
                     |machine: &Unit, pad: &Unit| machine.pad.is_some_and(|used| used.id == pad.id);
-                // A flat building is driven and walked over, not into.
                 if !units[a].alive
                     || !units[b].alive
-                    || units[a].role.deck().is_some()
-                    || units[b].role.deck().is_some()
                     || held_by(&units[a], &units[b])
                     || held_by(&units[b], &units[a])
                     || using(&units[a], &units[b])
@@ -2622,7 +3029,6 @@ fn find_new_way(units: &mut [Unit], i: usize, terrain: &Terrain) {
                 && u.alive
                 && u.altitude <= 0.0
                 && Some(u.id) != target_id
-                && u.role.deck().is_none()
                 && (u.kind.is_building() || u.deployed || !u.is_moving())
         })
         .map(|u| (u.x, u.z, u.radius() + unit.radius()))
@@ -2738,30 +3144,6 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
             watch_for_stall(unit, dt);
         }
     }
-    climb_onto_decks(units);
-}
-
-/// Stands what is on the ground and over a flat building's deck on top of it.
-fn climb_onto_decks(units: &mut [Unit]) {
-    let decks: Vec<(f32, f32, f32, f32)> = units
-        .iter()
-        .filter(|u| u.alive)
-        .filter_map(|u| u.role.deck().map(|(reach, top)| (u.x, u.z, reach, top)))
-        .collect();
-    if decks.is_empty() {
-        return;
-    }
-    for unit in units.iter_mut() {
-        if !unit.alive || unit.kind.flies() || unit.kind.is_building() {
-            continue;
-        }
-        let on = decks
-            .iter()
-            .find(|&&(x, z, reach, _)| (unit.x - x).abs() <= reach && (unit.z - z).abs() <= reach);
-        if let Some(&(_, _, _, top)) = on {
-            unit.y += top;
-        }
-    }
 }
 
 /// Comes down to sit, if the ground right below it can take it. Otherwise it stays up.
@@ -2773,6 +3155,18 @@ fn settle(unit: &mut Unit, terrain: &Terrain, dt: f32) {
             .is_some_and(|pad| (pad.x - unit.x).hypot(pad.z - unit.z) < OVER_PAD);
         let lowest = if is_over_pad { PAD_TOP } else { 0.0 };
         unit.altitude = (unit.altitude - CLIMB_SPEED * dt).max(lowest);
+        if is_over_pad {
+            // Coming down, it lines itself up with the deck, whichever way round is nearer.
+            let deck = unit.pad.map_or(FRAC_PI_4, |pad| pad.deck);
+            let along = turn_between(unit.heading, deck);
+            let turn = if along.abs() <= FRAC_PI_2 {
+                along
+            } else {
+                turn_between(unit.heading, deck + PI)
+            };
+            let most = TURN_SPEED * dt;
+            unit.heading += turn.clamp(-most, most);
+        }
     }
 }
 
@@ -3097,6 +3491,7 @@ fn tend_pads(units: &mut [Unit], terrain: &Terrain, dt: f32) {
                     id: u.id,
                     x: u.x,
                     z: u.z,
+                    deck: u.facing.turn(),
                 };
                 let nearest_of = |free: bool| {
                     units
@@ -3152,6 +3547,7 @@ fn go_home_after_a_mission(units: &mut [Unit], i: usize, terrain: &Terrain) {
         id: u.id,
         x: u.x,
         z: u.z,
+        deck: u.facing.turn(),
     };
     let nearest = |of: &mut dyn Iterator<Item = &Unit>| {
         of.min_by(|a, b| away(a).total_cmp(&away(b))).copied()
@@ -3212,10 +3608,48 @@ fn beside_pad(pad: Pad, id: u32) -> (f32, f32) {
     (pad.x + cos * PAD_BESIDE, pad.z + sin * PAD_BESIDE)
 }
 
+/// Puts it in the middle of the grid squares it stands on, as a building is.
+fn settle_on_its_squares(unit: &mut Unit) {
+    (unit.x, unit.z) = unit
+        .role
+        .plot_facing((unit.x, unit.z), unit.facing)
+        .center();
+}
+
+/// Brings an MCV that was told to deploy round to the way it deploys facing, and then through
+/// the second that it takes.
+fn go_on_deploying(unit: &mut Unit, dt: f32) {
+    match unit.deployment {
+        Deployment::Idle => return,
+        Deployment::Turning => {
+            let turn = turn_between(unit.heading, MCV_DEPLOY_HEADING);
+            let most = TURN_SPEED * dt;
+            if turn.abs() <= most {
+                unit.heading = MCV_DEPLOY_HEADING;
+                unit.deployment = Deployment::Drilling;
+                unit.constructing = CONSTRUCTION_SECONDS;
+                settle_on_its_squares(unit);
+            } else {
+                unit.heading += turn.clamp(-most, most);
+            }
+        }
+        Deployment::Drilling if unit.constructing <= 0.0 => {
+            unit.deployment = Deployment::Idle;
+            settle_on_its_squares(unit);
+            switch_deployed(unit);
+        }
+        Deployment::Drilling => {}
+    }
+    // It has started: nothing it is told meanwhile moves it.
+    unit.destination = (unit.x, unit.z);
+    unit.target = None;
+}
+
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
     for unit in units.iter_mut() {
         unit.constructing = (unit.constructing - dt).max(0.0);
+        go_on_deploying(unit, dt);
     }
     tend_pads(units, terrain, dt);
     alert_landers(units, teams);
@@ -3766,7 +4200,7 @@ mod tests {
                 .collect();
             assert_eq!(towers.len(), 1);
             assert_eq!(towers[0].color, color);
-            assert_eq!(towers[0].weapon, WeaponKind::Missile);
+            assert_eq!(towers[0].weapon, WeaponKind::TowerRockets);
             assert_eq!(towers[0].health, UnitKind::Tower.max_health());
             assert_eq!(towers[0].is_selected_in_groups(), owner == 0);
         }
@@ -4910,9 +5344,13 @@ mod tests {
             50
         ));
         let tank = *units.last().unwrap();
-        assert_eq!(tank.x, factory.x);
         let touching = factory.radius() + tank.radius();
-        assert!((tank.z - factory.z - touching).abs() < 0.5, "at the door");
+        let away = (tank.x - factory.x).hypot(tank.z - factory.z);
+        assert!((away - touching).abs() < 0.5, "at the door");
+        assert!(
+            ((tank.x - factory.x) + (tank.z - factory.z)).abs() < 0.01,
+            "out along the grid"
+        );
         assert!(tank.is_moving(), "on its way out");
         assert!(tank.destination.1 > tank.z);
         for _ in 0..100 {
@@ -5215,9 +5653,70 @@ mod tests {
     }
 
     #[test]
+    fn a_building_snaps_to_grid_squares_jumping_a_whole_square_at_a_time() {
+        let (x, z) = (10.0, 60.0);
+        let plot = Role::Tower.plot_at((x, z));
+        assert_eq!(plot.cells().count(), 4, "a tower takes two by two");
+        assert_eq!(
+            plot,
+            Role::Tower.plot_at((x + 0.05, z + 0.05)),
+            "no gliding"
+        );
+        let next = Role::Tower.plot_at((x + 0.5, z + 0.5));
+        assert_eq!((next.u, next.v), (plot.u + 1, plot.v), "a whole square on");
+        assert_eq!(Role::Tower.plot_at(plot.center()), plot, "and back");
+        assert_eq!(Role::Factory.plot_at((x, z)).cells().count(), 30);
+    }
+
+    #[test]
+    fn a_new_building_can_be_at_most_two_empty_squares_from_the_nearest_building() {
+        let mut tower = Unit::for_test(0.0, 60.0, UnitKind::Tower);
+        tower.role = Role::Tower;
+        let mine = tower.plot().unwrap();
+        let units = [tower];
+        let at = |du: i32, dv: i32| Plot {
+            u: mine.u + du,
+            v: mine.v + dv,
+            cols: 2,
+            rows: 2,
+        };
+        let near = |plot: Plot| is_near_building_of(&units, plot, 0);
+        assert!(near(at(2, 0)), "right beside it");
+        assert!(near(at(4, 0)), "two empty squares between");
+        assert!(!near(at(5, 0)), "three is too far");
+        assert!(near(at(-4, 0)), "the other way too");
+        assert!(!near(at(-5, 0)));
+        assert!(
+            near(at(0, 4)) && !near(at(0, 5)),
+            "and along the other axis"
+        );
+        assert!(near(at(4, 4)), "any dimension counts, diagonally as well");
+        assert!(!near(at(5, 4)));
+        assert!(
+            !is_near_building_of(&units, at(2, 0), 1),
+            "only its owner's"
+        );
+    }
+
+    #[test]
+    fn a_building_goes_up_only_between_the_frames_rising_and_coming_down() {
+        let mut barracks = Unit::for_test(0.0, 60.0, UnitKind::Building);
+        let at = |done: f32| {
+            let mut unit = barracks;
+            unit.constructing = CONSTRUCTION_SECONDS * (1.0 - done);
+            unit.raised()
+        };
+        assert_eq!(at(0.2), 0.0, "frames first");
+        assert!(at(0.5) > 0.0 && at(0.5) < 1.0, "then it grows");
+        assert_eq!(at(0.8), 1.0, "and stands whole as they come down");
+        barracks.constructing = 0.0;
+        assert_eq!(barracks.raised(), 1.0);
+    }
+
+    #[test]
     fn a_new_building_needs_clear_land() {
         assert!(
-            !can_place_building(&[], open_ground(), (0.0, 60.0)),
+            !can_place_building(&[], open_ground(), Role::Barracks.plot_at((0.0, 60.0))),
             "not on the sand"
         );
         let upland = Terrain::open_upland();
@@ -5227,31 +5726,39 @@ mod tests {
         assert!(!can_place_building(
             &units,
             terrain,
-            (barracks.x, barracks.z)
+            Role::Barracks.plot_at((barracks.x, barracks.z))
         ));
         assert!(!can_place_building(
             &units,
             terrain,
-            (barracks.x + 1.5, barracks.z)
+            Role::Barracks.plot_at((barracks.x + 1.5, barracks.z))
         ));
         assert!(can_place_building(
             &units,
             terrain,
-            (barracks.x - 8.0, barracks.z)
+            Role::Barracks.plot_at((barracks.x - 14.0, barracks.z))
         ));
         let mut plane = Unit::for_test(barracks.x + 8.0, barracks.z, UnitKind::Aircraft);
         plane.alive = true;
         assert!(
-            can_place_building(&[plane], terrain, (plane.x, plane.z)),
+            can_place_building(
+                &[plane],
+                terrain,
+                Role::Barracks.plot_at((plane.x, plane.z))
+            ),
             "what flies is not in the way"
         );
         let sitting = Unit {
             altitude: 0.0,
             ..plane
         };
-        assert!(!can_place_building(&[sitting], terrain, (plane.x, plane.z)));
+        assert!(!can_place_building(
+            &[sitting],
+            terrain,
+            Role::Barracks.plot_at((plane.x, plane.z))
+        ));
         assert!(
-            !can_place_building(&[], terrain, (-1000.0, 60.0)),
+            !can_place_building(&[], terrain, Role::Barracks.plot_at((-1000.0, 60.0))),
             "off the map"
         );
     }
@@ -5919,15 +6426,15 @@ mod tests {
     fn a_machine_sitting_on_a_pad_counts_as_grounded_and_one_up_in_the_air_does_not() {
         let mut machine = unit_at(0.0, 50.0, UnitKind::Aircraft);
         machine.role = Role::Destroyer;
-        machine.altitude = PAD_TOP;
+        machine.sit_on_pad(99);
         assert!(machine.is_grounded() && machine.can_be_repaired());
         assert_eq!(machine.height_as_target(), 0.0);
-        machine.altitude = 1.0;
+        machine.altitude = PAD_TOP + 1.0;
         assert!(!machine.is_grounded() && !machine.can_be_repaired());
-        assert_eq!(machine.height_as_target(), 1.0);
+        assert_eq!(machine.height_as_target(), PAD_TOP + 1.0);
         // What does not land is in the air even that low.
         let mut carryall = unit_at(0.0, 50.0, UnitKind::Aircraft);
-        carryall.altitude = PAD_TOP;
+        carryall.sit_on_pad(99);
         assert!(!carryall.is_grounded());
     }
 
@@ -5944,6 +6451,7 @@ mod tests {
             id: pad.id,
             x: pad.x,
             z: pad.z,
+            deck: FRAC_PI_4,
         });
         machine.health = 20.0;
         let mut fixer = unit_at(pad.x - 7.0, pad.z, UnitKind::Vehicle);
@@ -6121,7 +6629,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tank_and_a_soldier_drive_and_walk_right_over_a_landing_pad_standing_on_its_deck() {
+    fn a_tank_and_a_soldier_go_around_a_landing_pad_on_its_tower() {
         let terrain = open_map();
         for kind in [UnitKind::Vehicle, UnitKind::Infantry] {
             let [_, mut pad] = machine_and_pad(Role::Ornithopter);
@@ -6130,21 +6638,37 @@ mod tests {
             crossing.id = 5;
             crossing.destination = (4.0, 50.0);
             let mut units = [pad, crossing];
-            let mut stood_on_deck = false;
             for _ in 0..400 {
                 advance(&mut units, &terrain, &[0], 0.05);
                 let unit = units[1];
-                if unit.x.abs() < 0.5 {
-                    let ground = terrain.height_at(unit.x, unit.z);
-                    stood_on_deck |= (unit.y - ground - PAD_TOP).abs() < 0.001;
-                    assert!((unit.z - 50.0).abs() < 0.1, "straight across: {unit:?}");
-                }
+                let from_shaft = unit.x.hypot(unit.z - 50.0);
+                assert!(from_shaft > PAD_DECK.1, "around it: {unit:?}");
+                assert_eq!(unit.y, terrain.height_at(unit.x, unit.z), "on the ground");
             }
             assert_eq!((units[0].x, units[0].z), (0.0, 50.0), "the pad stays put");
             let unit = units[1];
-            assert!((unit.x - 4.0).abs() < 0.3, "it got across: {unit:?}");
-            assert_eq!(unit.y, terrain.height_at(unit.x, unit.z), "and back down");
-            assert!(stood_on_deck, "{kind:?}");
+            assert!(
+                (unit.x - 4.0).hypot(unit.z - 50.0) < 0.3,
+                "got past: {unit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn machines_landing_on_a_pad_line_themselves_up_with_it() {
+        let terrain = open_map();
+        for role in [Role::Ornithopter, Role::Destroyer] {
+            let [mut machine, pad] = machine_and_pad(role);
+            machine.heading = 2.2;
+            machine.selected = true;
+            let mut units = [machine, pad];
+            order_land(&mut units, 1);
+            for _ in 0..1000 {
+                advance(&mut units, &terrain, &[0], 0.05);
+            }
+            assert!(units[0].is_grounded(), "{:?}", units[0]);
+            let off = (units[0].heading - std::f32::consts::FRAC_PI_4).sin().abs();
+            assert!(off < 0.02, "{role:?} is {off} off: {:?}", units[0]);
         }
     }
 
@@ -6202,6 +6726,7 @@ mod tests {
             id: pad.id,
             x: pad.x,
             z: pad.z,
+            deck: FRAC_PI_4,
         });
         let spot = (pad.x, pad.z);
         // Far off at first, so it has to come and wait.
@@ -6248,6 +6773,7 @@ mod tests {
             id: pad.id,
             x: pad.x,
             z: pad.z,
+            deck: FRAC_PI_4,
         });
         let mut full = sitting;
         full.id = 3;
@@ -6385,26 +6911,175 @@ mod tests {
     }
 
     #[test]
-    fn on_any_size_of_map_everyone_starts_on_the_map_on_land_and_further_apart_when_it_is_bigger() {
-        let reach = |size: MapSize| {
-            // Land is scarcest on the water maps.
-            let map = (0..crate::game::MAPS.len())
-                .find(|&map| {
-                    let terrain = crate::battlefield::terrain(map);
-                    terrain.size() == size && terrain.material() == crate::platform::Material::Water
-                })
-                .unwrap();
-            let terrain = crate::battlefield::terrain(map);
-            let units = spawn_bases(terrain, &[TeamColor::Blue, TeamColor::Red, TeamColor::Cyan]);
-            let opponent = units.iter().find(|u| u.owner == 1).unwrap();
-            for unit in units.iter().filter(|u| u.altitude <= 0.0) {
-                assert!(terrain.can_walk(unit.x, unit.z), "{size:?}: {unit:?}");
+    fn an_mcv_comes_round_to_face_the_left_bottom_edge_then_takes_a_second_to_deploy() {
+        let terrain = Terrain::open_upland();
+        let mut mcv = unit_at(0.0, 50.0, UnitKind::Vehicle);
+        mcv.role = Role::Mcv;
+        mcv.heading = 0.1;
+        mcv.selected = true;
+        let mut units = [mcv];
+        toggle_deploy(&mut units, &terrain);
+        assert!(!units[0].deployed, "not at once");
+        assert_eq!(units[0].deployment, Deployment::Turning);
+        for _ in 0..200 {
+            advance(&mut units, &terrain, &[0], 0.02);
+            if units[0].deployment == Deployment::Drilling {
+                break;
             }
-            opponent.x.hypot(opponent.z - size.middle_z())
+        }
+        assert_eq!(units[0].heading, MCV_DEPLOY_HEADING);
+        assert!(units[0].is_under_construction(), "in its scaffolding");
+        assert_eq!(units[0].raised(), 1.0, "whole, not rising from the ground");
+        let mut seconds = 0.0;
+        while !units[0].deployed {
+            advance(&mut units, &terrain, &[0], 0.02);
+            seconds += 0.02;
+            assert!(seconds < 2.0);
+            // Orders make no difference to it meanwhile.
+            units[0].destination = (9.0, 60.0);
+        }
+        assert!((seconds - CONSTRUCTION_SECONDS).abs() < 0.05, "{seconds}");
+        assert_eq!(units[0].kind, UnitKind::Building);
+        let plot = units[0].plot().unwrap();
+        assert_eq!((units[0].x, units[0].z), plot.center(), "on the grid");
+    }
+
+    #[test]
+    fn an_mcvs_drill_lies_level_then_tips_to_45_degrees_and_bores_in_as_it_turns() {
+        let mut mcv = unit_at(0.0, 50.0, UnitKind::Vehicle);
+        mcv.role = Role::Mcv;
+        let packed = mcv.drill_pose();
+        assert_eq!((packed.tilt, packed.plunge), (0.0, 0.0));
+        mcv.deployment = Deployment::Drilling;
+        mcv.constructing = CONSTRUCTION_SECONDS * 0.5;
+        let half = mcv.drill_pose();
+        assert!(
+            half.tilt > 0.7 && half.spin > 1.0 && half.plunge < 1.0,
+            "{half:?}"
+        );
+        assert!(mcv.drill_is_biting());
+        mcv.deployment = Deployment::Idle;
+        mcv.constructing = 0.0;
+        switch_deployed(&mut mcv);
+        let done = mcv.drill_pose();
+        assert_eq!((done.tilt, done.plunge), (FRAC_PI_4, 1.0));
+    }
+
+    #[test]
+    fn a_building_turned_to_face_another_edge_changes_its_squares_and_its_way_out() {
+        let at = (0.0, 60.0);
+        let plain = Role::Factory.plot_facing(at, Facing::LeftBottom);
+        assert_eq!((plain.cols, plain.rows), (6, 5));
+        let turned = Role::Factory.plot_facing(at, Facing::RightBottom);
+        assert_eq!((turned.cols, turned.rows), (5, 6));
+        assert_eq!(
+            Role::Factory.plot_facing(turned.center(), Facing::RightBottom),
+            turned
+        );
+        let exits = |facing: Facing| -> Vec<(i32, i32)> {
+            let plot = Role::Factory.plot_facing(at, facing);
+            plot.cells()
+                .filter(|&cell| Role::Factory.is_exit(plot, facing, cell))
+                .collect()
         };
-        let (s, m, l) = (reach(MapSize::S), reach(MapSize::M), reach(MapSize::L));
-        assert!(m > s * 1.3 && m < s * 1.7, "{s} {m}");
-        assert!(l > s * 1.8 && l < s * 2.2, "{s} {l}");
+        let plot = |facing| Role::Factory.plot_facing(at, facing);
+        assert!(
+            exits(Facing::LeftBottom)
+                .iter()
+                .all(|c| c.1 == plot(Facing::LeftBottom).v + 4)
+        );
+        assert!(
+            exits(Facing::RightTop)
+                .iter()
+                .all(|c| c.1 == plot(Facing::RightTop).v)
+        );
+        assert!(
+            exits(Facing::RightBottom)
+                .iter()
+                .all(|c| c.0 == plot(Facing::RightBottom).u + 4)
+        );
+        assert!(
+            exits(Facing::LeftTop)
+                .iter()
+                .all(|c| c.0 == plot(Facing::LeftTop).u)
+        );
+        for facing in [
+            Facing::LeftBottom,
+            Facing::LeftTop,
+            Facing::RightTop,
+            Facing::RightBottom,
+        ] {
+            assert_eq!(exits(facing).len(), 2, "{facing:?}");
+        }
+        assert_eq!(Facing::of_drag(-5.0, 5.0), Facing::LeftBottom);
+        assert_eq!(Facing::of_drag(-5.0, -5.0), Facing::LeftTop);
+        assert_eq!(Facing::of_drag(5.0, -5.0), Facing::RightTop);
+        assert_eq!(Facing::of_drag(5.0, 5.0), Facing::RightBottom);
+        let (x, z) = Facing::RightTop.way_out();
+        assert!(x > 0.5 && z < -0.5, "{x} {z}");
+    }
+
+    #[test]
+    fn a_line_comes_to_a_plot_where_it_first_meets_it_and_not_from_inside() {
+        let plot = Plot {
+            u: 4,
+            v: 0,
+            cols: 2,
+            rows: 2,
+        };
+        assert_eq!(plot.entered_by((0.0, 1.0), (8.0, 1.0)), Some(0.5));
+        assert_eq!(plot.entered_by((0.0, 5.0), (8.0, 5.0)), None, "passes by");
+        assert_eq!(plot.entered_by((0.0, 1.0), (2.0, 1.0)), None, "stops short");
+        assert_eq!(plot.entered_by((5.0, 1.0), (9.0, 1.0)), None, "from inside");
+    }
+
+    #[test]
+    fn the_player_starts_at_random_with_opponents_placed_by_how_many_there_are() {
+        for seed in [1, 3, 5, 7, 11, 99, 1234] {
+            let mut random = seed;
+            let two = start_slots(2, &mut random);
+            assert_eq!(two[1], (two[0] + 4) % 8, "opposite");
+            let three = start_slots(3, &mut random);
+            let p = three[0];
+            assert_eq!(three[1..], [(p + 2) % 8, (p + 6) % 8], "one place between");
+            let four = start_slots(4, &mut random);
+            assert!(
+                four.iter().all(|s| s % 2 == four[0] % 2),
+                "all corners or all edges"
+            );
+            let mut all = four.clone();
+            all.sort();
+            all.dedup();
+            assert_eq!(all.len(), 4);
+            for sides in 5..=8 {
+                let mut all = start_slots(sides, &mut random);
+                assert_eq!(all.len(), sides);
+                all.sort();
+                all.dedup();
+                assert_eq!(all.len(), sides, "each its own place");
+            }
+        }
+        let mut random = 17;
+        let firsts: Vec<usize> = (0..40).map(|_| start_slots(2, &mut random)[0]).collect();
+        assert!(firsts.iter().any(|&f| f != firsts[0]), "picked at random");
+    }
+
+    #[test]
+    fn everyone_starts_with_an_mcv_that_can_deploy_where_it_stands_and_nobody_in_the_middle() {
+        let colors = [TeamColor::Blue; 8];
+        for map in 0..crate::game::MAPS.len() {
+            let terrain = crate::battlefield::terrain(map);
+            for sides in 2..=8 {
+                let mut random = 5 + sides as u32;
+                let units = spawn(terrain, &colors[..sides], &mut random);
+                assert_eq!(units.len(), sides);
+                for unit in &units {
+                    assert!(can_deploy_here(unit, terrain), "map {map}: {unit:?}");
+                    let from_middle = unit.x.hypot(unit.z - terrain.size().middle_z());
+                    assert!(from_middle > 40.0, "map {map}: {unit:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -6504,7 +7179,10 @@ mod tests {
     fn the_players_groups_are_more_than_a_screen_apart() {
         let view = View::new(Camera::centered(), 2880.0, 1800.0);
         let units = spawn_bases(terrain(0), &COLORS);
-        let far = units.iter().find(|u| u.x >= SECOND_GROUP_X - 3.0).unwrap();
+        let far = units
+            .iter()
+            .find(|u| u.owner == 0 && u.x.hypot(u.z - MAP_MIDDLE_Z) > 40.0)
+            .unwrap();
         let (x, _) = view.project(far.x, far.y, far.z).unwrap();
         assert!(x > 2880.0, "starts off screen: {x}");
     }

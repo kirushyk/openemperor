@@ -71,6 +71,11 @@ impl Fog {
         }
     }
 
+    /// The whole map is in view now.
+    pub fn see_everything(&mut self) {
+        self.sights.fill(Sight::Visible);
+    }
+
     pub fn at_grid(&self, u: usize, v: usize) -> Sight {
         self.sights[grid_index(u, v)]
     }

@@ -3,10 +3,10 @@
 //! can see are left out as they are made.
 
 use super::{Canvas, Point, cross, knee_of, unit_vector};
-use crate::battlefield::SUN;
+use crate::battlefield::{CELL_SIDE, SUN};
 use crate::game::Faction;
 use crate::platform::WorldVertex;
-use crate::units::{self, Role, Unit, UnitKind};
+use crate::units::{self, Role, Unit};
 use crate::weapons::{
     RAGDOLL_CHEST, RAGDOLL_ELBOWS, RAGDOLL_FEET, RAGDOLL_HANDS, RAGDOLL_HEAD, RAGDOLL_KNEES,
     RAGDOLL_PELVIS, RAGDOLL_SECONDS, RAGDOLL_SINK_SECONDS, Ragdoll,
@@ -717,7 +717,7 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         Role::RepairVehicle => &[[0.43, 0.24, 0.0]],
         Role::Catapult => &[[0.43, 0.17, 0.0]],
         Role::RocketLauncher => &[[0.46, 0.2, -0.15], [0.46, 0.2, 0.15]],
-        Role::Mongoose => &[[0.25, 0.57, 0.0]],
+        Role::Mongoose => &[[0.39, 0.58, 0.0]],
         Role::Minotaurus => &[[0.41, 1.15, -0.06], [0.41, 1.15, 0.06]],
         Role::AdvancedCarryall => &[[0.55, 0.03, -0.08], [0.55, 0.03, 0.08]],
         Role::AirDefensePlatform => &[[0.41, 0.05, -0.27], [0.41, 0.05, 0.27]],
@@ -727,10 +727,10 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         Role::Tower | Role::GunTower => &[[0.14, 1.5, 0.0]],
         // A big headlamp on the front of each front track pod.
         Role::Mcv => &[[1.02, 0.34, -0.66], [1.02, 0.34, 0.66]],
-        Role::SandBike => &[[0.43, 0.2, 0.0]],
-        Role::DiskSaw => &[[0.4, 0.24, -0.15], [0.4, 0.24, 0.15]],
+        Role::SandBike => &[[0.45, 0.2, 0.0]],
+        Role::DiskSaw => &[[0.3, 0.27, -0.3], [0.3, 0.27, 0.3]],
         Role::FlameTank => &[[0.43, 0.2, 0.0]],
-        Role::HugeTank => &[[0.73, 0.37, -0.36], [0.73, 0.37, 0.36]],
+        Role::HugeWalker => &[[0.82, 1.9, -0.3], [0.82, 1.9, 0.3]],
         Role::Recon => &[[0.38, 0.42, 0.0]],
         Role::LaserTank => &[[0.48, 0.17, 0.0]],
         // On top of its right track.
@@ -744,6 +744,7 @@ fn lamp_radius(role: Role) -> f32 {
     match role {
         Role::AdvancedCarryall => 0.045,
         Role::Minotaurus => 0.035,
+        Role::HugeWalker => 0.06,
         Role::Tower | Role::GunTower => 0.045,
         Role::Mcv => 0.075,
         _ => 0.026,
@@ -759,6 +760,49 @@ pub struct Beam {
     pub half: f32,
     pub reach: f32,
     pub spread: f32,
+}
+
+/// A pop-up turret: a low round collar in the ground with a bulge in its middle, which rises
+/// with the turret's gun when it has something to fire at.
+pub fn draw_popup_turret(canvas: &mut Canvas, unit: &Unit, color: [f32; 3], walls: [f32; 3]) {
+    let (trim, collar) = (team(color), team(walls));
+    let model = &mut Model::new(canvas, Place::on_ground(unit));
+    let round = model.sides(20);
+    let rise = unit.popped * units::TURRET_RISE;
+    model.tube(
+        tube([0.0, 0.0, 0.0], [0.0, 0.12, 0.0], 0.5)
+            .taper(0.44)
+            .sides(round),
+        collar,
+    );
+    model.tube(
+        tube([0.0, 0.12, 0.0], [0.0, 0.13, 0.0], 0.43).sides(round),
+        trim,
+    );
+    if rise > 0.0 {
+        model.tube(
+            tube([0.0, 0.1, 0.0], [0.0, 0.14 + rise, 0.0], 0.3).sides(round),
+            STEEL,
+        );
+    }
+    let middle = [0.0, 0.14 + rise, 0.0];
+    model.ball(middle, [0.32, 0.17, 0.32], true, STEEL);
+    let (reach, half, paint) = if unit.role == Role::GasTower {
+        (0.28, 0.1, self::team([0.35, 0.9, 0.25]))
+    } else {
+        (0.45, 0.035, GLARE)
+    };
+    if unit.popped > 0.05 {
+        let up = middle[1] + 0.07;
+        let tip = [0.22 + reach * unit.popped, up, 0.0];
+        model.tube(tube([0.18, up, 0.0], tip, half).sides(8), GUNMETAL);
+        model.tube(
+            tube(tip, [tip[0] + 0.012, up, 0.0], half * 1.15)
+                .sides(8)
+                .ends(false, true),
+            paint,
+        );
+    }
 }
 
 /// The beams a machine casts now: none from one sitting on the ground that only flies.
@@ -786,10 +830,11 @@ pub fn beams(unit: &Unit) -> Vec<Beam> {
         _ => (2.6, 0.75),
     };
     let (sin, cos) = unit.heading.sin_cos();
+    let size = unit.role.drawn_scale();
     spots
         .iter()
         .map(|&spot| {
-            let [x, y, z] = place.point(spot);
+            let [x, y, z] = place.point(spot.map(|c| c * size));
             Beam {
                 lens: (x, y, z),
                 ahead: [cos, 0.0, sin],
@@ -810,6 +855,8 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
     } else {
         Place::on_ground(unit)
     };
+    let origin = place.origin;
+    let drawn = canvas.objects.len();
     let model = &mut Model::new(canvas, place);
     match unit.role {
         Role::Tank => tank(model, unit, team),
@@ -826,7 +873,7 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
         Role::SandBike => sand_bike(model, team),
         Role::DiskSaw => disk_saw(model, unit, time, team),
         Role::FlameTank => flame_tank(model, unit, team),
-        Role::HugeTank => huge_tank(model, unit, team),
+        Role::HugeWalker => huge_walker(model, unit, team),
         Role::Recon => recon(model, unit, team),
         Role::LaserTank => laser_tank(model, time, team),
         Role::SiegeTank => siege_tank(model, unit, team),
@@ -835,6 +882,12 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
     let radius = lamp_radius(unit.role);
     for &spot in lamp_spots(unit.role) {
         model.lamp(spot, radius);
+    }
+    let size = unit.role.drawn_scale();
+    for vertex in &mut canvas.objects[drawn..] {
+        vertex.x = origin[0] + (vertex.x - origin[0]) * size;
+        vertex.y = origin[1] + (vertex.y - origin[1]) * size;
+        vertex.z = origin[2] + (vertex.z - origin[2]) * size;
     }
 }
 
@@ -983,23 +1036,32 @@ fn crane(
     model.bar(girder(-0.4), girder(0.4), 0.035, STEEL);
 }
 
-/// What puts a building up in its one second: two cranes turning opposite ways and, on all
-/// four sides, scaffolding that goes up and comes down again.
+/// What puts a building up in its one second, in three stages: scaffolding on all four sides
+/// and two cranes go up, the cranes turn opposite ways while the building grows, and then it
+/// all comes down and leaves the building bare.
 pub fn draw_construction(canvas: &mut Canvas, unit: &Unit) {
-    let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+    let smooth = |t: f32| {
+        let t = t.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
     let done = unit.construction_done();
+    let (up, down) = (units::CONSTRUCTION_UP, units::CONSTRUCTION_DOWN);
+    let work = ((done - up) / (down - up)).clamp(0.0, 1.0);
+    let (sin, cos) = std::f32::consts::FRAC_PI_4.sin_cos();
+    // Along the grid, as its squares are.
     let place = Place {
         origin: [unit.x, unit.y, unit.z],
-        along: [1.0, 0.0, 0.0],
+        along: [cos, 0.0, sin],
         up: [0.0, 1.0, 0.0],
-        across: [0.0, 0.0, 1.0],
+        across: [-sin, 0.0, cos],
     };
     let model = &mut Model::new(canvas, place);
-    let (half_a, half_c, top, size) = if unit.kind == UnitKind::Tower {
-        (0.75, 0.75, 1.5, 0.72)
-    } else {
-        (1.55, 1.3, 2.1, 1.0)
-    };
+    let (cols, rows) = unit
+        .plot()
+        .map_or(unit.role.plot_size(), |plot| (plot.cols, plot.rows));
+    let half_a = cols as f32 * CELL_SIDE / 2.0 + 0.15;
+    let half_c = rows as f32 * CELL_SIDE / 2.0 + 0.15;
+    let top = unit.role.building_top() + 0.25;
     let corners = [
         [-half_a, -half_c],
         [half_a, -half_c],
@@ -1008,29 +1070,33 @@ pub fn draw_construction(canvas: &mut Canvas, unit: &Unit) {
     ];
     for side in 0..4 {
         // Each side a little after the one before, so that they do not move as one.
-        let late = side as f32 * 0.05;
-        let turn = ((done - late) / 0.85).clamp(0.0, 1.0);
-        let height = top * (turn * PI).sin();
+        let late = side as f32 * 0.03;
+        let rising = smooth((done - late) / (up - 0.09).max(0.01));
+        let falling = smooth((1.0 - done - late) / (1.0 - down - 0.09).max(0.01));
+        let height = top * rising.min(falling);
         scaffold(model, corners[side], corners[(side + 1) % 4], height);
     }
-    let appear = smooth((done.min(1.0 - done) / 0.14).min(1.0));
-    let out = 0.55;
+    let appear = smooth(done / up).min(smooth((1.0 - done) / (1.0 - down)));
+    if appear <= 0.0 {
+        return;
+    }
+    let (height, jib, out) = (top + 1.5, half_a.max(half_c) * 1.35 + 0.8, 0.55);
     crane(
         model,
         [-half_a - out, -half_c - out],
-        3.4 * size,
-        3.0 * size,
-        0.4 + done * TAU * 0.75,
-        done,
+        height,
+        jib,
+        0.4 + work * TAU * 0.75,
+        work,
         appear,
     );
     crane(
         model,
         [half_a + out, half_c + out],
-        2.9 * size,
-        2.6 * size,
-        3.6 - done * TAU * 0.75,
-        (done + 0.3) % 1.0,
+        height - 0.45,
+        jib * 0.87,
+        3.6 - work * TAU * 0.75,
+        (work + 0.3) % 1.0,
         appear,
     );
 }
@@ -1794,8 +1860,8 @@ fn legs(model: &mut Model, unit: &Unit, legs: &Legs) {
     }
 }
 
-/// A small walking missile carrier: a rounded cockpit with a visor up on two bird legs, and a
-/// pod of four missile tubes on each side.
+/// A small walking missile carrier: a long rectangular body up on two bird legs, with a lamp
+/// in front and a separate launcher of four missile tubes on its back.
 fn strider(model: &mut Model, unit: &Unit, team: Paint) {
     legs(
         model,
@@ -1812,49 +1878,31 @@ fn strider(model: &mut Model, unit: &Unit, team: Paint) {
             pistons: 1,
         },
     );
-    model.loft(Loft {
-        rings: &[
-            [-0.23, 0.62, 0.0, 0.0],
-            [-0.21, 0.62, 0.07, 0.09],
-            [-0.1, 0.62, 0.12, 0.14],
-            [0.08, 0.62, 0.12, 0.15],
-            [0.2, 0.61, 0.09, 0.12],
-            [0.25, 0.6, 0.04, 0.06],
-            [0.26, 0.6, 0.0, 0.0],
-        ],
-        sides: 12,
-        paint: STEEL,
-        top: Some(team),
-    });
-    model.block([0.205, 0.64, 0.0], [0.03, 0.022, 0.085], GLASS);
-    let mouth_height = 0.66;
-    for side in [-0.21, 0.21] {
-        let out: f32 = if side < 0.0 { -1.0 } else { 1.0 };
-        model.bevel(
-            [0.0, mouth_height, side],
-            [0.16, 0.05, 0.05],
-            0.012,
-            GUNMETAL,
+    model.bevel([0.0, 0.62, 0.0], [0.38, 0.1, 0.14], 0.02, STEEL);
+    model.block([-0.05, 0.722, 0.0], [0.26, 0.004, 0.09], team);
+    model.block([0.382, 0.66, 0.0], [0.004, 0.035, 0.09], GLASS);
+    // The launcher stands apart on a post on its back.
+    model.tube(
+        tube([-0.14, 0.72, 0.0], [-0.14, 0.78, 0.0], 0.05).sides(8),
+        GUNMETAL,
+    );
+    let launcher_up = 0.86;
+    model.bevel(
+        [-0.14, launcher_up, 0.0],
+        [0.17, 0.09, 0.13],
+        0.012,
+        GUNMETAL,
+    );
+    model.block([-0.14, launcher_up, 0.132], [0.13, 0.04, 0.003], team);
+    model.block([-0.14, launcher_up, -0.132], [0.13, 0.04, 0.003], team);
+    for (u, c) in [(-0.04, -0.06), (-0.04, 0.06), (0.04, -0.06), (0.04, 0.06)] {
+        let at = [0.03, launcher_up + u, c];
+        model.tube(
+            tube(at, [0.034, at[1], at[2]], 0.03)
+                .sides(6)
+                .ends(false, true),
+            BORE,
         );
-        model.block(
-            [0.0, mouth_height, side + out * 0.051],
-            [0.13, 0.035, 0.003],
-            team,
-        );
-        for (u, c) in [
-            (-0.022, -0.022),
-            (-0.022, 0.022),
-            (0.022, -0.022),
-            (0.022, 0.022),
-        ] {
-            let at = [0.16, mouth_height + u, side + c];
-            model.tube(
-                tube(at, [0.163, at[1], at[2]], 0.015)
-                    .sides(6)
-                    .ends(false, true),
-                BORE,
-            );
-        }
     }
 }
 
@@ -2038,6 +2086,21 @@ fn air_defense_platform(model: &mut Model, team: Paint) {
         );
     }
     model.bevel([0.04, gun, 0.11], [0.05, 0.04, 0.03], 0.008, GUNMETAL);
+    for spot in AIR_DEFENSE_GLARES {
+        model.bevel(spot, [0.016, 0.016, 0.016], 0.004, GLARE);
+    }
+}
+
+/// Where the red lights on an air defense platform are, as [along, up, across].
+const AIR_DEFENSE_GLARES: [[f32; 3]; 2] = [[-0.34, 0.125, -0.27], [-0.34, 0.125, 0.27]];
+
+/// Where the red lights on an air defense platform are in the world.
+pub fn air_defense_glares(unit: &Unit) -> [Point; 2] {
+    let place = Place::in_air(unit);
+    AIR_DEFENSE_GLARES.map(|spot| {
+        let [x, y, z] = place.point(spot);
+        (x, y, z)
+    })
 }
 
 /// A small fast delta-wing drone: a slim fuselage with a sensor dome, a delta wing with
@@ -2390,6 +2453,57 @@ pub fn mcv_searchlight(unit: &Unit, faction: Faction, time: f32) -> Beam {
     }
 }
 
+/// A huge drill on a hinge at an MCV's nose: lying level while it drives, then tipped down and
+/// bored into the ground as it deploys, its two spiral flights showing it turn.
+fn mcv_drill(model: &mut Model, unit: &Unit, team: Paint) {
+    const LENGTH: f32 = 1.7;
+    const RADIUS: f32 = 0.3;
+    const PLUNGE: f32 = 0.45;
+    const FLIGHTS: usize = 2;
+    const STEPS: usize = 18;
+    let [along, up] = units::MCV_DRILL_PIVOT;
+    let pose = unit.drill_pose();
+    model.bevel([along - 0.06, up, 0.0], [0.18, 0.2, 0.3], 0.03, GUNMETAL);
+    let base = model.place;
+    let (sin, cos) = pose.tilt.sin_cos();
+    let way = base.way([cos, -sin, 0.0]);
+    let pivot = base.point([along, up, 0.0]);
+    let place = Place {
+        origin: [0, 1, 2].map(|i| pivot[i] + way[i] * pose.plunge * PLUNGE),
+        along: way,
+        up: base.way([sin, cos, 0.0]),
+        across: base.across,
+    };
+    let mut drill = model.at(place);
+    drill.tube(
+        tube([-0.3, 0.0, 0.0], [0.05, 0.0, 0.0], 0.13).sides(12),
+        STEEL,
+    );
+    drill.tube(
+        tube([0.05, 0.0, 0.0], [0.16, 0.0, 0.0], RADIUS + 0.04).sides(14),
+        team,
+    );
+    drill.tube(
+        tube([0.16, 0.0, 0.0], [LENGTH, 0.0, 0.0], RADIUS)
+            .taper(0.015)
+            .sides(14),
+        GUNMETAL,
+    );
+    let flight_point = |flight: usize, step: usize| {
+        let share = step as f32 / STEPS as f32;
+        let angle = pose.spin + share * TAU * 3.0 + flight as f32 * TAU / FLIGHTS as f32;
+        let radius = (RADIUS + 0.035) * (1.0 - share) + 0.015;
+        let (sin, cos) = angle.sin_cos();
+        [0.16 + share * (LENGTH - 0.16), radius * sin, radius * cos]
+    };
+    for flight in 0..FLIGHTS {
+        for step in 0..STEPS {
+            let (from, to) = (flight_point(flight, step), flight_point(flight, step + 1));
+            drill.bar(from, to, 0.028, STEEL);
+        }
+    }
+}
+
 const GLARE: Paint = Paint {
     color: [1.0, 0.12, 0.08],
     shine: 0.0,
@@ -2536,6 +2650,7 @@ pub fn draw_mcv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, c
     for &lamp in lamp_spots(Role::Mcv) {
         model.lamp(lamp, lamp_radius(Role::Mcv));
     }
+    mcv_drill(model, unit, team);
     if !unit.deployed {
         return;
     }
@@ -2571,12 +2686,12 @@ const MCV_TRACKS_APART: f32 = 0.66;
 /// wheel at each end, with a rifle on its nose.
 fn sand_bike(model: &mut Model, team: Paint) {
     let rings = [
-        [-0.46, 0.2, 0.0, 0.0],
-        [-0.3, 0.2, 0.05, 0.1],
-        [-0.05, 0.2, 0.08, 0.18],
-        [0.2, 0.2, 0.085, 0.2],
-        [0.34, 0.2, 0.065, 0.15],
-        [0.42, 0.2, 0.0, 0.0],
+        [-0.42, 0.2, 0.0, 0.0],
+        [-0.34, 0.2, 0.065, 0.15],
+        [-0.2, 0.2, 0.085, 0.2],
+        [0.05, 0.2, 0.08, 0.18],
+        [0.3, 0.2, 0.05, 0.1],
+        [0.47, 0.2, 0.0, 0.0],
     ];
     model.loft(Loft {
         rings: &rings,
@@ -2584,7 +2699,7 @@ fn sand_bike(model: &mut Model, team: Paint) {
         paint: STEEL,
         top: Some(team),
     });
-    for along in [0.24, -0.26] {
+    for along in [0.26, -0.24] {
         model.wheel([along, 0.11, 0.0], 0.11, 0.06, 12, RUBBER);
     }
     model.ball([0.06, 0.27, 0.0], [0.12, 0.06, 0.09], true, GLASS);
@@ -2594,11 +2709,13 @@ fn sand_bike(model: &mut Model, team: Paint) {
     );
 }
 
-/// A tracked disk saw: a low hull on tracks with a huge blade spinning upright in front of it
-/// on two arms, and twin rifles above.
+/// A disk saw: a huge blade spinning upright in the middle, with nothing behind it but a small
+/// pod on each side, each on its own track with a rifle and a lamp.
 fn disk_saw(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
+    const POD_SIDE: f32 = 0.3;
+    const RADIUS: f32 = 0.46;
     let track = Track {
-        rear: -0.32,
+        rear: -0.3,
         front: 0.3,
         height: 0.1,
         radius: 0.085,
@@ -2606,41 +2723,44 @@ fn disk_saw(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
         road_wheels: 4,
         links: 18,
     };
-    tracks(model, unit, &track, 0.22);
-    model.bevel([-0.02, 0.22, 0.0], [0.38, 0.09, 0.2], 0.025, GUNMETAL);
-    model.bevel([-0.1, 0.34, 0.0], [0.26, 0.04, 0.17], 0.02, team);
-    let hub = [crate::weapons::SAW_AHEAD, 0.3, 0.0];
-    for side in [-0.06, 0.06] {
-        model.bar([0.3, 0.26, side], [hub[0], hub[1], side], 0.022, STEEL);
-    }
-    // The blade, with teeth around its rim turning as it spins.
-    let blade = tube([hub[0], hub[1], -0.012], [hub[0], hub[1], 0.012], 0.3).sides(model.sides(20));
-    model.tube(blade, STEEL);
-    model.tube(
-        tube([hub[0], hub[1], -0.03], [hub[0], hub[1], 0.03], 0.05).sides(8),
-        BRONZE,
-    );
-    let teeth = if model.fine { 16 } else { 8 };
-    let spin = time * 14.0;
-    for n in 0..teeth {
-        let angle = spin + n as f32 / teeth as f32 * TAU;
-        let (sin, cos) = angle.sin_cos();
-        let (ahead_sin, ahead_cos) = (angle + 0.25).sin_cos();
-        let at = |r: f32, s: f32, c: f32| [hub[0] + c * r, hub[1] + s * r, 0.0];
-        let (a, b, c) = (
-            at(0.29, sin, cos),
-            at(0.29, ahead_sin, ahead_cos),
-            at(0.36, sin, cos),
-        );
-        model.triangle([a, b, c], [[0.0, 0.0, 1.0]; 3], STEEL);
-        model.triangle([a, c, b], [[0.0, 0.0, -1.0]; 3], STEEL);
-    }
-    for side in [-0.2, 0.2] {
-        model.bevel([0.12, 0.36, side], [0.1, 0.035, 0.03], 0.01, GUNMETAL);
+    tracks(model, unit, &track, POD_SIDE);
+    let hub = [0.0, 0.54, 0.0];
+    for side in [-POD_SIDE, POD_SIDE] {
+        model.bevel([0.0, 0.25, side], [0.24, 0.08, 0.07], 0.02, GUNMETAL);
+        model.block([-0.02, 0.335, side], [0.16, 0.006, 0.05], team);
+        model.bar([0.0, 0.3, side], [0.0, hub[1], side], 0.03, STEEL);
+        model.bevel([0.14, 0.36, side], [0.08, 0.03, 0.03], 0.01, GUNMETAL);
         model.tube(
             tube([0.2, 0.36, side], [0.5, 0.36, side], 0.016).sides(6),
             GUNMETAL,
         );
+    }
+    // The axle between the pods, and the blade on it with teeth around its rim as it spins.
+    model.tube(
+        tube([0.0, hub[1], -POD_SIDE], [0.0, hub[1], POD_SIDE], 0.035).sides(8),
+        GUNMETAL,
+    );
+    let blade =
+        tube([hub[0], hub[1], -0.014], [hub[0], hub[1], 0.014], RADIUS).sides(model.sides(28));
+    model.tube(blade, STEEL);
+    model.tube(
+        tube([hub[0], hub[1], -0.05], [hub[0], hub[1], 0.05], 0.08).sides(8),
+        BRONZE,
+    );
+    let teeth = if model.fine { 20 } else { 10 };
+    let spin = time * 14.0;
+    for n in 0..teeth {
+        let angle = spin + n as f32 / teeth as f32 * TAU;
+        let (sin, cos) = angle.sin_cos();
+        let (ahead_sin, ahead_cos) = (angle + 0.2).sin_cos();
+        let at = |r: f32, s: f32, c: f32| [hub[0] + c * r, hub[1] + s * r, 0.0];
+        let (a, b, c) = (
+            at(RADIUS - 0.01, sin, cos),
+            at(RADIUS - 0.01, ahead_sin, ahead_cos),
+            at(RADIUS + 0.07, sin, cos),
+        );
+        model.triangle([a, b, c], [[0.0, 0.0, 1.0]; 3], STEEL);
+        model.triangle([a, c, b], [[0.0, 0.0, -1.0]; 3], STEEL);
     }
 }
 
@@ -2679,47 +2799,61 @@ fn flame_tank(model: &mut Model, unit: &Unit, team: Paint) {
 
 /// A huge tank: long tracks with six road wheels, a broad hull and a big turret with twin
 /// cannons.
-fn huge_tank(model: &mut Model, unit: &Unit, team: Paint) {
-    let track = Track {
-        rear: -0.58,
-        front: 0.58,
-        height: 0.135,
-        radius: 0.115,
-        half_width: 0.09,
-        road_wheels: 6,
-        links: 26,
-    };
-    tracks(model, unit, &track, 0.42);
-    model.bevel([0.0, 0.2, 0.0], [0.62, 0.11, 0.32], 0.03, GUNMETAL);
-    let corner = |a: f32, u: f32, c: f32| [a, u, c];
-    model.hexa(
-        [
-            corner(-0.7, 0.3, -0.52),
-            corner(0.72, 0.3, -0.52),
-            corner(0.72, 0.3, 0.52),
-            corner(-0.7, 0.3, 0.52),
-            corner(-0.66, 0.44, -0.5),
-            corner(0.5, 0.44, -0.5),
-            corner(0.5, 0.44, 0.5),
-            corner(-0.66, 0.44, 0.5),
-        ],
-        STEEL,
-    );
-    let turret = tube([-0.1, 0.44, 0.0], [-0.1, 0.72, 0.0], 0.34)
-        .taper(0.28)
-        .sides(8)
-        .faceted();
-    model.tube(turret, STEEL);
-    model.tube(
-        tube([-0.1, 0.72, 0.0], [-0.1, 0.73, 0.0], 0.27)
-            .sides(8)
-            .faceted(),
-        team,
-    );
-    for side in [-0.13, 0.13] {
-        model.bevel([0.24, 0.62, side], [0.06, 0.06, 0.05], 0.015, GUNMETAL);
-        model.tube(tube([0.3, 0.62, side], [0.97, 0.62, side], 0.035), GUNMETAL);
-        model.tube(tube([0.97, 0.62, side], [1.05, 0.62, side], 0.05), GUNMETAL);
+fn huge_walker(model: &mut Model, unit: &Unit, team: Paint) {
+    const HIP_UP: f32 = 2.0;
+    let plasma = self::team([0.35, 0.55, 1.0]);
+    let moving = unit.is_moving();
+    // One leg reaching forward and two back, each stepping in its turn.
+    for (i, way) in [0.0_f32, 2.2, -2.2].into_iter().enumerate() {
+        let (sin, cos) = way.sin_cos();
+        let (swing, lift) = if moving {
+            let phase = unit.stride * 3.0 + i as f32 * TAU / 3.0;
+            (0.4 * phase.sin(), 0.35 * phase.cos().max(0.0))
+        } else {
+            (0.0, 0.0)
+        };
+        let hip = [cos * 0.5, HIP_UP, sin * 0.5];
+        let knee = [cos * 1.25, 2.55, sin * 1.25];
+        let foot = [cos * 1.5 + swing, lift + 0.05, sin * 1.5];
+        model.ball(hip, [0.24; 3], false, BRONZE);
+        model.tube(tube(hip, knee, 0.15).taper(0.12).sides(8), STEEL);
+        model.ball(knee, [0.19; 3], false, BRONZE);
+        model.tube(tube(knee, foot, 0.13).taper(0.09).sides(8), GUNMETAL);
+        let sole = [foot[0], lift, foot[2]];
+        model.tube(tube(sole, foot, 0.32).taper(0.2).sides(10), GUNMETAL);
+    }
+    model.bevel([0.0, HIP_UP, 0.0], [0.75, 0.38, 0.62], 0.06, GUNMETAL);
+    model.bevel([-0.05, HIP_UP + 0.5, 0.0], [0.55, 0.14, 0.5], 0.04, STEEL);
+    model.block([0.1, HIP_UP + 0.645, 0.3], [0.2, 0.006, 0.09], team);
+    model.block([0.76, HIP_UP + 0.05, 0.0], [0.012, 0.11, 0.26], GLASS);
+    // A plasma gun on each shoulder, ringed with glowing coils.
+    let (tip, up, side) = units::WALKER_PLASMA_TIP;
+    for side in [-side, side] {
+        let shoulder = [0.1, up, side];
+        model.ball(shoulder, [0.22; 3], false, BRONZE);
+        model.tube(
+            tube(shoulder, [tip, up, side], 0.1).taper(0.07).sides(10),
+            GUNMETAL,
+        );
+        for n in 0..3 {
+            let along = 0.6 + n as f32 * 0.25;
+            model.tube(
+                tube([along, up, side], [along + 0.04, up, side], 0.14).sides(10),
+                plasma,
+            );
+        }
+    }
+    // A rack of three rockets on its back.
+    let (ahead, rack) = (units::WALKER_ROCKET_AHEAD, units::WALKER_ROCKET_UP);
+    model.bevel([ahead - 0.33, rack, 0.0], [0.33, 0.16, 0.4], 0.03, GUNMETAL);
+    for side in units::WALKER_ROCKET_SIDES {
+        let at = [ahead, rack, side];
+        model.tube(
+            tube(at, [ahead + 0.01, rack, side], 0.09)
+                .sides(8)
+                .ends(false, true),
+            BORE,
+        );
     }
 }
 

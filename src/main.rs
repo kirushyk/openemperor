@@ -23,7 +23,11 @@ fn main() {
         }
     };
 
-    let mut game = game::Game::new(width as f32, height as f32);
+    // A different placing of the sides each run; the clock is all that is wanted of it.
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |since| since.subsec_nanos());
+    let mut game = game::Game::new(width as f32, height as f32).with_start_seed(seed);
     let mut last = Instant::now();
     while !game.quit {
         while let Some(event) = platform.poll_event() {

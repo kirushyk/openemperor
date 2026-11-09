@@ -5,7 +5,7 @@
 //! it deploys that where it stands and builds its base around it, one building at a time.
 
 use crate::battlefield::{Terrain, next_random};
-use crate::game::OpponentKind;
+use crate::game::{Faction, OpponentKind};
 use crate::units::{self, Role, Unit};
 use crate::weapons::WeaponKind;
 
@@ -21,18 +21,21 @@ const GUARD_REACH: f32 = 14.0;
 const WAVE_AT_MOST: usize = 30;
 /// What an opponent builds from its MCV, in order. It always builds the first of these it has
 /// fewer of than the list holds up to there, so it also builds again what it loses.
-const BUILD_ORDER: [Role; 10] = [
-    Role::Barracks,
-    Role::Factory,
-    Role::GunTower,
-    Role::Tower,
-    Role::Hangar,
-    Role::LandingPad,
-    Role::GunTower,
-    Role::Tower,
-    Role::Factory,
-    Role::Barracks,
-];
+fn build_order(house: Faction) -> [Role; 10] {
+    let [lesser, greater] = Role::towers_of(house);
+    [
+        Role::Barracks,
+        Role::Factory,
+        lesser,
+        greater,
+        Role::Hangar,
+        Role::LandingPad,
+        lesser,
+        greater,
+        Role::Factory,
+        Role::Barracks,
+    ]
+}
 /// How far from its MCV an opponent looks for room for a building, ring by ring, and how many
 /// places it tries on each ring.
 const BUILD_RINGS: [f32; 5] = [3.4, 5.8, 8.2, 10.6, 13.0];
@@ -100,7 +103,7 @@ impl Strategy {
                 return None;
             }
             if units::can_deploy_here(&units[mcv], terrain) {
-                units::switch_deployed(&mut units[mcv]);
+                units::start_deploying(&mut units[mcv]);
             } else if let Some(spot) =
                 units::deploy_spot_near(terrain, (units[mcv].x, units[mcv].z))
             {
@@ -123,7 +126,7 @@ impl Strategy {
         }
         // Done: it waits for room, if there is none just now.
         let maker = units[mcv];
-        let at = room_near(units, terrain, (maker.x, maker.z))?;
+        let at = room_near(units, terrain, role, (maker.x, maker.z))?;
         self.building = None;
         let mut building = units::new_building(terrain, at, role, (owner, maker.color), id);
         building.house = maker.house;
@@ -138,13 +141,15 @@ impl Strategy {
                 .filter(|u| u.alive && u.owner == self.owner && u.role == role)
                 .count()
         };
-        (0..BUILD_ORDER.len())
-            .map(|i| BUILD_ORDER[i])
-            .enumerate()
-            .find_map(|(i, role)| {
-                let wanted = BUILD_ORDER[..=i].iter().filter(|&&r| r == role).count();
-                (has(role) < wanted).then_some(role)
-            })
+        let house = units
+            .iter()
+            .find(|u| u.alive && u.owner == self.owner && u.role == Role::Mcv)?
+            .house;
+        let order = build_order(house);
+        order.iter().copied().enumerate().find_map(|(i, role)| {
+            let wanted = order[..=i].iter().filter(|&&r| r == role).count();
+            (has(role) < wanted).then_some(role)
+        })
     }
 
     /// Where its buildings stand, on average, if it has any.
@@ -164,7 +169,9 @@ impl Strategy {
         (x, z): (f32, f32),
     ) -> Option<usize> {
         nearest(units, (x, z), |u| {
-            u.kind.is_building() && units::are_enemies(teams, self.owner, u.owner)
+            u.kind.is_building()
+                && units::are_enemies(teams, self.owner, u.owner)
+                && !u.hidden_from(self.owner, teams)
         })
     }
 
@@ -319,13 +326,18 @@ impl Strategy {
 }
 
 /// The nearest place around a point with room for a building, ring by ring.
-fn room_near(units: &[Unit], terrain: &Terrain, (x, z): (f32, f32)) -> Option<(f32, f32)> {
+fn room_near(
+    units: &[Unit],
+    terrain: &Terrain,
+    role: Role,
+    (x, z): (f32, f32),
+) -> Option<(f32, f32)> {
     BUILD_RINGS.iter().enumerate().find_map(|(ring, &reach)| {
         (0..BUILD_TRIES).find_map(|n| {
             // Each ring starts a little further round, so that rings do not line up.
             let angle = (n as f32 + ring as f32 * 0.5) / BUILD_TRIES as f32 * std::f32::consts::TAU;
-            let at = (x + reach * angle.cos(), z + reach * angle.sin());
-            units::can_place_building(units, terrain, at).then_some(at)
+            let plot = role.plot_at((x + reach * angle.cos(), z + reach * angle.sin()));
+            units::can_place_building(units, terrain, plot).then(|| plot.center())
         })
     })
 }

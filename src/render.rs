@@ -4014,11 +4014,11 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
 fn draw_ally(canvas: &mut Canvas, ally: Ally, cx: f32, cy: f32, r: f32, px: f32) {
     match ally {
         Ally::None => canvas.text_centered("None", cx, cy, px, QUIET),
-        Ally::T => canvas.polygon(cx, cy, r, 3, -FRAC_PI_2, TEXT),
-        Ally::X => canvas.polygon(cx, cy, r, 4, FRAC_PI_4, TEXT),
-        Ally::G => canvas.polygon(cx, cy, r, 4, 0.0, TEXT),
-        Ally::F => canvas.polygon(cx, cy, r, 6, 0.0, TEXT),
-        Ally::S => canvas.star((cx, cy), (r, r * 0.42), 5, -FRAC_PI_2, TEXT),
+        Ally::Tleilaxu => canvas.polygon(cx, cy, r, 3, -FRAC_PI_2, TEXT),
+        Ally::Ix => canvas.polygon(cx, cy, r, 4, FRAC_PI_4, TEXT),
+        Ally::Guild => canvas.polygon(cx, cy, r, 4, 0.0, TEXT),
+        Ally::Fremen => canvas.polygon(cx, cy, r, 6, 0.0, TEXT),
+        Ally::Sardaukar => canvas.star((cx, cy), (r, r * 0.42), 5, -FRAC_PI_2, TEXT),
     }
 }
 

@@ -276,9 +276,9 @@ pub enum Faction {
 impl Faction {
     pub fn label(self) -> &'static str {
         match self {
-            Faction::Atreides => "Faction A",
-            Faction::Harkonnen => "Faction H",
-            Faction::Ordos => "Faction O",
+            Faction::Atreides => "House Atreides",
+            Faction::Harkonnen => "House Harkonnen",
+            Faction::Ordos => "House Ordos",
         }
     }
 
@@ -333,22 +333,22 @@ pub enum Difficulty {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ally {
     None,
-    T,
-    X,
-    G,
-    F,
-    S,
+    Tleilaxu,
+    Ix,
+    Guild,
+    Fremen,
+    Sardaukar,
 }
 
 impl Ally {
     fn next(self) -> Self {
         match self {
-            Ally::None => Ally::T,
-            Ally::T => Ally::X,
-            Ally::X => Ally::G,
-            Ally::G => Ally::F,
-            Ally::F => Ally::S,
-            Ally::S => Ally::None,
+            Ally::None => Ally::Tleilaxu,
+            Ally::Tleilaxu => Ally::Ix,
+            Ally::Ix => Ally::Guild,
+            Ally::Guild => Ally::Fremen,
+            Ally::Fremen => Ally::Sardaukar,
+            Ally::Sardaukar => Ally::None,
         }
     }
 }
@@ -3775,7 +3775,7 @@ mod tests {
         let rows = game.stats_rows();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].name, "Commander");
-        assert_eq!(rows[0].allies, [Ally::T, Ally::None]);
+        assert_eq!(rows[0].allies, [Ally::Tleilaxu, Ally::None]);
         assert_eq!(rows[0].color, game.skirmish.color);
         assert_eq!(rows[1].name, "AI 1 (Competent)");
         assert_eq!(rows[2].color, game.skirmish.opponents[1].color);
@@ -9267,15 +9267,15 @@ mod tests {
             assert!(left == Ally::None || left != right, "{left:?} twice");
         }
 
-        let mut allies = [Ally::T, Ally::None];
+        let mut allies = [Ally::Tleilaxu, Ally::None];
         cycle_ally(&mut allies, 1);
-        assert_eq!(allies, [Ally::T, Ally::X], "T is skipped");
+        assert_eq!(allies, [Ally::Tleilaxu, Ally::Ix], "T is skipped");
 
-        let mut allies = [Ally::S, Ally::F];
+        let mut allies = [Ally::Sardaukar, Ally::Fremen];
         cycle_ally(&mut allies, 1);
         assert_eq!(
             allies,
-            [Ally::S, Ally::None],
+            [Ally::Sardaukar, Ally::None],
             "S is skipped, none is still allowed"
         );
 
@@ -9283,7 +9283,11 @@ mod tests {
         cycle_ally(&mut allies, 0);
         cycle_ally(&mut allies, 0);
         cycle_ally(&mut allies, 1);
-        assert_eq!(allies, [Ally::X, Ally::T], "both slots can be filled");
+        assert_eq!(
+            allies,
+            [Ally::Ix, Ally::Tleilaxu],
+            "both slots can be filled"
+        );
     }
 
     #[test]
@@ -9291,7 +9295,10 @@ mod tests {
         let mut game = in_setup();
         click_widget(&mut game, Action::CycleOpponentAlly(0, 0));
         click_widget(&mut game, Action::CycleOpponentAlly(0, 1));
-        assert_eq!(game.skirmish.opponents[0].allies, [Ally::T, Ally::X]);
+        assert_eq!(
+            game.skirmish.opponents[0].allies,
+            [Ally::Tleilaxu, Ally::Ix]
+        );
     }
 
     #[test]
@@ -9304,11 +9311,18 @@ mod tests {
         }
         assert_eq!(
             seen,
-            [Ally::T, Ally::X, Ally::G, Ally::F, Ally::S, Ally::None]
+            [
+                Ally::Tleilaxu,
+                Ally::Ix,
+                Ally::Guild,
+                Ally::Fremen,
+                Ally::Sardaukar,
+                Ally::None
+            ]
         );
         assert_eq!(game.skirmish.allies[0], Ally::None);
         click_widget(&mut game, Action::CycleAlly(0));
-        assert_eq!(game.skirmish.allies, [Ally::T, Ally::None]);
+        assert_eq!(game.skirmish.allies, [Ally::Tleilaxu, Ally::None]);
     }
 
     fn set_ai_players(game: &mut Game, count: i32) {
@@ -9449,7 +9463,7 @@ mod tests {
         for _ in 0..2 {
             click_widget(&mut game, Action::CycleOpponentAlly(1, 1));
         }
-        assert_eq!(game.skirmish.opponents[1].allies, [Ally::None, Ally::X]);
+        assert_eq!(game.skirmish.opponents[1].allies, [Ally::None, Ally::Ix]);
         assert_eq!(game.skirmish.opponents[0].allies, [Ally::None, Ally::None]);
     }
 

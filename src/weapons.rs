@@ -9,9 +9,9 @@ use crate::game::Faction;
 use std::f32::consts::{PI, TAU};
 
 use crate::units::{
-    BURNS_PAST, CANNON_SIDES, CONSTRUCTION_DOWN, CONSTRUCTION_UP, Point, ROCKET_SIDES, Role,
-    SMOKES_PAST, TUBE_HEIGHT, Target, Unit, UnitKind, are_enemies, are_friends, distance, substeps,
-    turn_between,
+    BURNS_PAST, CANNON_HEIGHT, CANNON_SIDES, CONSTRUCTION_DOWN, CONSTRUCTION_UP, Point,
+    ROCKET_SIDES, Role, SMOKES_PAST, TUBE_HEIGHT, Target, Unit, UnitKind, are_enemies, are_friends,
+    distance, substeps, turn_between,
 };
 
 /// A unit with nothing in range looks again this often, in seconds.
@@ -125,9 +125,9 @@ pub enum Superweapon {
 impl Superweapon {
     pub fn of(house: Faction) -> Self {
         match house {
-            Faction::A => Superweapon::A,
-            Faction::H => Superweapon::H,
-            Faction::O => Superweapon::O,
+            Faction::Atreides => Superweapon::A,
+            Faction::Harkonnen => Superweapon::H,
+            Faction::Ordos => Superweapon::O,
         }
     }
 
@@ -175,6 +175,8 @@ pub const STRIKE_RADIUS: f32 = 7.0;
 /// Immediate damage at the center; it falls to half of this at the edge.
 const STRIKE_DAMAGE: f32 = 400.0;
 pub const POISON_SECONDS: f32 = 60.0;
+/// How long the mushroom cloud over the superweapon's blast stands before it has thinned away.
+const MUSHROOM_SECONDS: f32 = 16.0;
 /// Damage per second to anyone on the ground in poisoned land.
 const POISON_DAMAGE: f32 = 8.0;
 
@@ -561,6 +563,15 @@ pub struct Blast {
     pub life: f32,
 }
 
+/// The mushroom cloud climbing over the superweapon's blast. It is only a sight.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mushroom {
+    pub at: Point,
+    pub radius: f32,
+    /// From 1 when it goes off down to 0.
+    pub life: f32,
+}
+
 /// Lava going up from a vent. It is only a sight: it hurts nobody.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Eruption {
@@ -781,6 +792,7 @@ pub struct Combat {
     /// Where tornados get their wandering from, apart from the explosions' scatter.
     tornado_random: u32,
     pub eruptions: Vec<Eruption>,
+    pub mushrooms: Vec<Mushroom>,
     pub streaks: Vec<GunStreak>,
     pub wrecks: Vec<Wreck>,
     pub ragdolls: Vec<Ragdoll>,
@@ -901,7 +913,8 @@ impl Combat {
     }
 
     /// The superweapon going off: the blast, a ring of fire racing out along the ground, a
-    /// fireball, a column of smoke climbing, and a fountain burning on for a few seconds after.
+    /// fireball, a column of smoke climbing, a fountain burning on for a few seconds after, and
+    /// a mushroom cloud standing over it all.
     /// It clears away older particles if it must: nothing else is this important.
     fn explode_superweapon(&mut self, at: Point, radius: f32) {
         const RING: usize = 150;
@@ -962,6 +975,11 @@ impl Combat {
             at,
             life: 1.0,
             owed: 0.0,
+        });
+        self.mushrooms.push(Mushroom {
+            at,
+            radius,
+            life: 1.0,
         });
     }
 
@@ -1442,11 +1460,13 @@ impl Combat {
     }
 
     /// Lets the wisps in the air drift and thin, and adds vapor behind the wing ends of the
-    /// carryalls under way and dust behind what rolls over the sand.
+    /// carryalls under way, smoke out of exhaust pipes and stacks, dust behind what rolls over
+    /// the sand, and clouds of it in front of harvesters scooping it up.
     fn raise_wisps(&mut self, units: &[Unit], terrain: &Terrain, dt: f32) {
         const VAPOR_PER_SECOND: f32 = 30.0;
         const DUST_PER_SECOND: f32 = 14.0;
         const EXHAUST_PER_SECOND: f32 = 9.0;
+        const HARVEST_DUST_PER_SECOND: f32 = 45.0;
         const VAPOR: [f32; 3] = [0.94, 0.96, 1.0];
         for wisp in &mut self.wisps {
             wisp.position.0 += wisp.velocity.0 * dt;
@@ -1458,15 +1478,17 @@ impl Combat {
         let leaves_vapor = |u: &Unit| u.role == Role::AdvancedCarryall && u.is_moving();
         let smokes = |u: &Unit| {
             u.role == Role::Factory
-                && u.house == Faction::H
+                && u.house == Faction::Harkonnen
                 && u.alive
                 && !u.is_under_construction()
         };
+        let stacks_smoke =
+            |u: &Unit| u.role == Role::Refinery && u.alive && !u.is_under_construction();
         let raises_dust =
             |u: &Unit| u.role.rolls() && u.is_moving() && !terrain.on_upper_ground(u.x, u.z);
         if !units
             .iter()
-            .any(|u| leaves_vapor(u) || raises_dust(u) || smokes(u))
+            .any(|u| leaves_vapor(u) || raises_dust(u) || smokes(u) || stacks_smoke(u))
         {
             return;
         }
@@ -1502,6 +1524,49 @@ impl Combat {
                         color: [0.2 + next() * 0.14; 3],
                         life: 1.0,
                         fade: 0.3 + next() * 0.25,
+                    });
+                }
+            }
+            if stacks_smoke(unit) {
+                for top in unit.stack_tops() {
+                    for _ in 0..(EXHAUST_PER_SECOND * dt + next()) as usize {
+                        wisps.push(Wisp {
+                            position: top,
+                            velocity: (
+                                (next() - 0.5) * 0.3 + 0.15,
+                                1.0 + next() * 0.6,
+                                (next() - 0.5) * 0.3,
+                            ),
+                            size: 0.22 + next() * 0.18,
+                            color: [0.22 + next() * 0.14; 3],
+                            life: 1.0,
+                            fade: 0.25 + next() * 0.2,
+                        });
+                    }
+                }
+            }
+            if raises_dust(unit) && unit.is_harvesting() {
+                // Thrown up and out in front of the scoop, billowing over the harvester.
+                let (sin, cos) = unit.heading.sin_cos();
+                let reach = unit.radius() * 1.25;
+                for _ in 0..(HARVEST_DUST_PER_SECOND * dt + next()) as usize {
+                    let across = (next() - 0.5) * 1.4 * reach;
+                    let (out, up) = (next() - 0.3, next());
+                    wisps.push(Wisp {
+                        position: (
+                            unit.x + cos * reach - sin * across,
+                            unit.y + 0.1,
+                            unit.z + sin * reach + cos * across,
+                        ),
+                        velocity: (
+                            cos * out * 0.9 - sin * across + (next() - 0.5) * 0.4,
+                            0.5 + up * 1.2,
+                            sin * out * 0.9 + cos * across + (next() - 0.5) * 0.4,
+                        ),
+                        size: 0.25 + next() * 0.3,
+                        color: dust,
+                        life: 1.0,
+                        fade: 0.6 + next() * 0.5,
                     });
                 }
             }
@@ -1649,6 +1714,7 @@ impl Combat {
         fade(&mut self.streaks, dt / STREAK_SECONDS, |s| &mut s.life);
         fade(&mut self.sprays, dt / SPRAY_SECONDS, |s| &mut s.life);
         fade(&mut self.blasts, dt / BLAST_SECONDS, |b| &mut b.life);
+        fade(&mut self.mushrooms, dt / MUSHROOM_SECONDS, |m| &mut m.life);
         self.fly_particles(terrain, dt);
         self.fly_flamelets(dt);
     }
@@ -2117,8 +2183,9 @@ impl Combat {
                 } else {
                     self.explode(missile.position, MISSILE_BLAST_RADIUS);
                 }
-            } else if y <= terrain.height_at(x, z) || missile.fuel <= 0.0 {
-                // A miss: it hits the ground or burns out, harming nobody.
+            } else if y <= terrain.height_at(x, z) || missile.fuel <= 0.0 || heading_for.is_none() {
+                // A miss: it hits the ground, burns out, or blows itself up where it is once
+                // what it was chasing is gone, harming nobody.
                 self.explode(missile.position, MISSILE_BLAST_RADIUS * 0.6);
             } else {
                 flying.push(missile);
@@ -2304,7 +2371,7 @@ fn heal_veterans(units: &mut [Unit], dt: f32) {
 /// house O, and a good deal more with all three.
 fn veteran_healing(unit: &Unit) -> f32 {
     match (unit.rank(), unit.house) {
-        (0, _) | (1, Faction::A | Faction::H) => 0.0,
+        (0, _) | (1, Faction::Atreides | Faction::Harkonnen) => 0.0,
         (3.., _) => VETERAN_HEALING * 4.5,
         (rank, _) => VETERAN_HEALING * rank as f32,
     }
@@ -2409,9 +2476,9 @@ fn turn_to_aim(units: &mut [Unit], index: usize, aim: Option<Aim>, dt: f32) -> b
         None => {
             if units[index].kind.is_building() {
                 units[index].heading += TOWER_IDLE_TURN * dt;
-                pitch_tubes(&mut units[index], 0.0, dt);
                 pop_turret(&mut units[index], false, dt);
             }
+            pitch_tubes(&mut units[index], 0.0, dt);
             return false;
         }
     };
@@ -2426,8 +2493,13 @@ fn turn_to_aim(units: &mut [Unit], index: usize, aim: Option<Aim>, dt: f32) -> b
     let turned = turn.clamp(-most, most);
     units[index].heading += turned;
     let unit = &mut units[index];
-    let pitched = unit.role != Role::Tower || {
-        let rise = goal.1 - unit.y - TUBE_HEIGHT;
+    let pitched = !pitches(unit) || {
+        let height = if unit.role == Role::Minotaurus {
+            CANNON_HEIGHT
+        } else {
+            TUBE_HEIGHT
+        };
+        let rise = goal.1 - unit.y - height;
         let flat = dx.hypot(dz);
         let loft = TUBE_LOFT + TUBE_LOFT_AT_RANGE * (flat / unit.weapon.range()).min(1.0);
         let wanted = (rise.atan2(flat) + loft).clamp(TUBE_LOWEST, TUBE_HIGHEST);
@@ -2448,9 +2520,15 @@ fn pop_turret(unit: &mut Unit, up: bool, dt: f32) -> bool {
     unit.popped >= 1.0
 }
 
-/// Raises or lowers a missile tower's tubes towards a pitch. Returns whether they are there.
+/// Whether it raises what it fires before firing: a missile tower its tubes, and a Minotaurus
+/// its platform and cannons.
+fn pitches(unit: &Unit) -> bool {
+    matches!(unit.role, Role::Tower | Role::Minotaurus)
+}
+
+/// Raises or lowers what it fires towards a pitch. Returns whether that is there.
 fn pitch_tubes(unit: &mut Unit, wanted: f32, dt: f32) -> bool {
-    if unit.role != Role::Tower {
+    if !pitches(unit) {
         return true;
     }
     let most = TUBE_PITCH_SPEED * dt;
@@ -2998,7 +3076,7 @@ mod tests {
         let mut unit = shooter(WeaponKind::Unarmed);
         unit.experience = 2;
         unit.health = 50.0;
-        unit.house = Faction::O;
+        unit.house = Faction::Ordos;
         let mut units = [unit];
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 10.0);
@@ -3787,7 +3865,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missile_whose_target_dies_flies_on_and_harms_nobody() {
+    fn a_missile_whose_target_dies_blows_itself_up_at_once_and_harms_nobody() {
         let mut units = [
             shooter(WeaponKind::Missile),
             target_at(9.0, 60.0),
@@ -3800,8 +3878,8 @@ mod tests {
         let aimed_at = combat.missiles[0].target_id;
         let index = units.iter().position(|u| u.id == aimed_at).unwrap();
         units[index].alive = false;
-        run(&mut combat, &mut units, 5.0);
-        assert!(combat.missiles.is_empty());
+        run(&mut combat, &mut units, 0.05);
+        assert!(combat.missiles.is_empty(), "it flies no further");
         let other = if index == 1 { 2 } else { 1 };
         assert_eq!(units[other].health, 100.0);
     }
@@ -3898,6 +3976,10 @@ mod tests {
         assert_eq!(units[3].health, 100.0, "beyond the radius");
         assert_eq!(combat.poison.len(), 1);
         assert!((combat.poison[0].life - POISON_SECONDS).abs() < 0.2);
+        assert_eq!(combat.mushrooms.len(), 1, "a mushroom cloud climbs over it");
+        run(&mut combat, &mut units, MUSHROOM_SECONDS);
+        assert!(combat.mushrooms.is_empty(), "and thins away");
+        assert_eq!(combat.poison.len(), 1, "long before the radiation");
     }
 
     #[test]
@@ -5025,7 +5107,8 @@ mod tests {
         assert!(!units[0].alive, "it goes");
         assert!(!units[1].alive, "and takes its friends");
         assert!(units[2].alive && units[2].health == units[2].max_health());
-        assert_eq!(combat.poison.len(), 1);
+        assert_eq!(combat.poison.len(), 1, "it leaves radiation");
+        assert_eq!(combat.mushrooms.len(), 1, "under a mushroom cloud");
     }
 
     #[test]
@@ -5061,7 +5144,7 @@ mod tests {
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 2.0);
         assert!(combat.wisps.is_empty(), "this one is of house A");
-        units[0].house = Faction::H;
+        units[0].house = Faction::Harkonnen;
         run(&mut combat, &mut units, 2.0);
         let tip = units[0].exhaust_tip();
         assert!(!combat.wisps.is_empty());
@@ -5123,7 +5206,18 @@ mod tests {
         let mut units = [heavy_strider_facing_east(), target_at(10.0, 60.0)];
         units[1].cooldown = 1000.0;
         let mut combat = Combat::default();
-        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        // It raises its platform and cannons to the shot first.
+        for _ in 0..40 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            if !combat.shells.is_empty() {
+                break;
+            }
+        }
+        assert!(units[0].tube_pitch > 0.1, "raised: {}", units[0].tube_pitch);
+        let raised = units[0].muzzle().1;
+        let mut level = units[0];
+        level.tube_pitch = 0.0;
+        assert!(raised > level.muzzle().1, "its muzzles rise with it");
         units[0].cooldown = 1000.0;
         for _ in 0..5 {
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
@@ -5300,10 +5394,12 @@ mod tests {
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         assert!(combat.missiles.is_empty(), "the target is behind it");
+        let mut fired = false;
         for _ in 0..80 {
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            fired |= !combat.missiles.is_empty();
         }
-        assert!(!combat.missiles.is_empty(), "it turned round");
+        assert!(fired, "it turned round");
 
         let mut units = [rocket_launcher_facing_east(), target_at(10.0, 60.0)];
         units[0].destination = (0.0, 70.0);

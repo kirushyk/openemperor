@@ -102,72 +102,71 @@ const GROUND: [f32; 3] = [0.40, 0.30, 0.21];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Planet {
     /// Sand and rocky ground.
-    A,
+    Arrakis,
     /// Home of faction A: water and grass.
-    C,
+    Caladan,
     /// Home of faction O: ice and snow.
-    D,
+    Draconis,
     /// Home of faction H: lava and the same ground as planet A.
-    G,
+    GeidiPrime,
     /// A prison planet, nobody's home.
-    S,
+    SelusaSecundus,
     /// Home of the mini faction T.
-    T,
+    Tleilax,
 }
 
 impl Planet {
     fn lower_color(self) -> [f32; 3] {
         match self {
-            Planet::A => SAND,
-            Planet::C => [0.13, 0.36, 0.60],
-            Planet::D => [0.66, 0.82, 0.93],
-            Planet::G => [0.90, 0.28, 0.05],
-            Planet::S => [0.44, 0.42, 0.40],
-            Planet::T => [0.47, 0.50, 0.30],
+            Planet::Arrakis => SAND,
+            Planet::Caladan => [0.13, 0.36, 0.60],
+            Planet::Draconis => [0.66, 0.82, 0.93],
+            Planet::GeidiPrime => [0.90, 0.28, 0.05],
+            Planet::SelusaSecundus => [0.44, 0.42, 0.40],
+            Planet::Tleilax => [0.47, 0.50, 0.30],
         }
     }
 
     /// The low land that can be walked on but not built on.
     fn lowland_color(self) -> [f32; 3] {
         match self {
-            Planet::C => [0.74, 0.68, 0.48],
-            Planet::G => [0.32, 0.29, 0.28],
+            Planet::Caladan => [0.74, 0.68, 0.48],
+            Planet::GeidiPrime => [0.45, 0.45, 0.45],
             _ => self.lower_color(),
         }
     }
 
     fn upper_color(self) -> [f32; 3] {
         match self {
-            Planet::A | Planet::G => GROUND,
-            Planet::C => [0.24, 0.50, 0.20],
-            Planet::D => [0.96, 0.97, 1.00],
-            Planet::S => [0.24, 0.23, 0.25],
-            Planet::T => [0.30, 0.25, 0.30],
+            Planet::Arrakis | Planet::GeidiPrime => GROUND,
+            Planet::Caladan => [0.24, 0.50, 0.20],
+            Planet::Draconis => [0.96, 0.97, 1.00],
+            Planet::SelusaSecundus => [0.24, 0.23, 0.25],
+            Planet::Tleilax => [0.30, 0.25, 0.30],
         }
     }
 
     /// Water and lava: nothing can stand on the lower terrain.
     fn lower_is_solid(self) -> bool {
-        !matches!(self, Planet::C | Planet::G)
+        !matches!(self, Planet::Caladan | Planet::GeidiPrime)
     }
 }
 
 /// The planet of each map in `game::MAPS`.
 pub const MAP_PLANETS: [Planet; crate::game::MAPS.len()] = [
-    Planet::A,
-    Planet::C,
-    Planet::D,
-    Planet::G,
-    Planet::S,
-    Planet::T,
+    Planet::Arrakis,
+    Planet::Caladan,
+    Planet::Draconis,
+    Planet::GeidiPrime,
+    Planet::SelusaSecundus,
+    Planet::Tleilax,
 ];
 
 /// How strongly the surface grain varies the color, either way.
 const GRAIN: f32 = 0.22;
 
-/// The first half of zooming moves the camera between two fixed positions. The second half
-/// stays at the bottom position and narrows the field of view. Top: high and looking almost
-/// straight down.
+/// Zooming moves the camera between two fixed positions and narrows the field of view at
+/// the same time, in one movement. Top: high and looking almost straight down.
 const TOP_HEIGHT: f32 = 30.0;
 const TOP_PITCH_DEGREES: f32 = 75.0;
 /// Bottom: low and looking almost forward, 30 degrees down from the ground.
@@ -929,7 +928,7 @@ impl Terrain {
     #[cfg(test)]
     pub fn open_with_ruins(ruins: Vec<RuinPiece>) -> Self {
         Terrain {
-            planet: Planet::A,
+            planet: Planet::Arrakis,
             size: MapSize::L,
             is_ground: vec![false; GRID_POINTS],
             rise: vec![0.0; GRID_POINTS],
@@ -990,12 +989,12 @@ impl Terrain {
     /// What the ground shader makes of this map.
     pub fn material(&self) -> Material {
         match self.planet {
-            Planet::A => Material::Sand,
-            Planet::C => Material::Water,
-            Planet::G => Material::Lava,
-            Planet::D => Material::Ice,
-            Planet::S => Material::Stone,
-            Planet::T => Material::Moss,
+            Planet::Arrakis => Material::Sand,
+            Planet::Caladan => Material::Water,
+            Planet::GeidiPrime => Material::Lava,
+            Planet::Draconis => Material::Ice,
+            Planet::SelusaSecundus => Material::Stone,
+            Planet::Tleilax => Material::Moss,
         }
     }
 
@@ -1307,8 +1306,8 @@ pub fn world_to_grid(x: f32, z: f32) -> (f32, f32) {
     ((z + x) / (2.0 * CELL), (z - x) / (2.0 * CELL))
 }
 
-/// The ground point the camera looks at, and how far it has zoomed: 0 is the top position,
-/// 0.5 the bottom position, and 1 the bottom position with the field of view narrowed.
+/// The ground point the camera looks at, and how far it has zoomed: 0 is the top position
+/// with the widest field of view, 1 the bottom position with the narrowest.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pub x: f32,
@@ -1414,18 +1413,18 @@ impl Camera {
         (self.x, self.z) = grid_to_world(u.clamp(0.0, self.last), v.clamp(0.0, self.last));
     }
 
-    /// How far between the two positions: 0 at the top, 1 from the bottom position onward.
+    /// How far between the two positions: 0 at the top, 1 at the bottom.
     fn descent(self) -> f32 {
-        (self.zoom * 2.0).min(1.0)
+        self.zoom
     }
 
     fn altitude(self) -> f32 {
         TOP_HEIGHT + (BOTTOM_HEIGHT - TOP_HEIGHT) * self.descent()
     }
 
-    /// Magnification from narrowing the field of view: 1 until the bottom position.
+    /// Magnification from narrowing the field of view: 1 at the top, growing on the way down.
     fn lens(self) -> f32 {
-        1.0 + (MAX_LENS - 1.0) * (self.zoom * 2.0 - 1.0).max(0.0)
+        1.0 + (MAX_LENS - 1.0) * self.zoom
     }
 }
 
@@ -1802,11 +1801,13 @@ pub fn draw(
 ) {
     /// Under a liquid's surface along the shore, however shallow the bottom is there.
     const SHORE: f32 = 0.12;
-    /// How far down a liquid goes for how far under the threshold its noise is.
+    /// How far down a liquid looks for how far under the threshold its noise is.
     const DEPTH: f32 = 6.0;
-    /// What the land is made of right at the water, so its color does not run blue.
+    /// How far down its bed really lies for the same, under the surface drawn over it.
+    const BED_DEPTH: f32 = 2.0;
+    /// What the bed under the water is made of, so the shore runs down into it as sand.
     const BEACH: [f32; 3] = [0.74, 0.68, 0.48];
-    /// The same at the lava, burnt black.
+    /// The same under the lava, burnt black.
     const BASALT: [f32; 3] = [0.10, 0.08, 0.07];
     const ROOM: f32 = 8.0;
     let shore = match terrain.material() {
@@ -1815,30 +1816,53 @@ pub fn draw(
         Material::Sand | Material::Ice | Material::Stone | Material::Moss => None,
     };
     let view = View::new(camera, width, height);
+    let seen = |u: usize, v: usize| fog.map_or(1.0, |fog| fog.at_grid(u, v).shade());
     let point = |u: usize, v: usize| {
         let (x, z) = grid_to_world(u as f32, v as f32);
         let index = grid_index(u, v);
-        let height = terrain.vertex_height(u, v);
         // The shader picks low land, upper ground and bare rock by this, not by the true height.
         let land = terrain.rise[index] * UPPER_LEVEL + terrain.relief[index];
-        let ([r, g, b], level) = match shore {
+        let (y, [r, g, b], level) = match shore {
+            // The bed, dry land to the shader, with the liquid's own surface drawn over it.
             Some(color) if terrain.is_liquid[index] => {
-                (color, -(SHORE + terrain.deep[index] * DEPTH))
+                let bed = -(SHORE + terrain.deep[index] * BED_DEPTH);
+                (bed + terrain.relief[index], color, 0.001)
             }
             // A pit in the land stays dry, however far down it goes.
-            Some(_) => (terrain.colors[index], land.max(0.001)),
-            None => (terrain.colors[index], land),
+            Some(_) => (
+                terrain.vertex_height(u, v),
+                terrain.colors[index],
+                land.max(0.001),
+            ),
+            None => (terrain.vertex_height(u, v), terrain.colors[index], land),
         };
         WorldVertex {
             x,
-            y: height,
+            y,
             z,
             normal: terrain.normals[index],
             r,
             g,
             b,
-            seen: fog.map_or(1.0, |fog| fog.at_grid(u, v).shade()),
+            seen: seen(u, v),
             level,
+            stain: [0.0; 3],
+        }
+    };
+    // The liquid's surface: flat, over every cell it reaches, its depth told by its level.
+    let surface = |[r, g, b]: [f32; 3], u: usize, v: usize| {
+        let (x, z) = grid_to_world(u as f32, v as f32);
+        let index = grid_index(u, v);
+        WorldVertex {
+            x,
+            y: 0.0,
+            z,
+            normal: [0.0, 1.0, 0.0],
+            r,
+            g,
+            b,
+            seen: seen(u, v),
+            level: -(SHORE + terrain.deep[index] * DEPTH),
             stain: [0.0; 3],
         }
     };
@@ -1855,6 +1879,13 @@ pub fn draw(
             let (a, b) = (point(u, v), point(u + 1, v));
             let (c, d) = (point(u + 1, v + 1), point(u, v + 1));
             out.extend([a, b, c, a, c, d]);
+            let corners = [(u, v), (u + 1, v), (u + 1, v + 1), (u, v + 1)];
+            if let Some(color) = shore
+                && corners.iter().any(|&(u, v)| terrain.is_liquid(u, v))
+            {
+                let [a, b, c, d] = corners.map(|(u, v)| surface(color, u, v));
+                out.extend([a, b, c, a, c, d]);
+            }
         }
     }
 }
@@ -1892,37 +1923,29 @@ mod tests {
             "top looks almost straight down"
         );
         assert!(
-            (pitch(at_zoom(0.5)) - 30.0).abs() < 0.01,
+            (pitch(at_zoom(1.0)) - 30.0).abs() < 0.01,
             "bottom is 30 degrees from the ground"
         );
         assert!(
-            View::new(at_zoom(0.5), W, H).position[1] < View::new(at_zoom(0.0), W, H).position[1]
+            View::new(at_zoom(1.0), W, H).position[1] < View::new(at_zoom(0.0), W, H).position[1]
         );
     }
 
     #[test]
-    fn the_first_half_moves_the_camera_and_keeps_the_field_of_view() {
-        let wide = View::new(at_zoom(0.0), W, H).focal;
-        for zoom in [0.0, 0.2, 0.4, 0.5] {
-            assert_eq!(View::new(at_zoom(zoom), W, H).focal, wide, "at {zoom}");
+    fn one_movement_lowers_the_camera_and_narrows_the_field_of_view_up_to_2x() {
+        let views = [0.0, 0.25, 0.5, 0.75, 1.0].map(|zoom| View::new(at_zoom(zoom), W, H));
+        for pair in views.windows(2) {
+            assert!(
+                pair[1].position[1] < pair[0].position[1],
+                "lower all the way"
+            );
+            assert!(pair[1].focal > pair[0].focal, "and narrower all the way");
         }
         assert!(
-            pitch(at_zoom(0.25)) > pitch(at_zoom(0.5)),
-            "still moving at 0.25"
-        );
-    }
-
-    #[test]
-    fn the_second_half_stays_put_and_narrows_the_field_of_view_up_to_2x() {
-        let (bottom, end) = (View::new(at_zoom(0.5), W, H), View::new(at_zoom(1.0), W, H));
-        assert_eq!(end.position, bottom.position, "the camera does not move");
-        assert_eq!(end.forward, bottom.forward, "or turn");
-        assert!(
-            (end.focal / bottom.focal - 2.0).abs() < 1e-4,
+            (views[4].focal / views[0].focal - 2.0).abs() < 1e-4,
             "2x at the end"
         );
-        let middle = View::new(at_zoom(0.75), W, H).focal / bottom.focal;
-        assert!(middle > 1.0 && middle < 2.0, "gradual: {middle}");
+        assert!(pitch(at_zoom(0.25)) > pitch(at_zoom(0.5)), "still turning");
     }
 
     #[test]
@@ -1945,7 +1968,7 @@ mod tests {
             let [left, right, ..] = View::new(at_zoom(zoom), W, H).ground_corners().unwrap();
             right.0 - left.0
         };
-        assert!(width(1.0) < width(0.5) * 0.6);
+        assert!(width(1.0) < width(0.0) * 0.6);
     }
 
     #[test]
@@ -1955,7 +1978,10 @@ mod tests {
             camera.scroll((1.0, 0.0), 5, 0.1);
             camera.x - at_zoom(zoom).x
         };
-        assert!((moved(0.5) / moved(1.0) - 2.0).abs() < 0.01);
+        assert!(moved(0.0) > moved(0.5) && moved(0.5) > moved(1.0));
+        let (low, high) = (at_zoom(1.0), at_zoom(0.0));
+        let expected = (high.altitude() / high.lens()) / (low.altitude() / low.lens());
+        assert!((moved(0.0) / moved(1.0) - expected).abs() < 0.01);
     }
 
     #[test]
@@ -2363,12 +2389,12 @@ mod tests {
     #[test]
     fn every_planet_has_a_map_and_looks_different() {
         let planets = [
-            Planet::A,
-            Planet::C,
-            Planet::D,
-            Planet::G,
-            Planet::S,
-            Planet::T,
+            Planet::Arrakis,
+            Planet::Caladan,
+            Planet::Draconis,
+            Planet::GeidiPrime,
+            Planet::SelusaSecundus,
+            Planet::Tleilax,
         ];
         for (i, a) in planets.iter().enumerate() {
             assert!(MAP_PLANETS.contains(a));
@@ -2389,32 +2415,32 @@ mod tests {
         let green_ish = |c: [f32; 3]| c[1] > c[0] && c[1] > c[2];
         let red_ish = |c: [f32; 3]| c[0] > c[1] && c[0] > c[2];
         let bright = |c: [f32; 3]| c.iter().sum::<f32>() > 2.0;
-        assert_eq!(Planet::A.lower_color(), SAND);
-        assert!(blue_ish(Planet::C.lower_color()), "water");
-        assert!(green_ish(Planet::C.upper_color()), "grass");
+        assert_eq!(Planet::Arrakis.lower_color(), SAND);
+        assert!(blue_ish(Planet::Caladan.lower_color()), "water");
+        assert!(green_ish(Planet::Caladan.upper_color()), "grass");
         assert!(
-            blue_ish(Planet::D.lower_color()) && bright(Planet::D.lower_color()),
+            blue_ish(Planet::Draconis.lower_color()) && bright(Planet::Draconis.lower_color()),
             "ice"
         );
-        assert!(bright(Planet::D.upper_color()), "snow");
-        assert!(red_ish(Planet::G.lower_color()), "lava");
+        assert!(bright(Planet::Draconis.upper_color()), "snow");
+        assert!(red_ish(Planet::GeidiPrime.lower_color()), "lava");
         assert_eq!(
-            Planet::G.upper_color(),
-            Planet::A.upper_color(),
+            Planet::GeidiPrime.upper_color(),
+            Planet::Arrakis.upper_color(),
             "the same upper terrain"
         );
     }
 
     #[test]
     fn terrain_colors_follow_the_planet() {
-        let water = terrain(map_on(Planet::C));
-        assert_eq!(water.lower_color(), Planet::C.lower_color());
-        assert_eq!(water.upper_color(), Planet::C.upper_color());
+        let water = terrain(map_on(Planet::Caladan));
+        assert_eq!(water.lower_color(), Planet::Caladan.lower_color());
+        assert_eq!(water.upper_color(), Planet::Caladan.upper_color());
     }
 
     #[test]
     fn on_water_and_lava_there_is_low_land_to_cross_that_cannot_be_built_on() {
-        for planet in [Planet::C, Planet::G] {
+        for planet in [Planet::Caladan, Planet::GeidiPrime] {
             let terrain = terrain(map_on(planet));
             let (mut low, mut liquid) = (0, 0);
             for v in 0..=terrain.size().cells() {
@@ -2726,7 +2752,13 @@ mod tests {
                 assert!((x - ox).hypot(z - oz) >= 9.0);
             }
         }
-        for planet in [Planet::A, Planet::C, Planet::D, Planet::S, Planet::T] {
+        for planet in [
+            Planet::Arrakis,
+            Planet::Caladan,
+            Planet::Draconis,
+            Planet::SelusaSecundus,
+            Planet::Tleilax,
+        ] {
             assert!(terrain(map_on(planet)).vents().is_empty(), "{planet:?}");
         }
     }
@@ -2766,12 +2798,18 @@ mod tests {
 
     #[test]
     fn each_map_gets_the_material_of_its_planet() {
-        assert_eq!(terrain(map_on(Planet::A)).material(), Material::Sand);
-        assert_eq!(terrain(map_on(Planet::C)).material(), Material::Water);
-        assert_eq!(terrain(map_on(Planet::G)).material(), Material::Lava);
-        assert_eq!(terrain(map_on(Planet::D)).material(), Material::Ice);
-        assert_eq!(terrain(map_on(Planet::S)).material(), Material::Stone);
-        assert_eq!(terrain(map_on(Planet::T)).material(), Material::Moss);
+        assert_eq!(terrain(map_on(Planet::Arrakis)).material(), Material::Sand);
+        assert_eq!(terrain(map_on(Planet::Caladan)).material(), Material::Water);
+        assert_eq!(
+            terrain(map_on(Planet::GeidiPrime)).material(),
+            Material::Lava
+        );
+        assert_eq!(terrain(map_on(Planet::Draconis)).material(), Material::Ice);
+        assert_eq!(
+            terrain(map_on(Planet::SelusaSecundus)).material(),
+            Material::Stone
+        );
+        assert_eq!(terrain(map_on(Planet::Tleilax)).material(), Material::Moss);
     }
 
     #[test]

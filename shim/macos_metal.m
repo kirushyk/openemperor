@@ -2,6 +2,7 @@
 #import <Cocoa/Cocoa.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <AudioToolbox/AudioToolbox.h>
 #include "oe_shim.h"
 
 /* Shaders compile at startup: the Command Line Tools ship no offline `metal` compiler. */
@@ -16,6 +17,17 @@ static NSString *const kShader = @
     "  Out o; o.pos = float4(p.x, -p.y, 0.0, 1.0); o.color = float4(v[id].color); return o;\n"
     "}\n"
     "fragment float4 fs(Out in [[stage_in]]) { return in.color; }\n"
+    /* The backdrop: one rectangle, given by its corners in clip space, made of six corners. */
+    "struct ImageOut { float4 pos [[position]]; float2 uv; };\n"
+    "vertex ImageOut vs_image(uint id [[vertex_id]], constant float4 &rect [[buffer(1)]]) {\n"
+    "  float2 corners[6] = {float2(0, 0), float2(1, 0), float2(1, 1), float2(0, 0), float2(1, 1), float2(0, 1)};\n"
+    "  float2 c = corners[id];\n"
+    "  ImageOut o; o.pos = float4(mix(rect.xy, rect.zw, c), 0.0, 1.0); o.uv = c; return o;\n"
+    "}\n"
+    "fragment float4 fs_image(ImageOut in [[stage_in]], texture2d<float> image [[texture(0)]],\n"
+    "                         sampler smooth [[sampler(0)]]) {\n"
+    "  return float4(image.sample(smooth, in.uv).rgb, 1.0);\n"
+    "}\n"
     "struct EffectIn { packed_float3 pos; packed_float4 color; };\n"
     "vertex Out vs_effect(uint id [[vertex_id]], const device EffectIn *v [[buffer(0)]],\n"
     "                     constant float2 &size [[buffer(1)]]) {\n"
@@ -376,8 +388,8 @@ static NSString *const kShader = @
     "fragment float4 fs_world(WorldOut in [[stage_in]], constant Sky &sky [[buffer(0)]],\n"
     "                         texture2d<float> mirror [[texture(0)]], depth2d<float> map [[texture(1)]],\n"
     "                         sampler smooth [[sampler(0)]], sampler compare [[sampler(1)]]) {\n"
-    "  /* What lies under the water's surface shows nothing in the mirror. */\n"
-    "  if (sky.mirrored != 0 && in.level < 0.0) discard_fragment();\n"
+    "  /* The water's surface and what lies under it show nothing in the mirror. */\n"
+    "  if (sky.mirrored != 0 && (in.level < 0.0 || in.world.y < 0.0)) discard_fragment();\n"
     "  float3 normal = normalize(in.normal);\n"
     "  float in_sun = sun_on(in.world, normal, sky, map, compare);\n"
     "  float2 p = in.world.xz; float3 color = in.color;\n"
@@ -412,9 +424,9 @@ static NSString *const kShader = @
     /* Objects, drawn as material 8, say how much they shine in their level; soot takes it away. */
     "  if (sky.material == 8 && in.level > 0.0)\n"
     "    lit = shine_on(lit, color, in.world, normal, in_sun, in.level * clean, sky);\n"
-    /* Land beside lava glows from below. */
+    /* Land beside lava glows from below: its shore and its bed, not the low land above. */
     "  if (sky.material == 3) {\n"
-    "    float near = smoothstep(0.55, 0.0, in.level);\n"
+    "    float near = smoothstep(0.6, 0.0, in.world.y);\n"
     "    lit += float3(1.0, 0.3, 0.05) * near * near * (0.55 + 0.1 * sin(sky.time * 1.3 + p.x));\n"
     "  }\n"
     "  return float4(lit * in.seen, 1.0);\n"
@@ -440,6 +452,8 @@ static id<MTLRenderPipelineState> g_pipeline;
 static id<MTLRenderPipelineState> g_effect_pipeline;
 static id<MTLRenderPipelineState> g_world_pipeline;
 static id<MTLRenderPipelineState> g_shadow_pipeline;
+static id<MTLRenderPipelineState> g_image_pipeline;
+static id<MTLTexture> g_backdrop;
 static id<MTLDepthStencilState> g_depth_write;
 static id<MTLDepthStencilState> g_depth_read;
 static id<MTLDepthStencilState> g_depth_ignored;
@@ -522,7 +536,14 @@ static BOOL make_pipelines(id<MTLLibrary> library) {
     desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
     desc.vertexFunction = [library newFunctionWithName:@"vs_shadow"];
     if (g_world_pipeline) g_shadow_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
-    if (!g_shadow_pipeline) {
+
+    desc = [MTLRenderPipelineDescriptor new];
+    desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+    desc.vertexFunction = [library newFunctionWithName:@"vs_image"];
+    desc.fragmentFunction = [library newFunctionWithName:@"fs_image"];
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    if (g_shadow_pipeline) g_image_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (!g_image_pipeline) {
         NSLog(@"pipeline failed: %@", error);
         return NO;
     }
@@ -943,6 +964,19 @@ static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, u
         bind_world(encoder, empty_texture(), &sky, MATERIAL_OBJECTS);
         draw_list(encoder, buffer, offsets[1], world->objects_count);
     }
+    if (g_backdrop) {
+        /* As large as fits, keeping its shape, in the middle. */
+        float fit = fminf(size[0] / (float)g_backdrop.width, size[1] / (float)g_backdrop.height);
+        float half_w = (float)g_backdrop.width * fit / size[0];
+        float half_h = (float)g_backdrop.height * fit / size[1];
+        float rect[4] = {-half_w, half_h, half_w, -half_h};
+        [encoder setRenderPipelineState:g_image_pipeline];
+        [encoder setDepthStencilState:g_depth_ignored];
+        [encoder setVertexBytes:rect length:sizeof(rect) atIndex:1];
+        [encoder setFragmentTexture:g_backdrop atIndex:0];
+        [encoder setFragmentSamplerState:g_sampler atIndex:0];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+    }
     [encoder setVertexBytes:size length:sizeof(size) atIndex:1];
     if (world->effects_count) {
         [encoder setRenderPipelineState:g_effect_pipeline];
@@ -981,7 +1015,94 @@ void oe_draw(const OeVertex *vertices, uint32_t count, float r, float g, float b
     oe_draw_world(&world, r, g, b);
 }
 
+void oe_set_backdrop(const uint8_t *rgba, int32_t width, int32_t height) {
+    if (!rgba || width <= 0 || height <= 0) {
+        g_backdrop = nil;
+        return;
+    }
+    /* A new texture each time, so that none still being drawn from is written over. */
+    MTLTextureDescriptor *desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                           width:(NSUInteger)width
+                                                          height:(NSUInteger)height
+                                                       mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> texture = [g_device newTextureWithDescriptor:desc];
+    [texture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)width, (NSUInteger)height)
+               mipmapLevel:0
+                 withBytes:rgba
+               bytesPerRow:(NSUInteger)width * 4];
+    g_backdrop = texture;
+}
+
+/* The sound playing: its samples, how many, and how far the queue has been given them. */
+static AudioQueueRef g_sound;
+static float *g_samples;
+static uint32_t g_sample_count, g_samples_queued;
+static int32_t g_sound_loops;
+
+/* Gives the queue the next stretch of samples in this buffer, or lets it run dry at the end. */
+static void queue_samples(void *user, AudioQueueRef queue, AudioQueueBufferRef buffer) {
+    (void)user;
+    uint32_t room = buffer->mAudioDataBytesCapacity / sizeof(float);
+    if (g_sound_loops && g_samples_queued >= g_sample_count) g_samples_queued = 0;
+    uint32_t count = MIN(room, g_sample_count - g_samples_queued);
+    if (!count) return;
+    memcpy(buffer->mAudioData, g_samples + g_samples_queued, count * sizeof(float));
+    g_samples_queued += count;
+    buffer->mAudioDataByteSize = count * (uint32_t)sizeof(float);
+    AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
+}
+
+void oe_stop_sound(void) {
+    if (g_sound) {
+        AudioQueueStop(g_sound, true);
+        AudioQueueDispose(g_sound, true);
+        g_sound = NULL;
+    }
+    free(g_samples);
+    g_samples = NULL;
+    g_sample_count = g_samples_queued = 0;
+}
+
+void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
+                   int32_t loop) {
+    enum { BUFFERS = 3 };
+    oe_stop_sound();
+    g_sound_loops = loop;
+    if (!samples || !frames || channels <= 0 || rate <= 0) return;
+    g_sample_count = frames * (uint32_t)channels;
+    g_samples = malloc(g_sample_count * sizeof(float));
+    if (!g_samples) return;
+    memcpy(g_samples, samples, g_sample_count * sizeof(float));
+    uint32_t frame_bytes = (uint32_t)channels * (uint32_t)sizeof(float);
+    AudioStreamBasicDescription format = {
+        .mSampleRate = rate,
+        .mFormatID = kAudioFormatLinearPCM,
+        .mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+        .mBytesPerPacket = frame_bytes,
+        .mFramesPerPacket = 1,
+        .mBytesPerFrame = frame_bytes,
+        .mChannelsPerFrame = (uint32_t)channels,
+        .mBitsPerChannel = 32,
+    };
+    if (AudioQueueNewOutput(&format, queue_samples, NULL, NULL, NULL, 0, &g_sound) != noErr) {
+        g_sound = NULL;
+        oe_stop_sound();
+        return;
+    }
+    /* A quarter of a second in each buffer. */
+    for (int i = 0; i < BUFFERS; i++) {
+        AudioQueueBufferRef buffer;
+        if (AudioQueueAllocateBuffer(g_sound, (uint32_t)rate / 4 * frame_bytes, &buffer) == noErr) {
+            queue_samples(NULL, g_sound, buffer);
+        }
+    }
+    AudioQueueStart(g_sound, NULL);
+}
+
 void oe_shutdown(void) {
+    oe_stop_sound();
     set_captured(NO);
     [g_window close];
 }

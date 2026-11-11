@@ -584,3 +584,21 @@ void oe_shutdown(void) {
         XCloseDisplay(g_display);
     }
 }
+
+/* No backdrop or sound on this backend yet. */
+void oe_set_backdrop(const uint8_t *rgba, int32_t width, int32_t height) {
+    (void)rgba;
+    (void)width;
+    (void)height;
+}
+
+void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
+                   int32_t loop) {
+    (void)samples;
+    (void)loop;
+    (void)frames;
+    (void)channels;
+    (void)rate;
+}
+
+void oe_stop_sound(void) {}

@@ -305,6 +305,9 @@ unsafe extern "C" {
     fn oe_draw(vertices: *const Vertex, count: u32, r: f32, g: f32, b: f32);
     #[cfg(target_os = "macos")]
     fn oe_draw_world(world: *const RawWorld, clear_r: f32, clear_g: f32, clear_b: f32);
+    fn oe_set_backdrop(rgba: *const u8, width: i32, height: i32);
+    fn oe_play_sound(samples: *const f32, frames: u32, channels: i32, rate: i32, looped: i32);
+    fn oe_stop_sound();
     fn oe_shutdown();
 }
 
@@ -411,6 +414,50 @@ impl Platform {
                 clear[2],
             );
         }
+    }
+}
+
+/// A picture of rows of RGBA bytes, top row first.
+pub struct Image<'a> {
+    pub rgba: &'a [u8],
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Platform {
+    /// Shows a picture under all that is drawn from now on, as large as fits the screen, or
+    /// takes it away.
+    pub fn set_backdrop(&mut self, image: Option<Image>) {
+        match image {
+            Some(image) if image.rgba.len() >= (image.width * image.height * 4) as usize => {
+                // SAFETY: the bytes hold the whole picture, and the shim copies them.
+                unsafe {
+                    oe_set_backdrop(image.rgba.as_ptr(), image.width as i32, image.height as i32)
+                }
+            }
+            // SAFETY: a null picture takes the backdrop away.
+            _ => unsafe { oe_set_backdrop(std::ptr::null(), 0, 0) },
+        }
+    }
+
+    /// Plays interleaved samples, once or over and over, in place of whatever was playing.
+    pub fn play_sound(&mut self, samples: &[f32], channels: u32, rate: u32, looped: bool) {
+        let frames = samples.len() / channels.max(1) as usize;
+        // SAFETY: the samples hold `frames` frames of `channels`, and the shim copies them.
+        unsafe {
+            oe_play_sound(
+                samples.as_ptr(),
+                frames as u32,
+                channels as i32,
+                rate as i32,
+                i32::from(looped),
+            )
+        }
+    }
+
+    pub fn stop_sound(&mut self) {
+        // SAFETY: stopping is always safe, playing or not.
+        unsafe { oe_stop_sound() }
     }
 }
 

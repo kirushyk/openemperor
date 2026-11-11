@@ -179,6 +179,22 @@ impl Place {
             ..self
         }
     }
+
+    /// The same place pitched nose up by an angle about an axis across it through a point given
+    /// as [along, up, across], which stays where it was.
+    fn pitched(self, about: [f32; 3], angle: f32) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        let along = [0, 1, 2].map(|i| self.along[i] * cos + self.up[i] * sin);
+        let up = [0, 1, 2].map(|i| self.up[i] * cos - self.along[i] * sin);
+        let [a, u, _] = about;
+        let pivot = self.point(about);
+        Place {
+            origin: [0, 1, 2].map(|i| pivot[i] - along[i] * a - up[i] * u),
+            along,
+            up,
+            ..self
+        }
+    }
 }
 
 /// A round part along a straight line: a barrel, a wheel, a pod or a leg.
@@ -727,6 +743,8 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         Role::Tower | Role::GunTower => &[[0.14, 1.5, 0.0]],
         // A big headlamp on the front of each front track pod.
         Role::Mcv => &[[1.02, 0.34, -0.66], [1.02, 0.34, 0.66]],
+        // Under the cockpit, at the end of the beam it sits on.
+        Role::Harvester => &[[0.84, 0.6, 0.0]],
         Role::SandBike => &[[0.45, 0.2, 0.0]],
         Role::DiskSaw => &[[0.3, 0.27, -0.3], [0.3, 0.27, 0.3]],
         Role::FlameTank => &[[0.43, 0.2, 0.0]],
@@ -747,6 +765,7 @@ fn lamp_radius(role: Role) -> f32 {
         Role::HugeWalker => 0.06,
         Role::Tower | Role::GunTower => 0.045,
         Role::Mcv => 0.075,
+        Role::Harvester => 0.045,
         _ => 0.026,
     }
 }
@@ -861,6 +880,7 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
     match unit.role {
         Role::Tank => tank(model, unit, team),
         Role::RepairVehicle => repair_vehicle(model, unit, team),
+        Role::Harvester => harvester(model, unit, team),
         Role::Catapult => catapult(model, unit, team),
         Role::RocketLauncher => rocket_launcher(model, unit, team),
         Role::Mongoose => strider(model, unit, team),
@@ -1625,6 +1645,80 @@ fn repair_vehicle(model: &mut Model, unit: &Unit, team: Paint) {
     }
 }
 
+/// A harvester: four linked tracks in pods under a domed shell like a turtle's, its plates in
+/// the owner's color, a scoop low in front, and a beam reaching forward and up out of the shell
+/// like a turtle's neck, with the driver's cockpit on its end and a headlamp under it.
+fn harvester(model: &mut Model, unit: &Unit, team: Paint) {
+    const APART: f32 = 0.42;
+    for (rear, front) in [(-0.62, -0.14), (0.1, 0.56)] {
+        let track = Track {
+            rear,
+            front,
+            height: 0.12,
+            radius: 0.11,
+            half_width: 0.09,
+            road_wheels: 3,
+            links: 14,
+        };
+        tracks(model, unit, &track, APART);
+    }
+    model.bevel([-0.03, 0.25, 0.0], [0.62, 0.06, 0.34], 0.02, GUNMETAL);
+    // The shell: a low dome over a lip, with a plate on its crown and a ring of them around it.
+    let (middle, half) = ([-0.08, 0.3, 0.0], [0.6, 0.38, 0.5]);
+    model.ball([middle[0], 0.31, 0.0], [0.64, 0.05, 0.54], false, GUNMETAL);
+    model.ball(middle, half, true, STEEL);
+    model.ball(
+        [middle[0], middle[1] + half[1] - 0.04, 0.0],
+        [0.2, 0.07, 0.17],
+        true,
+        team,
+    );
+    if model.fine {
+        for k in 0..6 {
+            let (sin, cos) = (k as f32 / 6.0 * TAU).sin_cos();
+            let (along, across) = (0.36 * cos, 0.3 * sin);
+            let out = (along / half[0]).powi(2) + (across / half[2]).powi(2);
+            let up = middle[1] + half[1] * (1.0 - out).max(0.0).sqrt() - 0.04;
+            model.ball(
+                [middle[0] + along, up, across],
+                [0.13, 0.06, 0.11],
+                true,
+                team,
+            );
+        }
+    }
+    // The scoop it pushes through the sand, with its teeth.
+    model.bevel([0.66, 0.1, 0.0], [0.06, 0.07, 0.36], 0.015, GUNMETAL);
+    if model.fine {
+        for across in [-0.27, -0.09, 0.09, 0.27] {
+            model.block([0.74, 0.05, across], [0.03, 0.02, 0.03], STEEL);
+        }
+    }
+    // The neck: a beam out of the shell's front, rising as it goes.
+    model.hexa(
+        [
+            [0.3, 0.32, -0.11],
+            [0.72, 0.5, -0.09],
+            [0.72, 0.5, 0.09],
+            [0.3, 0.32, 0.11],
+            [0.3, 0.5, -0.11],
+            [0.72, 0.64, -0.09],
+            [0.72, 0.64, 0.09],
+            [0.3, 0.5, 0.11],
+        ],
+        GUNMETAL,
+    );
+    // The cockpit on its end, painted, with its windscreen looking ahead.
+    model.bevel([0.7, 0.74, 0.0], [0.14, 0.1, 0.15], 0.03, team);
+    model.bevel([0.82, 0.77, 0.0], [0.03, 0.055, 0.12], 0.01, GLASS);
+    model.tube(
+        tube([0.66, 0.84, 0.0], [0.66, 0.88, 0.0], 0.022).sides(8),
+        BEACON,
+    );
+    // The chute at the back it empties out of.
+    model.bevel([-0.68, 0.32, 0.0], [0.05, 0.08, 0.16], 0.015, BRONZE);
+}
+
 /// A tracked carrier with an open hull, painted sides, and a long throwing arm on a pivot
 /// with a bucket behind and a painted counterweight in front.
 fn catapult(model: &mut Model, unit: &Unit, team: Paint) {
@@ -1928,6 +2022,18 @@ fn heavy_strider(model: &mut Model, unit: &Unit, team: Paint) {
             pistons: 2,
         },
     );
+    // The platform tilts to aim, and its cannons elevate further on their hinge.
+    let [pivot_along, pivot_up] = units::PLATFORM_PIVOT;
+    let platform = model.place.pitched(
+        [pivot_along, pivot_up, 0.0],
+        unit.tube_pitch * units::PLATFORM_SHARE_OF_PITCH,
+    );
+    let height = units::CANNON_HEIGHT + 0.03;
+    let cannons = platform.pitched(
+        [units::CANNON_HINGE, units::CANNON_HEIGHT, 0.0],
+        unit.tube_pitch * (1.0 - units::PLATFORM_SHARE_OF_PITCH),
+    );
+    let mut model = model.at(platform);
     model.bevel([0.0, 0.92, 0.0], [0.42, 0.1, 0.36], 0.04, STEEL);
     model.hexa(
         [
@@ -1944,11 +2050,23 @@ fn heavy_strider(model: &mut Model, unit: &Unit, team: Paint) {
     );
     model.bevel([0.32, 1.15, 0.0], [0.08, 0.06, 0.12], 0.02, GUNMETAL);
     model.block(
-        [0.43, units::CANNON_HEIGHT + 0.03, 0.0],
+        [units::CANNON_HINGE, height, 0.0],
         [0.035, 0.07, 0.38],
         GUNMETAL,
     );
-    let height = units::CANNON_HEIGHT + 0.03;
+    for side in [-0.2, 0.2] {
+        model.tube(
+            tube([-0.38, 1.0, side], [-0.38, 1.3, side], 0.035)
+                .sides(8)
+                .ends(false, false),
+            GUNMETAL,
+        );
+        model.tube(
+            tube([-0.38, 1.26, side], [-0.38, 1.29, side], 0.028).sides(8),
+            BORE,
+        );
+    }
+    let mut model = model.at(cannons);
     for (&side, &recoil) in units::CANNON_SIDES.iter().zip(&unit.recoil) {
         let middle = units::CANNON_REACH - BARREL_HALF - RECOIL_TRAVEL * recoil;
         let (back, front) = (middle - BARREL_HALF, middle + BARREL_HALF);
@@ -1961,20 +2079,12 @@ fn heavy_strider(model: &mut Model, unit: &Unit, team: Paint) {
             GUNMETAL,
         );
         model.tube(
-            tube([0.43, height, side], [0.82, height, side], 0.05),
+            tube(
+                [units::CANNON_HINGE, height, side],
+                [0.82, height, side],
+                0.05,
+            ),
             STEEL,
-        );
-    }
-    for side in [-0.2, 0.2] {
-        model.tube(
-            tube([-0.38, 1.0, side], [-0.38, 1.3, side], 0.035)
-                .sides(8)
-                .ends(false, false),
-            GUNMETAL,
-        );
-        model.tube(
-            tube([-0.38, 1.26, side], [-0.38, 1.29, side], 0.028).sides(8),
-            BORE,
         );
     }
 }
@@ -2399,9 +2509,9 @@ fn destroyer(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
 /// How high the roof of each house's MCV is, where its searchlight stands.
 fn mcv_roof(faction: Faction) -> f32 {
     match faction {
-        Faction::A => 1.2,
-        Faction::H => 1.07,
-        Faction::O => 0.9,
+        Faction::Atreides => 1.2,
+        Faction::Harkonnen => 1.07,
+        Faction::Ordos => 0.9,
     }
 }
 
@@ -2536,7 +2646,7 @@ pub fn draw_mcv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, c
     model.bevel([0.0, 0.36, 0.0], [1.05, 0.12, 0.5], 0.03, GUNMETAL);
     let roof = mcv_roof(faction);
     match faction {
-        Faction::A => {
+        Faction::Atreides => {
             // Smooth and rounded: a lofted body with the owner's color along its top, and a
             // domed cab with a wide windscreen.
             let rings = [
@@ -2556,7 +2666,7 @@ pub fn draw_mcv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, c
             model.bevel([0.74, 0.98, 0.0], [0.03, 0.07, 0.24], 0.01, GLASS);
             model.tube(tube([-0.35, 0.98, 0.0], [-0.35, roof, 0.0], 0.11), GUNMETAL);
         }
-        Faction::H => {
+        Faction::Harkonnen => {
             // Brutal and angular: a heavy armored wedge with a ram in front, the owner's color
             // on its side plates, and spikes along its top edges.
             let corner = |a: f32, u: f32, c: f32| [a, u, c];
@@ -2598,7 +2708,7 @@ pub fn draw_mcv(canvas: &mut Canvas, unit: &Unit, faction: Faction, time: f32, c
             }
             model.bevel([0.55, roof - 0.12, 0.0], [0.03, 0.06, 0.3], 0.0, GLASS);
         }
-        Faction::O => {
+        Faction::Ordos => {
             // Low and sleek: a tapering wedge with swept fins in the owner's color and a raised
             // module at the back.
             let corner = |a: f32, u: f32, c: f32| [a, u, c];

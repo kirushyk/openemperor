@@ -149,6 +149,38 @@ impl UnitKind {
 const BUILDING_RADIUS: f32 = 1.2;
 /// The radius of an MCV on its tracks: far bigger than any other vehicle.
 const MCV_RADIUS: f32 = 1.0;
+/// The radius of a harvester: smaller than an MCV, but not by much.
+const HARVESTER_RADIUS: f32 = 0.6;
+/// How much substance a harvester holds when full.
+pub const HARVESTER_LOAD: f32 = 100.0;
+/// Seconds of driving over the sand it takes a harvester to fill up.
+const HARVEST_SECONDS: f32 = 60.0;
+/// What each unit of substance is worth at a refinery, in credits.
+const CREDITS_PER_SUBSTANCE: f32 = 7.0;
+/// Seconds a harvester takes to empty a full load at a refinery.
+pub const DUMP_SECONDS: f32 = 30.0;
+/// How far around where it found the sand a harvester roams, and the least it goes each time.
+const HARVEST_ROAM: f32 = 3.5;
+const HARVEST_LEAST_STEP: f32 = 1.5;
+/// How far out, in rings so far apart, a harvester looks for sand.
+const SAND_SEARCH_RINGS: usize = 50;
+const SAND_SEARCH_STEP: f32 = 1.5;
+/// Where a refinery's three pads are from its middle, as (across, ahead) with its front ahead,
+/// before it is turned the way it faces.
+pub const REFINERY_PADS: [(f32, f32); 3] = [(-1.4, 1.0), (0.0, 1.0), (1.4, 1.0)];
+/// How far each way a refinery's pad reaches: across it, and along it from the building out.
+pub const REFINERY_PAD_HALF: (f32, f32) = (0.55, 0.85);
+/// How far in front of its pad a harvester stops to come round before it backs on, how fast it
+/// backs on, and how close to its pad it has to come.
+const PAD_APPROACH: f32 = 2.2;
+const BACKING_SPEED: f32 = 1.0;
+const ON_PAD: f32 = 0.02;
+/// How far out in front of a refinery a full harvester waits when all of its pads are taken.
+const REFINERY_WAITS: f32 = 4.5;
+/// Where a refinery's exhaust stacks stand, as (across, ahead) before it is turned, and how
+/// high they end.
+pub const REFINERY_STACKS: [(f32, f32); 2] = [(-1.35, -1.3), (1.35, -1.3)];
+pub const REFINERY_STACK_TOP: f32 = 3.4;
 /// How high the deck of a landing pad is, which is where a machine on it sits.
 pub const PAD_TOP: f32 = 1.1;
 /// How far a landing pad's deck reaches each way from its middle.
@@ -244,6 +276,9 @@ pub enum Role {
     /// The huge main vehicle on four tracks. It deploys into the building that lets its owner
     /// build buildings, and packs up again to drive somewhere else.
     Mcv,
+    /// Unarmed, on four tracks, with its cockpit up on a beam out in front: it drives over
+    /// the sand scooping up substance, and takes it to a refinery once it is full.
+    Harvester,
     /// Lobs shells in a ballistic arc.
     Catapult,
     /// Fires a salvo of rockets from its two racks, then reloads for a long time.
@@ -314,6 +349,9 @@ pub enum Role {
     Hangar,
     /// A deck where one ornithopter at a time lands to load rockets.
     LandingPad,
+    /// Takes the substance harvesters bring, on three pads they back onto, and turns it into
+    /// credits for its owner.
+    Refinery,
     /// A house's own seat of power, without which its superweapon cannot fire.
     Palace(Faction),
 }
@@ -461,6 +499,7 @@ impl Role {
             Role::Tank
             | Role::RepairVehicle
             | Role::Mcv
+            | Role::Harvester
             | Role::SandBike
             | Role::DiskSaw
             | Role::FlameTank
@@ -487,6 +526,7 @@ impl Role {
             | Role::Factory
             | Role::Hangar
             | Role::LandingPad
+            | Role::Refinery
             | Role::Outpost
             | Role::Palace(_) => UnitKind::Building,
         }
@@ -502,6 +542,7 @@ impl Role {
             Role::Tank => "Tank",
             Role::RepairVehicle => "Repair Vehicle",
             Role::Mcv => "MCV",
+            Role::Harvester => "Harvester",
             Role::Catapult => "Catapult",
             Role::RocketLauncher => "Rocket Launcher",
             Role::Mongoose => "Mongoose",
@@ -535,9 +576,10 @@ impl Role {
             Role::Factory => "Factory",
             Role::Hangar => "Hangar",
             Role::LandingPad => "Landing Pad",
-            Role::Palace(Faction::A) => "Palace A",
-            Role::Palace(Faction::H) => "Palace H",
-            Role::Palace(Faction::O) => "Palace O",
+            Role::Refinery => "Refinery",
+            Role::Palace(Faction::Atreides) => "Palace A",
+            Role::Palace(Faction::Harkonnen) => "Palace H",
+            Role::Palace(Faction::Ordos) => "Palace O",
         }
     }
 
@@ -557,11 +599,13 @@ impl Role {
             Role::Scout
             | Role::Outpost
             | Role::Mcv
+            | Role::Harvester
             | Role::SuicideInfantry
             | Role::Barracks
             | Role::Factory
             | Role::Hangar
             | Role::LandingPad
+            | Role::Refinery
             | Role::Palace(_) => WeaponKind::Unarmed,
             Role::Sniper => WeaponKind::Sniper,
             Role::Engineer | Role::KInfantry => WeaponKind::Pistol,
@@ -601,6 +645,8 @@ impl Role {
             Role::SiegeTank => 380.0,
             Role::RepairVehicle => 200.0,
             Role::Mcv => 1200.0,
+            Role::Harvester => 500.0,
+            Role::Refinery => 1000.0,
             Role::Catapult | Role::RocketLauncher => 180.0,
             Role::Mongoose => 220.0,
             Role::Minotaurus => 450.0,
@@ -619,6 +665,7 @@ impl Role {
         match self {
             Role::Scout => 4.0,
             Role::Mcv => 1.8,
+            Role::Harvester => 2.4,
             Role::SandBike => 6.5,
             Role::HugeWalker => 0.9,
             Role::Recon => 6.0,
@@ -659,7 +706,9 @@ impl Role {
             Role::AdvancedCarryall => 12.0,
             Role::Minotaurus | Role::Destroyer => 15.0,
             Role::Mcv => 25.0,
+            Role::Harvester => 12.0,
             Role::LandingPad => 10.0,
+            Role::Refinery => 18.0,
             Role::Palace(_) => 30.0,
             Role::Outpost => 20.0,
             Role::Barracks => 15.0,
@@ -692,21 +741,23 @@ impl Role {
     /// and every hangar the same aircraft.
     pub fn made_by(self, house: Faction) -> bool {
         match self {
-            Role::GunPost | Role::Tower => house == Faction::A,
-            Role::FlameTower | Role::GunTower => house == Faction::H,
-            Role::GasTower | Role::LaserTower => house == Faction::O,
-            Role::LightInfantry | Role::KInfantry | Role::Sniper => house == Faction::A,
+            Role::GunPost | Role::Tower => house == Faction::Atreides,
+            Role::FlameTower | Role::GunTower => house == Faction::Harkonnen,
+            Role::GasTower | Role::LaserTower => house == Faction::Ordos,
+            Role::LightInfantry | Role::KInfantry | Role::Sniper => house == Faction::Atreides,
             Role::RegularInfantry | Role::RocketInfantry | Role::FlameInfantry => {
-                house == Faction::H
+                house == Faction::Harkonnen
             }
-            Role::GasInfantry | Role::SuicideInfantry | Role::MortarInfantry => house == Faction::O,
+            Role::GasInfantry | Role::SuicideInfantry | Role::MortarInfantry => {
+                house == Faction::Ordos
+            }
             Role::SandBike | Role::RepairVehicle | Role::Mongoose | Role::Minotaurus => {
-                house == Faction::A
+                house == Faction::Atreides
             }
-            Role::Recon | Role::LaserTank | Role::SiegeTank => house == Faction::O,
+            Role::Recon | Role::LaserTank | Role::SiegeTank => house == Faction::Ordos,
             Role::Palace(of) => house == of,
             Role::Tank | Role::DiskSaw | Role::FlameTank | Role::HugeWalker | Role::Catapult => {
-                house == Faction::H
+                house == Faction::Harkonnen
             }
             _ => true,
         }
@@ -715,9 +766,9 @@ impl Role {
     /// The armed towers a house builds, the lesser tier first.
     pub fn towers_of(house: Faction) -> [Role; 2] {
         match house {
-            Faction::A => [Role::GunPost, Role::Tower],
-            Faction::H => [Role::FlameTower, Role::GunTower],
-            Faction::O => [Role::GasTower, Role::LaserTower],
+            Faction::Atreides => [Role::GunPost, Role::Tower],
+            Faction::Harkonnen => [Role::FlameTower, Role::GunTower],
+            Faction::Ordos => [Role::GasTower, Role::LaserTower],
         }
     }
 
@@ -730,8 +781,10 @@ impl Role {
     pub fn radius(self) -> f32 {
         match self {
             Role::Mcv => MCV_RADIUS,
+            Role::Harvester => HARVESTER_RADIUS,
+            Role::Refinery => 2.0,
             Role::HugeWalker => 1.0,
-            Role::Palace(Faction::H) => 2.6,
+            Role::Palace(Faction::Harkonnen) => 2.6,
             Role::Outpost => 1.5,
             Role::SiegeTank => 0.55,
             Role::Barracks => 2.0,
@@ -748,10 +801,11 @@ impl Role {
         match self {
             Role::Barracks => (6, 4),
             Role::Factory | Role::Hangar => (6, 5),
-            Role::Palace(Faction::H) => (6, 6),
+            Role::Palace(Faction::Harkonnen) => (6, 6),
             Role::Palace(_) => (4, 3),
             Role::Outpost => (4, 4),
             Role::LandingPad => (3, 2),
+            Role::Refinery => (6, 6),
             Role::Mcv => (3, 3),
             _ => (2, 2),
         }
@@ -825,11 +879,12 @@ impl Role {
             Role::Barracks => 1.3,
             Role::Factory => 2.85,
             Role::Hangar => 1.65,
-            Role::Palace(Faction::H) => 5.9,
+            Role::Palace(Faction::Harkonnen) => 5.9,
             Role::Palace(_) => 2.2,
             Role::Outpost => 2.0,
             Role::GasTower | Role::LaserTower => 0.8,
             Role::LandingPad => PAD_TOP + 0.6,
+            Role::Refinery => REFINERY_STACK_TOP,
             Role::Mcv => 2.4,
             _ => TUBE_HEIGHT + 0.4,
         }
@@ -937,6 +992,12 @@ pub const CANNON_SIDES: [f32; 4] = [-0.3, -0.14, 0.14, 0.3];
 /// How high its cannons are, and how far ahead of its middle they end.
 pub const CANNON_HEIGHT: f32 = 1.05;
 pub const CANNON_REACH: f32 = 1.45;
+/// What its gun platform tilts about to aim, as [along, up] from its middle; how far ahead
+/// its cannons are hinged on the platform; and how much of the aim the platform's tilt takes,
+/// the cannons elevating through the rest.
+pub const PLATFORM_PIVOT: [f32; 2] = [0.0, 0.92];
+pub const CANNON_HINGE: f32 = 0.43;
+pub const PLATFORM_SHARE_OF_PITCH: f32 = 0.4;
 /// Seconds a building takes to go up once it has been placed.
 pub const CONSTRUCTION_SECONDS: f32 = 1.0;
 /// The way an MCV faces to deploy: the map's left-bottom edge.
@@ -1013,7 +1074,8 @@ pub struct Unit {
     pub alive: bool,
     /// Which of a tower's two tubes fires next.
     pub second_tube: bool,
-    /// How far a missile tower's tubes are raised, in radians: below level if negative.
+    /// How far a missile tower's tubes, or a Minotaurus's cannons, are raised, in radians:
+    /// below level if negative.
     pub tube_pitch: f32,
     /// What a building is making and the seconds left: one thing at a time.
     pub making: Option<(Role, f32)>,
@@ -1063,6 +1125,63 @@ pub struct Unit {
     pub theft: Option<Theft>,
     /// How it is getting on with going somewhere.
     stall: Stall,
+    /// How much substance a harvester has on board.
+    pub load: f32,
+    /// What a harvester is doing by itself.
+    pub harvest: Harvest,
+    /// Where on the sand a harvester harvests, and goes back to from the refinery.
+    field: (f32, f32),
+}
+
+/// What a harvester is getting on with by itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Harvest {
+    /// Left where it was sent: it starts harvesting once it stands there on the sand.
+    #[default]
+    Idle,
+    /// On its way to the sand.
+    Seeking,
+    /// Roaming over the sand, scooping up substance as it drives.
+    Collecting,
+    /// Looking for a free pad of one of its owner's refineries to empty its load at, and
+    /// waiting by one while they are all taken.
+    Returning,
+    /// On its way to the place in front of a refinery's pad.
+    ToPad(Dock),
+    /// Coming round there, to face away from the refinery.
+    Turning(Dock),
+    /// Backing onto the pad.
+    Backing(Dock),
+    /// On the pad, emptying its load into the refinery.
+    Dumping(Dock),
+}
+
+impl Harvest {
+    /// The refinery's pad it is going to or using.
+    pub fn dock(self) -> Option<Dock> {
+        match self {
+            Harvest::ToPad(dock)
+            | Harvest::Turning(dock)
+            | Harvest::Backing(dock)
+            | Harvest::Dumping(dock) => Some(dock),
+            Harvest::Idle | Harvest::Seeking | Harvest::Collecting | Harvest::Returning => None,
+        }
+    }
+
+    /// Whether it is at the pad, out of everyone's way and moving only by itself.
+    fn is_docked(self) -> bool {
+        matches!(
+            self,
+            Harvest::Turning(_) | Harvest::Backing(_) | Harvest::Dumping(_)
+        )
+    }
+}
+
+/// One of the three pads of a refinery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Dock {
+    pub refinery: u32,
+    pub pad: usize,
 }
 
 impl Unit {
@@ -1540,10 +1659,11 @@ impl Unit {
         if self.role == Role::Minotaurus {
             let (sin, cos) = self.heading.sin_cos();
             let side = CANNON_SIDES.get(self.salvo_fired).copied().unwrap_or(0.0);
+            let (ahead, up) = self.cannon_tip();
             return (
-                self.x + cos * CANNON_REACH - sin * side,
-                self.y + CANNON_HEIGHT,
-                self.z + sin * CANNON_REACH + cos * side,
+                self.x + cos * ahead - sin * side,
+                self.y + up,
+                self.z + sin * ahead + cos * side,
             );
         }
         if self.role == Role::RocketLauncher {
@@ -1571,6 +1691,20 @@ impl Unit {
             );
         }
         (self.x, self.y + self.altitude + HEIGHT * 0.8, self.z)
+    }
+
+    /// Where a Minotaurus's cannons end, as [along, up] from its middle: its platform tilted
+    /// about its pivot, and the cannons elevated on it about their hinge.
+    fn cannon_tip(&self) -> (f32, f32) {
+        let turn = |(a, u): (f32, f32), angle: f32| {
+            let (sin, cos) = angle.sin_cos();
+            (a * cos - u * sin, a * sin + u * cos)
+        };
+        let [pivot_a, pivot_u] = PLATFORM_PIVOT;
+        let tilt = self.tube_pitch * PLATFORM_SHARE_OF_PITCH;
+        let hinge = turn((CANNON_HINGE - pivot_a, CANNON_HEIGHT - pivot_u), tilt);
+        let barrel = turn((CANNON_REACH - CANNON_HINGE, 0.0), self.tube_pitch);
+        (pivot_a + hinge.0 + barrel.0, pivot_u + hinge.1 + barrel.1)
     }
 
     /// Where a sprayer's nozzle pointing this way from its nose is: a flame tank has one at
@@ -1605,6 +1739,34 @@ impl Unit {
             self.y + FACTORY_PIPE_TOP * size,
             self.z + (ahead * sin + across * cos) * size,
         )
+    }
+
+    /// Where a point of a building lies, given as (across, ahead) of its middle with its front
+    /// ahead, before it was turned the way it faces.
+    fn on_plot(&self, (across, ahead): (f32, f32)) -> (f32, f32) {
+        let (sin, cos) = self.facing.turn().sin_cos();
+        (
+            self.x + across * cos - ahead * sin,
+            self.z + across * sin + ahead * cos,
+        )
+    }
+
+    /// Where the middle of each of a refinery's pads is.
+    pub fn refinery_pads(&self) -> [(f32, f32); 3] {
+        REFINERY_PADS.map(|pad| self.on_plot(pad))
+    }
+
+    /// Where the smoke comes out of a refinery's exhaust stacks.
+    pub fn stack_tops(&self) -> [Point; 2] {
+        REFINERY_STACKS.map(|stack| {
+            let (x, z) = self.on_plot(stack);
+            (x, self.y + REFINERY_STACK_TOP, z)
+        })
+    }
+
+    /// Whether a harvester is driving over the sand scooping it up.
+    pub fn is_harvesting(&self) -> bool {
+        self.alive && self.harvest == Harvest::Collecting && self.is_moving()
     }
 
     /// Where gunfire comes out: at the end of the barrel, outside its body.
@@ -1662,10 +1824,10 @@ impl Unit {
         self.owner == 0 && self.theft.is_none()
     }
 
-    /// Whether a box or the select-all key takes it. Buildings that make units are only ever
-    /// picked by a single click of their own.
+    /// Whether a box or the select-all key takes it. Buildings, towers among them, are only
+    /// ever picked by a single click of their own.
     pub fn is_selected_in_groups(&self) -> bool {
-        self.is_selectable() && self.kind != UnitKind::Building
+        self.is_selectable() && !self.kind.is_building()
     }
 
     /// A lone player's unit standing at a point, ready to fire with bullets.
@@ -1685,7 +1847,7 @@ impl Unit {
             z,
             owner: 0,
             color: TeamColor::Blue,
-            house: Faction::A,
+            house: Faction::Atreides,
             selected: false,
             kind,
             heading: -FRAC_PI_2,
@@ -1719,6 +1881,9 @@ impl Unit {
             reloading: 0.0,
             theft: None,
             stall: Stall::NOT_STALLED,
+            load: 0.0,
+            harvest: Harvest::Idle,
+            field: (x, z),
         }
     }
 }
@@ -1823,7 +1988,7 @@ fn place_unit(
         z,
         owner,
         color,
-        house: Faction::A,
+        house: Faction::Atreides,
         selected: false,
         kind,
         heading: -FRAC_PI_2,
@@ -1857,6 +2022,13 @@ fn place_unit(
         reloading: 0.0,
         theft: None,
         stall: Stall::NOT_STALLED,
+        load: 0.0,
+        harvest: if role == Role::Harvester {
+            Harvest::Seeking
+        } else {
+            Harvest::Idle
+        },
+        field: (x, z),
     });
 }
 
@@ -2505,6 +2677,49 @@ fn order_layer(
         // Sent somewhere, it sits down there.
         units[i].on_mission = false;
         units[i].unloading = units[i].carrying;
+        // A harvester gives up its pad, and harvests there if it is sand.
+        units[i].harvest = Harvest::Idle;
+        units[i].reset_progress();
+    }
+}
+
+/// Sends the selected there, and the harvesters among them to harvest the sand there.
+pub fn order_harvest(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, teams: &[usize]) {
+    order_move(units, target, terrain, teams);
+    for unit in units
+        .iter_mut()
+        .filter(|u| u.selected && u.role == Role::Harvester)
+    {
+        unit.field = unit.destination;
+        unit.harvest = Harvest::Seeking;
+    }
+}
+
+/// Sends the selected harvesters with anything on board to empty it at this refinery: each to
+/// a free pad of it, or to wait for one by it, or failing that by another.
+pub fn order_dump(units: &mut [Unit], refinery: usize) {
+    let refinery = units[refinery];
+    for i in 0..units.len() {
+        let unit = units[i];
+        if !unit.selected || unit.role != Role::Harvester || unit.load <= 0.0 {
+            continue;
+        }
+        let taken = |dock: Dock| {
+            units
+                .iter()
+                .any(|u| u.alive && u.id != unit.id && u.harvest.dock() == Some(dock))
+        };
+        let away = |(x, z): (f32, f32)| (x - unit.x).hypot(z - unit.z);
+        let pads = refinery.refinery_pads();
+        let free = (0..pads.len())
+            .map(|pad| Dock {
+                refinery: refinery.id,
+                pad,
+            })
+            .filter(|&dock| !taken(dock))
+            .min_by(|a, b| away(pads[a.pad]).total_cmp(&away(pads[b.pad])));
+        units[i].harvest = free.map_or(Harvest::Returning, Harvest::ToPad);
+        units[i].target = None;
         units[i].reset_progress();
     }
 }
@@ -2514,7 +2729,10 @@ pub fn set_gathering(units: &mut [Unit], point: (f32, f32)) {
     for unit in units.iter_mut().filter(|u| {
         u.selected
             && u.kind == UnitKind::Building
-            && !matches!(u.role, Role::LandingPad | Role::Mcv | Role::Palace(_))
+            && !matches!(
+                u.role,
+                Role::LandingPad | Role::Refinery | Role::Mcv | Role::Palace(_)
+            )
     }) {
         unit.gathering = Some(point);
     }
@@ -2894,8 +3112,11 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 let held_by =
                     |held: &Unit, by: &Unit| held.theft.is_some_and(|theft| theft.carrier == by.id);
                 // And so are a machine and the pad it is using.
-                let using =
-                    |machine: &Unit, pad: &Unit| machine.pad.is_some_and(|used| used.id == pad.id);
+                let using = |machine: &Unit, pad: &Unit| {
+                    machine.pad.is_some_and(|used| used.id == pad.id)
+                        || machine.harvest.is_docked()
+                            && machine.harvest.dock().is_some_and(|d| d.refinery == pad.id)
+                };
                 if !units[a].alive
                     || !units[b].alive
                     || held_by(&units[a], &units[b])
@@ -2924,7 +3145,10 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 let solid = |unit: &Unit| {
                     let going_up_or_down = unit.role.lands() && unit.altitude < CRUISE_ALTITUDE;
                     (
-                        unit.kind.is_building() || unit.deployed || going_up_or_down,
+                        unit.kind.is_building()
+                            || unit.deployed
+                            || going_up_or_down
+                            || unit.harvest.is_docked(),
                         unit.heavy,
                     )
                 };
@@ -3645,6 +3869,222 @@ fn go_on_deploying(unit: &mut Unit, dt: f32) {
     unit.target = None;
 }
 
+/// Whether a place is on the sand, or the lower ground that stands for it, where harvesters
+/// find substance.
+pub fn is_sand(terrain: &Terrain, (x, z): (f32, f32)) -> bool {
+    terrain.can_walk(x, z) && !terrain.on_upper_ground(x, z)
+}
+
+/// The nearest place on the sand around a point, if there is any within reach.
+fn sand_near(terrain: &Terrain, (x, z): (f32, f32)) -> Option<(f32, f32)> {
+    if is_sand(terrain, (x, z)) {
+        return Some((x, z));
+    }
+    (1..=SAND_SEARCH_RINGS).find_map(|ring| {
+        let reach = ring as f32 * SAND_SEARCH_STEP;
+        let tries = 6 * ring;
+        (0..tries).find_map(|n| {
+            let angle = n as f32 / tries as f32 * TAU;
+            let at = (x + reach * angle.cos(), z + reach * angle.sin());
+            is_sand(terrain, at).then_some(at)
+        })
+    })
+}
+
+/// Somewhere else on the sand around where a harvester harvests for it to drive to next.
+fn roam(terrain: &Terrain, unit: &Unit) -> Option<(f32, f32)> {
+    const TRIES: usize = 8;
+    let mut random = (unit.id.wrapping_mul(0x9E37_79B1) ^ unit.stride.to_bits()) | 1;
+    (0..TRIES).find_map(|_| {
+        let (sin, cos) = (next_random(&mut random) * TAU).sin_cos();
+        let reach = next_random(&mut random) * HARVEST_ROAM;
+        let at = (unit.field.0 + reach * cos, unit.field.1 + reach * sin);
+        let far_enough = (at.0 - unit.x).hypot(at.1 - unit.z) >= HARVEST_LEAST_STEP;
+        (far_enough && is_sand(terrain, at)).then_some(at)
+    })
+}
+
+/// Whether it is a finished refinery of this owner's still standing.
+fn is_refinery_of(u: &Unit, owner: usize) -> bool {
+    u.alive && u.role == Role::Refinery && u.owner == owner && !u.is_under_construction()
+}
+
+/// The nearest pad of its owner's refineries that no other harvester is using or going to.
+fn free_dock(units: &[Unit], harvester: &Unit) -> Option<Dock> {
+    let taken = |dock: Dock| {
+        units
+            .iter()
+            .any(|u| u.alive && u.id != harvester.id && u.harvest.dock() == Some(dock))
+    };
+    let away = |(x, z): (f32, f32)| (x - harvester.x).hypot(z - harvester.z);
+    units
+        .iter()
+        .filter(|u| is_refinery_of(u, harvester.owner))
+        .flat_map(|refinery| {
+            let id = refinery.id;
+            (0..REFINERY_PADS.len()).map(move |pad| (Dock { refinery: id, pad }, refinery))
+        })
+        .filter(|&(dock, _)| !taken(dock))
+        .min_by(|(a, from_a), (b, from_b)| {
+            away(from_a.refinery_pads()[a.pad]).total_cmp(&away(from_b.refinery_pads()[b.pad]))
+        })
+        .map(|(dock, _)| dock)
+}
+
+/// Sends a unit somewhere, unless it is already headed there.
+fn head_for(unit: &mut Unit, to: (f32, f32)) {
+    if unit.destination != to {
+        unit.destination = to;
+        unit.reset_progress();
+    }
+}
+
+/// Harvesters go about their work by themselves: out to the sand, roaming over it scooping up
+/// substance as they drive, once full to a free pad of one of their owner's refineries, round
+/// in front of it and backing onto it, and there emptying their load, which pays the
+/// refinery's owner as it goes, before going back to the sand. `money` is each owner's.
+pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32], dt: f32) {
+    let credits = |load: f32| (load * CREDITS_PER_SUBSTANCE) as i32;
+    for i in 0..units.len() {
+        let unit = units[i];
+        if !unit.alive || unit.role != Role::Harvester || unit.theft.is_some() {
+            continue;
+        }
+        let here = (unit.x, unit.z);
+        let on_sand = is_sand(terrain, here);
+        // Its pad, where it is, and which way is out from it, while the refinery still stands.
+        let pad = unit.harvest.dock().map(|dock| {
+            units
+                .iter()
+                .find(|u| u.id == dock.refinery && is_refinery_of(u, unit.owner))
+                .map(|refinery| {
+                    let way = refinery.facing.way_out();
+                    (refinery.owner, refinery.refinery_pads()[dock.pad], way)
+                })
+        });
+        let unit = &mut units[i];
+        match (unit.harvest, pad.flatten()) {
+            (Harvest::Idle, _) => {
+                if !unit.is_moving() && on_sand && unit.load < HARVESTER_LOAD {
+                    unit.field = here;
+                    unit.harvest = Harvest::Collecting;
+                }
+            }
+            (Harvest::Seeking, _) if !unit.is_moving() => {
+                if on_sand {
+                    unit.field = here;
+                    unit.harvest = Harvest::Collecting;
+                } else if let Some(sand) = sand_near(terrain, unit.field) {
+                    head_for(unit, sand);
+                } else {
+                    unit.harvest = Harvest::Idle;
+                }
+            }
+            (Harvest::Collecting, _) if unit.load >= HARVESTER_LOAD => {
+                unit.harvest = Harvest::Returning;
+            }
+            (Harvest::Returning, _) if unit.load <= 0.0 => {
+                unit.harvest = Harvest::Seeking;
+            }
+            (Harvest::Returning, _) => {
+                let unit = *unit;
+                if let Some(dock) = free_dock(units, &unit) {
+                    units[i].harvest = Harvest::ToPad(dock);
+                } else if let Some(refinery) = units
+                    .iter()
+                    .filter(|u| is_refinery_of(u, unit.owner))
+                    .min_by(|a, b| {
+                        let away = |u: &Unit| (u.x - unit.x).hypot(u.z - unit.z);
+                        away(a).total_cmp(&away(b))
+                    })
+                {
+                    // All taken: it waits out in front of the nearest, its own spot for each.
+                    let (out_x, out_z) = refinery.facing.way_out();
+                    let (sin, cos) = (unit.id as f32 * 2.4).sin_cos();
+                    let wait = (
+                        refinery.x + out_x * REFINERY_WAITS + cos * 1.5,
+                        refinery.z + out_z * REFINERY_WAITS + sin * 1.5,
+                    );
+                    head_for(&mut units[i], wait);
+                }
+            }
+            (Harvest::Collecting, _) if unit.is_moving() => {
+                if on_sand {
+                    let rate = HARVESTER_LOAD / HARVEST_SECONDS;
+                    unit.load = (unit.load + rate * dt).min(HARVESTER_LOAD);
+                }
+            }
+            (Harvest::Collecting, _) => {
+                if !on_sand {
+                    unit.harvest = Harvest::Seeking;
+                } else if let Some(next) = roam(terrain, unit) {
+                    head_for(unit, next);
+                }
+            }
+            // Its refinery is gone, or someone else's now: it looks for another.
+            (
+                Harvest::ToPad(_) | Harvest::Turning(_) | Harvest::Backing(_) | Harvest::Dumping(_),
+                None,
+            ) => {
+                unit.harvest = Harvest::Returning;
+                unit.destination = here;
+            }
+            (Harvest::ToPad(dock), Some((_, (x, z), (out_x, out_z)))) => {
+                let front = (x + out_x * PAD_APPROACH, z + out_z * PAD_APPROACH);
+                if unit.is_moving() {
+                    head_for(unit, front);
+                } else if (front.0 - unit.x).hypot(front.1 - unit.z) < 0.5 {
+                    unit.harvest = Harvest::Turning(dock);
+                } else {
+                    // Held up on its way: it sets off again.
+                    unit.destination = front;
+                    unit.reset_progress();
+                }
+            }
+            (Harvest::Turning(dock), Some((_, _, (out_x, out_z)))) => {
+                let turn = turn_between(unit.heading, out_z.atan2(out_x));
+                let most = TURN_SPEED * dt;
+                unit.heading += turn.clamp(-most, most);
+                if turn.abs() <= most {
+                    unit.harvest = Harvest::Backing(dock);
+                }
+                unit.destination = here;
+            }
+            (Harvest::Backing(dock), Some((_, (x, z), _))) => {
+                let (dx, dz) = (x - unit.x, z - unit.z);
+                let left = dx.hypot(dz);
+                let step = BACKING_SPEED * dt;
+                if left <= step + ON_PAD {
+                    (unit.x, unit.z) = (x, z);
+                    unit.harvest = Harvest::Dumping(dock);
+                } else {
+                    unit.x += dx / left * step;
+                    unit.z += dz / left * step;
+                }
+                // Its tracks run backwards.
+                unit.stride -= step.min(left);
+                unit.y = terrain.height_at(unit.x, unit.z);
+                unit.destination = (unit.x, unit.z);
+            }
+            (Harvest::Dumping(_), Some((owner, (x, z), (out_x, out_z)))) => {
+                let before = unit.load;
+                unit.load = (unit.load - HARVESTER_LOAD / DUMP_SECONDS * dt).max(0.0);
+                if let Some(money) = money.get_mut(owner) {
+                    *money += credits(before) - credits(unit.load);
+                }
+                unit.destination = here;
+                if unit.load <= 0.0 {
+                    // Empty: it drives off its pad, and back to the sand.
+                    unit.harvest = Harvest::Seeking;
+                    unit.destination = (x + out_x * PAD_APPROACH, z + out_z * PAD_APPROACH);
+                    unit.reset_progress();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
     for unit in units.iter_mut() {
@@ -4186,7 +4626,7 @@ mod tests {
             assert_eq!(flame.len(), 1);
             assert_eq!(flame[0].color, color);
             assert_eq!(flame[0].weapon, WeaponKind::Flame);
-            assert_eq!(flame[0].is_selected_in_groups(), owner == 0);
+            assert!(!flame[0].is_selected_in_groups());
         }
     }
 
@@ -4202,7 +4642,7 @@ mod tests {
             assert_eq!(towers[0].color, color);
             assert_eq!(towers[0].weapon, WeaponKind::TowerRockets);
             assert_eq!(towers[0].health, UnitKind::Tower.max_health());
-            assert_eq!(towers[0].is_selected_in_groups(), owner == 0);
+            assert!(!towers[0].is_selected_in_groups());
         }
     }
 
@@ -5284,17 +5724,17 @@ mod tests {
     fn a_building_makes_what_its_house_makes_and_every_barracks_scouts_and_engineers() {
         for (house, own, other) in [
             (
-                Faction::A,
+                Faction::Atreides,
                 [Role::LightInfantry, Role::SandBike],
                 Role::Tank,
             ),
             (
-                Faction::H,
+                Faction::Harkonnen,
                 [Role::RocketInfantry, Role::DiskSaw],
                 Role::SandBike,
             ),
             (
-                Faction::O,
+                Faction::Ordos,
                 [Role::SuicideInfantry, Role::SiegeTank],
                 Role::KInfantry,
             ),
@@ -7256,5 +7696,122 @@ mod tests {
     fn a_zero_length_bolt_is_harmless() {
         let points = lightning_points((5.0, 5.0), (5.0, 5.0), 1, 30.0, 9.0);
         assert_eq!(points, [(5.0, 5.0), (5.0, 5.0)]);
+    }
+
+    fn refinery_and_harvesters(harvesters: usize) -> Vec<Unit> {
+        let mut refinery = unit_at(0.0, 60.0, UnitKind::Building);
+        refinery.role = Role::Refinery;
+        refinery.weapon = WeaponKind::Unarmed;
+        let mut units = vec![refinery];
+        for n in 0..harvesters {
+            let mut harvester = unit_at(4.0 + 2.0 * n as f32, 68.0, UnitKind::Vehicle);
+            harvester.role = Role::Harvester;
+            harvester.weapon = WeaponKind::Unarmed;
+            harvester.id = 1 + n as u32;
+            harvester.harvest = Harvest::Collecting;
+            harvester.load = HARVESTER_LOAD;
+            units.push(harvester);
+        }
+        units
+    }
+
+    fn work(units: &mut [Unit], money: &mut [i32], seconds: f32) {
+        const DT: f32 = 0.05;
+        for _ in 0..(seconds / DT) as usize {
+            advance(units, open_ground(), &[0], DT);
+            tend_harvesters(units, open_ground(), money, DT);
+        }
+    }
+
+    #[test]
+    fn a_full_harvester_backs_onto_a_refinery_pad_empties_in_thirty_seconds_and_goes_back() {
+        let mut units = refinery_and_harvesters(1);
+        let mut money = [0];
+        for _ in 0..600 {
+            work(&mut units, &mut money, 0.05);
+            if matches!(units[1].harvest, Harvest::Dumping(_)) {
+                break;
+            }
+        }
+        let (harvester, refinery) = (units[1], units[0]);
+        assert!(
+            matches!(harvester.harvest, Harvest::Dumping(_)),
+            "{harvester:?}"
+        );
+        let pad = refinery.refinery_pads()[harvester.harvest.dock().unwrap().pad];
+        assert!((harvester.x - pad.0).hypot(harvester.z - pad.1) < 0.05);
+        let (out_x, out_z) = refinery.facing.way_out();
+        assert!(
+            turn_between(harvester.heading, out_z.atan2(out_x)).abs() < 0.05,
+            "its back to the refinery"
+        );
+        work(&mut units, &mut money, DUMP_SECONDS - 1.0);
+        assert!(
+            matches!(units[1].harvest, Harvest::Dumping(_)),
+            "still at it"
+        );
+        assert!(money[0] > 600 && money[0] < 700, "paid as it goes");
+        work(&mut units, &mut money, 1.5);
+        assert_eq!(money[0], 700, "a full load is worth so much");
+        assert_eq!(units[1].load, 0.0);
+        assert_ne!(units[1].harvest, Harvest::Idle);
+        work(&mut units, &mut money, 10.0);
+        assert_eq!(units[1].harvest, Harvest::Collecting, "back on the sand");
+        assert!(units[1].load > 0.0, "and filling up");
+    }
+
+    #[test]
+    fn a_refinery_takes_three_harvesters_at_once_and_the_fourth_waits() {
+        let mut units = refinery_and_harvesters(4);
+        let mut money = [0];
+        work(&mut units, &mut money, 30.0);
+        let dumping = |units: &[Unit]| {
+            units
+                .iter()
+                .filter(|u| matches!(u.harvest, Harvest::Dumping(_)))
+                .count()
+        };
+        assert_eq!(dumping(&units), 3);
+        let pads: Vec<_> = units.iter().filter_map(|u| u.harvest.dock()).collect();
+        assert_eq!(pads.len(), 3, "each its own pad: {pads:?}");
+        assert!(
+            pads.iter()
+                .all(|a| pads.iter().filter(|b| *b == a).count() == 1)
+        );
+        let waiting = units
+            .iter()
+            .position(|u| u.role == Role::Harvester && u.harvest.dock().is_none())
+            .unwrap();
+        assert_eq!(units[waiting].load, HARVESTER_LOAD, "it waits full");
+        work(&mut units, &mut money, 45.0);
+        assert!(
+            units[waiting].load < HARVESTER_LOAD,
+            "and then gets its turn"
+        );
+    }
+
+    #[test]
+    fn a_harvester_fills_up_only_driving_over_the_sand_and_stops_harvesting_when_sent_off() {
+        let mut units = refinery_and_harvesters(1);
+        units[1].load = 0.0;
+        let mut money = [0];
+        work(&mut units, &mut money, 4.0);
+        assert!(units[1].load > 0.0);
+        assert!(units[1].is_harvesting() || units[1].harvest == Harvest::Collecting);
+        units[1].selected = true;
+        order_move(&mut units, (20.0, 70.0), open_ground(), &[0]);
+        assert_eq!(units[1].harvest, Harvest::Idle);
+        let load = units[1].load;
+        work(&mut units, &mut money, 0.5);
+        assert_eq!(units[1].load, load, "not while it goes where it was sent");
+
+        let mut high = units[1];
+        high.load = 0.0;
+        high.harvest = Harvest::Collecting;
+        let mut alone = [high];
+        for _ in 0..20 {
+            tend_harvesters(&mut alone, &Terrain::open_upland(), &mut money, 0.05);
+        }
+        assert_eq!(alone[0].load, 0.0, "nothing on the upper ground");
     }
 }

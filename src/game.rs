@@ -27,7 +27,7 @@ pub const SUPERWEAPON_CELL: usize = 6;
 /// own three.
 const INFANTRY_BUILDS: [(Faction, [Role; 5]); 3] = [
     (
-        Faction::A,
+        Faction::Atreides,
         [
             Role::Scout,
             Role::LightInfantry,
@@ -37,7 +37,7 @@ const INFANTRY_BUILDS: [(Faction, [Role; 5]); 3] = [
         ],
     ),
     (
-        Faction::H,
+        Faction::Harkonnen,
         [
             Role::Scout,
             Role::RegularInfantry,
@@ -47,7 +47,7 @@ const INFANTRY_BUILDS: [(Faction, [Role; 5]); 3] = [
         ],
     ),
     (
-        Faction::O,
+        Faction::Ordos,
         [
             Role::Scout,
             Role::GasInfantry,
@@ -60,14 +60,14 @@ const INFANTRY_BUILDS: [(Faction, [Role; 5]); 3] = [
 /// What each house's Vehicles menu makes on the ground, in the cells `VEHICLE_CELLS` lists.
 fn vehicle_builds(house: Faction) -> &'static [Role] {
     match house {
-        Faction::A => &[
+        Faction::Atreides => &[
             Role::SandBike,
             Role::RepairVehicle,
             Role::RocketLauncher,
             Role::Mongoose,
             Role::Minotaurus,
         ],
-        Faction::H => &[
+        Faction::Harkonnen => &[
             Role::Tank,
             Role::Catapult,
             Role::RocketLauncher,
@@ -75,7 +75,7 @@ fn vehicle_builds(house: Faction) -> &'static [Role] {
             Role::FlameTank,
             Role::HugeWalker,
         ],
-        Faction::O => &[
+        Faction::Ordos => &[
             Role::Recon,
             Role::LaserTank,
             Role::RocketLauncher,
@@ -84,7 +84,7 @@ fn vehicle_builds(house: Faction) -> &'static [Role] {
     }
 }
 /// The Vehicles menu's cells free for ground vehicles, in order.
-const VEHICLE_CELLS: [usize; 8] = [0, 1, 2, 3, 4, 5, 8, 10];
+const VEHICLE_CELLS: [usize; 7] = [0, 1, 2, 3, 4, 5, 10];
 /// What the Vehicles menu's bottom row makes, from its left end.
 const BOTTOM_VEHICLE_BUILDS: [Role; 3] =
     [Role::AirDefensePlatform, Role::AirDrone, Role::Ornithopter];
@@ -93,6 +93,8 @@ const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
 const CARRYALL_CELL: usize = BOTTOM_ROW_START - hud::GRID_COLUMNS;
 /// The Vehicles menu's cell for a spare MCV, beside the superweapon.
 const MCV_CELL: usize = SUPERWEAPON_CELL + 1;
+/// The Vehicles menu's cell for the Harvester, every house's, beside the spare MCV.
+const HARVESTER_CELL: usize = MCV_CELL + 1;
 /// The Vehicles menu's cell for the Destroyer, just above the Ornithopter.
 const DESTROYER_CELL: usize = BOTTOM_ROW_START - 1;
 /// Seconds of battle before the superweapon can fire again.
@@ -139,6 +141,8 @@ const BUILDING_BUILDS: [Role; 4] = [
 const PALACE_CELL: usize = BUILDING_BUILDS.len() + 2;
 /// The Buildings menu's cell for an outpost, after the palace.
 const OUTPOST_CELL: usize = PALACE_CELL + 1;
+/// The Buildings menu's cell for a refinery, after the outpost.
+const REFINERY_CELL: usize = OUTPOST_CELL + 1;
 /// How long before the superweapon is ready the launcher on top of a palace starts to open.
 const LAUNCHER_OPENS_SECONDS: f32 = 3.0;
 /// How much an opponent has standing at most before it stops making more, so that a long battle
@@ -189,8 +193,11 @@ pub enum CursorLook {
     Deploy,
     /// The selected unit under the cursor would stop being dug in.
     Undeploy,
-    /// A selected ornithopter or destroyer would land on the landing pad under the cursor.
+    /// A selected ornithopter or destroyer would land on the landing pad under the cursor, or a
+    /// selected harvester empty its load at the refinery there.
     Land,
+    /// The selected harvesters would go and harvest the sand here.
+    Harvest,
 }
 
 /// The new building the player has on the way: one at a time.
@@ -261,25 +268,25 @@ pub enum BuildTab {
 /// The three playable factions: A is blue, H red, O cyan. Each is shown as its planet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Faction {
-    A,
-    H,
-    O,
+    Atreides,
+    Harkonnen,
+    Ordos,
 }
 
 impl Faction {
     pub fn label(self) -> &'static str {
         match self {
-            Faction::A => "Faction A",
-            Faction::H => "Faction H",
-            Faction::O => "Faction O",
+            Faction::Atreides => "Faction A",
+            Faction::Harkonnen => "Faction H",
+            Faction::Ordos => "Faction O",
         }
     }
 
     fn next(self) -> Self {
         match self {
-            Faction::A => Faction::H,
-            Faction::H => Faction::O,
-            Faction::O => Faction::A,
+            Faction::Atreides => Faction::Harkonnen,
+            Faction::Harkonnen => Faction::Ordos,
+            Faction::Ordos => Faction::Atreides,
         }
     }
 }
@@ -477,10 +484,10 @@ impl SkirmishConfig {
 
 impl Default for SkirmishConfig {
     fn default() -> Self {
-        const FACTIONS: [Faction; 3] = [Faction::H, Faction::A, Faction::O];
+        const FACTIONS: [Faction; 3] = [Faction::Harkonnen, Faction::Atreides, Faction::Ordos];
         let mut opponents = [Opponent {
             kind: OpponentKind::Competent,
-            faction: Faction::H,
+            faction: Faction::Harkonnen,
             allies: [Ally::None; 2],
             color: TeamColor::Blue,
         }; OPPONENT_SLOTS];
@@ -489,7 +496,7 @@ impl Default for SkirmishConfig {
         }
         let mut config = SkirmishConfig {
             commander: "Commander".to_string(),
-            faction: Faction::A,
+            faction: Faction::Atreides,
             color: TeamColor::Blue,
             allies: [Ally::None; 2],
             opponents,
@@ -884,9 +891,9 @@ fn faction_buttons(width: f32, height: f32) -> Vec<Button> {
     const BOTTOM_Y: f32 = 716.0;
     let s = ui_scale(height);
     [
-        (Faction::A, 0.0, TOP_Y),
-        (Faction::H, -SPREAD, BOTTOM_Y),
-        (Faction::O, SPREAD, BOTTOM_Y),
+        (Faction::Atreides, 0.0, TOP_Y),
+        (Faction::Harkonnen, -SPREAD, BOTTOM_Y),
+        (Faction::Ordos, SPREAD, BOTTOM_Y),
     ]
     .into_iter()
     .map(|(faction, dx, cy)| Button {
@@ -1347,8 +1354,15 @@ pub struct Game {
     /// Where a selection drag started, as a point on the map (x, z), so that it stays put
     /// on the ground while the camera moves.
     selection_anchor: Option<(f32, f32)>,
+    /// Where on screen the left button went down, and whether the edge has scrolled the
+    /// camera since: only that, or moving the cursor away, makes a press a box.
+    press_point: (f32, f32),
+    scrolled_since_press: bool,
     /// Seconds since the game started, unbroken by going from screen to screen.
     menu_seconds: f32,
+    /// Whether a movie is playing on the intro's or a faction's movie screen, which then lasts
+    /// until it ends. Going to another screen clears it.
+    movie_playing: bool,
     /// Whether a Control key is down, which turns clicks into attack orders.
     control_held: bool,
     /// The ids of the units assigned to each of the number keys 1 to 9.
@@ -1424,7 +1438,10 @@ impl Game {
             aiming_strike: false,
             strike_recharge: 0.0,
             selection_anchor: None,
+            press_point: (0.0, 0.0),
+            scrolled_since_press: false,
             menu_seconds: 0.0,
+            movie_playing: false,
             control_held: false,
             control_groups: Default::default(),
             next_unit_id: 0,
@@ -1582,16 +1599,23 @@ impl Game {
     fn begin_selection(&mut self) {
         if self.cursor_on_battlefield() {
             self.selection_anchor = self.view().ground_at(self.mouse.0, self.mouse.1);
+            self.press_point = self.mouse;
+            self.scrolled_since_press = false;
         }
     }
 
     /// Whether the left button, if down on the battlefield, has stayed near where it went
-    /// down on screen, which makes this a click and not a box.
+    /// down on screen, which makes this a click and not a box. The camera easing its zoom
+    /// or following someone does not turn a click into a box; scrolling at the edge does.
     fn is_click_so_far(&self) -> bool {
         let Some((x, z)) = self.selection_anchor else {
             return true;
         };
-        let start = self.view().project_clamped(x, 0.0, z);
+        let start = if self.scrolled_since_press {
+            self.view().project_clamped(x, 0.0, z)
+        } else {
+            self.press_point
+        };
         let slop = CLICK_SLOP * ui_scale(self.height);
         (start.0 - self.mouse.0).abs() < slop && (start.1 - self.mouse.1).abs() < slop
     }
@@ -1638,6 +1662,7 @@ impl Game {
                 .copied(),
             BuildTab::Vehicles if cell == CARRYALL_CELL => Some(Role::AdvancedCarryall),
             BuildTab::Vehicles if cell == MCV_CELL => Some(Role::Mcv),
+            BuildTab::Vehicles if cell == HARVESTER_CELL => Some(Role::Harvester),
             BuildTab::Vehicles if cell == DESTROYER_CELL => Some(Role::Destroyer),
             BuildTab::Vehicles => VEHICLE_CELLS
                 .iter()
@@ -1649,6 +1674,7 @@ impl Game {
                 self.superweapon_allowed().then_some(Role::Palace(house))
             }
             BuildTab::Buildings if cell == OUTPOST_CELL => Some(Role::Outpost),
+            BuildTab::Buildings if cell == REFINERY_CELL => Some(Role::Refinery),
             BuildTab::Buildings => BUILDING_BUILDS
                 .into_iter()
                 .chain(Role::towers_of(house))
@@ -2063,6 +2089,8 @@ impl Game {
                     }
                 }
                 None if self.pad_under_cursor().is_some() => CursorLook::Land,
+                None if self.refinery_under_cursor().is_some() => CursorLook::Land,
+                None if self.harvest_here().is_some() => CursorLook::Harvest,
                 None if self.would_put_down_here() => CursorLook::Carry,
                 None if self.would_go_here() => CursorLook::Move,
                 None => CursorLook::Arrow,
@@ -2092,6 +2120,36 @@ impl Game {
             .filter(|&unit| self.units[unit].role == Role::LandingPad)
     }
 
+    /// The player's refinery under the cursor, if a click would send a selected harvester to
+    /// empty its load there.
+    fn refinery_under_cursor(&self) -> Option<usize> {
+        let loaded = |u: &&Unit| u.role == Role::Harvester && u.load > 0.0;
+        if !self.can_order_attack_here() || !self.selected_units().iter().any(loaded) {
+            return None;
+        }
+        self.unit_under_cursor().filter(|&unit| {
+            let refinery = &self.units[unit];
+            refinery.role == Role::Refinery && !refinery.is_under_construction()
+        })
+    }
+
+    /// The sand under the cursor, if what is selected is harvesters that a click would send to
+    /// harvest it.
+    fn harvest_here(&self) -> Option<(f32, f32)> {
+        let selected = self.selected_units();
+        let movers = || selected.iter().filter(|u| !u.kind.is_building());
+        if !self.can_order_attack_here()
+            || movers().next().is_none()
+            || movers().any(|u| u.role != Role::Harvester)
+            || self.unit_under_cursor().is_some()
+        {
+            return None;
+        }
+        let terrain = battlefield::terrain(self.battle_map);
+        self.land_under_cursor()
+            .filter(|&at| units::is_sand(terrain, at))
+    }
+
     /// Whether a click here would send somewhere any of what is selected: whatever can move, or
     /// a building that makes units, whose gathering point it would be.
     fn would_go_here(&self) -> bool {
@@ -2099,7 +2157,9 @@ impl Game {
             !u.deployed
                 && match u.kind {
                     UnitKind::Tower => false,
-                    UnitKind::Building => !matches!(u.role, Role::LandingPad | Role::Palace(_)),
+                    UnitKind::Building => {
+                        !matches!(u.role, Role::LandingPad | Role::Refinery | Role::Palace(_))
+                    }
                     _ => true,
                 }
         };
@@ -2184,11 +2244,16 @@ impl Game {
             units::start_deploying(&mut self.units[unit]);
         } else if let Some(pad) = self.pad_under_cursor().filter(|_| !adding) {
             units::order_land(&mut self.units, pad);
+        } else if let Some(refinery) = self.refinery_under_cursor().filter(|_| !adding) {
+            units::order_dump(&mut self.units, refinery);
+        } else if let Some(sand) = self.harvest_here().filter(|_| !adding) {
+            let terrain = battlefield::terrain(self.battle_map);
+            units::order_harvest(&mut self.units, sand, terrain, &self.teams);
         } else if let Some(picked) = self.unit_under_cursor() {
-            // A building that makes units is always picked on its own.
-            let adding = adding && self.units[picked].kind != UnitKind::Building;
+            // A building, tower or not, is always picked on its own.
+            let adding = adding && !self.units[picked].kind.is_building();
             for (i, unit) in self.units.iter_mut().enumerate() {
-                let stays = adding && unit.selected && unit.kind != UnitKind::Building;
+                let stays = adding && unit.selected && !unit.kind.is_building();
                 unit.selected = i == picked || stays;
             }
         } else if adding {
@@ -2289,7 +2354,7 @@ impl Game {
     pub fn faction_of(&self, owner: usize) -> Faction {
         let player = match self.battle_kind {
             BattleKind::Skirmish => self.skirmish.faction,
-            _ => self.faction.unwrap_or(Faction::A),
+            _ => self.faction.unwrap_or(Faction::Atreides),
         };
         match (self.battle_kind, owner) {
             (_, 0) => player,
@@ -2303,9 +2368,9 @@ impl Game {
         let setup = &self.skirmish;
         if self.battle_kind != BattleKind::Skirmish {
             let color = match self.faction {
-                Some(Faction::H) => TeamColor::Red,
-                Some(Faction::O) => TeamColor::Cyan,
-                Some(Faction::A) | None => TeamColor::Blue,
+                Some(Faction::Harkonnen) => TeamColor::Red,
+                Some(Faction::Ordos) => TeamColor::Cyan,
+                Some(Faction::Atreides) | None => TeamColor::Blue,
             };
             let enemy_color = if color == TeamColor::Red {
                 TeamColor::Blue
@@ -2557,6 +2622,37 @@ impl Game {
         self.menu_seconds
     }
 
+    /// Keeps the intro's or a faction's movie screen up for as long as the movie now starting
+    /// on it plays.
+    pub fn start_movie(&mut self) {
+        self.movie_playing = matches!(self.screen, Screen::Intro | Screen::Movie(_));
+    }
+
+    /// The movie has ended: on to what follows its screen, unless it was skipped already.
+    pub fn end_movie(&mut self) {
+        if std::mem::take(&mut self.movie_playing) {
+            match self.screen {
+                Screen::Intro => self.set_screen(Screen::MainMenu),
+                Screen::Movie(faction) => self.finish_movie(faction),
+                _ => {}
+            }
+        }
+    }
+
+    /// Whether one of the menus shows now, out of battle: not the intro, a movie or loading.
+    pub fn is_in_menus(&self) -> bool {
+        !self.in_battle
+            && !matches!(
+                self.screen,
+                Screen::Intro | Screen::Movie(_) | Screen::Loading | Screen::InGame
+            )
+    }
+
+    /// Whether a movie is what shows now.
+    pub fn is_playing_movie(&self) -> bool {
+        self.movie_playing
+    }
+
     /// Seconds since the current screen opened, for simple animation.
     pub fn screen_elapsed(&self) -> f32 {
         self.screen_elapsed
@@ -2794,6 +2890,7 @@ impl Game {
                 .retain(|line| battle_time - line.posted_at < CHAT_SECONDS);
             let terrain = battlefield::terrain(self.battle_map);
             units::advance(&mut self.units, terrain, &self.teams, dt);
+            units::tend_harvesters(&mut self.units, terrain, &mut self.money, dt);
             self.combat
                 .advance(&mut self.units, &self.teams, terrain, dt);
             self.combat.stir_tornados(terrain, dt);
@@ -2827,13 +2924,15 @@ impl Game {
             self.update_fog();
         }
         match self.screen {
-            Screen::Intro if self.screen_elapsed >= INTRO_SECONDS => {
+            Screen::Intro if !self.movie_playing && self.screen_elapsed >= INTRO_SECONDS => {
                 self.set_screen(Screen::MainMenu)
             }
             Screen::Loading if self.screen_elapsed >= LOADING_SECONDS => {
                 self.set_screen(Screen::InGame)
             }
-            Screen::Movie(faction) if self.screen_elapsed >= MOVIE_SECONDS => {
+            Screen::Movie(faction)
+                if !self.movie_playing && self.screen_elapsed >= MOVIE_SECONDS =>
+            {
                 self.finish_movie(faction)
             }
             Screen::InGame
@@ -2854,7 +2953,9 @@ impl Game {
                 {
                     let direction =
                         battlefield::edge_direction(self.mouse, self.width, self.height);
+                    let before = (self.camera.x, self.camera.z);
                     self.camera.scroll(direction, self.settings.scroll_rate, dt);
+                    self.scrolled_since_press |= before != (self.camera.x, self.camera.z);
                 }
             }
             _ => {}
@@ -3100,6 +3201,7 @@ impl Game {
         self.name_focused = false;
         self.close_lists();
         self.screen_elapsed = 0.0;
+        self.movie_playing = false;
     }
 }
 
@@ -3682,12 +3784,12 @@ mod tests {
     #[test]
     fn diplomacy_outside_a_skirmish_lists_the_player_and_one_enemy() {
         let mut game = in_faction_select();
-        pick(&mut game, Faction::O);
+        pick(&mut game, Faction::Ordos);
         click(&mut game, Action::ConfirmFaction);
         game.update(LOADING_SECONDS);
         let rows = game.stats_rows();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].faction, Some(Faction::O));
+        assert_eq!(rows[0].faction, Some(Faction::Ordos));
         assert_eq!(rows[0].color, TeamColor::Cyan);
         assert_ne!(rows[1].color, rows[0].color);
     }
@@ -3695,7 +3797,7 @@ mod tests {
     #[test]
     fn a_red_player_faces_an_enemy_of_another_color() {
         let mut game = in_faction_select();
-        pick(&mut game, Faction::H);
+        pick(&mut game, Faction::Harkonnen);
         click(&mut game, Action::ConfirmFaction);
         let rows = game.stats_rows();
         assert_eq!(rows[0].color, TeamColor::Red);
@@ -3734,7 +3836,7 @@ mod tests {
 
     fn campaign_battle() -> Game {
         let mut game = in_faction_select();
-        pick(&mut game, Faction::A);
+        pick(&mut game, Faction::Atreides);
         click(&mut game, Action::ConfirmFaction);
         game.update(LOADING_SECONDS);
         assert_eq!(game.screen, Screen::InGame);
@@ -3945,7 +4047,11 @@ mod tests {
         assert_eq!(game.screen, Screen::Loading);
         assert_eq!(game.campaign_mission, 1);
         assert_eq!(game.battle_map, 1, "on another map");
-        assert_eq!(game.faction, Some(Faction::A), "for the same faction");
+        assert_eq!(
+            game.faction,
+            Some(Faction::Atreides),
+            "for the same faction"
+        );
         game.update(LOADING_SECONDS);
         assert_eq!(game.outcome, None, "a fresh start");
         assert_eq!(game.killed, Casualties::default());
@@ -3967,7 +4073,7 @@ mod tests {
         leave_battle(&mut game);
         click(&mut game, Action::SinglePlayer);
         click(&mut game, Action::StartCampaign);
-        pick(&mut game, Faction::O);
+        pick(&mut game, Faction::Ordos);
         click(&mut game, Action::ConfirmFaction);
         assert_eq!(game.campaign_mission, 0);
     }
@@ -3997,7 +4103,7 @@ mod tests {
 
     #[test]
     fn each_house_builds_its_own_palace_which_brings_its_own_superweapon() {
-        for house in [Faction::A, Faction::H, Faction::O] {
+        for house in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
             let mut game = in_battle_as(house);
             assert_eq!(
                 game.build_role(BuildTab::Buildings, PALACE_CELL),
@@ -4012,9 +4118,9 @@ mod tests {
 
     #[test]
     fn a_house_cannot_build_another_houses_palace() {
-        assert!(!Role::Palace(Faction::A).made_by(Faction::H));
-        assert!(!Role::Palace(Faction::H).made_by(Faction::O));
-        assert!(!Role::Palace(Faction::O).made_by(Faction::A));
+        assert!(!Role::Palace(Faction::Atreides).made_by(Faction::Harkonnen));
+        assert!(!Role::Palace(Faction::Harkonnen).made_by(Faction::Ordos));
+        assert!(!Role::Palace(Faction::Ordos).made_by(Faction::Atreides));
     }
 
     #[test]
@@ -4726,8 +4832,9 @@ mod tests {
         assert!(game.chat.is_empty());
     }
 
-    /// How many units the player's first group has.
-    const FIRST_GROUP: usize = 18;
+    /// How many units the player's first group has, not counting its towers, which a box
+    /// leaves out.
+    const FIRST_GROUP: usize = 16;
 
     fn selected_count(game: &Game) -> usize {
         game.units.iter().filter(|u| u.selected).count()
@@ -5519,6 +5626,13 @@ mod tests {
         assert!(line_vertices(&game, crate::render::ATTACK_LINE) > 0);
     }
 
+    fn tower_of_role(game: &Game, owner: usize, role: Role) -> usize {
+        game.units
+            .iter()
+            .position(|u| u.owner == owner && u.role == role)
+            .unwrap()
+    }
+
     fn tower_of(game: &Game, owner: usize) -> usize {
         game.units
             .iter()
@@ -5527,23 +5641,36 @@ mod tests {
     }
 
     #[test]
-    fn the_players_tower_is_selected_by_a_box_or_a_click_along_with_everyone_else() {
+    fn the_players_tower_is_picked_only_by_a_click_and_on_its_own() {
         let mut game = in_battle();
         let tower = tower_of(&game, 0);
         let (from, to) = around_first_group();
         drag_select(&mut game, from, to);
-        assert!(game.units[tower].selected);
-        assert!(selected_count(&game) > 1, "together with the group");
+        assert!(!game.units[tower].selected, "a box leaves it out");
+        assert_eq!(selected_count(&game), FIRST_GROUP);
 
-        game.handle(Event::RightDown);
         let unit = game.units[tower];
         let (x, y) = game
             .view()
             .project(unit.x, unit.pick_height(), unit.z)
             .unwrap();
-        click_at(&mut game, x, y);
-        assert_eq!(selected_count(&game), 1);
+        game.handle(Event::MouseMove(x, y));
+        game.handle(Event::MouseDown);
+        game.handle(Event::ShiftMouseUp);
+        assert_eq!(selected_count(&game), 1, "even with Shift, on its own");
         assert!(game.units[tower].selected);
+
+        let other = tower_of_role(&game, 0, Role::FlameTower);
+        let unit = game.units[other];
+        let (x, y) = game
+            .view()
+            .project(unit.x, unit.pick_height(), unit.z)
+            .unwrap();
+        game.handle(Event::MouseMove(x, y));
+        game.handle(Event::MouseDown);
+        game.handle(Event::ShiftMouseUp);
+        assert_eq!(selected_count(&game), 1, "one building at a time");
+        assert!(game.units[other].selected);
 
         game.handle(Event::RightDown);
         game.handle(Event::KeyDown(Key::Char('a')));
@@ -5741,7 +5868,7 @@ mod tests {
     fn each_vehicle_button_makes_its_houses_vehicle_and_the_superweapon_comes_after_them() {
         for (house, names) in [
             (
-                Faction::A,
+                Faction::Atreides,
                 &[
                     "Sand Bike",
                     "Repair Vehicle",
@@ -5751,7 +5878,7 @@ mod tests {
                 ][..],
             ),
             (
-                Faction::H,
+                Faction::Harkonnen,
                 &[
                     "Tank",
                     "Catapult",
@@ -5762,7 +5889,7 @@ mod tests {
                 ][..],
             ),
             (
-                Faction::O,
+                Faction::Ordos,
                 &["Recon", "Laser Tank", "Rocket Launcher", "Siege Tank"][..],
             ),
         ] {
@@ -6783,7 +6910,7 @@ mod tests {
 
     #[test]
     fn each_house_builds_its_own_two_towers_of_two_by_two() {
-        for house in [Faction::A, Faction::H, Faction::O] {
+        for house in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
             let game = in_battle_as(house);
             let towers = Role::towers_of(house);
             for (i, role) in towers.into_iter().enumerate() {
@@ -6794,7 +6921,7 @@ mod tests {
                 assert_eq!(role.plot_size(), (2, 2));
                 assert!(role.build_seconds() > 0.0, "{role:?}");
             }
-            for other in [Faction::A, Faction::H, Faction::O] {
+            for other in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
                 let foreign = Role::towers_of(other).iter().any(|r| r.made_by(house));
                 assert_eq!(foreign, other == house);
             }
@@ -7048,13 +7175,16 @@ mod tests {
     #[test]
     fn each_houses_barracks_makes_its_own_three_besides_scouts_and_engineers() {
         for (house, names) in [
-            (Faction::A, ["Light Infantry", "Sniper", "K Infantry"]),
             (
-                Faction::H,
+                Faction::Atreides,
+                ["Light Infantry", "Sniper", "K Infantry"],
+            ),
+            (
+                Faction::Harkonnen,
                 ["Regular Infantry", "Rocket Infantry", "Flame Infantry"],
             ),
             (
-                Faction::O,
+                Faction::Ordos,
                 ["Gas Infantry", "Mortar Infantry", "Suicide Infantry"],
             ),
         ] {
@@ -8229,6 +8359,20 @@ mod tests {
     }
 
     #[test]
+    fn a_click_while_the_zoom_is_still_easing_sends_them_and_keeps_them_selected() {
+        let mut game = in_battle();
+        select_first_group(&mut game);
+        game.camera.zoom_by(4.0);
+        let clicked = (W / 2.0 - 800.0, H / 2.0 + 300.0);
+        game.handle(Event::MouseMove(clicked.0, clicked.1));
+        game.handle(Event::MouseDown);
+        game.update(0.05);
+        game.handle(Event::MouseUp);
+        assert_eq!(selected_count(&game), FIRST_GROUP, "they stay selected");
+        assert!(game.units.iter().any(|u| u.selected && u.is_moving()));
+    }
+
+    #[test]
     fn the_right_button_deselects_and_units_keep_their_orders() {
         let mut game = in_battle();
         select_first_group(&mut game);
@@ -8688,7 +8832,11 @@ mod tests {
                 .find(|b| b.action == Action::Faction(f))
                 .unwrap()
         };
-        let (a, b, c) = (find(Faction::A), find(Faction::H), find(Faction::O));
+        let (a, b, c) = (
+            find(Faction::Atreides),
+            find(Faction::Harkonnen),
+            find(Faction::Ordos),
+        );
         assert!(a.y < b.y && b.y == c.y, "A above, B and C level below it");
         assert!(b.x < a.x && a.x < c.x, "A between B and C");
         assert!((a.x - b.x - (c.x - a.x)).abs() < 0.5, "symmetric");
@@ -8704,17 +8852,17 @@ mod tests {
         let a = game
             .buttons()
             .into_iter()
-            .find(|b| b.action == Action::Faction(Faction::A))
+            .find(|b| b.action == Action::Faction(Faction::Atreides))
             .unwrap();
         game.handle(Event::MouseMove(a.x + 2.0, a.y + 2.0));
         assert_eq!(game.hovered(), None);
         game.handle(Event::MouseMove(a.x + a.w / 2.0, a.y + 2.0));
-        assert_eq!(game.hovered(), Some(Action::Faction(Faction::A)));
+        assert_eq!(game.hovered(), Some(Action::Faction(Faction::Atreides)));
     }
 
     #[test]
     fn picking_plays_that_factions_movie_then_asks() {
-        for faction in [Faction::A, Faction::H, Faction::O] {
+        for faction in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
             let mut game = in_faction_select();
             click(&mut game, Action::Faction(faction));
             assert_eq!(game.screen, Screen::Movie(faction));
@@ -8730,29 +8878,63 @@ mod tests {
     }
 
     #[test]
+    fn a_factions_movie_from_the_disc_lasts_until_it_ends_then_asks() {
+        let mut game = in_faction_select();
+        click(&mut game, Action::Faction(Faction::Ordos));
+        game.start_movie();
+        game.update(MOVIE_SECONDS * 10.0);
+        assert_eq!(game.screen, Screen::Movie(Faction::Ordos));
+        assert!(game.is_playing_movie());
+        game.end_movie();
+        assert_eq!(game.screen, Screen::FactionSelect);
+        assert_eq!(game.confirming, Some(Faction::Ordos));
+        assert!(!game.is_playing_movie());
+    }
+
+    #[test]
+    fn a_skipped_movie_leaves_the_next_movie_screen_on_its_own_time() {
+        let mut game = Game::new(W, H);
+        game.start_movie();
+        game.handle(Event::KeyDown(Key::Other));
+        assert_eq!(game.screen, Screen::MainMenu);
+        assert!(!game.is_playing_movie());
+        game.end_movie();
+        assert_eq!(
+            game.screen,
+            Screen::MainMenu,
+            "ending a skipped movie does nothing"
+        );
+
+        click(&mut game, Action::SinglePlayer);
+        click(&mut game, Action::StartCampaign);
+        pick(&mut game, Faction::Atreides);
+        assert_eq!(game.confirming, Some(Faction::Atreides));
+    }
+
+    #[test]
     fn movie_can_be_skipped_by_click_or_key() {
         let mut game = in_faction_select();
-        click(&mut game, Action::Faction(Faction::H));
+        click(&mut game, Action::Faction(Faction::Harkonnen));
         game.handle(Event::KeyDown(Key::Other));
-        assert_eq!(game.confirming, Some(Faction::H));
+        assert_eq!(game.confirming, Some(Faction::Harkonnen));
 
         let mut game = in_faction_select();
-        click(&mut game, Action::Faction(Faction::H));
+        click(&mut game, Action::Faction(Faction::Harkonnen));
         game.handle(Event::MouseDown);
         game.handle(Event::MouseUp);
-        assert_eq!(game.confirming, Some(Faction::H));
+        assert_eq!(game.confirming, Some(Faction::Harkonnen));
     }
 
     #[test]
     fn cancel_lets_the_player_pick_again() {
         let mut game = in_faction_select();
-        pick(&mut game, Faction::A);
+        pick(&mut game, Faction::Atreides);
         click(&mut game, Action::CancelFaction);
         assert_eq!(game.screen, Screen::FactionSelect);
         assert_eq!(game.confirming, None);
 
-        pick(&mut game, Faction::O);
-        assert_eq!(game.confirming, Some(Faction::O));
+        pick(&mut game, Faction::Ordos);
+        assert_eq!(game.confirming, Some(Faction::Ordos));
 
         game.handle(Event::KeyDown(Key::Escape));
         assert_eq!(game.confirming, None, "escape cancels the message box");
@@ -8762,13 +8944,13 @@ mod tests {
     #[test]
     fn ok_loads_the_fake_game_whose_only_button_is_back() {
         let mut game = in_faction_select();
-        pick(&mut game, Faction::O);
+        pick(&mut game, Faction::Ordos);
         click(&mut game, Action::ConfirmFaction);
         assert_eq!(game.screen, Screen::Loading);
         assert_eq!(game.loading_progress(), 0.0);
         game.update(LOADING_SECONDS);
         assert_eq!(game.screen, Screen::InGame);
-        assert_eq!(game.faction, Some(Faction::O));
+        assert_eq!(game.faction, Some(Faction::Ordos));
         assert!(game.buttons().is_empty());
     }
 
@@ -8776,20 +8958,20 @@ mod tests {
     fn message_box_blocks_the_screen_behind_it() {
         let mut game = in_faction_select();
         let behind = buttons(Screen::FactionSelect, W, H);
-        pick(&mut game, Faction::A);
+        pick(&mut game, Faction::Atreides);
         for b in behind {
             game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
             game.handle(Event::MouseDown);
             game.handle(Event::MouseUp);
             assert_eq!(game.screen, Screen::FactionSelect, "{} is blocked", b.label);
-            assert_eq!(game.confirming, Some(Faction::A));
+            assert_eq!(game.confirming, Some(Faction::Atreides));
         }
     }
 
     #[test]
     fn tutorial_after_a_campaign_has_no_faction() {
         let mut game = in_faction_select();
-        pick(&mut game, Faction::H);
+        pick(&mut game, Faction::Harkonnen);
         click(&mut game, Action::ConfirmFaction);
         game.update(LOADING_SECONDS);
         leave_battle(&mut game);
@@ -9066,8 +9248,8 @@ mod tests {
     #[test]
     fn faction_planet_cycles_a_h_o() {
         let mut game = in_setup();
-        assert_eq!(game.skirmish.faction, Faction::A);
-        for expected in [Faction::H, Faction::O, Faction::A] {
+        assert_eq!(game.skirmish.faction, Faction::Atreides);
+        for expected in [Faction::Harkonnen, Faction::Ordos, Faction::Atreides] {
             click_widget(&mut game, Action::CycleFaction);
             assert_eq!(game.skirmish.faction, expected);
         }
@@ -9582,7 +9764,7 @@ mod tests {
     }
 
     fn in_battle() -> Game {
-        in_battle_as(Faction::A)
+        in_battle_as(Faction::Atreides)
     }
 
     /// A skirmish with the player of this house.
@@ -9773,8 +9955,135 @@ mod tests {
     }
 
     #[test]
+    fn the_menus_are_where_the_intro_and_the_battle_are_not() {
+        let mut game = Game::new(1920.0, 1080.0);
+        assert!(!game.is_in_menus(), "the intro");
+        game.set_screen(Screen::MainMenu);
+        assert!(game.is_in_menus());
+        game.set_screen(Screen::Options);
+        assert!(game.is_in_menus());
+        assert!(!in_battle().is_in_menus());
+    }
+
+    #[test]
+    fn every_house_makes_harvesters_in_its_factory_and_refineries_from_its_mcv() {
+        for house in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
+            let mut game = in_battle_as(house);
+            assert_eq!(
+                game.build_role(BuildTab::Vehicles, HARVESTER_CELL),
+                Some(Role::Harvester)
+            );
+            assert_eq!(
+                game.build_role(BuildTab::Buildings, REFINERY_CELL),
+                Some(Role::Refinery)
+            );
+            assert_eq!(Role::Harvester.made_in(), Some(Role::Factory));
+            assert!(Role::Refinery.made_by(house));
+            click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+            let before = game.units.len();
+            click_hud(&mut game, Action::BuildCell(HARVESTER_CELL));
+            assert_eq!(game.units.len(), before + 1, "{house:?}");
+            assert_eq!(game.units[before].role, Role::Harvester);
+        }
+    }
+
+    #[test]
+    fn a_harvester_emptying_at_a_refinery_adds_to_its_owners_money() {
+        let mut game = in_battle();
+        let terrain = battlefield::terrain(game.battle_map);
+        let at = (game.units[0].x, game.units[0].z);
+        let refinery =
+            units::new_building(terrain, at, Role::Refinery, (0, game.units[0].color), 9_999);
+        game.units.push(refinery);
+        let refinery = game.units.len() - 1;
+        let mut harvester = game.units[refinery];
+        harvester.role = Role::Harvester;
+        harvester.kind = UnitKind::Vehicle;
+        harvester.id = 10_000;
+        (harvester.x, harvester.z) = game.units[refinery].refinery_pads()[0];
+        harvester.load = units::HARVESTER_LOAD;
+        harvester.harvest = units::Harvest::Dumping(units::Dock {
+            refinery: 9_999,
+            pad: 0,
+        });
+        game.units.push(harvester);
+        let before = game.player_money();
+        for _ in 0..(units::DUMP_SECONDS * 20.0) as usize + 10 {
+            game.update(0.05);
+        }
+        assert_eq!(game.player_money(), before + 700);
+    }
+
+    #[test]
+    fn selected_harvesters_show_the_land_cursor_over_a_refinery_and_red_over_sand() {
+        let mut game = in_battle();
+        game.fog = None;
+        let terrain = battlefield::terrain(game.battle_map);
+        let at = (game.units[0].x + 14.0, game.units[0].z + 14.0);
+        let refinery =
+            units::new_building(terrain, at, Role::Refinery, (0, game.units[0].color), 9_999);
+        game.units.push(refinery);
+        let refinery = game.units.len() - 1;
+        let harvester = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .unwrap();
+        game.units[harvester].role = Role::Harvester;
+        game.units[harvester].load = 50.0;
+        let at = game.units[refinery];
+        game.camera.look_at(at.x, at.z);
+        let (x, y) = game.view().project(at.x, at.pick_height(), at.z).unwrap();
+        game.handle(Event::MouseMove(x, y));
+        assert_eq!(game.cursor_look(), CursorLook::Arrow, "nothing selected");
+        game.units[harvester].selected = true;
+        assert_eq!(game.cursor_look(), CursorLook::Land);
+        click_at(&mut game, x, y);
+        assert!(game.units[harvester].selected, "the refinery is not picked");
+        assert!(matches!(
+            game.units[harvester].harvest,
+            units::Harvest::ToPad(units::Dock {
+                refinery: 9_999,
+                ..
+            })
+        ));
+
+        // Somewhere on the sand on screen, with nobody there.
+        let (width, height) = (game.width, game.height);
+        let sand = (0..40)
+            .flat_map(|i| (0..30).map(move |j| (i, j)))
+            .map(|(i, j)| (width * i as f32 / 40.0, height * j as f32 / 30.0))
+            .find(|&(x, y)| {
+                game.handle(Event::MouseMove(x, y));
+                game.cursor_on_battlefield()
+                    && game.unit_under_cursor().is_none()
+                    && game
+                        .land_under_cursor()
+                        .is_some_and(|at| units::is_sand(terrain, at))
+            })
+            .unwrap();
+        game.handle(Event::MouseMove(sand.0, sand.1));
+        assert_eq!(game.cursor_look(), CursorLook::Harvest);
+        click_at(&mut game, sand.0, sand.1);
+        assert_eq!(game.units[harvester].harvest, units::Harvest::Seeking);
+
+        let tank = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .unwrap();
+        game.units[tank].selected = true;
+        game.handle(Event::MouseMove(sand.0, sand.1));
+        assert_eq!(
+            game.cursor_look(),
+            CursorLook::Move,
+            "not with a tank along"
+        );
+    }
+
+    #[test]
     fn an_outpost_shows_the_whole_map_and_goes_on_the_buildings_menu_of_every_house() {
-        for house in [Faction::A, Faction::H, Faction::O] {
+        for house in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
             let game = in_battle_as(house);
             assert_eq!(
                 game.build_role(BuildTab::Buildings, OUTPOST_CELL),

@@ -109,6 +109,19 @@ typedef struct {
  * goes over it all. Blocks for vsync. macOS only so far. */
 void oe_draw_world(const OeWorld *world, float r, float g, float b);
 
+/* A picture shown under all that each frame draws, as large as fits the screen without
+ * changing its shape: rows of RGBA bytes, top row first. It stays until replaced; NULL takes
+ * it away. Only the macOS backend shows it so far. */
+void oe_set_backdrop(const uint8_t *rgba, int32_t width, int32_t height);
+
+/* Plays interleaved float samples, once or over and over if `loop` is 1, replacing anything
+ * playing. Only the macOS backend makes a sound so far. */
+void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
+                   int32_t loop);
+
+/* Stops the sound, if any is playing. */
+void oe_stop_sound(void);
+
 void oe_shutdown(void);
 
 #endif

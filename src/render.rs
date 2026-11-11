@@ -84,9 +84,9 @@ const PLASMA_TRAIL: Color = [0.35, 0.55, 1.0, 0.55];
 /// for the little touches on them.
 fn house_paint(house: Faction) -> ([f32; 3], [f32; 3]) {
     match house {
-        Faction::A => ([0.56, 0.51, 0.43], [0.66, 0.61, 0.52]),
-        Faction::H => ([0.17, 0.17, 0.19], [0.25, 0.25, 0.27]),
-        Faction::O => ([0.66, 0.76, 0.78], [0.76, 0.85, 0.87]),
+        Faction::Atreides => ([0.56, 0.51, 0.43], [0.66, 0.61, 0.52]),
+        Faction::Harkonnen => ([0.17, 0.17, 0.19], [0.25, 0.25, 0.27]),
+        Faction::Ordos => ([0.66, 0.76, 0.78], [0.76, 0.85, 0.87]),
     }
 }
 const GAS_COLOR: [f32; 3] = [0.35, 0.9, 0.25];
@@ -757,6 +757,7 @@ fn canvas_of(game: &Game) -> Canvas {
     let cx = game.width / 2.0;
 
     match game.screen {
+        Screen::Intro | Screen::Movie(_) if game.is_playing_movie() => {}
         Screen::Intro => {
             canvas.text_centered("INTRO PLACEHOLDER", cx, game.height / 2.0, 6.0 * s, QUIET);
         }
@@ -886,7 +887,9 @@ fn canvas_of(game: &Game) -> Canvas {
     let look = game.cursor_look();
     let cursor_drawn = canvas.vertices.len();
     match look {
-        CursorLook::Attack => canvas.attack_cursor(game.mouse, s, game.screen_elapsed()),
+        CursorLook::Attack | CursorLook::Harvest => {
+            canvas.attack_cursor(game.mouse, s, game.screen_elapsed())
+        }
         CursorLook::Heal => canvas.heal_cursor(game.mouse, s),
         CursorLook::Carry => canvas.carry_cursor(game.mouse, s),
         CursorLook::Move => canvas.move_cursor(game.mouse, s, game.screen_elapsed()),
@@ -898,6 +901,7 @@ fn canvas_of(game: &Game) -> Canvas {
     let lies_on_map = matches!(
         look,
         CursorLook::Attack
+            | CursorLook::Harvest
             | CursorLook::Carry
             | CursorLook::Move
             | CursorLook::Deploy
@@ -1424,6 +1428,32 @@ fn draw_poison(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
             POISON_FILL,
             (alpha, alpha * 1.4),
         );
+        draw_radiation_motes(canvas, game, view, zone, fade);
+    }
+}
+
+/// Faint green specks of radiation drifting up off poisoned land, each rising and fading away
+/// before it starts again from the ground.
+fn draw_radiation_motes(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    zone: &crate::weapons::PoisonZone,
+    fade: f32,
+) {
+    const MOTES: usize = 24;
+    const CLIMB: f32 = 2.5;
+    let terrain = battlefield::terrain(game.battle_map);
+    let time = game.battle_time();
+    for i in 0..MOTES {
+        let seed = i as f32 * 7.31 + zone.x * 0.13 + zone.z * 0.17;
+        let angle = seed.sin() * TAU;
+        let out = STRIKE_RADIUS * (0.5 + 0.5 * (seed * 3.7).sin()).sqrt();
+        let (mx, mz) = (zone.x + angle.cos() * out, zone.z + angle.sin() * out);
+        let phase = (time * 0.35 + (seed * 1.9).sin() * 0.5 + 0.5).fract();
+        let y = terrain.height_at(mx, mz) + phase * CLIMB;
+        let glow = POISON_FILL.map(|c| c * 0.35 * fade * (1.0 - phase) * phase * 4.0);
+        draw_glare(canvas, view, (mx, y, mz), 0.25, glow);
     }
 }
 
@@ -1561,6 +1591,9 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     for eruption in game.combat.eruptions.iter().filter(|e| seen(e.at)) {
         draw_eruption(canvas, game, view, eruption);
     }
+    for mushroom in game.combat.mushrooms.iter().filter(|m| seen(m.at)) {
+        draw_mushroom(canvas, view, mushroom);
+    }
     for particle in game.combat.particles.iter().filter(|p| seen(p.position)) {
         draw_particle(canvas, view, particle);
     }
@@ -1681,6 +1714,86 @@ fn draw_eruption(
                 ((tip_x, ground + height, tip_z), [0.0; 3]),
             ],
         );
+    }
+}
+
+/// A nuclear mushroom: a stem of smoke climbing from a skirt of dust, under a cap rolling over
+/// on itself as it swells. It burns inside at first, then darkens and thins away.
+fn draw_mushroom(
+    canvas: &mut Canvas,
+    view: &battlefield::View,
+    mushroom: &crate::weapons::Mushroom,
+) {
+    const STEM_LEVELS: usize = 14;
+    const STEM_AROUND: usize = 3;
+    const CAP_AROUND: usize = 16;
+    const CAP_TUBE: usize = 5;
+    const SKIRT: usize = 20;
+    const ASH: [f32; 3] = [0.36, 0.31, 0.27];
+    const FIRE: [f32; 3] = [0.95, 0.45, 0.12];
+    let (x, ground, z) = mushroom.at;
+    let radius = mushroom.radius;
+    let age = 1.0 - mushroom.life;
+    // It shoots up fast at first, then slows as it reaches its height.
+    let rise = 1.0 - (1.0 - (age * 2.5).min(1.0)).powi(2);
+    let fire = (1.0 - age * 4.0).max(0.0);
+    let thin = (mushroom.life * 4.0).min(1.0) * 0.9;
+    let top = ground + radius * (0.6 + 1.4 * rise);
+    let cap_radius = radius * (0.25 + 0.45 * rise);
+    let tube = radius * (0.18 + 0.12 * rise);
+    let tint = |hot: f32| {
+        let hot = (fire * hot).min(1.0);
+        [0, 1, 2].map(|i| ASH[i] + (FIRE[i] - ASH[i]) * hot)
+    };
+    // Steady scatter, so that the cloud keeps its shape from frame to frame.
+    let jitter = |seed: usize| (seed as f32 * 12.9898).sin() * 0.5;
+    for i in 0..SKIRT {
+        let angle = i as f32 / SKIRT as f32 * TAU + jitter(i);
+        let out = radius * (0.4 + 0.8 * rise);
+        let at = (x + angle.cos() * out, ground + 0.3, z + angle.sin() * out);
+        draw_puff(canvas, view, at, radius * 0.14, thin * 0.6, Some(tint(0.3)));
+    }
+    for level in 0..STEM_LEVELS {
+        let up = level as f32 / STEM_LEVELS as f32;
+        let width = tube * 0.55 * (1.0 + 0.6 * (1.0 - up));
+        for i in 0..STEM_AROUND {
+            let angle = i as f32 / STEM_AROUND as f32 * TAU + level as f32 * 1.3;
+            let at = (
+                x + angle.cos() * width * 0.4,
+                ground + (top - ground - tube * 0.5) * up,
+                z + angle.sin() * width * 0.4,
+            );
+            draw_puff(canvas, view, at, width * 0.9, thin, Some(tint(0.6 + up)));
+        }
+    }
+    for i in 0..CAP_AROUND {
+        let angle = i as f32 / CAP_AROUND as f32 * TAU + jitter(i) * 0.2;
+        for k in 0..CAP_TUBE {
+            // Rolling out over the top and back in underneath.
+            let roll = k as f32 / CAP_TUBE as f32 * TAU - age * 6.0;
+            let out = cap_radius + tube * roll.cos();
+            let at = (
+                x + angle.cos() * out,
+                top + tube * 0.7 * roll.sin(),
+                z + angle.sin() * out,
+            );
+            let size = tube * (0.75 + 0.15 * jitter(i * CAP_TUBE + k));
+            draw_puff(canvas, view, at, size, thin, Some(tint(1.2)));
+        }
+    }
+    draw_puff(
+        canvas,
+        view,
+        (x, top + tube * 0.6, z),
+        cap_radius * 0.9,
+        thin,
+        Some(tint(1.0)),
+    );
+    if fire > 0.0 {
+        let glow = FIRE.map(|c| c * fire);
+        draw_glare(canvas, view, (x, top, z), cap_radius * 1.6, glow);
+        let stem = glow.map(|c| c * 0.6);
+        draw_glare(canvas, view, (x, (ground + top) / 2.0, z), tube * 1.5, stem);
     }
 }
 
@@ -2281,8 +2394,11 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
     if unit.role == Role::Mcv {
         draw_mcv_lights(canvas, game, view, unit);
     }
-    if unit.role == Role::Palace(Faction::H) && !unit.is_under_construction() {
+    if unit.role == Role::Palace(Faction::Harkonnen) && !unit.is_under_construction() {
         draw_palace_lights(canvas, game, view, unit);
+    }
+    if unit.role == Role::Refinery && !unit.is_under_construction() {
+        draw_red_glares(canvas, view, &stack_lamps(unit), game.battle_time());
     }
     if unit.role == Role::AirDefensePlatform {
         let glares = models::air_defense_glares(unit);
@@ -2818,6 +2934,80 @@ fn draw_landing_pad(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     );
 }
 
+/// The red lamps either side of a refinery's exhaust stacks, a little under their tops.
+fn stack_lamps(unit: &Unit) -> [Point; 4] {
+    let [(ax, ay, az), (bx, by, bz)] = unit.stack_tops();
+    let (sin, cos) = unit.facing.turn().sin_cos();
+    let side = |(x, y, z): Point, way: f32| (x + way * cos, y - 0.2, z + way * sin);
+    [
+        side((ax, ay, az), -STACK_HALF - 0.03),
+        side((ax, ay, az), STACK_HALF + 0.03),
+        side((bx, by, bz), -STACK_HALF - 0.03),
+        side((bx, by, bz), STACK_HALF + 0.03),
+    ]
+}
+
+/// How far each way a refinery's exhaust stack reaches from its middle.
+const STACK_HALF: f32 = 0.13;
+
+/// A refinery, with its front on its south side: a long hall at the back with a tank on it
+/// and two tall exhaust stacks with red lamps near their tops, and in front of it three pads
+/// for harvesters to back onto, each with a chute into the hall.
+fn draw_refinery(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
+    const DECK: [f32; 3] = [0.24, 0.24, 0.26];
+    const STRIPE: [f32; 3] = [0.9, 0.72, 0.16];
+    const RED_LAMP: [f32; 3] = [0.7, 0.06, 0.04];
+    let (x, z, y) = (unit.x, unit.z, unit.y);
+    let (walls, roof) = house_paint(unit.house);
+    let mut part = |(px, pz, half_x, half_z): (f32, f32, f32, f32), heights, color| {
+        draw_turned_box(
+            canvas,
+            (x + px, z + pz, half_x, half_z, 0.0),
+            heights,
+            color,
+        );
+    };
+    // The hall, its roof, and the owner's band along its front.
+    part((0.0, -1.3, 1.95, 0.72), (y, y + 1.2), walls);
+    part((0.0, -1.3, 1.85, 0.62), (y + 1.2, y + 1.32), roof);
+    part((0.0, -0.57, 1.95, 0.012), (y + 0.9, y + 1.02), color);
+    // The tank on its roof, banded.
+    part((0.0, -1.35, 0.5, 0.45), (y + 1.32, y + 2.0), roof);
+    part((0.0, -1.35, 0.51, 0.46), (y + 1.75, y + 1.85), color);
+    // The stacks: a broad foot, a tall shaft, a band and a dark rim at the top, and red lamps.
+    let top = units::REFINERY_STACK_TOP;
+    for (sx, sz) in units::REFINERY_STACKS {
+        part((sx, sz, 0.22, 0.22), (y + 1.2, y + 1.7), walls);
+        part((sx, sz, STACK_HALF, STACK_HALF), (y + 1.7, y + top), roof);
+        part(
+            (sx, sz, STACK_HALF + 0.01, STACK_HALF + 0.01),
+            (y + top - 0.55, y + top - 0.45),
+            color,
+        );
+        part(
+            (sx, sz, STACK_HALF + 0.02, STACK_HALF + 0.02),
+            (y + top - 0.06, y + top),
+            BUILDING_DOOR,
+        );
+        for side in [-1.0, 1.0] {
+            let lamp = (sx + side * (STACK_HALF + 0.03), sz, 0.03, 0.03);
+            part(lamp, (y + top - 0.23, y + top - 0.17), RED_LAMP);
+        }
+    }
+    // The pads, striped round their edges, each with a chute into the hall at its back.
+    let (half_x, half_z) = units::REFINERY_PAD_HALF;
+    for (px, pz) in units::REFINERY_PADS {
+        part((px, pz, half_x, half_z), (y, y + 0.05), STRIPE);
+        part(
+            (px, pz, half_x - 0.06, half_z - 0.06),
+            (y + 0.05, y + 0.06),
+            DECK,
+        );
+        part((px, -0.45, 0.32, 0.12), (y, y + 0.55), BUILDING_DOOR);
+        part((px, -0.45, 0.36, 0.14), (y + 0.55, y + 0.62), color);
+    }
+}
+
 fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
     let [r, g, b, _] = team_color(unit.color);
     let color = [r, g, b];
@@ -2837,6 +3027,8 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
             let drawn = canvas.objects.len();
             if unit.role == Role::LandingPad {
                 draw_landing_pad(canvas, unit, color);
+            } else if unit.role == Role::Refinery {
+                draw_refinery(canvas, unit, color);
             } else {
                 let open = game.launcher_open(unit);
                 draw_building(canvas, unit, color, game.battle_time(), open);
@@ -3058,7 +3250,7 @@ fn draw_building(canvas: &mut Canvas, unit: &Unit, color: [f32; 3], time: f32, o
             (0.85, 0.45, 0.55)
         }
         // A keep between four corner turrets.
-        Role::Palace(Faction::A) => {
+        Role::Palace(Faction::Atreides) => {
             part((x, z, 1.15, 0.95), (y, y + 0.7), walls);
             part((x, z, 0.6, 0.5), (y + 0.7, y + 1.5), roof);
             for (side_x, side_z) in [(-1.0, -0.8), (1.0, -0.8), (-1.0, 0.8), (1.0, 0.8)] {
@@ -3067,7 +3259,7 @@ fn draw_building(canvas: &mut Canvas, unit: &Unit, color: [f32; 3], time: f32, o
             (0.95, 0.3, 0.45)
         }
         // A stepped pyramid.
-        Role::Palace(Faction::H) => {
+        Role::Palace(Faction::Harkonnen) => {
             for (half, from, to, paint) in [
                 (1.95, 0.0, 1.0, walls),
                 (1.45, 1.0, 2.2, roof),
@@ -3105,7 +3297,7 @@ fn draw_building(canvas: &mut Canvas, unit: &Unit, color: [f32; 3], time: f32, o
             (1.15, 0.25, 0.4)
         }
         // A long hall under two thin spires.
-        Role::Palace(Faction::O) => {
+        Role::Palace(Faction::Ordos) => {
             part((x, z, 1.3, 0.7), (y, y + 0.8), walls);
             part((x, z, 1.1, 0.45), (y + 0.8, y + 1.0), roof);
             for side in [-0.8, 0.8] {
@@ -3433,6 +3625,8 @@ fn short_name(role: Role) -> &'static str {
         Role::Ornithopter => "Ornith",
         Role::Destroyer => "Destroy",
         Role::LandingPad => "Pad",
+        Role::Refinery => "Refnry",
+        Role::Harvester => "Harvest",
         Role::Palace(_) => "Palace",
         Role::Tower => "R Tower",
         Role::GunTower => "MG Twr",

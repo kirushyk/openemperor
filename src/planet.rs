@@ -43,26 +43,26 @@ const CLOUD_ALPHA: f32 = 0.75;
 /// Dark seas, shallows and land for each faction.
 fn palette(faction: Faction) -> [[f32; 3]; 3] {
     match faction {
-        Faction::A => [[0.06, 0.14, 0.42], [0.16, 0.36, 0.78], [0.62, 0.76, 0.95]],
-        Faction::H => [[0.30, 0.06, 0.04], [0.70, 0.18, 0.10], [0.98, 0.62, 0.34]],
-        Faction::O => [[0.03, 0.26, 0.30], [0.10, 0.58, 0.62], [0.70, 0.95, 0.90]],
+        Faction::Atreides => [[0.06, 0.14, 0.42], [0.16, 0.36, 0.78], [0.62, 0.76, 0.95]],
+        Faction::Harkonnen => [[0.30, 0.06, 0.04], [0.70, 0.18, 0.10], [0.98, 0.62, 0.34]],
+        Faction::Ordos => [[0.03, 0.26, 0.30], [0.10, 0.58, 0.62], [0.70, 0.95, 0.90]],
     }
 }
 
 fn seed(faction: Faction) -> u32 {
     match faction {
-        Faction::A => 11,
-        Faction::H => 29,
-        Faction::O => 47,
+        Faction::Atreides => 11,
+        Faction::Harkonnen => 29,
+        Faction::Ordos => 47,
     }
 }
 
 /// Each planet starts at its own angle so they do not turn in step.
 fn start_angle(faction: Faction) -> f32 {
     match faction {
-        Faction::A => 0.0,
-        Faction::H => 2.1,
-        Faction::O => 4.2,
+        Faction::Atreides => 0.0,
+        Faction::Harkonnen => 2.1,
+        Faction::Ordos => 4.2,
     }
 }
 
@@ -194,7 +194,7 @@ fn build_sphere(
 fn meshes() -> &'static [[Mesh; 2]; 3] {
     static MESHES: OnceLock<[[Mesh; 2]; 3]> = OnceLock::new();
     MESHES.get_or_init(|| {
-        [Faction::A, Faction::H, Faction::O]
+        [Faction::Atreides, Faction::Harkonnen, Faction::Ordos]
             .map(|faction| [build_mesh(faction, 48, 96), build_mesh(faction, 18, 36)])
     })
 }
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn planets_stay_inside_their_circle_and_reach_its_rim() {
-        for (faction, radius) in [(Faction::A, 200.0), (Faction::O, 40.0)] {
+        for (faction, radius) in [(Faction::Atreides, 200.0), (Faction::Ordos, 40.0)] {
             let vertices = drawn(faction, radius, 1.3);
             assert_eq!(vertices.len() % 3, 0, "a triangle list");
             let farthest = vertices
@@ -362,7 +362,7 @@ mod tests {
     fn only_about_the_facing_half_is_drawn() {
         let mesh = &meshes()[0][0];
         let all_quads = mesh.rows * mesh.cols;
-        let quads = drawn(Faction::A, 200.0, 0.0).len() / 6;
+        let quads = drawn(Faction::Atreides, 200.0, 0.0).len() / 6;
         assert!(
             quads > all_quads / 3 && quads < all_quads * 3 / 4,
             "{quads} of {all_quads}"
@@ -371,22 +371,31 @@ mod tests {
 
     #[test]
     fn the_surface_moves_as_time_passes() {
-        assert_ne!(drawn(Faction::H, 200.0, 0.0), drawn(Faction::H, 200.0, 1.0));
+        assert_ne!(
+            drawn(Faction::Harkonnen, 200.0, 0.0),
+            drawn(Faction::Harkonnen, 200.0, 1.0)
+        );
     }
 
     #[test]
     fn the_same_moment_always_looks_the_same() {
-        assert_eq!(drawn(Faction::H, 200.0, 2.5), drawn(Faction::H, 200.0, 2.5));
+        assert_eq!(
+            drawn(Faction::Harkonnen, 200.0, 2.5),
+            drawn(Faction::Harkonnen, 200.0, 2.5)
+        );
     }
 
     #[test]
     fn small_planets_use_the_coarse_mesh() {
-        assert!(drawn(Faction::A, 30.0, 0.0).len() * 4 < drawn(Faction::A, 200.0, 0.0).len());
+        assert!(
+            drawn(Faction::Atreides, 30.0, 0.0).len() * 4
+                < drawn(Faction::Atreides, 200.0, 0.0).len()
+        );
     }
 
     #[test]
     fn surfaces_vary_and_have_both_sea_and_land() {
-        for faction in [Faction::A, Faction::H, Faction::O] {
+        for faction in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
             let [deep, _, land] = palette(faction);
             let colors = &meshes()[faction as usize][0].colors;
             let near = |c: &[f32; 3], target: [f32; 3]| {
@@ -409,9 +418,9 @@ mod tests {
 
     #[test]
     fn each_faction_reads_as_its_color() {
-        let blue = average_color(&drawn(Faction::A, 200.0, 0.0));
-        let red = average_color(&drawn(Faction::H, 200.0, 0.0));
-        let cyan = average_color(&drawn(Faction::O, 200.0, 0.0));
+        let blue = average_color(&drawn(Faction::Atreides, 200.0, 0.0));
+        let red = average_color(&drawn(Faction::Harkonnen, 200.0, 0.0));
+        let cyan = average_color(&drawn(Faction::Ordos, 200.0, 0.0));
         assert!(
             blue[2] > blue[0] && blue[2] > blue[1],
             "A is blue: {blue:?}"

@@ -48,12 +48,64 @@ fn build_macos(out: &Path) {
         ])
         .args(["-arch", arch, "-mmacosx-version-min=11.0", "-Ishim", "-o"])
         .arg(&obj));
+    let movie = out.join("movie_ffmpeg.o");
+    let ffmpeg = ffmpeg_flags();
+    run(Command::new("clang")
+        .args(["-c", "shim/movie_ffmpeg.c", "-O2", "-Wall", "-Wextra"])
+        .args(["-arch", arch, "-mmacosx-version-min=11.0", "-Ishim"])
+        .args(ffmpeg.iter().filter(|flag| flag.starts_with("-I")))
+        .arg("-o")
+        .arg(&movie));
+    for flag in &ffmpeg {
+        if let Some(dir) = flag.strip_prefix("-L") {
+            println!("cargo:rustc-link-search=native={dir}");
+        } else if let Some(lib) = flag.strip_prefix("-l") {
+            println!("cargo:rustc-link-lib=dylib={lib}");
+        }
+    }
     run(Command::new("ar")
         .arg("crs")
         .arg(out.join("liboeshim.a"))
-        .arg(&obj));
-    for framework in ["Cocoa", "Metal", "QuartzCore", "CoreGraphics"] {
+        .arg(&obj)
+        .arg(&movie));
+    for framework in [
+        "Cocoa",
+        "Metal",
+        "QuartzCore",
+        "CoreGraphics",
+        "AudioToolbox",
+    ] {
         println!("cargo:rustc-link-lib=framework={framework}");
+    }
+}
+
+/// Where FFmpeg's headers and libraries are, as compiler and linker flags: as pkg-config says,
+/// or else where Homebrew puts them.
+fn ffmpeg_flags() -> Vec<String> {
+    const LIBRARIES: [&str; 5] = [
+        "libavformat",
+        "libavcodec",
+        "libswscale",
+        "libswresample",
+        "libavutil",
+    ];
+    let found = Command::new("pkg-config")
+        .args(["--cflags", "--libs"])
+        .args(LIBRARIES)
+        .output()
+        .ok()
+        .filter(|out| out.status.success());
+    match found {
+        Some(out) => String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+        None => {
+            let prefix = "/opt/homebrew/opt/ffmpeg";
+            let mut flags = vec![format!("-I{prefix}/include"), format!("-L{prefix}/lib")];
+            flags.extend(LIBRARIES.map(|lib| format!("-l{}", &lib[3..])));
+            flags
+        }
     }
 }
 

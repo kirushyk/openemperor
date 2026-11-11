@@ -2326,12 +2326,12 @@ fn bounds(unit: &Unit) -> (Point, f32) {
         (UnitKind::Infantry, _) => 0.7,
         (_, Role::Minotaurus) => 1.35,
         (_, Role::Mongoose) => 0.95,
-        (_, Role::HugeWalker) => 3.2,
+        (_, Role::Devastator) => 3.2,
         // Its pipe stands high once it is deployed.
         // Its drill sticks out a long way in front.
         (_, Role::Mcv) => 3.0,
         // Its cannon stands high once it is deployed.
-        (_, Role::SiegeTank) => 2.3,
+        (_, Role::Kobra) => 2.3,
         // It may have a vehicle hanging under it.
         (_, Role::AdvancedCarryall) => 1.4,
         (UnitKind::Vehicle | UnitKind::Aircraft, _) => 0.5,
@@ -3643,9 +3643,9 @@ fn short_name(role: Role) -> &'static str {
         Role::SandBike => "Bike",
         Role::DiskSaw => "Saw",
         Role::FlameTank => "FlmTank",
-        Role::HugeWalker => "Walker",
+        Role::Devastator => "Walker",
         Role::LaserTank => "Laser",
-        Role::SiegeTank => "Siege",
+        Role::Kobra => "Siege",
         _ => role.name(),
     }
 }

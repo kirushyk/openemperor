@@ -40,7 +40,7 @@ fn build_order(house: Faction) -> [Role; 10] {
 /// places it tries on each ring.
 const BUILD_RINGS: [f32; 5] = [3.4, 5.8, 8.2, 10.6, 13.0];
 const BUILD_TRIES: usize = 12;
-/// The chance, each look at the battle, that a siege tank with an enemy in its deployed reach
+/// The chance, each look at the battle, that a Kobra with an enemy in its deployed reach
 /// deploys, and that a deployed one with nobody left in reach packs up.
 const SIEGE_DEPLOY_CHANCE: f32 = 0.2;
 const SIEGE_PACK_UP_CHANCE: f32 = 0.25;
@@ -260,12 +260,12 @@ impl Strategy {
         }
     }
 
-    /// Now and then deploys a siege tank that has an enemy in its deployed reach, and packs up
+    /// Now and then deploys a Kobra that has an enemy in its deployed reach, and packs up
     /// one that has nobody left in it, so that it can move on.
     fn work_siege_tanks(&mut self, units: &mut [Unit], teams: &[usize]) {
         for i in 0..units.len() {
             let unit = units[i];
-            if !unit.alive || unit.owner != self.owner || unit.role != Role::SiegeTank {
+            if !unit.alive || unit.owner != self.owner || unit.role != Role::Kobra {
                 continue;
             }
             let mut set_up = unit;
@@ -365,7 +365,7 @@ mod tests {
 
     const TEAMS: [usize; 2] = [0, 1];
 
-    /// An opponent's base and siege tank in the open, and an enemy this far from the tank.
+    /// An opponent's base and Kobra in the open, and an enemy this far from the tank.
     fn siege_at(enemy_away: f32) -> [Unit; 3] {
         let mut base = Unit::for_test(30.0, 60.0, UnitKind::Building);
         base.id = 1;
@@ -373,7 +373,7 @@ mod tests {
         let mut tank = Unit::for_test(30.0, 60.0, UnitKind::Vehicle);
         tank.id = 2;
         tank.owner = 1;
-        tank.role = Role::SiegeTank;
+        tank.role = Role::Kobra;
         tank.weapon = WeaponKind::Cannon;
         let mut enemy = Unit::for_test(30.0 + enemy_away, 60.0, UnitKind::Infantry);
         enemy.id = 3;

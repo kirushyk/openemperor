@@ -748,11 +748,11 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         Role::SandBike => &[[0.45, 0.2, 0.0]],
         Role::DiskSaw => &[[0.3, 0.27, -0.3], [0.3, 0.27, 0.3]],
         Role::FlameTank => &[[0.43, 0.2, 0.0]],
-        Role::HugeWalker => &[[0.82, 1.9, -0.3], [0.82, 1.9, 0.3]],
+        Role::Devastator => &[[0.82, 1.9, -0.3], [0.82, 1.9, 0.3]],
         Role::Recon => &[[0.38, 0.42, 0.0]],
         Role::LaserTank => &[[0.48, 0.17, 0.0]],
         // On top of its right track.
-        Role::SiegeTank => &[[0.36, 0.25, 0.33]],
+        Role::Kobra => &[[0.36, 0.25, 0.33]],
         _ => &[],
     }
 }
@@ -762,7 +762,7 @@ fn lamp_radius(role: Role) -> f32 {
     match role {
         Role::AdvancedCarryall => 0.045,
         Role::Minotaurus => 0.035,
-        Role::HugeWalker => 0.06,
+        Role::Devastator => 0.06,
         Role::Tower | Role::GunTower => 0.045,
         Role::Mcv => 0.075,
         Role::Harvester => 0.045,
@@ -893,10 +893,10 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
         Role::SandBike => sand_bike(model, team),
         Role::DiskSaw => disk_saw(model, unit, time, team),
         Role::FlameTank => flame_tank(model, unit, team),
-        Role::HugeWalker => huge_walker(model, unit, team),
+        Role::Devastator => huge_walker(model, unit, team),
         Role::Recon => recon(model, unit, team),
         Role::LaserTank => laser_tank(model, time, team),
-        Role::SiegeTank => siege_tank(model, unit, team),
+        Role::Kobra => siege_tank(model, unit, team),
         _ => return,
     }
     let radius = lamp_radius(unit.role);
@@ -3068,7 +3068,7 @@ const LASER_CRYSTAL: Paint = Paint {
     shine: 0.0,
 };
 
-/// A siege tank: a hull on two tracks with a cannon longer than itself resting on top. Deployed,
+/// A Kobra: a hull on two tracks with a cannon longer than itself resting on top. Deployed,
 /// a leg of three segments raises the cannon high, pointing up at a slant.
 fn siege_tank(model: &mut Model, unit: &Unit, team: Paint) {
     let track = Track {

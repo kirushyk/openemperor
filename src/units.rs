@@ -315,7 +315,7 @@ pub enum Role {
     /// House H's tank with two flamethrowers, at ten and at two o'clock.
     FlameTank,
     /// House H's huge tank with twin cannons.
-    HugeWalker,
+    Devastator,
     /// House O's quick scouting machine on four long insect legs.
     Recon,
     /// House O's laser tank, gliding over the ground: it goes any way at once, turning slowly
@@ -323,7 +323,7 @@ pub enum Role {
     LaserTank,
     /// House O's tank on two tracks with a cannon longer than itself. Deployed, it stands
     /// still and raises the cannon on a leg to shell what is far off.
-    SiegeTank,
+    Kobra,
     /// Sprays fire at the ground in front of it.
     FlameInfantry,
     /// Sprays green gas at the ground in front of it.
@@ -503,10 +503,10 @@ impl Role {
             | Role::SandBike
             | Role::DiskSaw
             | Role::FlameTank
-            | Role::HugeWalker
+            | Role::Devastator
             | Role::Recon
             | Role::LaserTank
-            | Role::SiegeTank
+            | Role::Kobra
             | Role::Catapult
             | Role::RocketLauncher
             | Role::Mongoose
@@ -560,10 +560,10 @@ impl Role {
             Role::SandBike => "Sand Bike",
             Role::DiskSaw => "Disk Saw",
             Role::FlameTank => "Flame Tank",
-            Role::HugeWalker => "Huge Walker",
+            Role::Devastator => "Devastator",
             Role::Recon => "Recon",
             Role::LaserTank => "Laser Tank",
-            Role::SiegeTank => "Siege Tank",
+            Role::Kobra => "Kobra",
             Role::GasInfantry => "Gas Infantry",
             Role::Tower => "Rocket Tower",
             Role::FlameTower => "Flame Tower",
@@ -591,11 +591,11 @@ impl Role {
             | Role::DiskSaw
             | Role::Recon => WeaponKind::Bullet,
             Role::LaserTank => WeaponKind::Laser,
-            Role::SiegeTank => WeaponKind::Cannon,
+            Role::Kobra => WeaponKind::Cannon,
             Role::RocketInfantry => WeaponKind::Missile,
             Role::MortarInfantry => WeaponKind::Pistol,
             Role::FlameTank => WeaponKind::Flame,
-            Role::HugeWalker => WeaponKind::Plasma,
+            Role::Devastator => WeaponKind::Plasma,
             Role::Scout
             | Role::Outpost
             | Role::Mcv
@@ -639,10 +639,10 @@ impl Role {
             Role::SandBike => 160.0,
             Role::DiskSaw => 340.0,
             Role::FlameTank => 320.0,
-            Role::HugeWalker => 2400.0,
+            Role::Devastator => 2400.0,
             Role::Recon => 150.0,
             Role::LaserTank => 260.0,
-            Role::SiegeTank => 380.0,
+            Role::Kobra => 380.0,
             Role::RepairVehicle => 200.0,
             Role::Mcv => 1200.0,
             Role::Harvester => 500.0,
@@ -667,10 +667,10 @@ impl Role {
             Role::Mcv => 1.8,
             Role::Harvester => 2.4,
             Role::SandBike => 6.5,
-            Role::HugeWalker => 0.9,
+            Role::Devastator => 0.9,
             Role::Recon => 6.0,
             Role::LaserTank => 5.5,
-            Role::SiegeTank => 3.0,
+            Role::Kobra => 3.0,
             Role::SuicideInfantry => 3.0,
             Role::Catapult | Role::RocketLauncher => 3.5,
             Role::Mongoose => 4.0,
@@ -695,10 +695,10 @@ impl Role {
             Role::RocketInfantry | Role::MortarInfantry => 6.0,
             Role::SandBike => 6.0,
             Role::DiskSaw | Role::FlameTank => 10.0,
-            Role::HugeWalker => 45.0,
+            Role::Devastator => 45.0,
             Role::Recon => 6.0,
             Role::LaserTank => 11.0,
-            Role::SiegeTank => 16.0,
+            Role::Kobra => 16.0,
             Role::Sniper | Role::KInfantry => 6.0,
             Role::RepairVehicle => 7.0,
             Role::Tank | Role::Catapult | Role::Mongoose | Role::AirDrone => 9.0,
@@ -730,8 +730,8 @@ impl Role {
             Role::KInfantry
                 | Role::MortarInfantry
                 | Role::SuicideInfantry
-                | Role::SiegeTank
-                | Role::HugeWalker
+                | Role::Kobra
+                | Role::Devastator
                 | Role::Mcv
         )
     }
@@ -754,9 +754,9 @@ impl Role {
             Role::SandBike | Role::RepairVehicle | Role::Mongoose | Role::Minotaurus => {
                 house == Faction::Atreides
             }
-            Role::Recon | Role::LaserTank | Role::SiegeTank => house == Faction::Ordos,
+            Role::Recon | Role::LaserTank | Role::Kobra => house == Faction::Ordos,
             Role::Palace(of) => house == of,
-            Role::Tank | Role::DiskSaw | Role::FlameTank | Role::HugeWalker | Role::Catapult => {
+            Role::Tank | Role::DiskSaw | Role::FlameTank | Role::Devastator | Role::Catapult => {
                 house == Faction::Harkonnen
             }
             _ => true,
@@ -783,10 +783,10 @@ impl Role {
             Role::Mcv => MCV_RADIUS,
             Role::Harvester => HARVESTER_RADIUS,
             Role::Refinery => 2.0,
-            Role::HugeWalker => 1.0,
+            Role::Devastator => 1.0,
             Role::Palace(Faction::Harkonnen) => 2.6,
             Role::Outpost => 1.5,
-            Role::SiegeTank => 0.55,
+            Role::Kobra => 0.55,
             Role::Barracks => 2.0,
             Role::Factory | Role::Hangar => 2.2,
             Role::Recon => 0.4,
@@ -867,7 +867,7 @@ impl Role {
                 self,
                 Role::Mongoose
                     | Role::Minotaurus
-                    | Role::HugeWalker
+                    | Role::Devastator
                     | Role::Recon
                     | Role::LaserTank
             )
@@ -972,7 +972,7 @@ pub const TUBE_SPREAD: f32 = 0.18;
 pub const TURRET_RISE: f32 = 0.32;
 /// How high a pop-up turret's gun is while it is sunk.
 const TURRET_MUZZLE_UP: f32 = 0.2;
-/// Where a huge walker's plasma guns end, as (ahead, up, to the side).
+/// Where a Devastator's plasma guns end, as (ahead, up, to the side).
 pub const WALKER_PLASMA_TIP: (f32, f32, f32) = (1.45, 2.05, 0.82);
 /// Where its rocket tubes end, and how far to each side the three of them are.
 pub const WALKER_ROCKET_AHEAD: f32 = 0.05;
@@ -1013,7 +1013,7 @@ pub const BUILD_REACH: i32 = 2;
 /// How many places on a building going up are being welded at once.
 pub const WELD_POINTS: usize = 4;
 
-/// Where a siege tank's cannon tip is, as [along, up], on its tracks and raised when deployed.
+/// Where a Kobra's cannon tip is, as [along, up], on its tracks and raised when deployed.
 pub const SIEGE_TIP: [f32; 2] = [1.05, 0.5];
 pub const SIEGE_RAISED_TIP: [f32; 2] = [0.97, 2.1];
 /// How high a Strider's missiles leave from.
@@ -1640,7 +1640,7 @@ impl Unit {
             let up = TURRET_MUZZLE_UP + TURRET_RISE * self.popped;
             return (self.x + cos * 0.45, self.y + up, self.z + sin * 0.45);
         }
-        if self.role == Role::SiegeTank {
+        if self.role == Role::Kobra {
             let [ahead, up] = if self.deployed {
                 SIEGE_RAISED_TIP
             } else {
@@ -1717,7 +1717,7 @@ impl Unit {
         (self.x + cos * 0.5, self.y + 0.3, self.z + sin * 0.5)
     }
 
-    /// Where a huge walker's rockets leave its rack, one to each tube.
+    /// Where a Devastator's rockets leave its rack, one to each tube.
     pub fn walker_rocket_tubes(&self) -> [(f32, f32, f32); 3] {
         let (sin, cos) = self.heading.sin_cos();
         WALKER_ROCKET_SIDES.map(|side| {
@@ -1771,13 +1771,13 @@ impl Unit {
 
     /// Where gunfire comes out: at the end of the barrel, outside its body.
     pub fn gun_tip(&self) -> (f32, f32, f32) {
-        if matches!(self.role, Role::GunTower | Role::GunPost | Role::SiegeTank) {
+        if matches!(self.role, Role::GunTower | Role::GunPost | Role::Kobra) {
             return self.muzzle();
         }
         // Twin guns side by side, firing in turn.
         let twin = match self.role {
             Role::DiskSaw => Some((0.5, 0.36, 0.3)),
-            Role::HugeWalker => Some(WALKER_PLASMA_TIP),
+            Role::Devastator => Some(WALKER_PLASMA_TIP),
             _ => None,
         };
         if let Some((ahead, up, side)) = twin {
@@ -1812,7 +1812,7 @@ impl Unit {
             match self.role {
                 Role::Mongoose => 0.5,
                 Role::Minotaurus => 0.9,
-                Role::HugeWalker => 2.0,
+                Role::Devastator => 2.0,
                 _ => HEIGHT / 2.0,
             }
         };
@@ -2429,9 +2429,9 @@ pub fn switch_deployed(unit: &mut Unit) {
     unit.weapon = match (unit.role, unit.deployed) {
         (Role::KInfantry, true) => WeaponKind::Cannon,
         (Role::MortarInfantry, true) => WeaponKind::Mortar,
-        (Role::SiegeTank, true) => WeaponKind::Siege,
-        (Role::SiegeTank, false) => WeaponKind::Cannon,
-        (Role::SuicideInfantry | Role::HugeWalker, _) => WeaponKind::Unarmed,
+        (Role::Kobra, true) => WeaponKind::Siege,
+        (Role::Kobra, false) => WeaponKind::Cannon,
+        (Role::SuicideInfantry | Role::Devastator, _) => WeaponKind::Unarmed,
         _ => WeaponKind::Pistol,
     };
     unit.destination = (unit.x, unit.z);
@@ -5735,7 +5735,7 @@ mod tests {
             ),
             (
                 Faction::Ordos,
-                [Role::SuicideInfantry, Role::SiegeTank],
+                [Role::SuicideInfantry, Role::Kobra],
                 Role::KInfantry,
             ),
         ] {

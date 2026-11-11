@@ -73,13 +73,13 @@ fn vehicle_builds(house: Faction) -> &'static [Role] {
             Role::RocketLauncher,
             Role::DiskSaw,
             Role::FlameTank,
-            Role::HugeWalker,
+            Role::Devastator,
         ],
         Faction::Ordos => &[
             Role::Recon,
             Role::LaserTank,
             Role::RocketLauncher,
-            Role::SiegeTank,
+            Role::Kobra,
         ],
     }
 }
@@ -119,10 +119,10 @@ const OPPONENT_BUILDS: [Role; 25] = [
     Role::Catapult,
     Role::DiskSaw,
     Role::FlameTank,
-    Role::HugeWalker,
+    Role::Devastator,
     Role::Recon,
     Role::LaserTank,
-    Role::SiegeTank,
+    Role::Kobra,
     Role::RocketLauncher,
     Role::AirDefensePlatform,
     Role::AirDrone,
@@ -5885,12 +5885,12 @@ mod tests {
                     "Rocket Launcher",
                     "Disk Saw",
                     "Flame Tank",
-                    "Huge Walker",
+                    "Devastator",
                 ][..],
             ),
             (
                 Faction::Ordos,
-                &["Recon", "Laser Tank", "Rocket Launcher", "Siege Tank"][..],
+                &["Recon", "Laser Tank", "Rocket Launcher", "Kobra"][..],
             ),
         ] {
             let mut game = in_battle_as(house);

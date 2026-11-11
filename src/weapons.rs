@@ -46,7 +46,7 @@ const TRACER_SECONDS: f32 = 0.2;
 const ROCKET_RELOAD_SECONDS: f32 = 8.0;
 /// How long a rocket tower reloads after its two rockets.
 const TOWER_RELOAD_SECONDS: f32 = 3.5;
-/// How long a huge walker's rockets come after one another.
+/// How long a Devastator's rockets come after one another.
 const WALKER_ROCKET_GAP_SECONDS: f32 = 0.3;
 
 /// Radians per second whatever must face its target turns towards it.
@@ -196,7 +196,7 @@ pub enum WeaponKind {
     HeavyRockets,
     /// Like a mortar, but a smaller white shell that hits harder, from four cannons in turn.
     Bombard,
-    /// A siege tank's long cannon, deployed: a bombard's shell, one at a time but more often
+    /// A Kobra's long cannon, deployed: a bombard's shell, one at a time but more often
     /// all told, and from farther away.
     Siege,
     /// Like a bullet, but slower and from farther away, and hits harder.
@@ -223,7 +223,7 @@ pub enum WeaponKind {
     Cistern,
     /// A laser firing often and weakly, not very far.
     RapidLaser,
-    /// A huge walker's: bolts of plasma flying fast and straight, hurting all around them.
+    /// A Devastator's: bolts of plasma flying fast and straight, hurting all around them.
     Plasma,
     /// Fixes friendly vehicles nearby instead of harming anyone.
     Repair,
@@ -646,7 +646,7 @@ pub struct Flamelet {
     fade: f32,
 }
 
-/// One of a huge walker's rockets, waiting for its turn to leave the rack.
+/// One of a Devastator's rockets, waiting for its turn to leave the rack.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WalkerRocket {
     walker_id: u32,
@@ -1987,7 +1987,7 @@ impl Combat {
         self.flamelets.retain(|f| f.life > 0.0);
     }
 
-    /// A huge walker's rockets leave their tubes one by one, for as long as it is alive and
+    /// A Devastator's rockets leave their tubes one by one, for as long as it is alive and
     /// what they are meant for is there.
     fn launch_walker_rockets(&mut self, units: &[Unit], dt: f32) {
         let mut waiting = Vec::with_capacity(self.walker_rockets.len());
@@ -2067,10 +2067,10 @@ impl Combat {
         self.gas_clouds.retain(|c| c.life > 0.0);
     }
 
-    /// A deployed huge walker destroys itself, as the superweapon would destroy that place.
+    /// A deployed Devastator destroys itself, as the superweapon would destroy that place.
     fn set_off_walkers(&mut self, units: &mut [Unit], terrain: &Terrain) {
         for i in 0..units.len() {
-            if units[i].alive && units[i].deployed && units[i].role == Role::HugeWalker {
+            if units[i].alive && units[i].deployed && units[i].role == Role::Devastator {
                 let (x, z) = (units[i].x, units[i].z);
                 hurt(&mut units[i], f32::INFINITY);
                 self.devastate(units, terrain, x, z);
@@ -2390,7 +2390,7 @@ fn hurt(unit: &mut Unit, damage: f32) {
 fn must_turn_to_fire(unit: &Unit) -> bool {
     if matches!(
         unit.role,
-        Role::HugeWalker | Role::DiskSaw | Role::SandBike | Role::FlameTank
+        Role::Devastator | Role::DiskSaw | Role::SandBike | Role::FlameTank
     ) {
         return true;
     }
@@ -3568,7 +3568,7 @@ mod tests {
 
     #[test]
     fn a_siege_tank_fires_its_cannon_on_tracks_and_shells_from_farther_off_deployed() {
-        let mut siege = as_role(Role::SiegeTank, 0.0, 60.0);
+        let mut siege = as_role(Role::Kobra, 0.0, 60.0);
         assert_eq!(siege.weapon, WeaponKind::Cannon);
         crate::units::switch_deployed(&mut siege);
         assert_eq!(siege.weapon, WeaponKind::Siege);
@@ -5064,7 +5064,7 @@ mod tests {
 
     #[test]
     fn a_huge_walker_fires_plasma_from_each_gun_in_turn_and_three_rockets_one_by_one() {
-        let walker = as_role(Role::HugeWalker, 0.0, 60.0);
+        let walker = as_role(Role::Devastator, 0.0, 60.0);
         assert_eq!(walker.weapon, WeaponKind::Plasma);
         let mut units = [walker, target_at(5.0, 60.0)];
         let mut combat = Combat::default();
@@ -5095,7 +5095,7 @@ mod tests {
 
     #[test]
     fn a_deployed_huge_walker_destroys_all_around_it_like_the_superweapon() {
-        let mut walker = as_role(Role::HugeWalker, 0.0, 60.0);
+        let mut walker = as_role(Role::Devastator, 0.0, 60.0);
         let mut friend = as_role(Role::LightInfantry, 3.0, 60.0);
         friend.id = 5;
         let far = target_at(0.0, 60.0 + STRIKE_RADIUS + 2.0);

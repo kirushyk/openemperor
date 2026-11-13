@@ -21,6 +21,9 @@ use std::thread;
 
 mod backdrop;
 mod models;
+mod original;
+
+pub use original::load as load_original_models;
 
 type Color = [f32; 4];
 
@@ -3239,6 +3242,9 @@ fn draw_refinery(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
 fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
     let [r, g, b, _] = team_color(unit.color);
     let color = [r, g, b];
+    if original::draw(canvas, unit, color) {
+        return;
+    }
     if unit.role == Role::Mcv {
         models::draw_mcv(canvas, unit, unit.house, game.battle_time(), color);
         return;

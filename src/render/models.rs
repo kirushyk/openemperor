@@ -154,10 +154,15 @@ impl Place {
     }
 
     /// Standing on the ground under the unit, turned to its heading.
-    fn level(unit: &Unit) -> Self {
-        let (sin, cos) = unit.heading.sin_cos();
+    pub(super) fn level(unit: &Unit) -> Self {
+        Place::turned([unit.x, unit.y, unit.z], unit.heading)
+    }
+
+    /// Standing at a point, level, turned to a heading.
+    pub(super) fn turned(origin: [f32; 3], heading: f32) -> Self {
+        let (sin, cos) = heading.sin_cos();
         Place {
-            origin: [unit.x, unit.y, unit.z],
+            origin,
             along: [cos, 0.0, sin],
             up: [0.0, 1.0, 0.0],
             across: [-sin, 0.0, cos],
@@ -167,13 +172,18 @@ impl Place {
     /// Where the unit is up in the air, leaning with it into its turns, its model stretched to
     /// the original's size.
     pub fn in_air(unit: &Unit) -> Self {
+        Place::flying(unit).stretched(unit.stretch())
+    }
+
+    /// Where the unit is up in the air, leaning with it into its turns.
+    pub(super) fn flying(unit: &Unit) -> Self {
         let mut place = Place::level(unit);
         place.origin[1] += unit.altitude;
         let (sin, cos) = unit.bank.sin_cos();
         let (right, up) = (place.across, place.up);
         place.across = [0, 1, 2].map(|i| right[i] * cos - up[i] * sin);
         place.up = [0, 1, 2].map(|i| right[i] * sin + up[i] * cos);
-        place.stretched(unit.stretch())
+        place
     }
 
     /// The same place, with what is made in it stretched this many times [along, up, across].
@@ -215,7 +225,7 @@ impl Place {
     }
 
     /// The same place with its origin moved by [along, up, across].
-    fn moved(self, by: [f32; 3]) -> Self {
+    pub(super) fn moved(self, by: [f32; 3]) -> Self {
         Place {
             origin: self.point(by),
             ..self
@@ -336,7 +346,7 @@ impl<'a> Model<'a> {
         }
     }
 
-    fn triangle(&mut self, points: [[f32; 3]; 3], normals: [[f32; 3]; 3], paint: Paint) {
+    pub(super) fn triangle(&mut self, points: [[f32; 3]; 3], normals: [[f32; 3]; 3], paint: Paint) {
         let points = points.map(|p| self.place.point(p));
         let normals = normals.map(|n| self.place.normal(n));
         if self.watchers.is_some_and(|w| !w.see(&points, &normals)) {

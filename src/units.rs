@@ -489,6 +489,16 @@ impl Plot {
         )
     }
 
+    /// How far a point in the world is from its squares, in world units: 0 on them. A grid
+    /// step is a square's side in the world along either axis, so the grid keeps distances.
+    fn distance_from(self, (x, z): (f32, f32)) -> f32 {
+        let (u, v) = world_to_grid(x, z);
+        let off = |at: f32, start: i32, size: i32| {
+            (start as f32 - at).max(at - (start + size) as f32).max(0.0)
+        };
+        off(u, self.u, self.cols).hypot(off(v, self.v, self.rows)) * CELL_SIDE
+    }
+
     fn contains(self, (u, v): (i32, i32)) -> bool {
         (self.u..self.u + self.cols).contains(&u) && (self.v..self.v + self.rows).contains(&v)
     }
@@ -5095,6 +5105,9 @@ fn past_the_edge(terrain: &Terrain, (x, z): (f32, f32)) -> (f32, f32) {
     grid_to_world(u, v)
 }
 
+/// How many free spots in front of a refinery a carryall looks over for one clear of buildings.
+const DROP_TRIES: usize = 60;
+
 /// Brings the owner of a refinery a harvester for it, for nothing: a carryall with the
 /// harvester under it flies in from past the nearest edge of the map and puts it down in front
 /// of the refinery. Then the carryall either stays, its owner's from then on, or flies off
@@ -5112,7 +5125,21 @@ pub fn deliver_harvester(
         refinery.x + out_x * REFINERY_WAITS,
         refinery.z + out_z * REFINERY_WAITS,
     );
-    let drop = terrain.nearest_walkable(front).unwrap_or(front);
+    // Put down as near the front as there is room, clear of everyone and of every building's
+    // squares.
+    let taken = spots_taken(units, false);
+    let clear = |spot: (f32, f32)| {
+        units
+            .iter()
+            .filter(|u| u.alive)
+            .filter_map(Unit::plot)
+            .all(|plot| plot.distance_from(spot) > Role::Harvester.radius())
+    };
+    let drop = find_slots(terrain, front, DROP_TRIES, &taken, false)
+        .into_iter()
+        .find(|&spot| clear(spot))
+        .or_else(|| terrain.nearest_walkable(front))
+        .unwrap_or(front);
     let from = past_the_edge(terrain, (refinery.x, refinery.z));
     let side = (refinery.owner, refinery.color);
     place_unit(
@@ -9389,6 +9416,31 @@ mod tests {
             open_ground().on_map(harvester.x, harvester.z) && harvester.load > 0.0,
             "it is down and harvesting: {harvester:?}"
         );
+    }
+
+    #[test]
+    fn a_harvester_given_is_put_down_clear_of_the_buildings_in_front_of_its_refinery() {
+        let mut refinery = unit_at(0.0, 2715.0, UnitKind::Building);
+        refinery.role = Role::Refinery;
+        refinery.weapon = WeaponKind::Unarmed;
+        let (out_x, out_z) = refinery.facing.way_out();
+        let front = (
+            refinery.x + out_x * REFINERY_WAITS,
+            refinery.z + out_z * REFINERY_WAITS,
+        );
+        let mut yard = new_building(open_ground(), front, Role::Mcv, (0, TeamColor::Blue), 7);
+        switch_deployed(&mut yard);
+        let mut units = vec![refinery, yard];
+        deliver_harvester(&mut units, open_ground(), (0, true), (3, 4));
+        let drop = units[2].destination;
+        for building in &units[..2] {
+            let plot = building.plot().unwrap();
+            assert!(
+                plot.distance_from(drop) > Role::Harvester.radius(),
+                "{:?} at {drop:?}",
+                building.role
+            );
+        }
     }
 
     #[test]

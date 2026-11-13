@@ -1,10 +1,12 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod archive;
 mod battlefield;
 mod fog;
 mod font;
 mod game;
 mod hud;
+mod inflate;
 #[cfg(target_os = "macos")]
 mod music;
 mod planet;
@@ -15,6 +17,7 @@ mod units;
 #[cfg(target_os = "macos")]
 mod video;
 mod weapons;
+mod xbf;
 
 use std::time::Instant;
 
@@ -57,6 +60,11 @@ fn main() {
     let disc = std::path::Path::new(DISC);
     #[cfg(target_os = "macos")]
     let mounted = disc.is_dir();
+    // The disc's own models, read while the menus show, take the place of ours once read.
+    #[cfg(target_os = "macos")]
+    if mounted {
+        render::load_original_models(disc);
+    }
     #[cfg(target_os = "macos")]
     let (mut movie, menu_music, battle_music) = {
         // A movie given on the command line plays in place of the disc's.

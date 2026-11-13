@@ -592,6 +592,12 @@ void oe_set_backdrop(const uint8_t *rgba, int32_t width, int32_t height) {
     (void)height;
 }
 
+void oe_set_pictures(const uint8_t *rgba, int32_t side, int32_t count) {
+    (void)rgba;
+    (void)side;
+    (void)count;
+}
+
 void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
                    int32_t loop) {
     (void)samples;

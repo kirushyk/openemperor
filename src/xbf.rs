@@ -5,6 +5,15 @@
 pub struct Model {
     pub textures: Vec<String>,
     pub objects: Vec<Object>,
+    pub sequences: Vec<Sequence>,
+}
+
+/// A named run of the model's animation, such as "Move" or "Fire 0": the frames it plays,
+/// from the first of each range up to its last, one range after another.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Sequence {
+    pub name: String,
+    pub ranges: Vec<(usize, usize)>,
 }
 
 /// A part of a model, placed by its transform within its parent, given for row vectors: a
@@ -14,9 +23,25 @@ pub struct Model {
 pub struct Object {
     pub name: String,
     pub transform: [[f32; 4]; 4],
+    pub animation: Option<Animation>,
     pub vertices: Vec<Vertex>,
     pub faces: Vec<Face>,
     pub children: Vec<Object>,
+}
+
+/// Where a part is at each frame of its model's animation: which of its poses it takes then.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Animation {
+    pub poses: Vec<[[f32; 4]; 4]>,
+    pub frames: Vec<u16>,
+}
+
+impl Animation {
+    /// Its pose at a frame, the last one's for those past its end.
+    pub fn at(&self, frame: usize) -> Option<&[[f32; 4]; 4]> {
+        let pose = self.frames.get(frame).or(self.frames.last())?;
+        self.poses.get(usize::from(*pose))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -88,7 +113,7 @@ pub fn parse(data: &[u8]) -> Option<Model> {
         return None;
     }
     let effects = reader.count()?;
-    reader.skip(effects)?;
+    let sequences = sequences(reader.bytes(effects)?);
     let names = reader.count()?;
     // Some names have a 2 in front of them; empty ones stand between the rest.
     let textures = reader
@@ -106,7 +131,66 @@ pub fn parse(data: &[u8]) -> Option<Model> {
     while reader.data.get(reader.at..reader.at + 4)? != (-1i32).to_le_bytes() {
         objects.push(object(reader, 0)?);
     }
-    Some(Model { textures, objects })
+    Some(Model {
+        textures,
+        objects,
+        sequences,
+    })
+}
+
+/// How long a sequence's name is kept in its list, and each of its ranges: three numbers and a
+/// flag, three bytes of padding, then its first and its last frame.
+const SEQUENCE_NAME: usize = 32;
+const SEQUENCE_RANGE: usize = 24;
+const PADDING: [u8; 3] = [0xcc; 3];
+
+/// The sequences listed at the end of a model's effects, before its last four bytes. Where the
+/// list starts is not said: it is the first place after a string's end that all the rest reads
+/// as one.
+fn sequences(effects: &[u8]) -> Vec<Sequence> {
+    (1..effects.len())
+        .filter(|&at| effects[at - 1] == 0 && effects[at].is_ascii_graphic())
+        .find_map(|at| sequence_list(effects, at))
+        .unwrap_or_default()
+}
+
+/// The list read from `at` on, each a name, a number, and its ranges, as long as the next does
+/// not start with a letter of another name.
+fn sequence_list(effects: &[u8], mut at: usize) -> Option<Vec<Sequence>> {
+    let end = effects.len().checked_sub(4)?;
+    let mut list = Vec::new();
+    while at < end {
+        let name = effects.get(at..at + SEQUENCE_NAME)?;
+        let name = &name[..name.iter().position(|&byte| byte == 0)?];
+        if !name
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
+        {
+            return None;
+        }
+        at += SEQUENCE_NAME + 4;
+        let mut ranges = Vec::new();
+        loop {
+            let range = effects
+                .get(at..at + SEQUENCE_RANGE)
+                .filter(|_| at + SEQUENCE_RANGE <= end)?;
+            let frame = |n: usize| u32::from_le_bytes(range[n..n + 4].try_into().unwrap());
+            let (first, last) = (frame(16), frame(20));
+            if range[13..16] != PADDING || first > last {
+                return None;
+            }
+            ranges.push((first as usize, last as usize));
+            at += SEQUENCE_RANGE;
+            if at >= end || effects[at].is_ascii_graphic() {
+                break;
+            }
+        }
+        list.push(Sequence {
+            name: name.iter().map(|&byte| char::from(byte)).collect(),
+            ranges,
+        });
+    }
+    (at == end && !list.is_empty()).then_some(list)
 }
 
 fn object(reader: &mut Reader, depth: usize) -> Option<Object> {
@@ -167,14 +251,17 @@ fn object(reader: &mut Reader, depth: usize) -> Option<Object> {
     if flags & VERTEX_ANIMATION != 0 {
         skip_vertex_animation(reader)?;
     }
-    if flags & OBJECT_ANIMATION != 0
-        && let Some(first) = first_frame(reader)?
-    {
-        transform = first;
+    let mut animation = None;
+    if flags & OBJECT_ANIMATION != 0 {
+        animation = object_animation(reader)?;
+    }
+    if let Some(first) = animation.as_ref().and_then(|animation| animation.at(0)) {
+        transform = *first;
     }
     Some(Object {
         name,
         transform,
+        animation,
         vertices,
         faces,
         children,
@@ -201,44 +288,61 @@ fn skip_vertex_animation(reader: &mut Reader) -> Option<()> {
     Some(())
 }
 
-/// Where the object's animation has it at its first frame, if it says: it gives a full or a
+/// Where the object's animation has it at each frame, if it says: it gives a full or a
 /// shortened matrix for every frame, shortened ones picked out for each frame, or keys each
-/// with a turn, a stretch and a move, as flagged, the earliest standing for the frames before.
-fn first_frame(reader: &mut Reader) -> Option<Option<[[f32; 4]; 4]>> {
+/// with a turn, a stretch and a move, as flagged, a frame taking the latest key up to it and the
+/// earliest standing for the frames before.
+fn object_animation(reader: &mut Reader) -> Option<Option<Animation>> {
     let length = reader.count()? + 1;
-    let first = match reader.i32()? {
-        -1 => {
-            let first = matrix(reader, 4)?;
-            reader.skip(64 * (length - 1))?;
-            first
-        }
-        -2 => {
-            let first = matrix(reader, 3)?;
-            reader.skip(48 * (length - 1))?;
-            first
-        }
+    let every_frame = |reader: &mut Reader, columns: usize| -> Option<Animation> {
+        Some(Animation {
+            poses: (0..length)
+                .map(|_| matrix(reader, columns))
+                .collect::<Option<_>>()?,
+            frames: (0..length)
+                .map(|n| u16::try_from(n).ok())
+                .collect::<Option<_>>()?,
+        })
+    };
+    let animation = match reader.i32()? {
+        -1 => every_frame(reader, 4)?,
+        -2 => every_frame(reader, 3)?,
         -3 => {
-            let matrices = reader.count()?;
-            let picks: Vec<i16> = (0..length).map(|_| reader.i16()).collect::<Option<_>>()?;
-            let all: Vec<_> = (0..matrices)
+            let count = reader.count()?;
+            let frames: Vec<u16> = (0..length)
+                .map(|_| {
+                    u16::try_from(reader.i16()?)
+                        .ok()
+                        .filter(|&n| usize::from(n) < count)
+                })
+                .collect::<Option<_>>()?;
+            let poses = (0..count)
                 .map(|_| matrix(reader, 3))
                 .collect::<Option<_>>()?;
-            *all.get(usize::try_from(*picks.first()?).ok()?)?
+            Animation { poses, frames }
         }
         keys => {
-            let mut earliest = None;
+            let mut keyed = Vec::new();
             for _ in 0..usize::try_from(keys).ok()? {
                 let frame = reader.i16()?;
                 let parts = reader.i16()? >> 12;
-                let key = key_matrix(reader, parts)?;
-                if earliest.is_none_or(|(at, _)| frame < at) {
-                    earliest = Some((frame, key));
-                }
+                keyed.push((frame, key_matrix(reader, parts)?));
             }
-            return Some(earliest.map(|(_, key)| key));
+            if keyed.is_empty() {
+                return Some(None);
+            }
+            keyed.sort_by_key(|&(frame, _)| frame);
+            let frames = (0..length)
+                .map(|n| {
+                    let after = keyed.partition_point(|&(frame, _)| i64::from(frame) <= n as i64);
+                    u16::try_from(after.saturating_sub(1)).ok()
+                })
+                .collect::<Option<_>>()?;
+            let poses = keyed.into_iter().map(|(_, pose)| pose).collect();
+            Animation { poses, frames }
         }
     };
-    Some(Some(first))
+    Some(Some(animation))
 }
 
 /// A matrix of four rows, each of `columns` numbers, the rest of it as the identity's.
@@ -426,6 +530,77 @@ mod tests {
         assert_eq!(model.objects[0].vertices[1].position, [1.0, 0.0, 0.0]);
         assert_eq!(model.objects[0].transform[3], [0.0, 5.0, 0.0, 1.0]);
         assert_eq!(model.objects[1].transform[3], [0.0, 0.0, 0.0, 1.0]);
+        let animation = model.objects[0].animation.as_ref().expect("an animation");
+        assert_eq!(
+            animation.at(1).map(|pose| pose[3]),
+            Some([0.0, 0.0, 0.0, 1.0])
+        );
+        assert_eq!(animation.at(9), animation.at(1));
+        assert_eq!(model.objects[1].animation, None);
+    }
+
+    #[test]
+    fn a_part_picks_its_pose_for_each_frame() {
+        let mut bytes = object_bytes("arm", &[], &[], OBJECT_ANIMATION);
+        // Three frames, between two poses: the second one up by 2.
+        bytes.extend(2i32.to_le_bytes());
+        bytes.extend((-3i32).to_le_bytes());
+        bytes.extend(2i32.to_le_bytes());
+        for pick in [0i16, 1, 1] {
+            bytes.extend(pick.to_le_bytes());
+        }
+        for up in [0.0f32, 2.0] {
+            for value in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, up, 0.0] {
+                bytes.extend(value.to_le_bytes());
+            }
+        }
+        let arm = object(
+            &mut Reader {
+                data: &bytes,
+                at: 0,
+            },
+            0,
+        )
+        .expect("a part");
+        let animation = arm.animation.expect("an animation");
+        let up = |frame| animation.at(frame).map(|pose| pose[3][1]);
+        assert_eq!((up(0), up(1), up(2)), (Some(0.0), Some(2.0), Some(2.0)));
+        assert_eq!(arm.transform[3][1], 0.0);
+    }
+
+    #[test]
+    fn the_sequences_are_read_from_the_end_of_the_effects() {
+        let entry = |name: &str, ranges: &[(u32, u32)]| {
+            let mut bytes = name.as_bytes().to_vec();
+            bytes.push(0);
+            bytes.resize(SEQUENCE_NAME, 0xcc);
+            bytes.extend(1i32.to_le_bytes());
+            for &(first, last) in ranges {
+                bytes.extend([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+                bytes.extend(PADDING);
+                bytes.extend(first.to_le_bytes());
+                bytes.extend(last.to_le_bytes());
+            }
+            bytes
+        };
+        let mut effects = b"FXDataHeader\0\x05\0\0\0Front wheel\0".to_vec();
+        effects.extend(entry("Stationary", &[(0, 0)]));
+        effects.extend(entry("Move", &[(12, 20), (20, 33)]));
+        effects.extend(entry("Fire 0", &[(40, 45)]));
+        effects.extend([0; 4]);
+        let sequence = |name: &str, ranges: &[(usize, usize)]| Sequence {
+            name: name.into(),
+            ranges: ranges.to_vec(),
+        };
+        assert_eq!(
+            sequences(&effects),
+            [
+                sequence("Stationary", &[(0, 0)]),
+                sequence("Move", &[(12, 20), (20, 33)]),
+                sequence("Fire 0", &[(40, 45)]),
+            ]
+        );
+        assert_eq!(sequences(b"FXDataHeader\0\0\0\0\0"), []);
     }
 
     #[test]

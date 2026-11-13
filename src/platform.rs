@@ -60,7 +60,15 @@ pub struct WorldVertex {
     /// Where on its unit it is, for the backend to lay black stains by, and how black they go.
     /// Below 0, the unit is invisible to its enemies and shimmers for its own side.
     pub stain: [f32; 3],
+    /// Where on a picture given to `Platform::set_pictures` it is, and which: below 0, none,
+    /// and it takes its color.
+    pub picture: [f32; 3],
+    /// The house color that its picture's house parts take.
+    pub team: [f32; 3],
 }
+
+/// What a corner with no picture has for one.
+pub const NO_PICTURE: [f32; 3] = [0.0, 0.0, -1.0];
 
 impl WorldVertex {
     /// A corner of an object standing on the map, not shining.
@@ -86,6 +94,8 @@ impl WorldVertex {
             seen: 1.0,
             level: shine,
             stain: [0.0; 3],
+            picture: NO_PICTURE,
+            team: [0.0; 3],
         }
     }
 }
@@ -306,6 +316,7 @@ unsafe extern "C" {
     #[cfg(target_os = "macos")]
     fn oe_draw_world(world: *const RawWorld, clear_r: f32, clear_g: f32, clear_b: f32);
     fn oe_set_backdrop(rgba: *const u8, width: i32, height: i32);
+    fn oe_set_pictures(rgba: *const u8, side: i32, count: i32);
     fn oe_play_sound(samples: *const f32, frames: u32, channels: i32, rate: i32, looped: i32);
     fn oe_stop_sound();
     fn oe_shutdown();
@@ -438,6 +449,19 @@ impl Platform {
             // SAFETY: a null picture takes the backdrop away.
             _ => unsafe { oe_set_backdrop(std::ptr::null(), 0, 0) },
         }
+    }
+
+    /// Gives the pictures objects are painted with: squares `side` pixels wide, one after
+    /// another, each of rows of RGBA bytes, top row first. Alpha 0 is a hole; from 128 up it
+    /// says how much house color shows there, none at 255.
+    pub fn set_pictures(&mut self, rgba: &[u8], side: u32) {
+        let square = (side * side * 4) as usize;
+        if square == 0 || rgba.len() < square {
+            return;
+        }
+        let count = rgba.len() / square;
+        // SAFETY: the bytes hold `count` whole squares, and the shim copies them.
+        unsafe { oe_set_pictures(rgba.as_ptr(), side as i32, count as i32) }
     }
 
     /// Plays interleaved samples, once or over and over, in place of whatever was playing.

@@ -5,7 +5,7 @@
 use super::{Canvas, Point, cross, knee_of, offset, unit_vector};
 use crate::battlefield::{CELL_SIDE, SUN};
 use crate::game::Faction;
-use crate::platform::WorldVertex;
+use crate::platform::{NO_PICTURE, WorldVertex};
 use crate::units::{self, Role, Unit};
 use crate::weapons::{
     RAGDOLL_CHEST, RAGDOLL_ELBOWS, RAGDOLL_FEET, RAGDOLL_HANDS, RAGDOLL_HEAD, RAGDOLL_KNEES,
@@ -328,7 +328,7 @@ impl<'a> Model<'a> {
     }
 
     /// The same model, made from another place for a while.
-    fn at(&mut self, place: Place) -> Model<'_> {
+    pub(super) fn at(&mut self, place: Place) -> Model<'_> {
         Model {
             out: self.out,
             watchers: self.watchers,
@@ -347,6 +347,19 @@ impl<'a> Model<'a> {
     }
 
     pub(super) fn triangle(&mut self, points: [[f32; 3]; 3], normals: [[f32; 3]; 3], paint: Paint) {
+        self.pictured(points, normals, paint, [NO_PICTURE; 3], [0.0; 3]);
+    }
+
+    /// A triangle painted with a picture, where each corner is on it, with the house color for
+    /// its house parts; `paint` for a backend that does not paint with pictures.
+    pub(super) fn pictured(
+        &mut self,
+        points: [[f32; 3]; 3],
+        normals: [[f32; 3]; 3],
+        paint: Paint,
+        picture: [[f32; 3]; 3],
+        team: [f32; 3],
+    ) {
         let points = points.map(|p| self.place.point(p));
         let normals = normals.map(|n| self.place.normal(n));
         if self.watchers.is_some_and(|w| !w.see(&points, &normals)) {
@@ -354,7 +367,11 @@ impl<'a> Model<'a> {
         }
         self.out.extend((0..3).map(|i| {
             let [x, y, z] = points[i];
-            WorldVertex::shiny((x, y, z), normals[i], paint.color, paint.shine)
+            WorldVertex {
+                picture: picture[i],
+                team,
+                ..WorldVertex::shiny((x, y, z), normals[i], paint.color, paint.shine)
+            }
         }));
     }
 

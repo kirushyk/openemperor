@@ -23,7 +23,7 @@ mod backdrop;
 mod models;
 mod original;
 
-pub use original::load as load_original_models;
+pub use original::{PICTURE_SIDE, load as load_original_models, pictures as original_pictures};
 
 type Color = [f32; 4];
 
@@ -3242,7 +3242,7 @@ fn draw_refinery(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
 fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
     let [r, g, b, _] = team_color(unit.color);
     let color = [r, g, b];
-    if original::draw(canvas, unit, color) {
+    if original::draw(canvas, unit, color, game.battle_time()) {
         return;
     }
     if unit.role == Role::Mcv {

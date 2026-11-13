@@ -36,8 +36,10 @@ static NSString *const kShader = @
     "}\n"
     /* A tile's diagonal, in world units: the original game's coordinates, 32 to a tile's side. */
     "constant float TILE_DIAGONAL = 45.254834;\n"
-    "struct WorldIn { packed_float3 pos; packed_float3 normal; packed_float3 color; float seen; float level; packed_float3 stain; };\n"
-    "struct WorldOut { float4 pos [[position]]; float3 world; float3 normal; float3 color; float seen; float level; float3 stain; };\n"
+    "struct WorldIn { packed_float3 pos; packed_float3 normal; packed_float3 color; float seen; float level; packed_float3 stain;\n"
+    "                 packed_float3 picture; packed_float3 team; };\n"
+    "struct WorldOut { float4 pos [[position]]; float3 world; float3 normal; float3 color; float seen; float level; float3 stain;\n"
+    "                  float3 picture; float3 team; };\n"
     "struct PointLight { packed_float3 place; float radius; packed_float3 color; float unused; };\n"
     "struct Sky { float4x4 view; float4x4 sun_view; float2 size; float time; int material;\n"
     "             float3 camera; float3 sun; int mirrored; int light_count; float2 padding; PointLight lights[16]; };\n"
@@ -45,7 +47,8 @@ static NSString *const kShader = @
     "                         constant Sky &sky [[buffer(1)]]) {\n"
     "  WorldOut o; o.world = float3(v[id].pos); o.pos = sky.view * float4(o.world, 1.0);\n"
     "  o.normal = float3(v[id].normal); o.color = float3(v[id].color);\n"
-    "  o.seen = v[id].seen; o.level = v[id].level; o.stain = float3(v[id].stain); return o;\n"
+    "  o.seen = v[id].seen; o.level = v[id].level; o.stain = float3(v[id].stain);\n"
+    "  o.picture = float3(v[id].picture); o.team = float3(v[id].team); return o;\n"
     "}\n"
     "vertex float4 vs_shadow(uint id [[vertex_id]], const device WorldIn *v [[buffer(0)]],\n"
     "                        constant Sky &sky [[buffer(1)]]) {\n"
@@ -389,7 +392,8 @@ static NSString *const kShader = @
     "}\n"
     "fragment float4 fs_world(WorldOut in [[stage_in]], constant Sky &sky [[buffer(0)]],\n"
     "                         texture2d<float> mirror [[texture(0)]], depth2d<float> map [[texture(1)]],\n"
-    "                         sampler smooth [[sampler(0)]], sampler compare [[sampler(1)]]) {\n"
+    "                         sampler smooth [[sampler(0)]], sampler compare [[sampler(1)]],\n"
+    "                         texture2d_array<float> pictures [[texture(2)]], sampler tiled [[sampler(2)]]) {\n"
     "  /* The water's surface and what lies under it show nothing in the mirror. */\n"
     "  if (sky.mirrored != 0 && (in.level < 0.0 || in.world.y < 0.0)) discard_fragment();\n"
     "  float3 normal = normalize(in.normal);\n"
@@ -397,6 +401,13 @@ static NSString *const kShader = @
     /* The ground's patterns and how high and deep it lies are laid out in tile diagonals. */
     "  float2 p = in.world.xz / TILE_DIAGONAL; float level = in.level / TILE_DIAGONAL;\n"
     "  float3 color = in.color;\n"
+    /* A painted object: its picture's color, the house color over its house parts, and no
+     * surface where the picture has a hole. */
+    "  if (in.picture.z >= 0.0) {\n"
+    "    float4 texel = pictures.sample(tiled, in.picture.xy, uint(in.picture.z + 0.5));\n"
+    "    if (texel.a < 0.25) discard_fragment();\n"
+    "    color = texel.rgb + saturate((1.0 - texel.a) * 2.0) * in.team;\n"
+    "  }\n"
     /* Black stains of what is damaged, spreading the worse it is, with soot around them. */
     "  float clean = 1.0;\n"
     "  if (in.stain.z > 0.0) {\n"
@@ -467,6 +478,8 @@ static id<MTLTexture> g_mirror_depth;
 static id<MTLTexture> g_shadow_map;
 static id<MTLSamplerState> g_sampler;
 static id<MTLSamplerState> g_compare_sampler;
+static id<MTLSamplerState> g_tiled_sampler;
+static id<MTLTexture> g_pictures;
 static id<MTLBuffer> g_buffers[FRAMES_IN_FLIGHT];
 static dispatch_semaphore_t g_inflight;
 static uint32_t g_frame;
@@ -563,6 +576,13 @@ static BOOL make_pipelines(id<MTLLibrary> library) {
     g_sampler = [g_device newSamplerStateWithDescriptor:sampler];
     sampler.compareFunction = MTLCompareFunctionLessEqual;
     g_compare_sampler = [g_device newSamplerStateWithDescriptor:sampler];
+    MTLSamplerDescriptor *tiled = [MTLSamplerDescriptor new];
+    tiled.minFilter = MTLSamplerMinMagFilterLinear;
+    tiled.magFilter = MTLSamplerMinMagFilterLinear;
+    tiled.mipFilter = MTLSamplerMipFilterLinear;
+    tiled.sAddressMode = MTLSamplerAddressModeRepeat;
+    tiled.tAddressMode = MTLSamplerAddressModeRepeat;
+    g_tiled_sampler = [g_device newSamplerStateWithDescriptor:tiled];
     g_shadow_map = depth_texture(SHADOW_MAP, SHADOW_MAP,
                                  MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
     return YES;
@@ -845,6 +865,20 @@ static void draw_list(id<MTLRenderCommandEncoder> encoder, id<MTLBuffer> buffer,
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count];
 }
 
+/* The pictures objects are painted with, or a blank one while there are none. */
+static id<MTLTexture> pictures(void) {
+    if (!g_pictures) {
+        MTLTextureDescriptor *desc = [MTLTextureDescriptor new];
+        desc.textureType = MTLTextureType2DArray;
+        desc.pixelFormat = MTLPixelFormatRGBA8Unorm;
+        desc.width = desc.height = 1;
+        desc.arrayLength = 1;
+        desc.usage = MTLTextureUsageShaderRead;
+        g_pictures = [g_device newTextureWithDescriptor:desc];
+    }
+    return g_pictures;
+}
+
 /* What the world's fragments read, in any pass that draws them. */
 static void bind_world(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> mirror, const OeSky *sky,
                        int32_t material) {
@@ -856,6 +890,8 @@ static void bind_world(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> mirro
     [encoder setFragmentTexture:g_shadow_map atIndex:1];
     [encoder setFragmentSamplerState:g_sampler atIndex:0];
     [encoder setFragmentSamplerState:g_compare_sampler atIndex:1];
+    [encoder setFragmentTexture:pictures() atIndex:2];
+    [encoder setFragmentSamplerState:g_tiled_sampler atIndex:2];
 }
 
 /* The depth of all that is solid, as the sun sees it. */
@@ -1037,6 +1073,37 @@ void oe_set_backdrop(const uint8_t *rgba, int32_t width, int32_t height) {
                  withBytes:rgba
                bytesPerRow:(NSUInteger)width * 4];
     g_backdrop = texture;
+}
+
+void oe_set_pictures(const uint8_t *rgba, int32_t side, int32_t count) {
+    if (!rgba || side <= 0 || count <= 0) {
+        g_pictures = nil;
+        return;
+    }
+    MTLTextureDescriptor *desc = [MTLTextureDescriptor new];
+    desc.textureType = MTLTextureType2DArray;
+    desc.pixelFormat = MTLPixelFormatRGBA8Unorm;
+    desc.width = desc.height = (NSUInteger)side;
+    desc.arrayLength = (NSUInteger)count;
+    desc.mipmapLevelCount = (NSUInteger)floor(log2((double)side)) + 1;
+    desc.usage = MTLTextureUsageShaderRead;
+    /* A new texture, so that none still being drawn from is written over. */
+    id<MTLTexture> texture = [g_device newTextureWithDescriptor:desc];
+    NSUInteger bytes = (NSUInteger)side * (NSUInteger)side * 4;
+    for (NSUInteger layer = 0; layer < (NSUInteger)count; layer++) {
+        [texture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)side, (NSUInteger)side)
+                   mipmapLevel:0
+                         slice:layer
+                     withBytes:rgba + layer * bytes
+                   bytesPerRow:(NSUInteger)side * 4
+                 bytesPerImage:bytes];
+    }
+    id<MTLCommandBuffer> commands = [g_queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
+    [blit generateMipmapsForTexture:texture];
+    [blit endEncoding];
+    [commands commit];
+    g_pictures = texture;
 }
 
 /* The sound playing: its samples, how many, and how far the queue has been given them. */

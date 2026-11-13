@@ -9,7 +9,7 @@
 
 use crate::fog::Fog;
 use crate::planet::fractal_noise;
-use crate::platform::{Material, WorldVertex};
+use crate::platform::{Material, NO_PICTURE, WorldVertex};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::OnceLock;
@@ -2011,6 +2011,8 @@ pub fn draw(
             seen: seen(u, v),
             level,
             stain: [0.0; 3],
+            picture: NO_PICTURE,
+            team: [0.0; 3],
         }
     };
     // The liquid's surface: flat, over every cell it reaches, its depth told by its level.
@@ -2028,6 +2030,8 @@ pub fn draw(
             seen: seen(u, v),
             level: -(SHORE + terrain.deep[index] * DEPTH),
             stain: [0.0; 3],
+            picture: NO_PICTURE,
+            team: [0.0; 3],
         }
     };
     let area = view.ground_seen(width, height);

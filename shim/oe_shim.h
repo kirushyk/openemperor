@@ -63,7 +63,9 @@ typedef struct {
     float r, g, b;
     float seen;
     float level;
-    float stain[3]; /* where on its unit it is, and how black it goes */
+    float stain[3];   /* where on its unit it is, and how black it goes */
+    float picture[3]; /* where on a picture of oe_set_pictures it is, and which; below 0, none */
+    float team[3];    /* the house color its picture's house parts take */
 } OeWorldVertex;
 
 /* A corner of something see-through: on the screen, with a depth to test. Premultiplied. */
@@ -113,6 +115,12 @@ void oe_draw_world(const OeWorld *world, float r, float g, float b);
  * changing its shape: rows of RGBA bytes, top row first. It stays until replaced; NULL takes
  * it away. Only the macOS backend shows it so far. */
 void oe_set_backdrop(const uint8_t *rgba, int32_t width, int32_t height);
+
+/* The pictures objects are painted with, `count` squares `side` pixels wide, one after
+ * another, each of rows of RGBA bytes, top row first. Alpha 0 is a hole; from 128 up, it says
+ * how much of the house color shows there: none at 255, all at 128, over the color given.
+ * They stay until replaced. Only the macOS backend paints with them so far. */
+void oe_set_pictures(const uint8_t *rgba, int32_t side, int32_t count);
 
 /* Plays interleaved float samples, once or over and over if `loop` is 1, replacing anything
  * playing. Only the macOS backend makes a sound so far. */

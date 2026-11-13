@@ -101,6 +101,9 @@ fn main() {
     // When the battle track playing now is over, if one is.
     #[cfg(target_os = "macos")]
     let mut battle_track_ends: Option<Instant> = None;
+    // Whether the disc's pictures, read with its models, have been given to the backend.
+    #[cfg(target_os = "macos")]
+    let mut pictures_given = false;
     let mut last = Instant::now();
     while !game.quit {
         while let Some(event) = platform.poll_event() {
@@ -170,6 +173,11 @@ fn main() {
             } else if battle_track_ends.take().is_some() && !music_playing {
                 platform.stop_sound();
             }
+        }
+        #[cfg(target_os = "macos")]
+        if !pictures_given && let Some(pictures) = render::original_pictures() {
+            platform.set_pictures(pictures, render::PICTURE_SIDE as u32);
+            pictures_given = true;
         }
         platform.draw(&render::build_frame(&game), render::clear_color(&game));
     }

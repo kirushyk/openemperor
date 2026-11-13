@@ -2,7 +2,8 @@
 //! front of its base, holds it there until there are enough, then sends them all off together
 //! against the nearest enemy base, fighting whatever they meet on the way. Meanwhile whatever
 //! is still at home turns on enemies that come too close. It starts from nothing but its MCV:
-//! it deploys that where it stands and builds its base around it, one building at a time.
+//! it deploys that where it stands and builds its base around it, one building at a time,
+//! paying for each bit by bit as it goes up.
 
 use crate::battlefield::{Terrain, next_random};
 use crate::game::{Faction, OpponentKind};
@@ -12,19 +13,20 @@ use crate::weapons::WeaponKind;
 /// Seconds between one look at the battle and the next.
 const THINK_SECONDS: f32 = 1.0;
 /// How far ahead of its base, towards the nearest enemy base, an opponent gathers its army.
-const RALLY_AHEAD: f32 = 3.0;
+const RALLY_AHEAD: f32 = 135.8;
 /// How near the rally point a unit has to be to count as gathered.
-const RALLY_REACH: f32 = 6.0;
+const RALLY_REACH: f32 = 271.5;
 /// How near its base an enemy has to come for what is at home to go after it.
-const GUARD_REACH: f32 = 14.0;
+const GUARD_REACH: f32 = 633.6;
 /// The largest army an opponent waits for before setting off.
 const WAVE_AT_MOST: usize = 30;
 /// What an opponent builds from its MCV, in order. It always builds the first of these it has
 /// fewer of than the list holds up to there, so it also builds again what it loses.
-fn build_order(house: Faction) -> [Role; 10] {
+fn build_order(house: Faction) -> [Role; 12] {
     let [lesser, greater] = Role::towers_of(house);
     [
         Role::Barracks,
+        Role::Refinery,
         Role::Factory,
         lesser,
         greater,
@@ -32,14 +34,18 @@ fn build_order(house: Faction) -> [Role; 10] {
         Role::LandingPad,
         lesser,
         greater,
+        Role::Refinery,
         Role::Factory,
         Role::Barracks,
     ]
 }
 /// How far from its MCV an opponent looks for room for a building, ring by ring, and how many
 /// places it tries on each ring.
-const BUILD_RINGS: [f32; 5] = [3.4, 5.8, 8.2, 10.6, 13.0];
+const BUILD_RINGS: [f32; 8] = [153.9, 262.5, 371.1, 479.7, 588.3, 696.9, 805.5, 914.1];
 const BUILD_TRIES: usize = 12;
+/// How many empty squares an opponent leaves between its buildings, for its harvesters and
+/// the rest of its army to drive through.
+const LANE: i32 = 3;
 /// The chance, each look at the battle, that a Kobra with an enemy in its deployed reach
 /// deploys, and that a deployed one with nobody left in reach packs up.
 const SIEGE_DEPLOY_CHANCE: f32 = 0.2;
@@ -85,12 +91,14 @@ impl Strategy {
         }
     }
 
-    /// Deploys its MCV where it has stopped, and works on its base from there: once a building
-    /// is done and there is room for it near the MCV, it is returned, with this id, to go up.
+    /// Deploys its MCV where it has stopped, and works on its base from there, paying for it
+    /// out of `money` as it goes: once a building is done and there is room for it near the
+    /// MCV, it is returned, with this id, to go up.
     pub fn grow(
         &mut self,
         units: &mut [Unit],
         terrain: &Terrain,
+        money: &mut i32,
         dt: f32,
         id: u32,
     ) -> Option<Unit> {
@@ -104,9 +112,12 @@ impl Strategy {
             }
             if units::can_deploy_here(&units[mcv], terrain) {
                 units::start_deploying(&mut units[mcv]);
-            } else if let Some(spot) =
-                units::deploy_spot_near(terrain, (units[mcv].x, units[mcv].z))
-            {
+            } else if let Some(spot) = units::deploy_spot_near(
+                units,
+                terrain,
+                units[mcv].house,
+                (units[mcv].x, units[mcv].z),
+            ) {
                 // Off the sand first, onto higher ground.
                 units[mcv].destination = spot;
             }
@@ -119,18 +130,27 @@ impl Strategy {
                 (role, role.build_seconds())
             }
         };
-        let left = left - dt;
+        let left = units::work_and_pay(role, left, dt, money);
         self.building = Some((role, left));
         if left > 0.0 {
             return None;
         }
         // Done: it waits for room, if there is none just now.
         let maker = units[mcv];
-        let at = room_near(units, terrain, role, (maker.x, maker.z))?;
+        let at = room_near(units, terrain, role, maker.house, (maker.x, maker.z))?;
         self.building = None;
         let mut building = units::new_building(terrain, at, role, (owner, maker.color), id);
         building.house = maker.house;
         Some(building)
+    }
+
+    /// What its base still needs paid: the rest of the building on its way, or all of the
+    /// next one it will build. It keeps that much back from its army.
+    pub fn saving_for(&self, units: &[Unit]) -> i32 {
+        match self.building {
+            Some((role, left)) => role.cost() - units::paid_for(role, left),
+            None => self.next_building(units).map_or(0, Role::cost),
+        }
     }
 
     /// The first building of the build order it has fewer of than the order asks for so far.
@@ -182,7 +202,7 @@ impl Strategy {
             return Some(base);
         };
         let (dx, dz) = (units[enemy].x - base.0, units[enemy].z - base.1);
-        let away = dx.hypot(dz).max(0.001);
+        let away = dx.hypot(dz).max(0.04525);
         let ahead = RALLY_AHEAD.min(away / 2.0);
         Some((base.0 + dx / away * ahead, base.1 + dz / away * ahead))
     }
@@ -215,7 +235,7 @@ impl Strategy {
             .filter(|&i| soldier(&units[i]) && !self.attackers.contains(&units[i].id))
             .collect();
 
-        // Those at home go after enemies that come too near.
+        // Those at home go after enemies that come too near, unless they are too fast to catch.
         for &i in &home {
             if units[i].target.is_some() {
                 continue;
@@ -224,6 +244,7 @@ impl Strategy {
             let intruder = nearest(units, (shooter.x, shooter.z), |u| {
                 !u.kind.is_building()
                     && shooter.can_attack(u, teams)
+                    && shooter.can_catch(u)
                     && (u.x - base.0).hypot(u.z - base.1) <= GUARD_REACH
             });
             if let Some(intruder) = intruder {
@@ -285,8 +306,8 @@ impl Strategy {
         }
     }
 
-    /// Keeps an attacker going: it fights the nearest enemy it can see, and otherwise heads
-    /// for the nearest enemy building.
+    /// Keeps an attacker going: it fights the nearest enemy it can see and catch, and otherwise
+    /// heads for the nearest enemy building.
     fn press_on(&self, units: &mut [Unit], i: usize, terrain: &Terrain, teams: &[usize]) {
         let unit = units[i];
         let current = match unit.target {
@@ -299,6 +320,7 @@ impl Strategy {
         let in_sight = nearest(units, (unit.x, unit.z), |u| {
             !u.kind.is_building()
                 && unit.can_attack(u, teams)
+                && unit.can_catch(u)
                 && (u.x - unit.x).hypot(u.z - unit.z) <= unit.sight()
         });
         if let Some(enemy) = in_sight {
@@ -330,14 +352,17 @@ fn room_near(
     units: &[Unit],
     terrain: &Terrain,
     role: Role,
+    house: Faction,
     (x, z): (f32, f32),
 ) -> Option<(f32, f32)> {
     BUILD_RINGS.iter().enumerate().find_map(|(ring, &reach)| {
         (0..BUILD_TRIES).find_map(|n| {
             // Each ring starts a little further round, so that rings do not line up.
             let angle = (n as f32 + ring as f32 * 0.5) / BUILD_TRIES as f32 * std::f32::consts::TAU;
-            let plot = role.plot_at((x + reach * angle.cos(), z + reach * angle.sin()));
-            units::can_place_building(units, terrain, plot).then(|| plot.center())
+            let plot = role.plot_at(house, (x + reach * angle.cos(), z + reach * angle.sin()));
+            let fits = units::can_place_building(units, terrain, plot)
+                && units::leaves_lanes(units, plot, LANE);
+            fits.then(|| plot.center())
         })
     })
 }
@@ -367,15 +392,15 @@ mod tests {
 
     /// An opponent's base and Kobra in the open, and an enemy this far from the tank.
     fn siege_at(enemy_away: f32) -> [Unit; 3] {
-        let mut base = Unit::for_test(30.0, 60.0, UnitKind::Building);
+        let mut base = Unit::for_test(1358.0, 2715.0, UnitKind::Building);
         base.id = 1;
         base.owner = 1;
-        let mut tank = Unit::for_test(30.0, 60.0, UnitKind::Vehicle);
+        let mut tank = Unit::for_test(1358.0, 2715.0, UnitKind::Vehicle);
         tank.id = 2;
         tank.owner = 1;
         tank.role = Role::Kobra;
         tank.weapon = WeaponKind::Cannon;
-        let mut enemy = Unit::for_test(30.0 + enemy_away, 60.0, UnitKind::Infantry);
+        let mut enemy = Unit::for_test(1358.0 + enemy_away, 2715.0, UnitKind::Infantry);
         enemy.id = 3;
         [base, tank, enemy]
     }
@@ -389,7 +414,7 @@ mod tests {
 
     #[test]
     fn a_siege_tank_deploys_sometimes_with_an_enemy_in_reach_and_packs_up_when_there_is_none() {
-        let mut units = siege_at(WeaponKind::Siege.range() - 1.0);
+        let mut units = siege_at(WeaponKind::Siege.range() - 45.25);
         let mut strategy = Strategy::new(1, OpponentKind::Competent);
         think_for(&mut strategy, &mut units, 60);
         assert!(units[1].deployed, "it sets up");
@@ -400,8 +425,25 @@ mod tests {
     }
 
     #[test]
+    fn those_at_home_go_after_an_intruder_they_can_catch_and_let_a_faster_one_go() {
+        for (intruder, chased) in [(Role::Devastator, true), (Role::SandBike, false)] {
+            let mut units = siege_at(452.5);
+            units[1].role = Role::Mongoose;
+            units[2].kind = UnitKind::Vehicle;
+            units[2].role = intruder;
+            let mut strategy = Strategy::new(1, OpponentKind::Competent);
+            think_for(&mut strategy, &mut units, 1);
+            assert_eq!(
+                units[1].target,
+                chased.then_some(units::Target::Unit(3)),
+                "{intruder:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_siege_tank_with_nobody_in_reach_stays_on_its_tracks() {
-        let mut units = siege_at(WeaponKind::Siege.range() + 1.0);
+        let mut units = siege_at(WeaponKind::Siege.range() + 45.25);
         let mut strategy = Strategy::new(1, OpponentKind::Competent);
         think_for(&mut strategy, &mut units, 60);
         assert!(!units[1].deployed);
@@ -409,7 +451,7 @@ mod tests {
 
     #[test]
     fn a_deployed_siege_tank_takes_no_marching_orders() {
-        let mut units = siege_at(WeaponKind::Siege.range() - 1.0);
+        let mut units = siege_at(WeaponKind::Siege.range() - 45.25);
         units::switch_deployed(&mut units[1]);
         let stays = units[1].destination;
         let mut strategy = Strategy::new(1, OpponentKind::Competent);

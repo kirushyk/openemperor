@@ -12,17 +12,25 @@ use std::cmp::Ordering;
 use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 /// About how tall a unit stands, in world units.
-pub const HEIGHT: f32 = 0.5;
+pub const HEIGHT: f32 = 22.63;
+/// How far apart the units of a starting group stand: a little over two tiles, room for a
+/// machine.
 #[cfg(test)]
-const SPACING: f32 = 1.2;
+const SPACING: f32 = 70.0;
 /// A unit this close to its destination has reached it.
-const ARRIVED: f32 = 0.12;
-/// Destinations in one order stand this far apart, enough for any two units side by side.
-const SLOT_SPACING: f32 = 1.3;
+const ARRIVED: f32 = 5.431;
+/// Destinations in one order stand this far apart: two and a half tiles, enough for two
+/// machines of the original's usual size side by side with room between them.
+const SLOT_SPACING: f32 = 2.5 * CELL_SIDE;
+/// The same in the air, where carryalls take three tiles.
+const AIR_SLOT_SPACING: f32 = 3.5 * CELL_SIDE;
 /// How far from the clicked point to look for free destinations, in slots.
 const SLOT_SEARCH_RINGS: i32 = 40;
 /// The longest simulation step, in seconds; longer frames are divided up.
 const MAX_STEP: f32 = 0.05;
+/// How many times a second the original game updates at its usual game speed. A second of
+/// battle here is that many of its updates.
+pub const UPDATES_PER_SECOND: f32 = 25.0;
 
 /// A point in the world: x east, y up, z south.
 pub type Point = (f32, f32, f32);
@@ -39,12 +47,12 @@ pub fn substeps(dt: f32) -> (usize, f32) {
 /// A vehicle must point this close to its way, in radians, before it drives.
 const DRIVE_ALIGNMENT: f32 = 0.15;
 /// How far ahead, beyond touching, a unit starts to steer around another.
-const AVOID_MARGIN: f32 = 0.9;
+const AVOID_MARGIN: f32 = 40.73;
 /// How long a unit keeps pressing against water, lava or a ruin without getting any nearer
 /// before it gives up, in seconds.
 const BLOCKED_PATIENCE: f32 = 8.0;
 /// Getting this much nearer counts as progress.
-const PROGRESS: f32 = 0.05;
+const PROGRESS: f32 = 2.263;
 /// How often a unit on its way is looked at, to see that it is getting somewhere.
 const STALL_LOOK_SECONDS: f32 = 1.2;
 /// How much of what it could cover between looks it must have covered.
@@ -52,7 +60,7 @@ const STALL_SHARE: f32 = 0.25;
 /// How many looks in a row finding it has got nowhere before it gives up altogether.
 const STALL_LOOKS_AT_MOST: u8 = 10;
 /// How far a heavy unit will swerve to run down enemy infantry.
-const SQUASH_LURE: f32 = 4.0;
+const SQUASH_LURE: f32 = 181.0;
 /// How nearly ahead that infantry must be, as the cosine of the angle off its way: it will
 /// not turn back for anyone behind it.
 const SQUASH_LURE_AHEAD: f32 = 0.3;
@@ -60,11 +68,11 @@ const SQUASH_LURE_AHEAD: f32 = 0.3;
 /// shifting about a little does not keep it starting and stopping.
 const ATTACK_REACH: f32 = 0.9;
 /// An engineer this far beyond touching a building takes it over.
-const CAPTURE_MARGIN: f32 = 0.3;
+const CAPTURE_MARGIN: f32 = 13.58;
 /// How much farther something fires and sees for each world unit it stands above what it fires
 /// on or the lowest ground, and the most height that counts.
-const HIGH_GROUND_GAIN: f32 = 0.25;
-const HIGH_GROUND_MOST: f32 = 1.6;
+const HIGH_GROUND_GAIN: f32 = 0.005524;
+const HIGH_GROUND_MOST: f32 = 72.41;
 
 /// What standing this far above something multiplies how far it reaches by: nothing below.
 pub fn high_ground(above: f32) -> f32 {
@@ -92,13 +100,12 @@ pub enum UnitKind {
 }
 
 impl UnitKind {
-    /// The radius of the sphere it collides with.
+    /// The radius of the sphere it collides with: half the tiles across the original gives
+    /// it, one for a soldier and two for most machines and for a tower.
     pub fn radius(self) -> f32 {
         match self {
-            UnitKind::Infantry => 0.25,
-            UnitKind::Vehicle => 0.45,
-            UnitKind::Aircraft => 0.4,
-            UnitKind::Tower => 0.6,
+            UnitKind::Infantry => CELL_SIDE / 2.0,
+            UnitKind::Vehicle | UnitKind::Aircraft | UnitKind::Tower => CELL_SIDE,
             UnitKind::Building => BUILDING_RADIUS,
         }
     }
@@ -134,23 +141,9 @@ impl UnitKind {
             UnitKind::Building => 800.0,
         }
     }
-
-    /// World units per second.
-    fn speed(self) -> f32 {
-        match self {
-            UnitKind::Infantry => 2.5,
-            UnitKind::Vehicle => 4.5,
-            UnitKind::Aircraft => 7.0,
-            UnitKind::Tower | UnitKind::Building => 0.0,
-        }
-    }
 }
 
-const BUILDING_RADIUS: f32 = 1.2;
-/// The radius of an MCV on its tracks: far bigger than any other vehicle.
-const MCV_RADIUS: f32 = 1.0;
-/// The radius of a harvester: smaller than an MCV, but not by much.
-const HARVESTER_RADIUS: f32 = 0.6;
+const BUILDING_RADIUS: f32 = 54.31;
 /// How much substance a harvester holds when full.
 pub const HARVESTER_LOAD: f32 = 100.0;
 /// Seconds of driving over the sand it takes a harvester to fill up.
@@ -160,59 +153,65 @@ const CREDITS_PER_SUBSTANCE: f32 = 7.0;
 /// Seconds a harvester takes to empty a full load at a refinery.
 pub const DUMP_SECONDS: f32 = 30.0;
 /// How far around where it found the sand a harvester roams, and the least it goes each time.
-const HARVEST_ROAM: f32 = 3.5;
-const HARVEST_LEAST_STEP: f32 = 1.5;
-/// How far out, in rings so far apart, a harvester looks for sand.
-const SAND_SEARCH_RINGS: usize = 50;
-const SAND_SEARCH_STEP: f32 = 1.5;
-/// Where a refinery's three pads are from its middle, as (across, ahead) with its front ahead,
-/// before it is turned the way it faces.
-pub const REFINERY_PADS: [(f32, f32); 3] = [(-1.4, 1.0), (0.0, 1.0), (1.4, 1.0)];
+const HARVEST_ROAM: f32 = 158.4;
+const HARVEST_LEAST_STEP: f32 = 67.88;
+/// How a refinery's three pads fan out from a point just inside the front of its hall, given as
+/// (across, ahead) of its middle with its front ahead, before it is turned the way it faces:
+/// each is turned this far from straight ahead, the side ones at 45 degrees to the middle one,
+/// and has its middle this far out from that point.
+pub const REFINERY_PAD_HUB: (f32, f32) = (0.0, -1.6);
+pub const REFINERY_PAD_TURNS: [f32; 3] = [-FRAC_PI_4, 0.0, FRAC_PI_4];
+pub const REFINERY_PAD_REACH: f32 = 2.8;
 /// How far each way a refinery's pad reaches: across it, and along it from the building out.
-pub const REFINERY_PAD_HALF: (f32, f32) = (0.55, 0.85);
+pub const REFINERY_PAD_HALF: (f32, f32) = (0.78, 1.25);
 /// How far in front of its pad a harvester stops to come round before it backs on, how fast it
 /// backs on, and how close to its pad it has to come.
-const PAD_APPROACH: f32 = 2.2;
-const BACKING_SPEED: f32 = 1.0;
-const ON_PAD: f32 = 0.02;
+const PAD_APPROACH: f32 = 135.8;
+const BACKING_SPEED: f32 = 45.25;
+const ON_PAD: f32 = 0.9051;
 /// How far out in front of a refinery a full harvester waits when all of its pads are taken.
-const REFINERY_WAITS: f32 = 4.5;
+const REFINERY_WAITS: f32 = 294.2;
 /// Where a refinery's exhaust stacks stand, as (across, ahead) before it is turned, and how
 /// high they end.
-pub const REFINERY_STACKS: [(f32, f32); 2] = [(-1.35, -1.3), (1.35, -1.3)];
-pub const REFINERY_STACK_TOP: f32 = 3.4;
+pub const REFINERY_STACKS: [(f32, f32); 2] = [(-1.9, -2.0), (1.9, -2.0)];
+pub const REFINERY_STACK_TOP: f32 = 4.0;
 /// How high the deck of a landing pad is, which is where a machine on it sits.
 pub const PAD_TOP: f32 = 1.1;
-/// How far a landing pad's deck reaches each way from its middle.
-pub const PAD_DECK: (f32, f32) = (1.0, 0.68);
+/// How high a landing pad's deck stands, as it is drawn.
+pub fn pad_top() -> f32 {
+    PAD_TOP * Role::LandingPad.stretch(Faction::Atreides)[1]
+}
+/// How far a landing pad's deck reaches each way from its middle, across and ahead: it is
+/// longer from front to back, as the original's two squares by three.
+pub const PAD_DECK: (f32, f32) = (0.68, 1.0);
 /// How long a landing pad takes to load one rocket, in seconds.
 const RELOAD_SECONDS: f32 = 1.2;
 /// How far from its pad a machine with rockets left no longer counts as using it.
-const LEAVES_PAD: f32 = 1.5;
+const LEAVES_PAD: f32 = 67.88;
 /// How close above its pad a machine has come to settle on it.
-const OVER_PAD: f32 = 0.5;
+const OVER_PAD: f32 = 22.63;
 /// How close to a pad a machine short of rockets gets a full one to make way, or goes to it.
-const PAD_NEARBY: f32 = 10.0;
+const PAD_NEARBY: f32 = 452.5;
 /// How far out, in rings so far apart, an MCV on the sand looks for upper ground to deploy on.
 const DEPLOY_SEARCH_RINGS: usize = 60;
-const DEPLOY_SEARCH_STEP: f32 = 1.2;
+const DEPLOY_SEARCH_STEP: f32 = 54.31;
 /// How far from its base's MCV a machine home from a mission sits down.
-const HOME_BESIDE: f32 = 3.2;
+const HOME_BESIDE: f32 = 144.8;
 /// How far out, in rings so far apart, a machine looks for higher ground to sit down on.
 const HIGHER_GROUND_RINGS: usize = 10;
-const HIGHER_GROUND_STEP: f32 = 1.5;
+const HIGHER_GROUND_STEP: f32 = 67.88;
 /// How far from a pad a machine waits for it to be free.
-const PAD_BESIDE: f32 = 2.8;
+const PAD_BESIDE: f32 = 126.7;
 /// How far from a pad a machine waiting for it no longer counts as beside it.
-const PAD_WAITS: f32 = 4.5;
+const PAD_WAITS: f32 = 203.6;
 /// How far to one side of a group's middle its landing pad stands, and how far ahead of it.
 #[cfg(test)]
-const PAD_ALONG: f32 = -5.0;
+const PAD_ALONG: f32 = -226.3;
 #[cfg(test)]
-const PAD_AHEAD: f32 = 2.2;
+const PAD_AHEAD: f32 = 99.56;
 /// How far to the other side its MCV stands.
 #[cfg(test)]
-const MCV_ALONG: f32 = 5.4;
+const MCV_ALONG: f32 = 362.0;
 /// How much of its health something must have lost to smoke, to show black stains, and to burn.
 pub const SMOKES_PAST: f32 = 0.25;
 pub const STAINS_PAST: f32 = 0.4;
@@ -220,25 +219,26 @@ pub const BURNS_PAST: f32 = 0.7;
 /// How many units a building can have waiting behind the one it is making.
 const QUEUE_ROOM: usize = 30;
 /// How far beyond its side the door of a building is.
-const DOOR_MARGIN: f32 = 0.2;
+const DOOR_MARGIN: f32 = 9.051;
 /// How far out of a factory's door a new vehicle drives.
-const DRIVE_OUT: f32 = 2.5;
+const DRIVE_OUT: f32 = 113.1;
 /// How far behind a group's middle its buildings stand, and how far apart.
 #[cfg(test)]
-const BUILDINGS_BEHIND: f32 = 4.8;
+const BUILDINGS_BEHIND: f32 = 250.0;
 #[cfg(test)]
-const BUILDING_SPREAD: f32 = 4.6;
+const BUILDING_SPREAD: f32 = 208.2;
 /// How high aircraft fly, in world units.
-const CRUISE_ALTITUDE: f32 = 4.0;
+const CRUISE_ALTITUDE: f32 = 181.0;
 /// World units per second that whatever lands goes up and comes down.
-const CLIMB_SPEED: f32 = 2.5;
-/// How far from where it was sent something that never stops circles.
-const CIRCLE_RADIUS: f32 = 3.5;
+const CLIMB_SPEED: f32 = 113.1;
 /// How near right above a vehicle a carryall must be to pick it up.
-const LIFT_REACH: f32 = 0.3;
+const LIFT_REACH: f32 = 13.58;
 /// World units per second a carried vehicle is pulled up or let down, and how high it hangs.
-const WINCH_SPEED: f32 = 3.0;
-const HANG_HEIGHT: f32 = CRUISE_ALTITUDE - 0.6;
+const WINCH_SPEED: f32 = 135.8;
+/// How far under a carryall what it carries hangs, so that its top clears it: a harvester
+/// stands far taller than other vehicles.
+const HANGS_BELOW: f32 = 27.15;
+const HARVESTER_HANGS_BELOW: f32 = 65.62;
 /// How long an enemy vehicle fights a carryall that has hold of it before it can be lifted.
 pub const STRUGGLE_SECONDS: f32 = 4.0;
 /// Radians it leans into the sharpest turn, and how quickly it gets there, per second.
@@ -252,11 +252,11 @@ const RANK_ATTACK: f32 = 0.2;
 const RANK_SPEED: f32 = 0.1;
 
 /// How far a unit sees, in world units, by what it is: it always sees as far as it can hit.
-const INFANTRY_SIGHT: f32 = 8.0;
-const VEHICLE_SIGHT: f32 = 9.0;
-const AIRCRAFT_SIGHT: f32 = 10.0;
-const TOWER_SIGHT: f32 = 10.0;
-const SCOUT_SIGHT: f32 = 14.0;
+const INFANTRY_SIGHT: f32 = 362.0;
+const VEHICLE_SIGHT: f32 = 407.3;
+const AIRCRAFT_SIGHT: f32 = 452.5;
+const TOWER_SIGHT: f32 = 452.5;
+const SCOUT_SIGHT: f32 = 633.6;
 
 /// What a unit is, beyond how it moves: this names it and decides what it starts with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -289,6 +289,9 @@ pub enum Role {
     Minotaurus,
     /// Hangs in the air, unarmed, and carries friendly vehicles to where it is told.
     AdvancedCarryall,
+    /// Unarmed, and goes about by itself, never told where: it circles until a harvester has a
+    /// long way to go, then carries it there, out to the sand or back to a refinery.
+    Carryall,
     /// Hangs in the air and fires an automatic gun at the air and the ground alike.
     AirDefensePlatform,
     /// A delta wing that can never stop: it circles where it was sent, and fires its missiles
@@ -298,6 +301,12 @@ pub enum Role {
     Ornithopter,
     /// A heavier, slower ornithopter whose rockets do far more harm.
     Destroyer,
+    /// House O's: cheap, unarmed and hanging in the air, it bursts into six rockets chasing the
+    /// first enemy aircraft that comes near.
+    AirMine,
+    /// House O's: hangs in the air, unarmed, until deployed. Then it lets six heavy bombs fall,
+    /// hard on buildings, and a suicide infantry come down after them by parachute.
+    EyeInTheSky,
     /// House H's rifleman: tougher than light infantry.
     RegularInfantry,
     /// House H's soldier with a shoulder launcher firing missiles.
@@ -324,6 +333,11 @@ pub enum Role {
     /// House O's tank on two tracks with a cannon longer than itself. Deployed, it stands
     /// still and raises the cannon on a leg to shell what is far off.
     Kobra,
+    /// House O's armored carrier for up to five soldiers, gliding like a laser tank and firing
+    /// twin rockets.
+    RocketApc,
+    /// House A's armored carrier for up to five soldiers: invisible, with twin rapid guns.
+    StealthApc,
     /// Sprays fire at the ground in front of it.
     FlameInfantry,
     /// Sprays green gas at the ground in front of it.
@@ -392,8 +406,14 @@ impl Facing {
 
     /// The way out of the front of a building, on the ground.
     pub fn way_out(self) -> (f32, f32) {
+        self.turned((0.0, 1.0))
+    }
+
+    /// A way given as (across, ahead) of a building with its front ahead, turned to look this
+    /// way.
+    pub fn turned(self, (across, ahead): (f32, f32)) -> (f32, f32) {
         let (sin, cos) = self.turn().sin_cos();
-        (-sin, cos)
+        (across * cos - ahead * sin, across * sin + ahead * cos)
     }
 
     /// Whether a building's width and depth are swapped on the grid.
@@ -507,15 +527,20 @@ impl Role {
             | Role::Recon
             | Role::LaserTank
             | Role::Kobra
+            | Role::RocketApc
+            | Role::StealthApc
             | Role::Catapult
             | Role::RocketLauncher
             | Role::Mongoose
             | Role::Minotaurus => UnitKind::Vehicle,
             Role::AdvancedCarryall
+            | Role::Carryall
             | Role::AirDefensePlatform
             | Role::AirDrone
             | Role::Ornithopter
-            | Role::Destroyer => UnitKind::Aircraft,
+            | Role::Destroyer
+            | Role::AirMine
+            | Role::EyeInTheSky => UnitKind::Aircraft,
             Role::Tower
             | Role::FlameTower
             | Role::GunTower
@@ -548,10 +573,13 @@ impl Role {
             Role::Mongoose => "Mongoose",
             Role::Minotaurus => "Minotaurus",
             Role::AdvancedCarryall => "Advanced Carryall",
+            Role::Carryall => "Carryall",
             Role::AirDefensePlatform => "Air Defense Platform",
             Role::AirDrone => "Air Drone",
             Role::Ornithopter => "Ornithopter",
             Role::Destroyer => "Destroyer",
+            Role::AirMine => "Air Mine",
+            Role::EyeInTheSky => "Eye in the Sky",
             Role::FlameInfantry => "Flame Infantry",
             Role::RegularInfantry => "Regular Infantry",
             Role::RocketInfantry => "Rocket Infantry",
@@ -564,6 +592,8 @@ impl Role {
             Role::Recon => "Recon",
             Role::LaserTank => "Laser Tank",
             Role::Kobra => "Kobra",
+            Role::RocketApc => "Rocket APC",
+            Role::StealthApc => "Stealth APC",
             Role::GasInfantry => "Gas Infantry",
             Role::Tower => "Rocket Tower",
             Role::FlameTower => "Flame Tower",
@@ -589,7 +619,9 @@ impl Role {
             | Role::RegularInfantry
             | Role::SandBike
             | Role::DiskSaw
+            | Role::StealthApc
             | Role::Recon => WeaponKind::Bullet,
+            Role::RocketApc => WeaponKind::TowerRockets,
             Role::LaserTank => WeaponKind::Laser,
             Role::Kobra => WeaponKind::Cannon,
             Role::RocketInfantry => WeaponKind::Missile,
@@ -617,7 +649,9 @@ impl Role {
             Role::Mongoose => WeaponKind::Missile,
             Role::Tower => WeaponKind::TowerRockets,
             Role::Minotaurus => WeaponKind::Bombard,
-            Role::AdvancedCarryall => WeaponKind::Unarmed,
+            Role::AdvancedCarryall | Role::Carryall | Role::AirMine | Role::EyeInTheSky => {
+                WeaponKind::Unarmed
+            }
             Role::AirDefensePlatform => WeaponKind::AutoGun,
             Role::GunTower => WeaponKind::TowerGun,
             Role::GunPost => WeaponKind::PostGun,
@@ -643,6 +677,8 @@ impl Role {
             Role::Recon => 150.0,
             Role::LaserTank => 260.0,
             Role::Kobra => 380.0,
+            Role::RocketApc => 450.0,
+            Role::StealthApc => 400.0,
             Role::RepairVehicle => 200.0,
             Role::Mcv => 1200.0,
             Role::Harvester => 500.0,
@@ -652,6 +688,8 @@ impl Role {
             Role::Minotaurus => 450.0,
             Role::AirDefensePlatform => 200.0,
             Role::AirDrone => 80.0,
+            Role::AirMine => 60.0,
+            Role::EyeInTheSky => 300.0,
             Role::Destroyer => 320.0,
             Role::LandingPad => 400.0,
             Role::Palace(_) => 1200.0,
@@ -661,26 +699,55 @@ impl Role {
         }
     }
 
-    fn speed(self) -> f32 {
-        match self {
-            Role::Scout => 4.0,
-            Role::Mcv => 1.8,
-            Role::Harvester => 2.4,
-            Role::SandBike => 6.5,
-            Role::Devastator => 0.9,
-            Role::Recon => 6.0,
-            Role::LaserTank => 5.5,
-            Role::Kobra => 3.0,
-            Role::SuicideInfantry => 3.0,
-            Role::Catapult | Role::RocketLauncher => 3.5,
-            Role::Mongoose => 4.0,
-            Role::Minotaurus => 2.8,
-            Role::AirDefensePlatform => 3.0,
-            Role::AirDrone => 8.0,
-            Role::Ornithopter => 5.5,
-            Role::Destroyer => 3.2,
-            _ => self.kind().speed(),
-        }
+    /// World units per second: the original's speed for it, in its coordinates per update.
+    /// Walkers go as fast as their legs carry them.
+    pub fn speed(self, house: Faction) -> f32 {
+        let per_update = match self {
+            Role::Scout => match house {
+                Faction::Atreides => 7.0,
+                Faction::Harkonnen => 6.0,
+                Faction::Ordos => 8.0,
+            },
+            Role::LightInfantry | Role::Sniper | Role::GasInfantry | Role::SuicideInfantry => 6.0,
+            Role::Engineer
+            | Role::KInfantry
+            | Role::RegularInfantry
+            | Role::RocketInfantry
+            | Role::FlameInfantry
+            | Role::MortarInfantry => 4.0,
+            Role::Mcv | Role::Harvester => 4.0,
+            Role::SandBike | Role::LaserTank => 12.0,
+            Role::Recon => 14.0,
+            Role::Tank | Role::Kobra => 5.0,
+            Role::FlameTank | Role::RocketLauncher => 6.0,
+            Role::StealthApc | Role::RepairVehicle | Role::DiskSaw | Role::Catapult => 8.0,
+            Role::RocketApc => 10.0,
+            Role::Devastator => 1.0,
+            Role::Minotaurus => 2.0,
+            Role::Mongoose => 3.0,
+            Role::Carryall | Role::Ornithopter | Role::AirDrone => 20.0,
+            Role::AdvancedCarryall => 17.0,
+            Role::Destroyer => 10.0,
+            Role::EyeInTheSky => 7.0,
+            Role::AirMine => 6.0,
+            Role::AirDefensePlatform => 2.0,
+            _ => 0.0,
+        };
+        per_update * UPDATES_PER_SECOND
+    }
+
+    /// How fast it turns, in radians per second: the original's turn per update.
+    pub fn turn_rate(self) -> f32 {
+        let per_update = match self {
+            Role::SandBike | Role::Recon => 0.3,
+            Role::Mongoose | Role::DiskSaw | Role::EyeInTheSky => 0.2,
+            Role::AirMine | Role::AirDefensePlatform => 0.2,
+            Role::Devastator | Role::Minotaurus | Role::Harvester => 0.15,
+            Role::LaserTank | Role::Carryall | Role::AdvancedCarryall => 0.1,
+            Role::RocketApc | Role::Ornithopter | Role::AirDrone | Role::Destroyer => 0.05,
+            _ => 0.175,
+        };
+        per_update * UPDATES_PER_SECOND
     }
 
     /// How long it takes its building to make it, in seconds.
@@ -699,12 +766,15 @@ impl Role {
             Role::Recon => 6.0,
             Role::LaserTank => 11.0,
             Role::Kobra => 16.0,
+            Role::RocketApc | Role::StealthApc => 12.0,
             Role::Sniper | Role::KInfantry => 6.0,
             Role::RepairVehicle => 7.0,
             Role::Tank | Role::Catapult | Role::Mongoose | Role::AirDrone => 9.0,
             Role::RocketLauncher | Role::Ornithopter | Role::AirDefensePlatform => 11.0,
-            Role::AdvancedCarryall => 12.0,
+            Role::AdvancedCarryall | Role::Carryall => 12.0,
             Role::Minotaurus | Role::Destroyer => 15.0,
+            Role::AirMine => 5.0,
+            Role::EyeInTheSky => 18.0,
             Role::Mcv => 25.0,
             Role::Harvester => 12.0,
             Role::LandingPad => 10.0,
@@ -715,6 +785,49 @@ impl Role {
             Role::Factory | Role::Hangar => 20.0,
             Role::Tower | Role::GunTower | Role::LaserTower => 12.0,
             Role::GunPost | Role::FlameTower | Role::GasTower => 8.0,
+        }
+    }
+
+    /// What it costs to make, in credits, paid bit by bit while it is being made.
+    pub fn cost(self) -> i32 {
+        match self {
+            Role::Scout => 40,
+            Role::LightInfantry | Role::RegularInfantry => 50,
+            Role::FlameInfantry | Role::GasInfantry => 80,
+            Role::KInfantry | Role::RocketInfantry => 90,
+            Role::SuicideInfantry | Role::MortarInfantry => 100,
+            Role::Sniper => 120,
+            Role::Engineer => 400,
+            Role::SandBike => 250,
+            Role::Recon => 300,
+            Role::RepairVehicle | Role::Mongoose => 600,
+            Role::Tank => 700,
+            Role::Catapult | Role::DiskSaw | Role::FlameTank => 800,
+            Role::RocketLauncher | Role::LaserTank => 900,
+            Role::Minotaurus | Role::Kobra | Role::StealthApc => 1000,
+            Role::RocketApc => 900,
+            Role::Harvester => 1200,
+            Role::Devastator => 1750,
+            Role::Mcv => 2000,
+            Role::AirDrone => 600,
+            Role::Carryall => 800,
+            Role::AirDefensePlatform => 900,
+            Role::Ornithopter => 1000,
+            Role::AdvancedCarryall => 1100,
+            Role::Destroyer => 1400,
+            Role::AirMine => 200,
+            Role::EyeInTheSky => 1500,
+            Role::GunPost => 300,
+            Role::FlameTower | Role::GasTower => 400,
+            Role::Tower => 500,
+            Role::GunTower | Role::LaserTower => 600,
+            Role::Barracks => 300,
+            Role::LandingPad => 500,
+            Role::Outpost => 750,
+            Role::Factory => 1000,
+            Role::Hangar => 1100,
+            Role::Refinery => 1500,
+            Role::Palace(_) => 1600,
         }
     }
 
@@ -733,6 +846,7 @@ impl Role {
                 | Role::Kobra
                 | Role::Devastator
                 | Role::Mcv
+                | Role::EyeInTheSky
         )
     }
 
@@ -751,14 +865,26 @@ impl Role {
             Role::GasInfantry | Role::SuicideInfantry | Role::MortarInfantry => {
                 house == Faction::Ordos
             }
-            Role::SandBike | Role::RepairVehicle | Role::Mongoose | Role::Minotaurus => {
-                house == Faction::Atreides
-            }
-            Role::Recon | Role::LaserTank | Role::Kobra => house == Faction::Ordos,
+            Role::SandBike
+            | Role::RepairVehicle
+            | Role::Mongoose
+            | Role::Minotaurus
+            | Role::StealthApc => house == Faction::Atreides,
+            Role::Recon
+            | Role::LaserTank
+            | Role::Kobra
+            | Role::RocketApc
+            | Role::AirMine
+            | Role::EyeInTheSky => house == Faction::Ordos,
             Role::Palace(of) => house == of,
-            Role::Tank | Role::DiskSaw | Role::FlameTank | Role::Devastator | Role::Catapult => {
-                house == Faction::Harkonnen
-            }
+            Role::Tank
+            | Role::DiskSaw
+            | Role::FlameTank
+            | Role::Devastator
+            | Role::Catapult
+            | Role::RocketLauncher
+            | Role::Destroyer => house == Faction::Harkonnen,
+            Role::AirDrone => house == Faction::Atreides,
             _ => true,
         }
     }
@@ -780,47 +906,226 @@ impl Role {
     /// The radius of the sphere it collides with, as it comes out.
     pub fn radius(self) -> f32 {
         match self {
-            Role::Mcv => MCV_RADIUS,
-            Role::Harvester => HARVESTER_RADIUS,
-            Role::Refinery => 2.0,
-            Role::Devastator => 1.0,
-            Role::Palace(Faction::Harkonnen) => 2.6,
-            Role::Outpost => 1.5,
-            Role::Kobra => 0.55,
-            Role::Barracks => 2.0,
-            Role::Factory | Role::Hangar => 2.2,
-            Role::Recon => 0.4,
-            Role::DiskSaw => 0.5,
-            Role::SandBike => 0.35,
+            // The biggest machines take three tiles across.
+            Role::Mcv | Role::Harvester | Role::Kobra | Role::Carryall | Role::AdvancedCarryall => {
+                CELL_SIDE * 1.5
+            }
+            Role::Refinery => 126.7,
+            Role::Palace(Faction::Harkonnen) => 117.7,
+            Role::Outpost => 67.88,
+            Role::Barracks => 90.51,
+            Role::Factory | Role::Hangar => 99.56,
             _ => self.kind().radius(),
         }
     }
 
-    /// How many grid squares a building takes up along the map's two grid axes.
-    pub fn plot_size(self) -> (i32, i32) {
-        match self {
-            Role::Barracks => (6, 4),
-            Role::Factory | Role::Hangar => (6, 5),
-            Role::Palace(Faction::Harkonnen) => (6, 6),
-            Role::Palace(_) => (4, 3),
-            Role::Outpost => (4, 4),
-            Role::LandingPad => (3, 2),
-            Role::Refinery => (6, 6),
-            Role::Mcv => (3, 3),
+    /// How many grid squares a building takes up along the map's two grid axes, across its
+    /// front and from front to back: the original's, without the room left clear before it.
+    pub fn plot_size(self, house: Faction) -> (i32, i32) {
+        use Faction::{Atreides, Harkonnen, Ordos};
+        match (self, house) {
+            (Role::Barracks, Atreides) => (5, 4),
+            (Role::Barracks, Harkonnen) => (5, 6),
+            (Role::Barracks, Ordos) => (5, 5),
+            (Role::Factory, Atreides) => (7, 6),
+            (Role::Factory, Harkonnen) => (8, 8),
+            (Role::Factory, Ordos) => (7, 7),
+            (Role::Hangar, Atreides) => (5, 7),
+            (Role::Hangar, Harkonnen) => (7, 7),
+            (Role::Hangar, Ordos) => (7, 6),
+            (Role::Outpost, Atreides) => (5, 4),
+            (Role::Outpost, Harkonnen) => (4, 4),
+            (Role::Outpost, Ordos) => (4, 3),
+            (Role::Palace(Atreides), _) => (7, 7),
+            (Role::Palace(Harkonnen), _) => (9, 7),
+            (Role::Palace(Ordos), _) => (9, 6),
+            (Role::Refinery, _) => (11, 7),
+            (Role::LandingPad, _) => (2, 3),
+            // Deployed, as big as the original's construction yard.
+            (Role::Mcv, Harkonnen) => (5, 8),
+            (Role::Mcv, _) => (5, 7),
             _ => (2, 2),
+        }
+    }
+
+    /// How tall the original's building is, in its coordinates.
+    fn roof_height(self, house: Faction) -> f32 {
+        use Faction::{Atreides, Harkonnen, Ordos};
+        match (self, house) {
+            (Role::Barracks, Ordos) => 120.0,
+            (Role::Barracks, _) => 125.0,
+            (Role::Factory, Atreides) | (Role::Hangar, Atreides) => 135.0,
+            (Role::Factory, Harkonnen) => 145.0,
+            (Role::Hangar, Harkonnen) => 125.0,
+            (Role::Factory | Role::Hangar, Ordos) => 115.0,
+            (Role::Palace(Atreides), _) => 220.0,
+            (Role::Palace(Harkonnen), _) => 285.0,
+            (Role::Palace(Ordos), _) => 200.0,
+            (Role::GasTower, _) => 20.0,
+            (Role::LaserTower, _) => 50.0,
+            (Role::Tower | Role::FlameTower | Role::GunTower | Role::GunPost, _) => 80.0,
+            (Role::LandingPad, _) => 72.0,
+            (Role::Mcv, _) => 107.0,
+            _ => 100.0,
+        }
+    }
+
+    /// How big the original's model of it is, in its coordinates, as [along, up, across] of a
+    /// machine (to its nose, its top, to its right) or [across, up, ahead] of a building: the
+    /// box the original selects it by, and a building's squares. An aircraft's up is how thick
+    /// it is. Infantry with no such box have their figure's height and a usual breadth.
+    pub fn original_size(self, house: Faction) -> [f32; 3] {
+        match self {
+            Role::LightInfantry => [14.0, 35.0, 14.0],
+            Role::Scout => [14.0, 36.3, 14.0],
+            Role::Sniper => [14.0, 32.4, 14.0],
+            Role::Engineer => [14.0, 35.1, 14.0],
+            Role::KInfantry => [22.1, 37.3, 21.5],
+            Role::FlameInfantry => [14.0, 43.6, 14.0],
+            Role::GasInfantry => [16.1, 33.6, 13.9],
+            Role::RegularInfantry => [13.2, 34.4, 13.5],
+            Role::RocketInfantry => [15.7, 37.1, 15.4],
+            Role::SuicideInfantry => [12.6, 30.6, 12.0],
+            Role::MortarInfantry => [14.0, 40.3, 14.0],
+            Role::Tank => [61.1, 31.7, 47.7],
+            Role::RepairVehicle => [66.7, 33.1, 37.0],
+            Role::Mcv => [88.6, 46.7, 64.9],
+            Role::Harvester => [99.1, 53.4, 69.0],
+            Role::SandBike => [52.7, 16.1, 30.8],
+            Role::DiskSaw => [58.7, 50.7, 49.6],
+            Role::FlameTank => [51.0, 23.7, 40.5],
+            Role::Devastator => [89.7, 85.3, 76.6],
+            Role::Recon => [69.6, 20.3, 23.1],
+            Role::LaserTank => [67.4, 34.6, 37.6],
+            // Its box stands as tall as its howitzer raised: it keeps its proportions.
+            Role::Kobra => [79.4, 33.3, 45.9],
+            Role::RocketApc => [54.5, 49.1, 30.6],
+            Role::StealthApc => [43.9, 27.0, 40.5],
+            Role::Catapult => [71.2, 23.8, 59.6],
+            Role::RocketLauncher => [56.9, 37.6, 47.0],
+            Role::Mongoose => [41.0, 43.8, 26.4],
+            Role::Minotaurus => [66.7, 46.6, 44.0],
+            Role::AdvancedCarryall => [104.1, 24.5, 86.2],
+            Role::Carryall => [83.9, 17.4, 82.8],
+            Role::AirDefensePlatform => [69.5, 14.5, 56.6],
+            Role::AirDrone => [63.8, 7.7, 71.5],
+            Role::Ornithopter => [52.7, 34.0, 49.5],
+            Role::Destroyer => [62.0, 27.2, 84.7],
+            Role::AirMine => [18.5, 32.4, 24.6],
+            Role::EyeInTheSky => [69.3, 22.5, 38.3],
+            Role::Barracks
+            | Role::Factory
+            | Role::Hangar
+            | Role::Refinery
+            | Role::Outpost
+            | Role::Palace(_)
+            | Role::LandingPad
+            | Role::Tower
+            | Role::FlameTower
+            | Role::GunTower
+            | Role::GunPost
+            | Role::GasTower
+            | Role::LaserTower => {
+                let (cols, rows) = self.plot_size(house);
+                [
+                    cols as f32 * CELL_SIDE,
+                    self.roof_height(house),
+                    rows as f32 * CELL_SIDE,
+                ]
+            }
+        }
+    }
+
+    /// How big its own model is as it is made, in world units, measured the same way as
+    /// `original_size`. Drawing tests keep these up to date with the models.
+    pub fn made_size(self) -> [f32; 3] {
+        match self {
+            Role::LightInfantry => [0.415, 0.664, 0.2685],
+            Role::Scout => [0.31, 0.7703, 0.2685],
+            Role::Sniper => [0.645, 0.656, 0.2685],
+            Role::Engineer => [0.4359, 0.675, 0.3266],
+            Role::KInfantry => [0.3509, 0.671, 0.2952],
+            Role::FlameInfantry | Role::GasInfantry => [0.545, 0.666, 0.2685],
+            Role::RegularInfantry => [0.415, 0.671, 0.2685],
+            Role::RocketInfantry => [0.6017, 0.671, 0.2842],
+            Role::SuicideInfantry => [0.2787, 0.664, 0.3125],
+            Role::MortarInfantry => [0.4697, 0.6645, 0.2952],
+            Role::Tank => [1.1142, 0.66, 0.582],
+            Role::RepairVehicle => [0.8637, 0.532, 0.52],
+            Role::Mcv => [3.844, 1.398, 1.64],
+            Role::Harvester => [1.6096, 0.88, 1.0271],
+            Role::SandBike => [0.9226, 0.33, 0.4],
+            Role::DiskSaw => [1.06, 1.07, 0.74],
+            Role::FlameTank => [0.9072, 0.5008, 0.6358],
+            Role::Devastator => [2.9914, 2.98, 3.0655],
+            Role::Recon => [1.2179, 0.53, 0.7774],
+            Role::LaserTank => [0.946, 0.585, 0.6],
+            Role::Kobra => [1.77, 0.5808, 0.8],
+            Role::RocketApc => [1.058, 0.5366, 0.78],
+            Role::StealthApc => [1.128, 0.5, 0.6],
+            Role::Catapult => [0.9416, 0.46, 0.524],
+            Role::RocketLauncher => [0.886, 0.439, 0.53],
+            Role::Mongoose => [0.776, 0.95, 0.4258],
+            Role::Minotaurus => [1.87, 1.3, 0.9511],
+            Role::AdvancedCarryall => [1.12, 0.2205, 1.006],
+            Role::Carryall => [1.226, 0.3213, 0.908],
+            Role::AirDefensePlatform => [0.9, 0.25, 0.73],
+            Role::AirDrone => [0.92, 0.273, 1.0],
+            Role::Ornithopter => [0.79, 0.25, 1.0048],
+            Role::Destroyer => [1.14, 0.377, 1.6076],
+            Role::AirMine => [0.74, 0.3, 0.6409],
+            Role::EyeInTheSky => [1.34, 0.53, 1.08],
+            Role::Barracks => [2.0, 0.69, 1.424],
+            Role::Factory => [2.1, 1.5, 1.724],
+            Role::Hangar => [2.2, 0.86, 1.824],
+            Role::Refinery => [6.8307, 4.0, 5.2],
+            Role::Outpost => [2.3, 1.95, 2.324],
+            Role::Palace(Faction::Atreides) => [2.4, 1.5, 2.0],
+            Role::Palace(Faction::Harkonnen) => [3.92, 4.7, 3.934],
+            Role::Palace(Faction::Ordos) => [2.6, 2.2, 1.424],
+            Role::LandingPad => [1.36, 1.57, 2.0],
+            Role::Tower | Role::GunTower => [1.0, 1.52, 1.0],
+            Role::FlameTower => [1.0, 1.4, 1.0],
+            Role::GunPost => [1.24, 1.4, 1.24],
+            // Risen, with its gun out.
+            Role::GasTower => [1.0, 0.645, 1.0],
+            Role::LaserTower => [1.0, 0.63, 1.0],
+        }
+    }
+
+    /// How big an MCV's model is deployed, as it is made, as [along, up, across].
+    fn deployed_size(house: Faction) -> [f32; 3] {
+        let up = match house {
+            Faction::Atreides => 2.252,
+            Faction::Harkonnen => 2.122,
+            Faction::Ordos => 1.952,
+        };
+        [3.986, up, 2.2]
+    }
+
+    /// How many times its model is stretched along each of its own three axes, as given in
+    /// `original_size`, to be as big as the original's. Infantry are stretched along by as much
+    /// as across, so that what they hold out in front keeps its length.
+    pub fn stretch(self, house: Faction) -> [f32; 3] {
+        let (wanted, made) = (self.original_size(house), self.made_size());
+        let [along, up, across] = std::array::from_fn(|i| wanted[i] / made[i]);
+        if self.kind() == UnitKind::Infantry {
+            [across, up, across]
+        } else {
+            [along, up, across]
         }
     }
 
     /// The squares it would take up with its middle as near this place as the grid allows,
     /// looking the usual way.
-    pub fn plot_at(self, at: (f32, f32)) -> Plot {
-        self.plot_facing(at, Facing::default())
+    pub fn plot_at(self, house: Faction, at: (f32, f32)) -> Plot {
+        self.plot_facing(house, at, Facing::default())
     }
 
     /// The squares it would take up with its middle as near this place as the grid allows,
     /// looking this way.
-    pub fn plot_facing(self, (x, z): (f32, f32), facing: Facing) -> Plot {
-        let (cols, rows) = self.plot_size();
+    pub fn plot_facing(self, house: Faction, (x, z): (f32, f32), facing: Facing) -> Plot {
+        let (cols, rows) = self.plot_size(house);
         let (cols, rows) = if facing.swaps_sides() {
             (rows, cols)
         } else {
@@ -842,22 +1147,31 @@ impl Role {
         let middle_v = plot.v + plot.rows / 2;
         let along_u = (middle_u - 1..=middle_u).contains(&u);
         let along_v = (middle_v - 1..=middle_v).contains(&v);
-        self.makes_units()
+        let exit = self.makes_units()
             && match facing {
                 Facing::LeftBottom => v == plot.v + plot.rows - 1 && along_u,
                 Facing::RightTop => v == plot.v && along_u,
                 Facing::RightBottom => u == plot.u + plot.cols - 1 && along_v,
                 Facing::LeftTop => u == plot.u && along_v,
-            }
+            };
+        exit || self.is_under_pad(plot, facing, (u, v))
     }
 
-    /// How many times its basic model it is drawn.
-    pub fn drawn_scale(self) -> f32 {
-        match self {
-            Role::Barracks | Role::Factory | Role::Hangar => 1.9,
-            Role::AdvancedCarryall => 2.0,
-            _ => 1.0,
-        }
+    /// Whether the middle of this grid cell of its plot lies on one of a refinery's pads,
+    /// where harvesters come in.
+    fn is_under_pad(self, plot: Plot, facing: Facing, (u, v): (i32, i32)) -> bool {
+        let (x, z) = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+        let (middle_x, middle_z) = plot.center();
+        let (half_across, half_along) = (35.3, 56.57);
+        self == Role::Refinery
+            && (0..REFINERY_PAD_TURNS.len()).any(|pad| {
+                let (middle, way) = laid_refinery_pad(pad);
+                let (pad_x, pad_z) = facing.turned(middle);
+                let (out_x, out_z) = facing.turned(way);
+                let (dx, dz) = (x - middle_x - pad_x, z - middle_z - pad_z);
+                (dx * out_x + dz * out_z).abs() <= half_along
+                    && (dx * out_z - dz * out_x).abs() <= half_across
+            })
     }
 
     /// Whether it runs on wheels or tracks, and so raises dust on sand.
@@ -870,24 +1184,23 @@ impl Role {
                     | Role::Devastator
                     | Role::Recon
                     | Role::LaserTank
+                    | Role::RocketApc
             )
     }
 
-    /// How high a building reaches, as it is drawn.
-    pub fn building_top(self) -> f32 {
-        match self {
-            Role::Barracks => 1.3,
-            Role::Factory => 2.85,
-            Role::Hangar => 1.65,
-            Role::Palace(Faction::Harkonnen) => 5.9,
-            Role::Palace(_) => 2.2,
-            Role::Outpost => 2.0,
-            Role::GasTower | Role::LaserTower => 0.8,
-            Role::LandingPad => PAD_TOP + 0.6,
-            Role::Refinery => REFINERY_STACK_TOP,
-            Role::Mcv => 2.4,
-            _ => TUBE_HEIGHT + 0.4,
-        }
+    /// Whether it glides over the ground, going any way at once and turning its nose slowly.
+    pub fn glides(self) -> bool {
+        matches!(self, Role::LaserTank | Role::RocketApc)
+    }
+
+    /// Whether infantry can get in it, to be carried about.
+    pub fn carries_infantry(self) -> bool {
+        matches!(self, Role::RocketApc | Role::StealthApc)
+    }
+
+    /// How high a building reaches, as it is drawn: as high as the original's roof.
+    pub fn building_top(self, house: Faction) -> f32 {
+        self.roof_height(house)
     }
 
     /// Whether it sits on the ground when it has nowhere to go.
@@ -907,6 +1220,11 @@ impl Role {
     /// Whether it must keep flying forward, unable to hang in the air.
     fn never_stops(self) -> bool {
         self == Role::AirDrone
+    }
+
+    /// Whether the player can send it anywhere: a carryall goes about by itself.
+    pub fn goes_where_told(self) -> bool {
+        self != Role::Carryall
     }
 
     /// Its height above the ground when it first appears.
@@ -940,12 +1258,18 @@ impl Role {
     }
 }
 
-/// Radians per second a vehicle can turn.
-const TURN_SPEED: f32 = 3.0;
-/// Radians per second a laser tank's nose comes round to the way it glides.
-const GLIDER_TURN_SPEED: f32 = 1.0;
+/// How fast a soldier comes down by parachute.
+const PARACHUTE_SPEED: f32 = 54.31;
+/// How many soldiers an APC has room for.
+pub const APC_ROOM: usize = 5;
+/// How near a soldier has to come to the edge of an APC to get in.
+const BOARDING_REACH: f32 = 22.63;
+/// Where a rocket APC's rockets leave its pods, and a stealth APC's gunfire its guns, as
+/// (ahead, up, to either side) of its middle.
+pub const APC_ROCKET_TIP: [f32; 3] = [0.36, 0.47, 0.32];
+pub const APC_GUN_TIP: [f32; 3] = [0.62, 0.45, 0.04];
 /// How far a recon's legs step for each radian it turns on the spot.
-const LEGS_PER_TURN: f32 = 0.45;
+const LEGS_PER_TURN: f32 = 20.36;
 /// Which place for a base holds the player's second group in a battle set up for tests: off to
 /// the east, a long scroll from the first.
 #[cfg(test)]
@@ -955,11 +1279,11 @@ const SECOND_GROUP_SPOT: usize = 2;
 const ROWS_WITH_AIRCRAFT: usize = 4;
 /// How far to the side of its group's middle the player's tower stands.
 #[cfg(test)]
-const PLAYER_TOWER_OFFSET: f32 = -3.4;
+const PLAYER_TOWER_OFFSET: f32 = -153.9;
 /// How far to the side of its group's middle an opponent's tower stands. Not so far that it
 /// leaves the land kept clear around the ring.
 #[cfg(test)]
-const OPPONENT_TOWER_OFFSET: f32 = 3.5;
+const OPPONENT_TOWER_OFFSET: f32 = 158.4;
 /// How high a tower's tubes are.
 pub const TUBE_HEIGHT: f32 = 1.26;
 /// How far ahead of a tower's middle its tubes end, and how far apart they stand from it.
@@ -1000,6 +1324,9 @@ pub const CANNON_HINGE: f32 = 0.43;
 pub const PLATFORM_SHARE_OF_PITCH: f32 = 0.4;
 /// Seconds a building takes to go up once it has been placed.
 pub const CONSTRUCTION_SECONDS: f32 = 1.0;
+/// Where the nozzle of a carryall's right jet is, as [along, up, across] on its model: at the
+/// back of the jet on the end of the middle wing. The left one is across from it.
+pub const CARRYALL_JET_NOZZLE: [f32; 3] = [-0.2, 0.12, 0.4];
 /// The way an MCV faces to deploy: the map's left-bottom edge.
 const MCV_DEPLOY_HEADING: f32 = 3.0 * FRAC_PI_4;
 /// Where an MCV's drill is hinged, as [along, up].
@@ -1016,6 +1343,14 @@ pub const WELD_POINTS: usize = 4;
 /// Where a Kobra's cannon tip is, as [along, up], on its tracks and raised when deployed.
 pub const SIEGE_TIP: [f32; 2] = [1.05, 0.5];
 pub const SIEGE_RAISED_TIP: [f32; 2] = [0.97, 2.1];
+/// How many seconds a Kobra takes to raise its cannon all the way, or to lower it.
+const SIEGE_RAISE_SECONDS: f32 = 1.6;
+
+/// Where a Kobra's cannon tip is with the cannon raised this far, from 0 to 1.
+pub fn siege_tip(raised: f32) -> [f32; 2] {
+    let ease = raised * raised * (3.0 - 2.0 * raised);
+    [0, 1].map(|i| SIEGE_TIP[i] + (SIEGE_RAISED_TIP[i] - SIEGE_TIP[i]) * ease)
+}
 /// How high a Strider's missiles leave from.
 const STRIDER_MUZZLE_HEIGHT: f32 = 0.86;
 
@@ -1108,7 +1443,8 @@ pub struct Unit {
     pad: Option<Pad>,
     /// Seconds an invisible unit stays seen after it last fired.
     pub revealed: f32,
-    /// How far a pop-up turret has come up: 0 sunk in the ground, 1 ready to fire.
+    /// How far a pop-up turret has come up: 0 sunk in the ground, 1 ready to fire. For a
+    /// Kobra, how far its cannon is raised: 0 resting on its tracks, 1 high on its leg.
     pub popped: f32,
     /// Seconds left until a building just placed is finished, and works.
     pub constructing: f32,
@@ -1121,16 +1457,82 @@ pub struct Unit {
     on_mission: bool,
     /// How far along a pad is with loading its next rocket, in seconds.
     reloading: f32,
-    /// The enemy carryall that has hold of it, if one has.
+    /// The carryall that has hold of it, if one has: an enemy's stealing it, or for a
+    /// harvester one of its own side's carrying it.
     pub theft: Option<Theft>,
     /// How it is getting on with going somewhere.
     stall: Stall,
+    /// The most it goes at while marching with others, at the pace of the slowest of them.
+    pace: Option<f32>,
     /// How much substance a harvester has on board.
     pub load: f32,
     /// What a harvester is doing by itself.
     pub harvest: Harvest,
     /// Where on the sand a harvester harvests, and goes back to from the refinery.
     field: (f32, f32),
+    /// What a carryall is doing with a harvester, if anything.
+    pub lift: Option<Lift>,
+    /// Who an APC has on board, out of sight until they get out.
+    pub passengers: [Option<Passenger>; APC_ROOM],
+    /// The APC a soldier is on its way to get into.
+    boarding: Option<u32>,
+}
+
+/// A soldier on board an APC: all of them that is kept until they get out again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Passenger {
+    pub role: Role,
+    id: u32,
+    health: f32,
+    experience: u32,
+    house: Faction,
+}
+
+impl Passenger {
+    #[cfg(test)]
+    pub fn for_test(role: Role) -> Self {
+        Passenger {
+            role,
+            id: u32::MAX,
+            health: role.max_health(),
+            experience: 0,
+            house: Faction::Atreides,
+        }
+    }
+}
+
+/// What a carryall is getting on with by itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Lift {
+    /// On its way to pick up this harvester, which waits once it is near, to put it down there.
+    Fetch { harvester: u32, to: (f32, f32) },
+    /// Holding a harvester, on its way to put it down. Then it flies off the map if it only
+    /// came to bring it, and otherwise circles there.
+    Deliver { then_leaves: bool },
+    /// Flying off the map, to be gone once it is past the edge.
+    Leave,
+}
+
+/// A refinery's pad as it is made, before the refinery is turned the way it faces: its middle
+/// and the way out along it, each as (across, ahead).
+pub fn refinery_pad(pad: usize) -> ((f32, f32), (f32, f32)) {
+    let (sin, cos) = REFINERY_PAD_TURNS[pad].sin_cos();
+    let (across, ahead) = REFINERY_PAD_HUB;
+    let reach = REFINERY_PAD_REACH;
+    ((across + sin * reach, ahead + cos * reach), (sin, cos))
+}
+
+/// A refinery's pad as it stands, its model stretched to the original's size, before the
+/// refinery is turned the way it faces. Every house's refinery is the same.
+fn laid_refinery_pad(pad: usize) -> ((f32, f32), (f32, f32)) {
+    let [across, _, ahead] = Role::Refinery.stretch(Faction::Atreides);
+    let ((middle_across, middle_ahead), (way_across, way_ahead)) = refinery_pad(pad);
+    let way = (way_across * across, way_ahead * ahead);
+    let length = way.0.hypot(way.1);
+    (
+        (middle_across * across, middle_ahead * ahead),
+        (way.0 / length, way.1 / length),
+    )
 }
 
 /// What a harvester is getting on with by itself.
@@ -1192,7 +1594,13 @@ impl Unit {
 
     /// Whether it was on its way somewhere, alive or just shot down.
     pub fn is_under_way(&self) -> bool {
-        self.remaining() > ARRIVED || self.role.never_stops()
+        self.remaining() > ARRIVED || self.circles()
+    }
+
+    /// Whether it keeps flying round where it was sent: an air drone always, and a carryall
+    /// while it has no harvester to see to.
+    fn circles(&self) -> bool {
+        self.role.never_stops() || (self.role == Role::Carryall && self.lift.is_none())
     }
 
     /// How many of this role it is making or has waiting.
@@ -1240,7 +1648,17 @@ impl Unit {
 
     /// Whether it is high enough to fire. What lands cannot launch anything until it is up.
     pub fn can_launch(&self) -> bool {
-        !self.role.lands() || self.altitude >= CRUISE_ALTITUDE
+        (!self.role.lands() || self.altitude >= CRUISE_ALTITUDE) && !self.is_shifting_its_cannon()
+    }
+
+    /// How far a Kobra's cannon should be raised, as it is deployed or not.
+    fn siege_raise_wanted(&self) -> f32 {
+        if self.deployed { 1.0 } else { 0.0 }
+    }
+
+    /// Whether it is a Kobra still raising or lowering its cannon, which cannot fire meanwhile.
+    pub fn is_shifting_its_cannon(&self) -> bool {
+        self.role == Role::Kobra && self.popped != self.siege_raise_wanted()
     }
 
     /// Whether it has no need of a spot on the ground: what lands needs one, and so does
@@ -1270,7 +1688,34 @@ impl Unit {
             (_, UnitKind::Aircraft) => AIRCRAFT_SIGHT,
             (_, UnitKind::Tower | UnitKind::Building) => TOWER_SIGHT,
         };
-        own.max(self.weapon.range() + 1.0)
+        own.max(self.range() + 45.25)
+    }
+
+    /// The way a landing pad's deck lies lengthwise, from its front to its back, as a heading.
+    fn deck_heading(&self) -> f32 {
+        self.facing.turn() + FRAC_PI_2
+    }
+
+    /// How far from where it was sent it circles, if it never stops: as tight as it can turn.
+    fn circle_radius(&self) -> f32 {
+        self.speed() / self.role.turn_rate()
+    }
+
+    /// How far it fires on flat ground: as far as its weapon does, or as far as the original
+    /// lets this kind of unit fire it.
+    pub fn range(&self) -> f32 {
+        let tiles = match (self.role, self.weapon) {
+            (Role::SandBike | Role::Recon, WeaponKind::Bullet) => 7.0,
+            (Role::RocketInfantry, WeaponKind::Missile) => 8.0,
+            (Role::RocketApc, WeaponKind::TowerRockets) => 10.0,
+            (Role::Ornithopter, WeaponKind::Rockets) => 12.0,
+            (Role::Kobra, WeaponKind::Cannon) => 8.0,
+            (Role::KInfantry, WeaponKind::Cannon) => 12.0,
+            (Role::FlameTower, WeaponKind::Flame) => 8.0,
+            (Role::MortarInfantry, WeaponKind::Mortar) => 15.0,
+            _ => return self.weapon.range(),
+        };
+        tiles * CELL_SIDE
     }
 
     /// How far it sees from where it stands: farther the higher it is above the lowest ground.
@@ -1280,7 +1725,7 @@ impl Unit {
 
     /// How far it can fire at what stands at this height: farther down onto lower ground.
     pub fn range_down_to(&self, height: f32) -> f32 {
-        self.weapon.range() * high_ground(self.y - height)
+        self.range() * high_ground(self.y - height)
     }
 
     /// From 0, with no medal, up to 3.
@@ -1301,7 +1746,14 @@ impl Unit {
     }
 
     pub fn speed(&self) -> f32 {
-        self.role.speed() * (1.0 + RANK_SPEED * self.rank() as f32)
+        let speed = self.role.speed(self.house) * (1.0 + RANK_SPEED * self.rank() as f32);
+        self.pace.map_or(speed, |pace| speed.min(pace))
+    }
+
+    /// Whether it is any use going after this one by itself: not if that one is faster, as it
+    /// would only be chased round the map. What stays put can always be caught.
+    pub fn can_catch(&self, other: &Unit) -> bool {
+        other.speed() <= self.speed()
     }
 
     /// Adds experience. Reaching a new rank adds the health that rank brings to what it has.
@@ -1317,6 +1769,11 @@ impl Unit {
     }
 
     /// Whether it is down: on the ground, or for what lands, sitting on the deck of a pad.
+    /// Whether it is a soldier still coming down by parachute, unable to go anywhere yet.
+    pub fn is_parachuting(&self) -> bool {
+        self.kind == UnitKind::Infantry && self.altitude > 0.0
+    }
+
     pub fn is_grounded(&self) -> bool {
         self.altitude <= 0.0 || (self.role.lands() && self.is_on_pad())
     }
@@ -1334,6 +1791,8 @@ impl Unit {
     fn stand_down(&mut self) {
         self.target = None;
         self.destination = (self.x, self.z);
+        self.pace = None;
+        self.boarding = None;
     }
 
     fn reset_progress(&mut self) {
@@ -1372,7 +1831,7 @@ impl Unit {
             z: self.z,
             deck: FRAC_PI_4,
         });
-        self.altitude = PAD_TOP;
+        self.altitude = pad_top();
     }
 
     /// Whether it is a building still going up.
@@ -1399,30 +1858,34 @@ impl Unit {
 
     /// Where a building going up is being welded, climbing as it rises.
     pub fn weld_points(&self) -> [Point; WELD_POINTS] {
-        let (cols, rows) = self.role.plot_size();
+        let (cols, rows) = self.role.plot_size(self.house);
         let reach = cols.min(rows) as f32 * CELL_SIDE * 0.42;
-        let rise = self.raised() * self.role.building_top();
+        let rise = self.raised() * self.role.building_top(self.house);
         std::array::from_fn(|i| {
             let (sin, cos) = (self.id as f32 * 2.4 + i as f32 * TAU / 4.0).sin_cos();
-            let height = 0.1 + (0.25 + 0.2 * i as f32) * rise;
+            let height = 4.525 + (0.25 + 0.2 * i as f32) * rise;
             (self.x + reach * cos, self.y + height, self.z + reach * sin)
         })
     }
 
-    /// Where the ends of its wings are, leaning with it into its turns.
+    /// Where vapor streams off it, leaning with it into its turns: the ends of an advanced
+    /// carryall's wings, and the nozzles of a carryall's jets at the ends of its middle wings.
     pub fn wing_tips(&self) -> [Point; 2] {
-        const WING_END: f32 = 0.5;
-        const WING_HEIGHT: f32 = 0.1;
-        let size = self.role.drawn_scale();
+        let [ahead, up, out] = match self.role {
+            Role::Carryall => CARRYALL_JET_NOZZLE,
+            _ => [0.0, 0.1, 0.5],
+        };
+        let [stretch_ahead, stretch_up, stretch_out] = self.stretch();
+        let (ahead, up) = (ahead * stretch_ahead, up * stretch_up);
         let (sin, cos) = self.heading.sin_cos();
         let (bank_sin, bank_cos) = self.bank.sin_cos();
-        let height = self.y + self.altitude + WING_HEIGHT * size;
+        let height = self.y + self.altitude + up;
         [-1.0, 1.0].map(|side| {
-            let out = side * WING_END * size;
+            let out = side * out * stretch_out;
             (
-                self.x - sin * out * bank_cos,
+                self.x + cos * ahead - sin * out * bank_cos,
                 height - out * bank_sin,
-                self.z + cos * out * bank_cos,
+                self.z + sin * ahead + cos * out * bank_cos,
             )
         })
     }
@@ -1461,22 +1924,21 @@ impl Unit {
     /// Where an MCV's drill goes into the ground.
     pub fn drill_bite(&self) -> Point {
         let [along, up] = MCV_DRILL_PIVOT;
-        let reach = along + up;
-        let (sin, cos) = self.heading.sin_cos();
-        (self.x + cos * reach, self.y + 0.05, self.z + sin * reach)
+        let (x, _, z) = self.on_body((along + up, 0.0, 0.0));
+        (x, self.y + 2.263, z)
     }
 
     /// The grid squares it takes up, if it is a building.
     pub fn plot(&self) -> Option<Plot> {
-        self.kind
-            .is_building()
-            .then(|| self.role.plot_facing((self.x, self.z), self.facing))
+        self.kind.is_building().then(|| {
+            self.role
+                .plot_facing(self.house, (self.x, self.z), self.facing)
+        })
     }
 
-    /// Whether it can go invisible: a scout, and a sniper with all three medals.
+    /// Whether it can go invisible: a scout, a stealth APC, and a sniper with all three medals.
     pub fn can_cloak(&self) -> bool {
-        self.role == Role::Scout
-            || self.role == Role::LaserTower
+        matches!(self.role, Role::Scout | Role::StealthApc)
             || (self.role == Role::Sniper && self.rank() >= 3)
     }
 
@@ -1513,7 +1975,7 @@ impl Unit {
     /// Whether it is sitting on its landing pad.
     fn is_on_pad(&self) -> bool {
         self.pad.is_some_and(|pad| {
-            (pad.x - self.x).hypot(pad.z - self.z) < OVER_PAD && self.altitude <= PAD_TOP + 0.01
+            (pad.x - self.x).hypot(pad.z - self.z) < OVER_PAD && self.altitude <= pad_top() + 0.4525
         })
     }
 
@@ -1565,6 +2027,7 @@ impl Unit {
             && self.alive
             && other.alive
             && other.kind == UnitKind::Vehicle
+            && other.theft.is_none()
             && are_friends(teams, self.owner, other.owner)
     }
 
@@ -1636,61 +2099,61 @@ impl Unit {
     /// and a rocket launcher goes along its racks.
     pub fn muzzle(&self) -> (f32, f32, f32) {
         if self.role.pops_up() {
-            let (sin, cos) = self.heading.sin_cos();
             let up = TURRET_MUZZLE_UP + TURRET_RISE * self.popped;
-            return (self.x + cos * 0.45, self.y + up, self.z + sin * 0.45);
+            return self.on_body((0.45, up, 0.0));
         }
         if self.role == Role::Kobra {
-            let [ahead, up] = if self.deployed {
-                SIEGE_RAISED_TIP
-            } else {
-                SIEGE_TIP
-            };
-            let (sin, cos) = self.heading.sin_cos();
-            return (self.x + cos * ahead, self.y + up, self.z + sin * ahead);
+            let [ahead, up] = siege_tip(self.popped);
+            return self.on_body((ahead, up, 0.0));
         }
         if self.role == Role::LaserTank {
             // The crystal on top of its dome.
-            return (self.x, self.y + 0.54, self.z);
+            return self.on_body((0.0, 0.54, 0.0));
         }
         if self.role == Role::Mongoose {
-            return (self.x, self.y + STRIDER_MUZZLE_HEIGHT, self.z);
+            return self.on_body((0.0, STRIDER_MUZZLE_HEIGHT, 0.0));
         }
         if self.role == Role::Minotaurus {
-            let (sin, cos) = self.heading.sin_cos();
             let side = CANNON_SIDES.get(self.salvo_fired).copied().unwrap_or(0.0);
             let (ahead, up) = self.cannon_tip();
-            return (
-                self.x + cos * ahead - sin * side,
-                self.y + up,
-                self.z + sin * ahead + cos * side,
-            );
+            return self.on_body((ahead, up, side));
+        }
+        if self.role == Role::RocketApc {
+            let [ahead, up, side] = APC_ROCKET_TIP;
+            return self.on_body((ahead, up, self.side_in_turn(side)));
         }
         if self.role == Role::RocketLauncher {
-            let (sin, cos) = self.heading.sin_cos();
             let side = ROCKET_SIDES.get(self.salvo_fired).copied().unwrap_or(0.0);
-            return (
-                self.x + cos * ROCKET_REACH - sin * side,
-                self.y + ROCKET_HEIGHT,
-                self.z + sin * ROCKET_REACH + cos * side,
-            );
+            return self.on_body((ROCKET_REACH, ROCKET_HEIGHT, side));
         }
         if self.kind.is_building() {
-            let (sin, cos) = self.heading.sin_cos();
-            let side = match (self.role, self.second_tube) {
-                (Role::FlameTower | Role::GunPost | Role::GasTower | Role::LaserTower, _) => 0.0,
-                (_, true) => TUBE_SPREAD,
-                (_, false) => -TUBE_SPREAD,
+            let side = match self.role {
+                Role::FlameTower | Role::GunPost | Role::GasTower | Role::LaserTower => 0.0,
+                _ => self.side_in_turn(TUBE_SPREAD),
             };
             let (rise, out) = self.tube_pitch.sin_cos();
             let reach = TUBE_HINGE + TUBE_LENGTH * out;
-            return (
-                self.x + cos * reach - sin * side,
-                self.y + TUBE_HEIGHT + TUBE_LENGTH * rise,
-                self.z + sin * reach + cos * side,
-            );
+            return self.on_body((reach, TUBE_HEIGHT + TUBE_LENGTH * rise, side));
         }
         (self.x, self.y + self.altitude + HEIGHT * 0.8, self.z)
+    }
+
+    /// A point given as (ahead, up, to its right) of where it stands in its model as made,
+    /// stretched with its model and turned its way.
+    fn on_body(&self, (ahead, up, side): (f32, f32, f32)) -> (f32, f32, f32) {
+        let [stretch_ahead, stretch_up, stretch_side] = self.stretch();
+        let (ahead, up, side) = (ahead * stretch_ahead, up * stretch_up, side * stretch_side);
+        let (sin, cos) = self.heading.sin_cos();
+        (
+            self.x + cos * ahead - sin * side,
+            self.y + up,
+            self.z + sin * ahead + cos * side,
+        )
+    }
+
+    /// Which of two twin barrels this far to each side fires next: they take turns.
+    fn side_in_turn(&self, side: f32) -> f32 {
+        if self.second_tube { side } else { -side }
     }
 
     /// Where a Minotaurus's cannons end, as [along, up] from its middle: its platform tilted
@@ -1713,54 +2176,64 @@ impl Unit {
         if self.role != Role::FlameTank {
             return self.muzzle();
         }
-        let (sin, cos) = (self.heading + way).sin_cos();
-        (self.x + cos * 0.5, self.y + 0.3, self.z + sin * 0.5)
+        let (sin, cos) = way.sin_cos();
+        self.on_body((cos * 0.5, 0.3, sin * 0.5))
     }
 
     /// Where a Devastator's rockets leave its rack, one to each tube.
     pub fn walker_rocket_tubes(&self) -> [(f32, f32, f32); 3] {
-        let (sin, cos) = self.heading.sin_cos();
-        WALKER_ROCKET_SIDES.map(|side| {
-            (
-                self.x + cos * WALKER_ROCKET_AHEAD - sin * side,
-                self.y + WALKER_ROCKET_UP,
-                self.z + sin * WALKER_ROCKET_AHEAD + cos * side,
-            )
-        })
+        WALKER_ROCKET_SIDES.map(|side| self.on_body((WALKER_ROCKET_AHEAD, WALKER_ROCKET_UP, side)))
     }
 
     /// Where the smoke comes out of a factory's exhaust pipe, wherever it was turned.
     pub fn exhaust_tip(&self) -> (f32, f32, f32) {
-        let size = self.role.drawn_scale();
-        let (sin, cos) = self.facing.turn().sin_cos();
-        let [ahead, across] = FACTORY_PIPE;
-        (
-            self.x + (ahead * cos - across * sin) * size,
-            self.y + FACTORY_PIPE_TOP * size,
-            self.z + (ahead * sin + across * cos) * size,
-        )
+        let [x, z] = FACTORY_PIPE;
+        let (x, z) = self.on_plot((x, z));
+        (x, self.y + FACTORY_PIPE_TOP * self.stretch()[1], z)
+    }
+
+    /// How many times its model is stretched along its own three axes.
+    pub fn stretch(&self) -> [f32; 3] {
+        if self.role == Role::Mcv && self.deployed {
+            // Deployed, it fills the original construction yard's squares, its length from
+            // front to back.
+            let (cols, rows) = self.role.plot_size(self.house);
+            let wanted = [
+                rows as f32 * CELL_SIDE,
+                self.role.roof_height(self.house),
+                cols as f32 * CELL_SIDE,
+            ];
+            let made = Role::deployed_size(self.house);
+            return std::array::from_fn(|i| wanted[i] / made[i]);
+        }
+        self.role.stretch(self.house)
     }
 
     /// Where a point of a building lies, given as (across, ahead) of its middle with its front
-    /// ahead, before it was turned the way it faces.
+    /// ahead in its model as made, before it was stretched and turned the way it faces.
     fn on_plot(&self, (across, ahead): (f32, f32)) -> (f32, f32) {
-        let (sin, cos) = self.facing.turn().sin_cos();
-        (
-            self.x + across * cos - ahead * sin,
-            self.z + across * sin + ahead * cos,
-        )
+        let [stretch_across, _, stretch_ahead] = self.stretch();
+        let (x, z) = self
+            .facing
+            .turned((across * stretch_across, ahead * stretch_ahead));
+        (self.x + x, self.z + z)
     }
 
     /// Where the middle of each of a refinery's pads is.
     pub fn refinery_pads(&self) -> [(f32, f32); 3] {
-        REFINERY_PADS.map(|pad| self.on_plot(pad))
+        std::array::from_fn(|pad| self.on_plot(refinery_pad(pad).0))
+    }
+
+    /// Which way is out along each of a refinery's pads, away from it.
+    pub fn refinery_pad_ways(&self) -> [(f32, f32); 3] {
+        std::array::from_fn(|pad| self.facing.turned(laid_refinery_pad(pad).1))
     }
 
     /// Where the smoke comes out of a refinery's exhaust stacks.
     pub fn stack_tops(&self) -> [Point; 2] {
         REFINERY_STACKS.map(|stack| {
             let (x, z) = self.on_plot(stack);
-            (x, self.y + REFINERY_STACK_TOP, z)
+            (x, self.y + REFINERY_STACK_TOP * self.stretch()[1], z)
         })
     }
 
@@ -1777,19 +2250,13 @@ impl Unit {
         // Twin guns side by side, firing in turn.
         let twin = match self.role {
             Role::DiskSaw => Some((0.5, 0.36, 0.3)),
+            Role::StealthApc => Some(APC_GUN_TIP.into()),
             Role::Devastator => Some(WALKER_PLASMA_TIP),
             _ => None,
         };
         if let Some((ahead, up, side)) = twin {
-            let side = if self.second_tube { side } else { -side };
-            let (sin, cos) = self.heading.sin_cos();
-            return (
-                self.x + cos * ahead - sin * side,
-                self.y + up,
-                self.z + sin * ahead + cos * side,
-            );
+            return self.on_body((ahead, up, self.side_in_turn(side)));
         }
-        let base = self.y + self.altitude;
         let (ahead, up) = match (self.role, self.deployed) {
             (Role::KInfantry, true) => (0.75, 0.18),
             (Role::KInfantry, false) => (0.2, 0.42),
@@ -1798,21 +2265,22 @@ impl Unit {
             (Role::AirDefensePlatform, _) => (0.5, 0.175),
             _ if self.kind == UnitKind::Infantry => (0.33, 0.4),
             _ if self.kind == UnitKind::Vehicle => (0.65, 0.375),
-            _ => (0.3, HEIGHT * 0.8),
+            _ => (0.3, 0.4),
         };
-        let (sin, cos) = self.heading.sin_cos();
-        (self.x + cos * ahead, base + up, self.z + sin * ahead)
+        let (x, y, z) = self.on_body((ahead, up, 0.0));
+        (x, y + self.altitude, z)
     }
 
     /// The height on screen that a click aims at.
     pub fn pick_height(&self) -> f32 {
         let above_feet = if self.kind.is_building() {
-            TUBE_HEIGHT * 0.7
+            39.91
         } else {
             match self.role {
-                Role::Mongoose => 0.5,
-                Role::Minotaurus => 0.9,
-                Role::Devastator => 2.0,
+                Role::Mongoose => 22.63,
+                Role::Minotaurus => 40.73,
+                Role::Devastator => 90.51,
+                Role::Harvester => HEIGHT * 0.75,
                 _ => HEIGHT / 2.0,
             }
         };
@@ -1873,6 +2341,7 @@ impl Unit {
             rockets_fired: 0,
             pad: None,
             on_mission: false,
+            pace: None,
             revealed: 0.0,
             popped: 0.0,
             constructing: 0.0,
@@ -1884,6 +2353,9 @@ impl Unit {
             load: 0.0,
             harvest: Harvest::Idle,
             field: (x, z),
+            lift: None,
+            passengers: [None; APC_ROOM],
+            boarding: None,
         }
     }
 }
@@ -1943,10 +2415,13 @@ fn spawn_group(
 ) {
     for row in 0..rows {
         for col in 0..cols {
-            let x = cx + (col as f32 - (cols - 1) as f32 / 2.0) * SPACING;
+            let kind = kind_in_block(owner, row, rows);
+            // Carryalls, three tiles across, need more room along their row.
+            let along = if kind.flies() { 2.0 * SPACING } else { SPACING };
+            let x = cx + (col as f32 - (cols - 1) as f32 / 2.0) * along;
             let z = cz + (row as f32 - (rows - 1) as f32 / 2.0) * SPACING;
             // A row of vehicles ends in a catapult, and the rest are tanks.
-            let (role, weapon) = match kind_in_block(owner, row, rows) {
+            let (role, weapon) = match kind {
                 UnitKind::Infantry => (Role::LightInfantry, infantry_weapon(owner, col)),
                 UnitKind::Vehicle if col + 1 == cols => (Role::Catapult, Role::Catapult.weapon()),
                 kind => (Role::for_kind(kind), Role::for_kind(kind).weapon()),
@@ -2014,6 +2489,7 @@ fn place_unit(
         rockets_fired: 0,
         pad: None,
         on_mission: false,
+        pace: None,
         revealed: 0.0,
         popped: 0.0,
         constructing: 0.0,
@@ -2029,6 +2505,9 @@ fn place_unit(
             Harvest::Idle
         },
         field: (x, z),
+        lift: None,
+        passengers: [None; APC_ROOM],
+        boarding: None,
     });
 }
 
@@ -2104,9 +2583,9 @@ pub fn start_making(units: &mut [Unit], role: Role, owner: usize) -> bool {
 }
 
 /// Calls off one order of a role from the owner's building with the most waiting: the last of
-/// them waiting, wherever it is in the queue, or else the one being made, and then the next
-/// one starts. Returns whether there was one.
-pub fn cancel_making(units: &mut [Unit], role: Role, owner: usize) -> bool {
+/// them waiting, wherever it is in the queue, or else the one being made, whose money so far
+/// comes back, and then the next one starts. Returns whether there was one.
+pub fn cancel_making(units: &mut [Unit], role: Role, owner: usize, money: &mut i32) -> bool {
     let building = units
         .iter_mut()
         .filter(|u| u.alive && u.owner == owner && u.orders_for(role) > 0)
@@ -2123,23 +2602,67 @@ pub fn cancel_making(units: &mut [Unit], role: Role, owner: usize) -> bool {
             building.queue[place..].rotate_left(1);
             building.queue[QUEUE_ROOM - 1] = None;
         }
-        None => building.start_next(),
+        None => {
+            if let Some((making, left)) = building.making {
+                *money += paid_for(making, left);
+            }
+            building.start_next();
+        }
     }
     true
 }
 
-/// Counts down what every building is making. Returns the buildings done with theirs.
-pub fn work_on_making(units: &mut [Unit], dt: f32) -> Vec<usize> {
+/// How much of what it costs to make this has been paid with these seconds of it left: the
+/// share of the work done.
+pub fn paid_for(role: Role, left: f32) -> i32 {
+    let done = 1.0 - (left / role.build_seconds().max(0.001)).clamp(0.0, 1.0);
+    (role.cost() as f32 * done).floor() as i32
+}
+
+/// Works `dt` seconds more on making this, which needed `left` seconds more, paying for each
+/// bit of it out of `money` as it goes: the work stops where the money runs out. Returns the
+/// seconds still left.
+pub fn work_and_pay(role: Role, left: f32, dt: f32, money: &mut i32) -> f32 {
+    let paid = paid_for(role, left);
+    let can_pay = (*money).max(0);
+    // As far as the money goes, short of where the work would get to.
+    let affordable = role.build_seconds() * (1.0 - (paid + can_pay) as f32 / role.cost() as f32);
+    let left_now = (left - dt).max(0.0).max(affordable).min(left);
+    *money -= (paid_for(role, left_now) - paid).min(can_pay);
+    left_now
+}
+
+/// Counts down what every building is making, paid for from each owner's `money`. Returns the
+/// buildings done with theirs.
+pub fn work_on_making(units: &mut [Unit], money: &mut [i32], dt: f32) -> Vec<usize> {
     let mut done = Vec::new();
     for (i, unit) in units.iter_mut().enumerate().filter(|(_, u)| u.alive) {
-        if let Some((_, left)) = &mut unit.making {
-            *left = (*left - dt).max(0.0);
+        let Some(money) = money.get_mut(unit.owner) else {
+            continue;
+        };
+        if let Some((role, left)) = &mut unit.making {
+            *left = work_and_pay(*role, *left, dt, money);
             if *left <= 0.0 {
                 done.push(i);
             }
         }
     }
     done
+}
+
+/// What an owner has still to pay for what their buildings are making and have waiting.
+pub fn still_owed(units: &[Unit], owner: usize) -> i32 {
+    units
+        .iter()
+        .filter(|u| u.alive && u.owner == owner)
+        .map(|u| {
+            let making = u
+                .making
+                .map_or(0, |(role, left)| role.cost() - paid_for(role, left));
+            let waiting: i32 = u.queue.iter().flatten().map(|role| role.cost()).sum();
+            making + waiting
+        })
+        .sum()
 }
 
 /// Lets a building's finished unit out. Returns the new unit's index, or nothing if there is no
@@ -2222,35 +2745,47 @@ fn spots_taken(units: &[Unit], flying: bool) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// Whether a building's footprint here lies all on the upper ground, which can be walked on:
-/// nothing is built on the sand, or the lower ground that stands for it on other planets.
-fn footprint_on_upper_ground(terrain: &Terrain, (x, z): (f32, f32)) -> bool {
-    let radius = BUILDING_RADIUS;
-    [
-        (0.0, 0.0),
-        (-radius, 0.0),
-        (radius, 0.0),
-        (0.0, -radius),
-        (0.0, radius),
-    ]
-    .iter()
-    .all(|(dx, dz)| terrain.can_walk(x + dx, z + dz) && terrain.on_upper_ground(x + dx, z + dz))
+/// Whether the squares of an MCV of this house deployed here lie all on the upper ground,
+/// which can be walked on: nothing is built on the sand, or the lower ground that stands for it
+/// on other planets.
+fn footprint_on_upper_ground(terrain: &Terrain, house: Faction, at: (f32, f32)) -> bool {
+    Role::Mcv.plot_at(house, at).cells().all(|(u, v)| {
+        let (x, z) = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+        terrain.can_walk(x, z) && terrain.on_upper_ground(x, z)
+    })
 }
 
 /// Whether it could deploy where it stands: an MCV only on the upper ground, as a building.
 pub fn can_deploy_here(unit: &Unit, terrain: &Terrain) -> bool {
-    unit.deployed || unit.role != Role::Mcv || footprint_on_upper_ground(terrain, (unit.x, unit.z))
+    unit.deployed
+        || unit.role != Role::Mcv
+        || footprint_on_upper_ground(terrain, unit.house, (unit.x, unit.z))
 }
 
-/// The nearest place around a point where an MCV could deploy, ring by ring.
-pub fn deploy_spot_near(terrain: &Terrain, (x, z): (f32, f32)) -> Option<(f32, f32)> {
+/// The nearest place around a point where an MCV of this house could deploy, ring by ring,
+/// clear of what stands there already for good.
+pub fn deploy_spot_near(
+    units: &[Unit],
+    terrain: &Terrain,
+    house: Faction,
+    (x, z): (f32, f32),
+) -> Option<(f32, f32)> {
+    // As far as its squares reach from their middle, along their longer side.
+    let (cols, rows) = Role::Mcv.plot_size(house);
+    let reach = cols.max(rows) as f32 * CELL_SIDE / 2.0;
+    let clear = |(x, z): (f32, f32)| {
+        units.iter().all(|u| {
+            !(u.alive && (u.kind.is_building() || u.deployed))
+                || (u.x - x).hypot(u.z - z) > u.radius() + reach
+        })
+    };
     (0..=DEPLOY_SEARCH_RINGS).find_map(|ring| {
         let reach = ring as f32 * DEPLOY_SEARCH_STEP;
         let tries = (6 * ring).max(1);
         (0..tries).find_map(|n| {
             let angle = n as f32 / tries as f32 * TAU;
             let at = (x + reach * angle.cos(), z + reach * angle.sin());
-            footprint_on_upper_ground(terrain, at).then_some(at)
+            (footprint_on_upper_ground(terrain, house, at) && clear(at)).then_some(at)
         })
     })
 }
@@ -2296,6 +2831,16 @@ pub fn is_near_building_of(units: &[Unit], plot: Plot, owner: usize) -> bool {
         .filter(|u| u.alive && u.owner == owner)
         .filter_map(Unit::plot)
         .any(|theirs| plot.gap_to(theirs) <= BUILD_REACH)
+}
+
+/// Whether these squares leave at least this many empty squares between them and every other
+/// building, for what drives about a base to get through.
+pub fn leaves_lanes(units: &[Unit], plot: Plot, lane: i32) -> bool {
+    units
+        .iter()
+        .filter(|u| u.alive)
+        .filter_map(Unit::plot)
+        .all(|theirs| plot.gap_to(theirs) >= lane)
 }
 
 /// A new building that has not been put anywhere yet.
@@ -2348,9 +2893,9 @@ fn place_base(
     }
 }
 
-/// Deploys every selected unit that can, or packs it up again. Returns whether an MCV could not
-/// deploy where it stands.
-pub fn toggle_deploy(units: &mut [Unit], terrain: &Terrain) -> bool {
+/// Deploys every selected unit that can, or packs it up again, and selected APCs let out
+/// everyone they have on board. Returns whether an MCV could not deploy where it stands.
+pub fn toggle_deploy(units: &mut Vec<Unit>, terrain: &Terrain) -> bool {
     let mut refused = false;
     for unit in units
         .iter_mut()
@@ -2362,7 +2907,45 @@ pub fn toggle_deploy(units: &mut [Unit], terrain: &Terrain) -> bool {
             refused = true;
         }
     }
+    for apc in 0..units.len() {
+        if units[apc].selected && units[apc].role.carries_infantry() {
+            unload(units, terrain, apc);
+        }
+    }
     refused
+}
+
+/// Lets everyone on board an APC out onto free spots around it, as far as there is room.
+pub fn unload(units: &mut Vec<Unit>, terrain: &Terrain, apc: usize) {
+    let carrier = units[apc];
+    for (seat, passenger) in carrier.passengers.iter().enumerate() {
+        let Some(passenger) = passenger else {
+            continue;
+        };
+        let taken = spots_taken(units, false);
+        let Some(&spot) = find_slots(terrain, (carrier.x, carrier.z), 1, &taken, false).first()
+        else {
+            return;
+        };
+        let side = (carrier.owner, carrier.color);
+        let role = passenger.role;
+        place_unit(
+            units,
+            terrain,
+            spot,
+            role,
+            role.weapon(),
+            side,
+            passenger.id,
+        );
+        if let Some(out) = units.last_mut() {
+            out.health = passenger.health;
+            out.experience = passenger.experience;
+            out.house = passenger.house;
+            out.heading = carrier.heading;
+        }
+        units[apc].passengers[seat] = None;
+    }
 }
 
 /// Sends the selected machines that load at landing pads to this one: the nearest of them lands
@@ -2373,7 +2956,7 @@ pub fn order_land(units: &mut [Unit], pad: usize) {
         id: pad_unit.id,
         x: pad_unit.x,
         z: pad_unit.z,
-        deck: pad_unit.facing.turn(),
+        deck: pad_unit.deck_heading(),
     };
     let mut taken = units
         .iter()
@@ -2431,7 +3014,7 @@ pub fn switch_deployed(unit: &mut Unit) {
         (Role::MortarInfantry, true) => WeaponKind::Mortar,
         (Role::Kobra, true) => WeaponKind::Siege,
         (Role::Kobra, false) => WeaponKind::Cannon,
-        (Role::SuicideInfantry | Role::Devastator, _) => WeaponKind::Unarmed,
+        (Role::SuicideInfantry | Role::Devastator | Role::EyeInTheSky, _) => WeaponKind::Unarmed,
         _ => WeaponKind::Pistol,
     };
     unit.destination = (unit.x, unit.z);
@@ -2571,17 +3154,22 @@ fn find_slots(
     } else {
         terrain.nearest_walkable(target).unwrap_or(target)
     };
+    let spacing = if flying {
+        AIR_SLOT_SPACING
+    } else {
+        SLOT_SPACING
+    };
     let mut offsets = Vec::new();
     for j in -SLOT_SEARCH_RINGS..=SLOT_SEARCH_RINGS {
         for i in -SLOT_SEARCH_RINGS..=SLOT_SEARCH_RINGS {
-            offsets.push((i as f32 * SLOT_SPACING, j as f32 * SLOT_SPACING));
+            offsets.push((i as f32 * spacing, j as f32 * spacing));
         }
     }
     offsets.sort_by(|a, b| a.0.hypot(a.1).total_cmp(&b.0.hypot(b.1)));
     let is_free = |spot: (f32, f32), others: &[(f32, f32)]| {
         others
             .iter()
-            .all(|o| (o.0 - spot.0).hypot(o.1 - spot.1) >= SLOT_SPACING - 0.001)
+            .all(|o| (o.0 - spot.0).hypot(o.1 - spot.1) >= spacing - 0.04525)
     };
     let mut slots: Vec<(f32, f32)> = Vec::with_capacity(count);
     for (dx, dz) in offsets {
@@ -2660,7 +3248,11 @@ fn order_layer(
     let mut chosen: Vec<usize> = (0..units.len())
         .filter(|&i| {
             let unit = &units[i];
-            in_layer(unit) && unit.selected && !unit.deployed && !unit.kind.is_building()
+            in_layer(unit)
+                && unit.selected
+                && !unit.deployed
+                && !unit.kind.is_building()
+                && unit.role.goes_where_told()
         })
         .collect();
     let mut slots = find_slots(terrain, target, chosen.len(), &taken, flying);
@@ -2674,6 +3266,8 @@ fn order_layer(
         let Some(nearest) = nearest else { return };
         units[i].destination = slots.swap_remove(nearest);
         units[i].target = None;
+        units[i].pace = None;
+        units[i].boarding = None;
         // Sent somewhere, it sits down there.
         units[i].on_mission = false;
         units[i].unloading = units[i].carrying;
@@ -2681,6 +3275,191 @@ fn order_layer(
         units[i].harvest = Harvest::Idle;
         units[i].reset_progress();
     }
+}
+
+/// Marches the selected on the ground there together. Each keeps its place in the group, or
+/// the nearest free spot to it, the one in the middle going first so that it gets its own, and
+/// all go at the pace of the slowest. What flies is sent there as by `order_move`.
+pub fn order_march(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, teams: &[usize]) {
+    order_move(units, target, terrain, teams);
+    let marching: Vec<usize> = (0..units.len())
+        .filter(|&i| {
+            let unit = &units[i];
+            unit.selected
+                && !unit.keeps_to_the_air()
+                && !unit.deployed
+                && !unit.kind.is_building()
+                && unit.role.goes_where_told()
+        })
+        .collect();
+    if marching.is_empty() {
+        return;
+    }
+    let count = marching.len() as f32;
+    let middle = marching.iter().fold((0.0, 0.0), |(x, z), &i| {
+        (x + units[i].x / count, z + units[i].z / count)
+    });
+    let pace = marching
+        .iter()
+        .map(|&i| units[i].speed())
+        .fold(f32::INFINITY, f32::min);
+    let mut taken: Vec<(f32, f32)> = units
+        .iter()
+        .filter(|u| u.alive && !u.keeps_to_the_air() && (!u.selected || u.kind.is_building()))
+        .flat_map(|u| {
+            let around = u.kind.is_building().then(|| building_footprint(u));
+            std::iter::once(u.destination).chain(around.into_iter().flatten())
+        })
+        .collect();
+    let others = taken.clone();
+    let mut by_middle = marching;
+    let from_middle = |unit: &Unit| (unit.x - middle.0).hypot(unit.z - middle.1);
+    by_middle.sort_by(|&a, &b| from_middle(&units[a]).total_cmp(&from_middle(&units[b])));
+    for i in by_middle {
+        let place = (
+            target.0 + units[i].x - middle.0,
+            target.1 + units[i].z - middle.1,
+        );
+        // Its own place in the group if that is free of the rest, however near it is to the
+        // others marching; or else the nearest free spot to it.
+        let free = clear_of_ruins(terrain, place)
+            && terrain.can_walk(place.0, place.1)
+            && others
+                .iter()
+                .all(|o| (o.0 - place.0).hypot(o.1 - place.1) >= SLOT_SPACING - 0.04525);
+        let spot = if free {
+            place
+        } else {
+            let Some(&spot) = find_slots(terrain, place, 1, &taken, false).first() else {
+                continue;
+            };
+            spot
+        };
+        taken.push(spot);
+        units[i].destination = spot;
+        units[i].pace = Some(pace);
+    }
+}
+
+/// Stops the selected right where they are, giving up where they were going and what they were
+/// going after, so that they only fight back at what comes for them.
+pub fn order_stop(units: &mut [Unit]) {
+    for unit in units
+        .iter_mut()
+        .filter(|u| u.selected && u.alive && u.role.goes_where_told())
+    {
+        unit.stand_down();
+        unit.on_mission = false;
+        unit.way = None;
+        unit.reset_progress();
+        if unit.role == Role::Harvester {
+            unit.harvest = Harvest::Idle;
+        }
+    }
+}
+
+/// Whether this soldier could get into this APC: one of its own side's, with room left.
+pub fn can_board(soldier: &Unit, apc: &Unit) -> bool {
+    soldier.kind == UnitKind::Infantry
+        && apc.alive
+        && apc.role.carries_infantry()
+        && apc.owner == soldier.owner
+        && apc.passengers.iter().any(Option::is_none)
+}
+
+/// Sends the selected soldiers that could get into this APC there to get in, the nearest
+/// first, as many as it has room for.
+pub fn order_board(units: &mut [Unit], apc: usize) {
+    let carrier = units[apc];
+    let away = |u: &Unit| (u.x - carrier.x).hypot(u.z - carrier.z);
+    let mut chosen: Vec<usize> = (0..units.len())
+        .filter(|&i| units[i].alive && units[i].selected && can_board(&units[i], &carrier))
+        .collect();
+    chosen.sort_by(|&a, &b| away(&units[a]).total_cmp(&away(&units[b])));
+    let room = carrier.passengers.iter().filter(|p| p.is_none()).count();
+    for i in chosen.into_iter().take(room) {
+        let unit = &mut units[i];
+        unit.stand_down();
+        unit.deployed = false;
+        unit.boarding = Some(carrier.id);
+        unit.destination = (carrier.x, carrier.z);
+        unit.reset_progress();
+    }
+}
+
+/// Brings soldiers on their way to an APC up to where it is now, and takes on board those who
+/// have reached it: they are gone from the battlefield until it lets them out.
+pub fn board_apcs(units: &mut Vec<Unit>) {
+    let mut boarded = Vec::new();
+    for i in 0..units.len() {
+        let Some(id) = units[i].boarding.filter(|_| units[i].alive) else {
+            continue;
+        };
+        let apc = units.iter().position(|u| u.id == id);
+        let Some(apc) = apc.filter(|&apc| can_board(&units[i], &units[apc])) else {
+            units[i].boarding = None;
+            continue;
+        };
+        let (soldier, carrier) = (units[i], units[apc]);
+        let gap = (soldier.x - carrier.x).hypot(soldier.z - carrier.z);
+        if gap > carrier.radius() + soldier.radius() + BOARDING_REACH {
+            let (to_x, to_z) = soldier.destination;
+            if (to_x - carrier.x).hypot(to_z - carrier.z) > BOARDING_REACH {
+                units[i].destination = (carrier.x, carrier.z);
+                units[i].reset_progress();
+            }
+            continue;
+        }
+        if let Some(seat) = units[apc].passengers.iter_mut().find(|p| p.is_none()) {
+            *seat = Some(Passenger {
+                role: soldier.role,
+                id: soldier.id,
+                health: soldier.health,
+                experience: soldier.experience,
+                house: soldier.house,
+            });
+            boarded.push(soldier.id);
+        }
+    }
+    if !boarded.is_empty() {
+        units.retain(|u| !boarded.contains(&u.id));
+    }
+}
+
+/// Each deployed Eye in the Sky is gone, and a suicide infantry of its side jumps from it, to
+/// come down by parachute, selected if it was. Returns them as they were, to let their bombs
+/// go from there.
+pub fn release_eyes(units: &mut Vec<Unit>, terrain: &Terrain, next_id: &mut u32) -> Vec<Unit> {
+    let mut released = Vec::new();
+    for i in 0..units.len() {
+        let eye = units[i];
+        if !(eye.alive && eye.deployed && eye.role == Role::EyeInTheSky) {
+            continue;
+        }
+        units[i].health = -eye.max_health();
+        units[i].alive = false;
+        units[i].selected = false;
+        let role = Role::SuicideInfantry;
+        let side = (eye.owner, eye.color);
+        place_unit(
+            units,
+            terrain,
+            (eye.x, eye.z),
+            role,
+            role.weapon(),
+            side,
+            *next_id,
+        );
+        *next_id += 1;
+        if let Some(jumper) = units.last_mut() {
+            jumper.altitude = eye.altitude;
+            jumper.house = eye.house;
+            jumper.heading = eye.heading;
+            jumper.selected = eye.selected;
+        }
+        released.push(eye);
+    }
+    released
 }
 
 /// Sends the selected there, and the harvesters among them to harvest the sand there.
@@ -2740,6 +3519,7 @@ pub fn set_gathering(units: &mut [Unit], point: (f32, f32)) {
 
 fn set_target(unit: &mut Unit, target: Target) {
     unit.target = Some(target);
+    unit.boarding = None;
     unit.reset_progress();
 }
 
@@ -2834,7 +3614,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
         let away = distance(goal, units[i].center());
         let in_reach = away <= units[i].range_down_to(goal.1) * ATTACK_REACH;
         // What never stops circles its target, firing as it goes.
-        units[i].destination = if in_reach && !units[i].role.never_stops() {
+        units[i].destination = if in_reach && !units[i].circles() {
             (x, z)
         } else {
             (goal.0, goal.2)
@@ -2855,7 +3635,7 @@ pub fn can_run_over(squasher: &Unit, victim: &Unit, teams: &[usize]) -> bool {
 /// Sends repair vehicles with nothing to do to the nearest hurt friend close by.
 fn rush_to_the_hurt(units: &mut [Unit], teams: &[usize]) {
     /// How far off a repair vehicle notices a friend that is hurt.
-    const NOTICES: f32 = 12.0;
+    const NOTICES: f32 = 543.1;
     for i in 0..units.len() {
         let unit = units[i];
         if unit.weapon != WeaponKind::Repair
@@ -2900,7 +3680,7 @@ fn prey_direction(
         .filter(|o| o.alive && can_squash(unit, o, teams))
     {
         let (dx, dz) = (other.x - unit.x, other.z - unit.z);
-        let distance = dx.hypot(dz).max(0.0001);
+        let distance = dx.hypot(dz).max(0.004525);
         let (dir_x, dir_z) = (dx / distance, dz / distance);
         if distance < best_distance && dir_x * ahead.0 + dir_z * ahead.1 > SQUASH_LURE_AHEAD {
             best = Some((dir_x, dir_z));
@@ -2918,7 +3698,7 @@ fn steering(units: &[Unit], index: usize, terrain: &Terrain, teams: &[usize]) ->
     let unit = &units[index];
     let goal = unit.way.map_or(unit.destination, |way| way.through);
     let (to_x, to_z) = (goal.0 - unit.x, goal.1 - unit.z);
-    let length = to_x.hypot(to_z).max(0.0001);
+    let length = to_x.hypot(to_z).max(0.004525);
     let toward_destination = (to_x / length, to_z / length);
     let (want_x, want_z) =
         prey_direction(units, index, teams, toward_destination).unwrap_or(toward_destination);
@@ -2967,12 +3747,22 @@ pub fn turn_between(from: f32, to: f32) -> f32 {
     (to - from + PI).rem_euclid(TAU) - PI
 }
 
-/// Moves a unit along its way, sliding along whatever it cannot enter. Returns whether
-/// those got in its way.
+/// Moves a unit along its way, sliding along whatever it cannot enter: along the map's grid,
+/// which cliffs and shores follow, or else along the world's axes. Returns whether those got
+/// in its way.
 fn walk(unit: &mut Unit, terrain: &Terrain, (dir_x, dir_z): (f32, f32), dt: f32) -> bool {
     let distance = (unit.speed() * dt).min(unit.remaining());
     let (dx, dz) = (dir_x * distance, dir_z * distance);
-    let tries = [(dx, dz), (dx, 0.0), (0.0, dz)];
+    // The share of the step along each of the grid's two axes, which run between the world's.
+    let along_u = (dx + dz) / 2.0;
+    let along_v = (dz - dx) / 2.0;
+    let tries = [
+        (dx, dz),
+        (along_u, along_u),
+        (-along_v, along_v),
+        (dx, 0.0),
+        (0.0, dz),
+    ];
     match tries
         .iter()
         .find(|(tx, tz)| unit.can_enter(terrain, unit.x + tx, unit.z + tz))
@@ -3004,7 +3794,7 @@ fn push_out_of_ruins(unit: &mut Unit, terrain: &Terrain) -> bool {
         touched = true;
         // The flat distance at which the sphere just clears this piece.
         let clear = (radius * radius - dy * dy).max(0.0).sqrt();
-        let (push_x, push_z) = if flat > 0.0001 {
+        let (push_x, push_z) = if flat > 0.004525 {
             (dx / flat * (clear - flat), dz / flat * (clear - flat))
         } else {
             // Its center is over the footprint: leave by the nearest side.
@@ -3108,19 +3898,29 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
     for _ in 0..SEPARATION_ROUNDS {
         for a in 0..units.len() {
             for b in a + 1..units.len() {
-                // A carryall and the vehicle it has hold of are meant to be together.
+                // A carryall and the vehicle it has hold of are meant to be together, and once
+                // that is off the ground it is out of everyone's way.
                 let held_by =
                     |held: &Unit, by: &Unit| held.theft.is_some_and(|theft| theft.carrier == by.id);
-                // And so are a machine and the pad it is using.
+                let hangs = |unit: &Unit| unit.theft.is_some() && unit.altitude > 0.0;
+                // And what flies goes over buildings, however big.
+                let over = |flier: &Unit, below: &Unit| {
+                    flier.kind.flies() && flier.altitude > 0.0 && below.kind.is_building()
+                };
+                // And so are a machine and the pad it is using, and a harvester and the
+                // refinery whose pad it is going to, which lies within the refinery's sphere.
                 let using = |machine: &Unit, pad: &Unit| {
                     machine.pad.is_some_and(|used| used.id == pad.id)
-                        || machine.harvest.is_docked()
-                            && machine.harvest.dock().is_some_and(|d| d.refinery == pad.id)
+                        || machine.harvest.dock().is_some_and(|d| d.refinery == pad.id)
                 };
                 if !units[a].alive
                     || !units[b].alive
                     || held_by(&units[a], &units[b])
                     || held_by(&units[b], &units[a])
+                    || hangs(&units[a])
+                    || hangs(&units[b])
+                    || over(&units[a], &units[b])
+                    || over(&units[b], &units[a])
                     || using(&units[a], &units[b])
                     || using(&units[b], &units[a])
                 {
@@ -3134,7 +3934,7 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                     continue;
                 }
                 // Exactly on top of each other, any fixed direction will do.
-                let (nx, nz) = if flat > 0.0001 {
+                let (nx, nz) = if flat > 0.004525 {
                     (dx / flat, dz / flat)
                 } else {
                     (1.0, 0.0)
@@ -3174,14 +3974,15 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
     }
 }
 
+/// Close enough to a point on its way to go on to the next.
+const THROUGH: f32 = 18.1;
+
 /// Finds a way around what stands between a unit on the ground and where it is going, unless
 /// it has one or goes straight there. With no way at all it keeps heading straight, which ends
 /// with it giving up against whatever blocks it. Returns whether it had to look for a route.
 fn plan_way(unit: &mut Unit, terrain: &Terrain, may_search: bool) -> bool {
-    /// Close enough to a point on its way to go on to the next.
-    const THROUGH: f32 = 0.4;
     /// How far a destination may have moved for a route to it to still be good.
-    const STILL_GOOD: f32 = 1.0;
+    const STILL_GOOD: f32 = 45.25;
     let here = (unit.x, unit.z);
     if let Some(way) = unit.way {
         let moved = (way.to.0 - unit.destination.0).hypot(way.to.1 - unit.destination.1);
@@ -3258,10 +4059,13 @@ fn find_new_way(units: &mut [Unit], i: usize, terrain: &Terrain) {
         .map(|u| (u.x, u.z, u.radius() + unit.radius()))
         .collect();
     let here = (unit.x, unit.z);
-    let route = terrain.next_on_route_around(here, unit.destination, &obstacles);
+    // A route on from right where it stands would only bring it back to the same stall.
+    let route = terrain
+        .next_on_route_around(here, unit.destination, &obstacles)
+        .filter(|&(x, z)| (x - here.0).hypot(z - here.1) >= THROUGH);
     let through = route.unwrap_or_else(|| {
         let (sin, cos) = (unit.heading + FRAC_PI_2 * f32::from(unit.stall.looks)).sin_cos();
-        (unit.x + cos * 2.0, unit.z + sin * 2.0)
+        (unit.x + cos * 90.51, unit.z + sin * 90.51)
     });
     units[i].way = Some(Way {
         through,
@@ -3283,12 +4087,22 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
         } else if units[i].is_rising_to_fight() {
             units[i].altitude = (units[i].altitude + CLIMB_SPEED * dt).min(CRUISE_ALTITUDE);
         }
-        if !units[i].is_moving() {
-            units[i].way = None;
+        if units[i].is_parachuting() {
+            let unit = &mut units[i];
+            unit.altitude = (unit.altitude - PARACHUTE_SPEED * dt).max(0.0);
             continue;
         }
-        if units[i].role.never_stops() {
+        if !units[i].is_moving() {
+            units[i].way = None;
+            units[i].pace = None;
+            continue;
+        }
+        if units[i].circles() {
             fly_on(&mut units[i], terrain, dt);
+            continue;
+        }
+        if units[i].role == Role::Carryall {
+            swoop(&mut units[i], dt);
             continue;
         }
         if !units[i].kind.flies() {
@@ -3303,16 +4117,15 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
         let way = dir_z.atan2(dir_x);
         let unit = &mut units[i];
         let turn = turn_between(unit.heading, way);
-        let most = TURN_SPEED * dt;
+        let most = unit.role.turn_rate() * dt;
         match unit.kind {
             UnitKind::Infantry => {
                 unit.heading = way;
                 held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
             }
-            // A laser tank glides any way at once, slowly turning its nose that way meanwhile.
-            UnitKind::Vehicle if unit.role == Role::LaserTank => {
-                let slow = GLIDER_TURN_SPEED * dt;
-                unit.heading += turn.clamp(-slow, slow);
+            // A glider goes any way at once, slowly turning its nose that way meanwhile.
+            UnitKind::Vehicle if unit.role.glides() => {
+                unit.heading += turn.clamp(-most, most);
                 held_back[i] = walk(unit, terrain, (dir_x, dir_z), dt);
             }
             UnitKind::Vehicle => {
@@ -3377,7 +4190,7 @@ fn settle(unit: &mut Unit, terrain: &Terrain, dt: f32) {
         let is_over_pad = unit
             .pad
             .is_some_and(|pad| (pad.x - unit.x).hypot(pad.z - unit.z) < OVER_PAD);
-        let lowest = if is_over_pad { PAD_TOP } else { 0.0 };
+        let lowest = if is_over_pad { pad_top() } else { 0.0 };
         unit.altitude = (unit.altitude - CLIMB_SPEED * dt).max(lowest);
         if is_over_pad {
             // Coming down, it lines itself up with the deck, whichever way round is nearer.
@@ -3388,7 +4201,7 @@ fn settle(unit: &mut Unit, terrain: &Terrain, dt: f32) {
             } else {
                 turn_between(unit.heading, deck + PI)
             };
-            let most = TURN_SPEED * dt;
+            let most = unit.role.turn_rate() * dt;
             unit.heading += turn.clamp(-most, most);
         }
     }
@@ -3400,16 +4213,14 @@ fn fly_on(unit: &mut Unit, terrain: &Terrain, dt: f32) {
     let (to_x, to_z) = (unit.destination.0 - unit.x, unit.destination.1 - unit.z);
     let away = to_x.hypot(to_z);
     // Straight at it from far away, along the circle on it, and outward from inside it.
-    let off_its_way = if away >= CIRCLE_RADIUS {
-        FRAC_PI_2 * CIRCLE_RADIUS / away
+    let circle = unit.circle_radius();
+    let off_its_way = if away >= circle {
+        FRAC_PI_2 * circle / away
     } else {
-        FRAC_PI_2 * (2.0 - away / CIRCLE_RADIUS)
+        FRAC_PI_2 * (2.0 - away / circle)
     };
-    let most = TURN_SPEED * dt;
-    let turned = turn_between(unit.heading, to_z.atan2(to_x) + off_its_way).clamp(-most, most);
-    unit.heading += turned;
-    let lean = MOST_BANK * turned / most;
-    unit.bank += (lean - unit.bank) * (BANK_RATE * dt).min(1.0);
+    let most = unit.role.turn_rate() * dt;
+    let turned = bank_into_turn(unit, to_z.atan2(to_x) + off_its_way, dt);
     let step = unit.speed() * dt;
     let ahead = (unit.heading.cos(), unit.heading.sin());
     // At the map's edge it glides along it at full speed, the way its nose is nearer to, or
@@ -3440,6 +4251,43 @@ fn fly_on(unit: &mut Unit, terrain: &Terrain, dt: f32) {
             // Its nose comes round to the way it glides.
             unit.heading += turn_between(unit.heading, tz.atan2(tx)).clamp(-most, most);
         }
+    }
+}
+
+/// Turns its nose as far as it can towards a way, leaning into the turn. Returns how far it
+/// turned.
+fn bank_into_turn(unit: &mut Unit, way: f32, dt: f32) -> f32 {
+    let most = unit.role.turn_rate() * dt;
+    let turned = turn_between(unit.heading, way).clamp(-most, most);
+    unit.heading += turned;
+    let lean = MOST_BANK * turned / most;
+    unit.bank += (lean - unit.bank) * (BANK_RATE * dt).min(1.0);
+    turned
+}
+
+/// Flies on along its nose like what circles, but straight for where it is going, easing off
+/// while it has to turn hard and as it comes near, so that it ends up right over the spot.
+/// Nothing keeps it on the map: a carryall bringing a harvester comes from past its edge.
+fn swoop(unit: &mut Unit, dt: f32) {
+    /// How near it starts to ease off, and how slow it gets.
+    const EASE_FROM: f32 = 113.1;
+    const SLOWEST: f32 = 0.15;
+    /// How near it only drifts straight onto the spot, whichever way it faces.
+    const DRIFT: f32 = 22.63;
+    let (to_x, to_z) = (unit.destination.0 - unit.x, unit.destination.1 - unit.z);
+    let away = to_x.hypot(to_z);
+    bank_into_turn(unit, to_z.atan2(to_x), dt);
+    let facing = turn_between(unit.heading, to_z.atan2(to_x))
+        .cos()
+        .max(SLOWEST);
+    let easing = (away / EASE_FROM).clamp(SLOWEST, 1.0);
+    let step = (unit.speed() * facing * easing * dt).min(away);
+    if away < DRIFT {
+        unit.x += to_x / away.max(0.004525) * step;
+        unit.z += to_z / away.max(0.004525) * step;
+    } else {
+        unit.x += unit.heading.cos() * step;
+        unit.z += unit.heading.sin() * step;
     }
 }
 
@@ -3550,7 +4398,7 @@ pub fn carry(
         let vehicle = &mut load.vehicle;
         (vehicle.x, vehicle.z, vehicle.heading) = (spot.0, spot.1, carrier.heading);
         let winch = if lowering { -WINCH_SPEED } else { WINCH_SPEED };
-        load.height = (load.height + winch * dt).clamp(0.0, HANG_HEIGHT);
+        load.height = (load.height + winch * dt).clamp(0.0, hang_height(vehicle));
         vehicle.y = carrier.y + load.height;
         if lowering && load.height <= 0.0 {
             carrier.carrying = false;
@@ -3606,7 +4454,7 @@ fn work_on_thefts(units: &mut [Unit], terrain: &Terrain, dt: f32) {
             && terrain.can_walk(spot.0, spot.1)
             && clear_of_ruins(terrain, spot);
         let winch = if lowering { -WINCH_SPEED } else { WINCH_SPEED };
-        let height = (units[i].altitude + winch * dt).clamp(0.0, HANG_HEIGHT);
+        let height = (units[i].altitude + winch * dt).clamp(0.0, hang_height(&units[i]));
         let heading = units[c].heading;
         let vehicle = &mut units[i];
         (vehicle.x, vehicle.z, vehicle.heading) = (spot.0, spot.1, heading);
@@ -3641,7 +4489,7 @@ fn alert_landers(units: &mut [Unit], teams: &[usize]) {
             && units.iter().any(|other| {
                 lander.fires_on_sight(other, teams)
                     && other.kind != UnitKind::Building
-                    && distance(up_there, other.center()) <= lander.weapon.range()
+                    && distance(up_there, other.center()) <= lander.range()
             });
     }
 }
@@ -3703,8 +4551,9 @@ fn tend_pads(units: &mut [Unit], terrain: &Terrain, dt: f32) {
                     units[i].reset_progress();
                 }
             }
-            // With rockets left it only tops up at a pad close by, with no enemy to go up for.
-            None if idle && (out || (unit.rockets_fired > 0 && !unit.alerted)) => {
+            // With rockets left, even all of them, it sits down on a free pad close by rather
+            // than on the ground, with no enemy to go up for.
+            None if idle && (out || !unit.alerted) => {
                 let taken = |id: u32| {
                     units
                         .iter()
@@ -3715,7 +4564,7 @@ fn tend_pads(units: &mut [Unit], terrain: &Terrain, dt: f32) {
                     id: u.id,
                     x: u.x,
                     z: u.z,
-                    deck: u.facing.turn(),
+                    deck: u.deck_heading(),
                 };
                 let nearest_of = |free: bool| {
                     units
@@ -3771,7 +4620,7 @@ fn go_home_after_a_mission(units: &mut [Unit], i: usize, terrain: &Terrain) {
         id: u.id,
         x: u.x,
         z: u.z,
-        deck: u.facing.turn(),
+        deck: u.deck_heading(),
     };
     let nearest = |of: &mut dyn Iterator<Item = &Unit>| {
         of.min_by(|a, b| away(a).total_cmp(&away(b))).copied()
@@ -3836,18 +4685,26 @@ fn beside_pad(pad: Pad, id: u32) -> (f32, f32) {
 fn settle_on_its_squares(unit: &mut Unit) {
     (unit.x, unit.z) = unit
         .role
-        .plot_facing((unit.x, unit.z), unit.facing)
+        .plot_facing(unit.house, (unit.x, unit.z), unit.facing)
         .center();
 }
 
 /// Brings an MCV that was told to deploy round to the way it deploys facing, and then through
 /// the second that it takes.
+/// Raises a deployed Kobra's cannon on its leg bit by bit, or lowers it again once it is not.
+fn raise_siege_cannon(unit: &mut Unit, dt: f32) {
+    if unit.role == Role::Kobra {
+        let most = dt / SIEGE_RAISE_SECONDS;
+        unit.popped += (unit.siege_raise_wanted() - unit.popped).clamp(-most, most);
+    }
+}
+
 fn go_on_deploying(unit: &mut Unit, dt: f32) {
     match unit.deployment {
         Deployment::Idle => return,
         Deployment::Turning => {
             let turn = turn_between(unit.heading, MCV_DEPLOY_HEADING);
-            let most = TURN_SPEED * dt;
+            let most = unit.role.turn_rate() * dt;
             if turn.abs() <= most {
                 unit.heading = MCV_DEPLOY_HEADING;
                 unit.deployment = Deployment::Drilling;
@@ -3869,26 +4726,17 @@ fn go_on_deploying(unit: &mut Unit, dt: f32) {
     unit.target = None;
 }
 
-/// Whether a place is on the sand, or the lower ground that stands for it, where harvesters
-/// find substance.
-pub fn is_sand(terrain: &Terrain, (x, z): (f32, f32)) -> bool {
-    terrain.can_walk(x, z) && !terrain.on_upper_ground(x, z)
+/// Whether a place is on one of the map's fields of substance, where harvesters harvest.
+pub fn has_substance(terrain: &Terrain, (x, z): (f32, f32)) -> bool {
+    terrain.can_walk(x, z) && terrain.has_substance(x, z)
 }
 
-/// The nearest place on the sand around a point, if there is any within reach.
-fn sand_near(terrain: &Terrain, (x, z): (f32, f32)) -> Option<(f32, f32)> {
-    if is_sand(terrain, (x, z)) {
-        return Some((x, z));
+/// The place itself if it has substance, or else the middle of the field nearest to it.
+fn sand_near(terrain: &Terrain, at: (f32, f32)) -> Option<(f32, f32)> {
+    if has_substance(terrain, at) {
+        return Some(at);
     }
-    (1..=SAND_SEARCH_RINGS).find_map(|ring| {
-        let reach = ring as f32 * SAND_SEARCH_STEP;
-        let tries = 6 * ring;
-        (0..tries).find_map(|n| {
-            let angle = n as f32 / tries as f32 * TAU;
-            let at = (x + reach * angle.cos(), z + reach * angle.sin());
-            is_sand(terrain, at).then_some(at)
-        })
-    })
+    terrain.nearest_field(at)
 }
 
 /// Somewhere else on the sand around where a harvester harvests for it to drive to next.
@@ -3900,7 +4748,7 @@ fn roam(terrain: &Terrain, unit: &Unit) -> Option<(f32, f32)> {
         let reach = next_random(&mut random) * HARVEST_ROAM;
         let at = (unit.field.0 + reach * cos, unit.field.1 + reach * sin);
         let far_enough = (at.0 - unit.x).hypot(at.1 - unit.z) >= HARVEST_LEAST_STEP;
-        (far_enough && is_sand(terrain, at)).then_some(at)
+        (far_enough && has_substance(terrain, at)).then_some(at)
     })
 }
 
@@ -3922,7 +4770,7 @@ fn free_dock(units: &[Unit], harvester: &Unit) -> Option<Dock> {
         .filter(|u| is_refinery_of(u, harvester.owner))
         .flat_map(|refinery| {
             let id = refinery.id;
-            (0..REFINERY_PADS.len()).map(move |pad| (Dock { refinery: id, pad }, refinery))
+            (0..REFINERY_PAD_TURNS.len()).map(move |pad| (Dock { refinery: id, pad }, refinery))
         })
         .filter(|&(dock, _)| !taken(dock))
         .min_by(|(a, from_a), (b, from_b)| {
@@ -3945,20 +4793,26 @@ fn head_for(unit: &mut Unit, to: (f32, f32)) {
 /// refinery's owner as it goes, before going back to the sand. `money` is each owner's.
 pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32], dt: f32) {
     let credits = |load: f32| (load * CREDITS_PER_SUBSTANCE) as i32;
+    // Those a carryall is coming for leave it to the carryall.
+    let fetched = fetched_by_carryalls(units);
     for i in 0..units.len() {
         let unit = units[i];
-        if !unit.alive || unit.role != Role::Harvester || unit.theft.is_some() {
+        if !unit.alive
+            || unit.role != Role::Harvester
+            || unit.theft.is_some()
+            || fetched.contains(&unit.id)
+        {
             continue;
         }
         let here = (unit.x, unit.z);
-        let on_sand = is_sand(terrain, here);
+        let on_sand = has_substance(terrain, here);
         // Its pad, where it is, and which way is out from it, while the refinery still stands.
         let pad = unit.harvest.dock().map(|dock| {
             units
                 .iter()
                 .find(|u| u.id == dock.refinery && is_refinery_of(u, unit.owner))
                 .map(|refinery| {
-                    let way = refinery.facing.way_out();
+                    let way = refinery.refinery_pad_ways()[dock.pad];
                     (refinery.owner, refinery.refinery_pads()[dock.pad], way)
                 })
         });
@@ -4002,8 +4856,8 @@ pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32],
                     let (out_x, out_z) = refinery.facing.way_out();
                     let (sin, cos) = (unit.id as f32 * 2.4).sin_cos();
                     let wait = (
-                        refinery.x + out_x * REFINERY_WAITS + cos * 1.5,
-                        refinery.z + out_z * REFINERY_WAITS + sin * 1.5,
+                        refinery.x + out_x * REFINERY_WAITS + cos * 67.88,
+                        refinery.z + out_z * REFINERY_WAITS + sin * 67.88,
                     );
                     head_for(&mut units[i], wait);
                 }
@@ -4033,7 +4887,7 @@ pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32],
                 let front = (x + out_x * PAD_APPROACH, z + out_z * PAD_APPROACH);
                 if unit.is_moving() {
                     head_for(unit, front);
-                } else if (front.0 - unit.x).hypot(front.1 - unit.z) < 0.5 {
+                } else if (front.0 - unit.x).hypot(front.1 - unit.z) < 22.63 {
                     unit.harvest = Harvest::Turning(dock);
                 } else {
                     // Held up on its way: it sets off again.
@@ -4043,7 +4897,7 @@ pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32],
             }
             (Harvest::Turning(dock), Some((_, _, (out_x, out_z)))) => {
                 let turn = turn_between(unit.heading, out_z.atan2(out_x));
-                let most = TURN_SPEED * dt;
+                let most = unit.role.turn_rate() * dt;
                 unit.heading += turn.clamp(-most, most);
                 if turn.abs() <= most {
                     unit.harvest = Harvest::Backing(dock);
@@ -4085,11 +4939,284 @@ pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32],
     }
 }
 
+/// How long a harvester's way has to be for a carryall to take it there instead.
+const LIFT_WORTH: f32 = 633.6;
+/// How near a carryall coming for a harvester has to be for the harvester to stop for it.
+const WAIT_FOR_LIFT: f32 = 135.8;
+/// How far past the map's edge a carryall bringing a harvester comes from and goes back to.
+const PAST_THE_EDGE: f32 = 271.5;
+
+/// Whether this carryall would get this harvester where it is going sooner than it would drive
+/// there itself, counting flying over for it and winching it up and down.
+fn lift_is_quicker(carrier: &Unit, harvester: &Unit) -> bool {
+    let away = (harvester.x - carrier.x).hypot(harvester.z - carrier.z);
+    let way = harvester.remaining();
+    let winching = 2.0 * hang_height(harvester) / WINCH_SPEED;
+    (away + way) / carrier.speed() + winching < way / harvester.speed()
+}
+
+/// Whether this harvester of this owner's has a long way to go, wherever it is going, and could
+/// be carried there.
+fn wants_a_lift(unit: &Unit, owner: usize) -> bool {
+    could_be_lifted(unit, owner) && unit.remaining() > LIFT_WORTH
+}
+
+/// Whether this is a harvester of this owner's that a carryall could pick up now: anywhere but
+/// on or onto a refinery's pad.
+fn could_be_lifted(unit: &Unit, owner: usize) -> bool {
+    unit.alive
+        && unit.owner == owner
+        && unit.role == Role::Harvester
+        && unit.theft.is_none()
+        && !unit.harvest.is_docked()
+}
+
+/// How high above the ground a vehicle hangs under a carryall.
+fn hang_height(vehicle: &Unit) -> f32 {
+    let below = if vehicle.role == Role::Harvester {
+        HARVESTER_HANGS_BELOW
+    } else {
+        HANGS_BELOW
+    };
+    CRUISE_ALTITUDE - below
+}
+
+/// The ids of the harvesters carryalls are on their way to pick up.
+fn fetched_by_carryalls(units: &[Unit]) -> Vec<u32> {
+    units
+        .iter()
+        .filter(|u| u.alive)
+        .filter_map(|u| match u.lift {
+            Some(Lift::Fetch { harvester, .. }) => Some(harvester),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Carryalls see to their owner's harvesters by themselves. One with nothing to do circles
+/// where it is until a harvester has a long way to go and it is nearer to that harvester than
+/// the harvester is to where it is going. Then it goes for it, the harvester waiting once it is
+/// near, picks it up and puts it down where it was going, and circles there. Each takes the
+/// nearest of the harvesters no other carryall is going for, one after another. One that only
+/// came to bring a harvester flies off the map once it has, and is gone.
+pub fn tend_carryalls(units: &mut Vec<Unit>, terrain: &Terrain) {
+    for i in 0..units.len() {
+        let carrier = units[i];
+        if !carrier.alive || carrier.role != Role::Carryall {
+            continue;
+        }
+        let here = (carrier.x, carrier.z);
+        let away = |u: &Unit| (u.x - here.0).hypot(u.z - here.1);
+        match carrier.lift {
+            None => {
+                let gone_for = fetched_by_carryalls(units);
+                let wanted = units
+                    .iter()
+                    .filter(|u| {
+                        wants_a_lift(u, carrier.owner)
+                            && lift_is_quicker(&carrier, u)
+                            && !gone_for.contains(&u.id)
+                    })
+                    .min_by(|a, b| away(a).total_cmp(&away(b)))
+                    .copied();
+                if let Some(harvester) = wanted {
+                    units[i].lift = Some(Lift::Fetch {
+                        harvester: harvester.id,
+                        to: harvester.destination,
+                    });
+                    units[i].destination = (harvester.x, harvester.z);
+                }
+            }
+            Some(Lift::Fetch { harvester, to }) => {
+                let found = units
+                    .iter()
+                    .position(|u| u.id == harvester && could_be_lifted(u, carrier.owner));
+                let nearly_there =
+                    |h: usize| (to.0 - units[h].x).hypot(to.1 - units[h].z) < LIFT_WORTH / 2.0;
+                let Some(h) = found.filter(|&h| !nearly_there(h)) else {
+                    // Gone, no longer on its way anywhere, or nearly there: it is not needed.
+                    units[i].lift = None;
+                    units[i].destination = here;
+                    continue;
+                };
+                let over = (units[h].x, units[h].z);
+                units[i].destination = over;
+                let near = away(&units[h]);
+                if near > WAIT_FOR_LIFT {
+                    // It may have been sent somewhere else meanwhile; but once it has stopped
+                    // to wait, coming round again does not make it think it is there.
+                    if units[h].is_moving() {
+                        let to = units[h].destination;
+                        units[i].lift = Some(Lift::Fetch { harvester, to });
+                    }
+                } else if near > LIFT_REACH {
+                    units[h].destination = over;
+                } else {
+                    units[h].theft = Some(Theft {
+                        carrier: carrier.id,
+                        struggle: 0.0,
+                    });
+                    units[h].selected = false;
+                    units[h].stand_down();
+                    let carrier = &mut units[i];
+                    (carrier.carrying, carrier.unloading) = (true, true);
+                    carrier.destination = to;
+                    carrier.lift = Some(Lift::Deliver { then_leaves: false });
+                }
+            }
+            Some(Lift::Deliver { then_leaves }) if !carrier.carrying => {
+                (units[i].lift, units[i].destination) = if then_leaves {
+                    (Some(Lift::Leave), past_the_edge(terrain, here))
+                } else {
+                    (None, here)
+                };
+            }
+            Some(Lift::Deliver { .. } | Lift::Leave) => {}
+        }
+    }
+    units.retain(|u| u.lift != Some(Lift::Leave) || u.is_moving());
+}
+
+/// The nearest point to this one a little past the map's edge, out along the grid.
+fn past_the_edge(terrain: &Terrain, (x, z): (f32, f32)) -> (f32, f32) {
+    let (u, v) = world_to_grid(x, z);
+    let last = terrain.size().cells() as f32;
+    let past = PAST_THE_EDGE / CELL_SIDE;
+    let edges = [
+        (u, (-past, v)),
+        (last - u, (last + past, v)),
+        (v, (u, -past)),
+        (last - v, (u, last + past)),
+    ];
+    let (_, (u, v)) = edges
+        .into_iter()
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("there are four edges");
+    grid_to_world(u, v)
+}
+
+/// Brings the owner of a refinery a harvester for it, for nothing: a carryall with the
+/// harvester under it flies in from past the nearest edge of the map and puts it down in front
+/// of the refinery. Then the carryall either stays, its owner's from then on, or flies off
+/// again. The harvester goes out to the nearest sand. `ids` are the carryall's and the
+/// harvester's.
+pub fn deliver_harvester(
+    units: &mut Vec<Unit>,
+    terrain: &Terrain,
+    (refinery, stays): (usize, bool),
+    ids: (u32, u32),
+) {
+    let refinery = units[refinery];
+    let (out_x, out_z) = refinery.facing.way_out();
+    let front = (
+        refinery.x + out_x * REFINERY_WAITS,
+        refinery.z + out_z * REFINERY_WAITS,
+    );
+    let drop = terrain.nearest_walkable(front).unwrap_or(front);
+    let from = past_the_edge(terrain, (refinery.x, refinery.z));
+    let side = (refinery.owner, refinery.color);
+    place_unit(
+        units,
+        terrain,
+        from,
+        Role::Carryall,
+        WeaponKind::Unarmed,
+        side,
+        ids.0,
+    );
+    place_unit(
+        units,
+        terrain,
+        from,
+        Role::Harvester,
+        WeaponKind::Unarmed,
+        side,
+        ids.1,
+    );
+    let [.., carrier, harvester] = &mut units[..] else {
+        return;
+    };
+    carrier.house = refinery.house;
+    carrier.heading = (drop.1 - from.1).atan2(drop.0 - from.0);
+    (carrier.carrying, carrier.unloading) = (true, true);
+    carrier.destination = drop;
+    carrier.lift = Some(Lift::Deliver {
+        then_leaves: !stays,
+    });
+    harvester.house = refinery.house;
+    harvester.heading = carrier.heading;
+    harvester.altitude = hang_height(harvester);
+    harvester.theft = Some(Theft {
+        carrier: ids.0,
+        struggle: 0.0,
+    });
+    harvester.field = terrain.nearest_field(drop).unwrap_or(drop);
+}
+
+/// The first of this owner's finished refineries, if they have fewer harvesters than
+/// refineries, counting those on their way under carryalls.
+pub fn short_of_harvesters(units: &[Unit], owner: usize) -> Option<usize> {
+    let harvesters = units
+        .iter()
+        .filter(|u| u.alive && u.owner == owner && u.role == Role::Harvester)
+        .count();
+    let mut refineries = (0..units.len()).filter(|&i| is_refinery_of(&units[i], owner));
+    let first = refineries.next()?;
+    (harvesters < 1 + refineries.count()).then_some(first)
+}
+
+/// Credits lying on the battlefield in a crate, for whoever reaches it first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crate {
+    pub x: f32,
+    pub z: f32,
+    pub money: i32,
+    /// Seconds until it is gone, if nobody reaches it first.
+    pub left: f32,
+}
+
+/// How near a unit on the ground has to come to a crate to pick it up.
+const CRATE_REACH: f32 = 36.2;
+
+/// Opens the crates that a unit on the ground has reached, paying each one's money to that
+/// unit's owner, and takes away those left lying too long. Returns the owners paid and how
+/// much, in turn.
+pub fn open_crates(
+    units: &[Unit],
+    crates: &mut Vec<Crate>,
+    money: &mut [i32],
+    dt: f32,
+) -> Vec<(usize, i32)> {
+    let mut opened = Vec::new();
+    crates.retain_mut(|found| {
+        found.left -= dt;
+        if found.left <= 0.0 {
+            return false;
+        }
+        let finder = units.iter().find(|u| {
+            u.alive
+                && matches!(u.kind, UnitKind::Infantry | UnitKind::Vehicle)
+                && u.theft.is_none()
+                && (u.x - found.x).hypot(u.z - found.z) <= CRATE_REACH + u.radius()
+        });
+        let Some(finder) = finder else {
+            return true;
+        };
+        if let Some(money) = money.get_mut(finder.owner) {
+            *money += found.money;
+        }
+        opened.push((finder.owner, found.money));
+        false
+    });
+    opened
+}
+
 /// Advances every unit by `dt` seconds. Units killed meanwhile are left marked as not alive.
 pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
     for unit in units.iter_mut() {
         unit.constructing = (unit.constructing - dt).max(0.0);
         go_on_deploying(unit, dt);
+        raise_siege_cannon(unit, dt);
     }
     tend_pads(units, terrain, dt);
     alert_landers(units, teams);
@@ -4235,23 +5362,23 @@ mod tests {
     #[test]
     fn a_moving_heavy_vehicle_squashes_enemy_infantry_in_its_way() {
         let mut units = [
-            unit_at(-3.0, 60.0, UnitKind::Vehicle),
-            enemy_at(0.0, 60.0, UnitKind::Infantry),
+            unit_at(-135.8, 2715.0, UnitKind::Vehicle),
+            enemy_at(0.0, 2715.0, UnitKind::Infantry),
         ];
         units[0].heading = 0.0;
-        units[0].destination = (3.0, 60.0);
+        units[0].destination = (135.8, 2715.0);
         for _ in 0..100 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
         assert!(!units[1].alive, "run over");
         assert!(units[0].alive);
         assert!(
-            (units[0].x - 3.0).abs() < 0.2,
+            (units[0].x - 135.8).abs() < 9.051,
             "and it drove on straight: {:?}",
             units[0]
         );
         assert!(
-            (units[0].z - 60.0).abs() < 0.2,
+            (units[0].z - 2715.0).abs() < 9.051,
             "it did not swerve: {:?}",
             units[0]
         );
@@ -4262,19 +5389,19 @@ mod tests {
         let run_into = |driver: Unit, target: Unit, teams: &[usize]| {
             let mut units = [driver, target];
             units[0].heading = 0.0;
-            units[0].destination = (3.0, 60.0);
+            units[0].destination = (135.8, 2715.0);
             for _ in 0..100 {
                 advance(&mut units, open_ground(), teams, 0.05);
             }
             units[1].alive
         };
-        let vehicle = unit_at(-3.0, 60.0, UnitKind::Vehicle);
-        let infantry = unit_at(-3.0, 60.0, UnitKind::Infantry);
+        let vehicle = unit_at(-135.8, 2715.0, UnitKind::Vehicle);
+        let infantry = unit_at(-135.8, 2715.0, UnitKind::Infantry);
         let light = Unit {
             heavy: false,
             ..vehicle
         };
-        let target = enemy_at(0.0, 60.0, UnitKind::Infantry);
+        let target = enemy_at(0.0, 2715.0, UnitKind::Infantry);
 
         assert!(
             run_into(infantry, target, &TWO_SIDES),
@@ -4285,11 +5412,19 @@ mod tests {
             "nor a vehicle that is not heavy"
         );
         assert!(
-            run_into(vehicle, enemy_at(0.0, 60.0, UnitKind::Vehicle), &TWO_SIDES),
+            run_into(
+                vehicle,
+                enemy_at(0.0, 2715.0, UnitKind::Vehicle),
+                &TWO_SIDES
+            ),
             "nor crush vehicles"
         );
         assert!(
-            run_into(vehicle, unit_at(0.0, 60.0, UnitKind::Infantry), &TWO_SIDES),
+            run_into(
+                vehicle,
+                unit_at(0.0, 2715.0, UnitKind::Infantry),
+                &TWO_SIDES
+            ),
             "own infantry lives"
         );
         assert!(run_into(vehicle, target, &[0, 0]), "and so do allies");
@@ -4298,11 +5433,11 @@ mod tests {
     #[test]
     fn a_vehicle_goes_out_of_its_way_to_squash_enemy_infantry_then_carries_on() {
         let mut units = [
-            unit_at(-6.0, 60.0, UnitKind::Vehicle),
-            enemy_at(0.0, 62.5, UnitKind::Infantry),
+            unit_at(-271.5, 2715.0, UnitKind::Vehicle),
+            enemy_at(0.0, 2828.0, UnitKind::Infantry),
         ];
         units[0].heading = 0.0;
-        units[0].destination = (8.0, 60.0);
+        units[0].destination = (362.0, 2715.0);
         for _ in 0..400 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
@@ -4310,7 +5445,7 @@ mod tests {
             !units[1].alive,
             "it swerved and got them, though they stood off its way"
         );
-        assert_eq!(units[0].destination, (8.0, 60.0), "its order stands");
+        assert_eq!(units[0].destination, (362.0, 2715.0), "its order stands");
         assert!(
             !units[0].is_moving(),
             "and it finished the trip: {:?}",
@@ -4321,13 +5456,13 @@ mod tests {
     #[test]
     fn a_vehicle_does_not_swerve_for_anyone_behind_it_or_too_far_or_friendly() {
         for (target, teams) in [
-            (enemy_at(-9.0, 60.0, UnitKind::Infantry), TWO_SIDES),
-            (enemy_at(0.0, 66.0, UnitKind::Infantry), TWO_SIDES),
-            (enemy_at(0.0, 62.5, UnitKind::Infantry), [0, 0]),
+            (enemy_at(-407.3, 2715.0, UnitKind::Infantry), TWO_SIDES),
+            (enemy_at(0.0, 2987.0, UnitKind::Infantry), TWO_SIDES),
+            (enemy_at(0.0, 2828.0, UnitKind::Infantry), [0, 0]),
         ] {
-            let mut units = [unit_at(-6.0, 60.0, UnitKind::Vehicle), target];
+            let mut units = [unit_at(-271.5, 2715.0, UnitKind::Vehicle), target];
             units[0].heading = 0.0;
-            units[0].destination = (8.0, 60.0);
+            units[0].destination = (362.0, 2715.0);
             for _ in 0..400 {
                 advance(&mut units, open_ground(), &teams, 0.05);
             }
@@ -4338,10 +5473,10 @@ mod tests {
     #[test]
     fn a_vehicle_standing_still_squashes_nobody() {
         let mut units = [
-            unit_at(0.0, 60.0, UnitKind::Vehicle),
-            enemy_at(-3.0, 60.0, UnitKind::Infantry),
+            unit_at(0.0, 2715.0, UnitKind::Vehicle),
+            enemy_at(-135.8, 2715.0, UnitKind::Infantry),
         ];
-        units[1].destination = (0.0, 60.0);
+        units[1].destination = (0.0, 2715.0);
         for _ in 0..100 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
@@ -4372,17 +5507,17 @@ mod tests {
             units[0]
         );
 
-        let walled = Terrain::open_with_ruins(vec![wall(0.0, 60.0, 0.5, 3.0, 2.0)]);
-        let tank = unit_at(2.0, 60.0, UnitKind::Vehicle);
-        let mut units = [unit_at(-5.0, 60.0, UnitKind::Aircraft), tank];
+        let walled = Terrain::open_with_ruins(vec![wall(0.0, 2715.0, 22.63, 135.8, 90.51)]);
+        let tank = unit_at(90.51, 2715.0, UnitKind::Vehicle);
+        let mut units = [unit_at(-226.3, 2715.0, UnitKind::Aircraft), tank];
         units[0].heading = 0.0;
-        units[0].destination = (5.0, 60.0);
+        units[0].destination = (226.3, 2715.0);
         for _ in 0..40 {
             advance(&mut units, &walled, &[0], 0.05);
-            assert_eq!(units[0].z, 60.0, "never strays: {:?}", units[0]);
+            assert_eq!(units[0].z, 2715.0, "never strays: {:?}", units[0]);
             assert_eq!(
                 (units[1].x, units[1].z),
-                (2.0, 60.0),
+                (90.51, 2715.0),
                 "the tank is not pushed"
             );
         }
@@ -4392,14 +5527,14 @@ mod tests {
     #[test]
     fn aircraft_keep_clear_of_each_other() {
         let mut units = [
-            unit_at(-5.0, 60.0, UnitKind::Aircraft),
-            unit_at(5.0, 60.0, UnitKind::Aircraft),
+            unit_at(-226.3, 2715.0, UnitKind::Aircraft),
+            unit_at(226.3, 2715.0, UnitKind::Aircraft),
         ];
-        units[0].destination = (5.0, 60.0);
-        units[1].destination = (-5.0, 60.0);
+        units[0].destination = (226.3, 2715.0);
+        units[1].destination = (-226.3, 2715.0);
         for _ in 0..200 {
             advance(&mut units, open_ground(), &[], 0.05);
-            assert!(largest_overlap(&units) < 0.05);
+            assert!(largest_overlap(&units) < 2.263);
         }
         assert!(!units[0].is_moving() && !units[1].is_moving(), "{units:?}");
     }
@@ -4407,18 +5542,18 @@ mod tests {
     #[test]
     fn nothing_on_the_ground_squashes_or_is_squashed_by_aircraft() {
         let mut units = [
-            unit_at(-3.0, 60.0, UnitKind::Vehicle),
-            enemy_at(0.0, 60.0, UnitKind::Aircraft),
+            unit_at(-135.8, 2715.0, UnitKind::Vehicle),
+            enemy_at(0.0, 2715.0, UnitKind::Aircraft),
         ];
         units[0].heading = 0.0;
-        units[0].destination = (3.0, 60.0);
+        units[0].destination = (135.8, 2715.0);
         for _ in 0..100 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
         assert!(units[1].alive);
         assert_eq!(
             (units[1].x, units[1].z),
-            (0.0, 60.0),
+            (0.0, 2715.0),
             "the vehicle passed under it"
         );
     }
@@ -4426,23 +5561,23 @@ mod tests {
     #[test]
     fn the_air_and_the_ground_may_be_sent_to_the_same_spot() {
         let mut units = [
-            unit_at(-3.0, 60.0, UnitKind::Infantry),
-            unit_at(3.0, 60.0, UnitKind::Aircraft),
+            unit_at(-135.8, 2715.0, UnitKind::Infantry),
+            unit_at(135.8, 2715.0, UnitKind::Aircraft),
         ];
         units[0].selected = true;
         units[1].selected = true;
-        order_move(&mut units, (0.0, 50.0), open_ground(), &[]);
-        assert_eq!(units[0].destination, (0.0, 50.0));
-        assert_eq!(units[1].destination, (0.0, 50.0));
+        order_move(&mut units, (0.0, 2263.0), open_ground(), &[]);
+        assert_eq!(units[0].destination, (0.0, 2263.0));
+        assert_eq!(units[1].destination, (0.0, 2263.0));
     }
 
     #[test]
     fn aircraft_may_be_sent_over_ruins_and_water_but_not_off_the_map() {
-        let walled = Terrain::open_with_ruins(vec![wall(0.0, 60.0, 1.0, 1.0, 1.0)]);
-        let mut units = [unit_at(-8.0, 60.0, UnitKind::Aircraft)];
+        let walled = Terrain::open_with_ruins(vec![wall(0.0, 2715.0, 45.25, 45.25, 45.25)]);
+        let mut units = [unit_at(-362.0, 2715.0, UnitKind::Aircraft)];
         units[0].selected = true;
-        order_move(&mut units, (0.0, 60.0), &walled, &[0]);
-        assert_eq!(units[0].destination, (0.0, 60.0), "right over the ruin");
+        order_move(&mut units, (0.0, 2715.0), &walled, &[0]);
+        assert_eq!(units[0].destination, (0.0, 2715.0), "right over the ruin");
 
         let terrain = map_with_impassable_lower_terrain();
         let water = (-40..=40)
@@ -4452,7 +5587,7 @@ mod tests {
         order_move(&mut units, water, terrain, &[0]);
         assert_eq!(units[0].destination, water, "right over the water");
 
-        order_move(&mut units, (0.0, -30.0), terrain, &[0]);
+        order_move(&mut units, (0.0, -1358.0), terrain, &[0]);
         assert!(
             terrain.on_map(units[0].destination.0, units[0].destination.1),
             "{:?}",
@@ -4489,8 +5624,8 @@ mod tests {
 
     fn attacker_and_enemy(enemy_x: f32) -> [Unit; 2] {
         let mut units = [
-            unit_at(0.0, 60.0, UnitKind::Infantry),
-            enemy_at(enemy_x, 60.0, UnitKind::Infantry),
+            unit_at(0.0, 2715.0, UnitKind::Infantry),
+            enemy_at(enemy_x, 2715.0, UnitKind::Infantry),
         ];
         units[1].id = 7;
         units[0].selected = true;
@@ -4500,7 +5635,7 @@ mod tests {
 
     #[test]
     fn a_unit_told_to_attack_closes_to_within_range_and_stops_there() {
-        let mut units = attacker_and_enemy(20.0);
+        let mut units = attacker_and_enemy(905.1);
         order_attack(&mut units, 1, &TWO_SIDES);
         assert_eq!(units[0].target, Some(Target::Unit(7)));
         for _ in 0..400 {
@@ -4518,21 +5653,21 @@ mod tests {
 
     #[test]
     fn a_unit_follows_a_target_that_moves_away() {
-        let mut units = attacker_and_enemy(5.0);
+        let mut units = attacker_and_enemy(135.8);
         order_attack(&mut units, 1, &TWO_SIDES);
         advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         assert!(!units[0].is_moving(), "already in range");
-        units[1].x = 25.0;
-        units[1].destination = (25.0, 60.0);
+        units[1].x = 1131.0;
+        units[1].destination = (1131.0, 2715.0);
         for _ in 0..400 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
-        assert!(units[0].x > 15.0, "it went after it: {:?}", units[0]);
+        assert!(units[0].x > 678.8, "it went after it: {:?}", units[0]);
     }
 
     #[test]
     fn a_unit_stops_where_it_is_when_its_target_dies() {
-        let mut units = attacker_and_enemy(20.0);
+        let mut units = attacker_and_enemy(905.1);
         order_attack(&mut units, 1, &TWO_SIDES);
         for _ in 0..10 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
@@ -4547,28 +5682,28 @@ mod tests {
 
     #[test]
     fn a_move_order_replaces_the_target() {
-        let mut units = attacker_and_enemy(20.0);
+        let mut units = attacker_and_enemy(905.1);
         order_attack(&mut units, 1, &TWO_SIDES);
-        order_move(&mut units, (-5.0, 60.0), open_ground(), &TWO_SIDES);
+        order_move(&mut units, (-226.3, 2715.0), open_ground(), &TWO_SIDES);
         assert_eq!(units[0].target, None);
         for _ in 0..100 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
-        assert!(units[0].x < -4.0, "{:?}", units[0]);
+        assert!(units[0].x < -181.0, "{:?}", units[0]);
     }
 
     #[test]
     fn only_selected_units_able_to_fight_it_take_the_order() {
         let plane = Unit {
             id: 7,
-            ..enemy_at(20.0, 60.0, UnitKind::Aircraft)
+            ..enemy_at(905.1, 2715.0, UnitKind::Aircraft)
         };
-        let mut mortar = unit_at(0.0, 60.0, UnitKind::Vehicle);
+        let mut mortar = unit_at(0.0, 2715.0, UnitKind::Vehicle);
         mortar.selected = true;
         mortar.weapon = WeaponKind::Mortar;
-        let mut idle = unit_at(0.0, 62.0, UnitKind::Infantry);
+        let mut idle = unit_at(0.0, 2806.0, UnitKind::Infantry);
         idle.weapon = WeaponKind::Bullet;
-        let mut gunner = unit_at(0.0, 64.0, UnitKind::Infantry);
+        let mut gunner = unit_at(0.0, 2896.0, UnitKind::Infantry);
         gunner.selected = true;
         gunner.weapon = WeaponKind::Laser;
         let mut units = [mortar, idle, gunner, plane];
@@ -4581,12 +5716,12 @@ mod tests {
     #[test]
     fn a_unit_cut_off_from_its_target_gives_up_on_it() {
         let terrain = Terrain::open_with_ruins(vec![
-            wall(0.0, 56.0, 4.0, 0.2, 2.0),
-            wall(0.0, 64.0, 4.0, 0.2, 2.0),
-            wall(-4.0, 60.0, 0.2, 4.0, 2.0),
-            wall(4.0, 60.0, 0.2, 4.0, 2.0),
+            wall(0.0, 2534.0, 181.0, 9.051, 90.51),
+            wall(0.0, 2896.0, 181.0, 9.051, 90.51),
+            wall(-181.0, 2715.0, 9.051, 181.0, 90.51),
+            wall(181.0, 2715.0, 9.051, 181.0, 90.51),
         ]);
-        let mut units = attacker_and_enemy(20.0);
+        let mut units = attacker_and_enemy(905.1);
         order_attack(&mut units, 1, &TWO_SIDES);
         for _ in 0..1200 {
             advance(&mut units, &terrain, &TWO_SIDES, 0.05);
@@ -4599,14 +5734,14 @@ mod tests {
     fn a_unit_wedged_behind_others_gives_up_on_its_target() {
         // A row of parked vehicles too tight to pass, across the way to the target.
         let mut units = vec![
-            unit_at(0.0, 60.0, UnitKind::Infantry),
-            enemy_at(20.0, 60.0, UnitKind::Infantry),
+            unit_at(0.0, 2715.0, UnitKind::Infantry),
+            enemy_at(905.1, 2715.0, UnitKind::Infantry),
         ];
         units[1].id = 7;
         units[0].selected = true;
         units[0].weapon = WeaponKind::Bullet;
         for i in -8..=8 {
-            units.push(unit_at(1.5, 60.0 + i as f32 * 0.9, UnitKind::Vehicle));
+            units.push(unit_at(67.88, 2715.0 + i as f32 * 40.73, UnitKind::Vehicle));
         }
         order_attack(&mut units, 1, &TWO_SIDES);
         for _ in 0..1200 {
@@ -4651,7 +5786,7 @@ mod tests {
         let colors = crate::game::TEAM_COLORS;
         for map in 0..crate::game::MAPS.len() {
             for count in 2..=colors.len() {
-                let terrain = terrain(map);
+                let terrain = crate::battlefield::terrain(map);
                 for unit in spawn_bases(terrain, &colors[..count])
                     .iter()
                     .filter(|u| u.kind.is_building())
@@ -4668,16 +5803,16 @@ mod tests {
     #[test]
     fn nothing_moves_a_tower_or_runs_it_over() {
         let mut units = [
-            unit_at(-4.0, 60.0, UnitKind::Vehicle),
-            enemy_at(0.0, 60.0, UnitKind::Tower),
+            unit_at(-181.0, 2715.0, UnitKind::Vehicle),
+            enemy_at(0.0, 2715.0, UnitKind::Tower),
         ];
         units[0].heading = 0.0;
-        units[0].destination = (4.0, 60.0);
+        units[0].destination = (181.0, 2715.0);
         for _ in 0..400 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
         assert!(units[1].alive, "not squashed");
-        assert_eq!((units[1].x, units[1].z), (0.0, 60.0), "not pushed");
+        assert_eq!((units[1].x, units[1].z), (0.0, 2715.0), "not pushed");
         assert!(
             !units[0].is_moving(),
             "and the vehicle drove around it: {:?}",
@@ -4688,24 +5823,24 @@ mod tests {
     #[test]
     fn no_order_sends_anyone_right_onto_a_tower() {
         let mut units = [
-            unit_at(-8.0, 60.0, UnitKind::Vehicle),
-            enemy_at(0.0, 60.0, UnitKind::Tower),
+            unit_at(-362.0, 2715.0, UnitKind::Vehicle),
+            enemy_at(0.0, 2715.0, UnitKind::Tower),
         ];
         units[0].selected = true;
-        order_move(&mut units, (0.0, 60.0), open_ground(), &TWO_SIDES);
-        assert_ne!(units[0].destination, (0.0, 60.0));
+        order_move(&mut units, (0.0, 2715.0), open_ground(), &TWO_SIDES);
+        assert_ne!(units[0].destination, (0.0, 2715.0));
     }
 
     #[test]
     fn a_towers_two_tubes_stand_side_by_side_ahead_of_it_where_it_is_aimed() {
-        let mut tower = unit_at(0.0, 60.0, UnitKind::Tower);
+        let mut tower = unit_at(0.0, 2715.0, UnitKind::Tower);
         tower.heading = 0.0;
         let first = tower.muzzle();
         tower.second_tube = true;
         let second = tower.muzzle();
         assert!(first.0 > 0.0 && second.0 > 0.0, "ahead of it, to the east");
         assert_eq!(first.0, second.0);
-        assert!((first.2 - second.2).abs() > 0.2, "side by side");
+        assert!((first.2 - second.2).abs() > 9.051, "side by side");
     }
 
     fn produced(role: Role) -> Unit {
@@ -4714,7 +5849,7 @@ mod tests {
         place_unit(
             &mut units,
             open_ground(),
-            (0.0, 60.0),
+            (0.0, 2715.0),
             role,
             role.weapon(),
             side,
@@ -4777,6 +5912,9 @@ mod tests {
     #[test]
     fn vehicles_made_in_a_hurry_sort_themselves_out_beyond_the_door() {
         let mut units = base_of(0);
+        for unit in &mut units {
+            unit.house = Faction::Harkonnen;
+        }
         for id in 0..12 {
             assert!(produce(
                 &mut units,
@@ -4786,11 +5924,11 @@ mod tests {
                 10 + id
             ));
         }
-        for _ in 0..200 {
+        for _ in 0..400 {
             advance(&mut units, open_ground(), &[0], 0.05);
         }
         assert!(
-            largest_overlap(&units) <= 0.001,
+            largest_overlap(&units) <= 0.1,
             "{}",
             largest_overlap(&units)
         );
@@ -4808,8 +5946,8 @@ mod tests {
     #[test]
     fn the_drone_can_be_told_to_attack_only_aircraft_and_the_platform_anything() {
         let (plane, tank) = (
-            enemy_at(1.0, 60.0, UnitKind::Aircraft),
-            enemy_at(1.0, 60.0, UnitKind::Vehicle),
+            enemy_at(45.25, 2715.0, UnitKind::Aircraft),
+            enemy_at(45.25, 2715.0, UnitKind::Vehicle),
         );
         let (drone, platform) = (produced(Role::AirDrone), produced(Role::AirDefensePlatform));
         assert!(drone.can_attack(&plane, &TWO_SIDES));
@@ -4821,8 +5959,8 @@ mod tests {
     #[test]
     fn flame_and_gas_infantry_can_be_told_to_attack_the_ground_but_not_aircraft() {
         let (plane, tank) = (
-            enemy_at(1.0, 60.0, UnitKind::Aircraft),
-            enemy_at(1.0, 60.0, UnitKind::Vehicle),
+            enemy_at(45.25, 2715.0, UnitKind::Aircraft),
+            enemy_at(45.25, 2715.0, UnitKind::Vehicle),
         );
         for role in [Role::FlameInfantry, Role::GasInfantry] {
             let unit = produced(role);
@@ -4834,21 +5972,21 @@ mod tests {
     #[test]
     fn scouts_run_fast_and_can_attack_nobody() {
         let scout = produced(Role::Scout);
-        assert!(scout.role.speed() > Role::LightInfantry.speed());
-        let enemy = enemy_at(1.0, 60.0, UnitKind::Infantry);
+        assert!(scout.speed() > Role::LightInfantry.speed(scout.house));
+        let enemy = enemy_at(45.25, 2715.0, UnitKind::Infantry);
         assert!(!scout.can_attack(&enemy, &TWO_SIDES));
     }
 
     #[test]
     fn k_infantry_deploys_into_a_cannon_stays_put_and_can_pack_up_again() {
-        let mut units = [produced(Role::KInfantry)];
+        let mut units = vec![produced(Role::KInfantry)];
         units[0].selected = true;
         toggle_deploy(&mut units, open_ground());
         assert!(units[0].deployed);
         assert_eq!(units[0].weapon, WeaponKind::Cannon);
 
         let at = (units[0].x, units[0].z);
-        order_move(&mut units, (10.0, 60.0), open_ground(), &[0]);
+        order_move(&mut units, (452.5, 2715.0), open_ground(), &[0]);
         for _ in 0..40 {
             advance(&mut units, open_ground(), &[0], 0.05);
         }
@@ -4856,21 +5994,21 @@ mod tests {
 
         toggle_deploy(&mut units, open_ground());
         assert_eq!(units[0].weapon, WeaponKind::Pistol);
-        order_move(&mut units, (10.0, 60.0), open_ground(), &[0]);
+        order_move(&mut units, (452.5, 2715.0), open_ground(), &[0]);
         advance(&mut units, open_ground(), &[0], 0.05);
         assert_ne!((units[0].x, units[0].z), at, "on the move again");
     }
 
     #[test]
     fn deploying_stops_a_unit_and_only_selected_k_infantry_takes_the_order() {
-        let mut units = [
+        let mut units = vec![
             produced(Role::KInfantry),
             produced(Role::Sniper),
             produced(Role::KInfantry),
         ];
         units[0].selected = true;
         units[1].selected = true;
-        units[0].destination = (10.0, 60.0);
+        units[0].destination = (452.5, 2715.0);
         toggle_deploy(&mut units, open_ground());
         assert!(!units[0].is_moving());
         assert!(!units[1].deployed);
@@ -4879,9 +6017,9 @@ mod tests {
 
     #[test]
     fn a_deployed_unit_told_to_attack_does_not_walk_off_after_its_target() {
-        let mut units = [
+        let mut units = vec![
             produced(Role::KInfantry),
-            enemy_at(25.0, 60.0, UnitKind::Infantry),
+            enemy_at(1131.0, 2715.0, UnitKind::Infantry),
         ];
         units[1].id = 7;
         units[0].selected = true;
@@ -4897,8 +6035,8 @@ mod tests {
     fn engineer_and_tower() -> [Unit; 2] {
         let mut engineer = produced(Role::Engineer);
         engineer.selected = true;
-        engineer.x = -8.0;
-        engineer.destination = (-8.0, engineer.z);
+        engineer.x = -362.0;
+        engineer.destination = (-362.0, engineer.z);
         let mut tower = enemy_at(0.0, engineer.z, UnitKind::Tower);
         tower.id = 7;
         [engineer, tower]
@@ -4942,7 +6080,7 @@ mod tests {
     fn those_attacking_a_building_stop_when_it_changes_sides() {
         let mut gunner = produced(Role::LightInfantry);
         gunner.selected = true;
-        gunner.x = -20.0;
+        gunner.x = -905.1;
         let mut tower = enemy_at(0.0, gunner.z, UnitKind::Tower);
         tower.id = 7;
         let mut units = [gunner, tower];
@@ -4957,51 +6095,51 @@ mod tests {
 
     #[test]
     fn a_unit_told_to_attack_a_place_closes_to_within_range_and_stays_on_the_order() {
-        let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry)];
+        let mut units = [unit_at(0.0, 2715.0, UnitKind::Infantry)];
         units[0].selected = true;
-        order_attack_place(&mut units, (20.0, 60.0));
-        assert_eq!(units[0].target, Some(Target::Place(20.0, 60.0)));
+        order_attack_place(&mut units, (905.1, 2715.0));
+        assert_eq!(units[0].target, Some(Target::Place(905.1, 2715.0)));
         for _ in 0..400 {
             advance(&mut units, open_ground(), &[0], 0.05);
         }
         assert!(!units[0].is_moving());
-        let away = 20.0 - units[0].x;
+        let away = 905.1 - units[0].x;
         assert!(
-            away <= WeaponKind::Bullet.range() && away > 3.0,
+            away <= WeaponKind::Bullet.range() && away > 135.8,
             "it did not go all the way: {away}"
         );
         assert_eq!(
             units[0].target,
-            Some(Target::Place(20.0, 60.0)),
+            Some(Target::Place(905.1, 2715.0)),
             "the order stands"
         );
 
-        order_move(&mut units, (0.0, 60.0), open_ground(), &[0]);
+        order_move(&mut units, (0.0, 2715.0), open_ground(), &[0]);
         assert_eq!(units[0].target, None, "until a move order replaces it");
     }
 
     #[test]
     fn a_unit_already_in_range_of_a_place_does_not_move() {
-        let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry)];
+        let mut units = [unit_at(0.0, 2715.0, UnitKind::Infantry)];
         units[0].selected = true;
-        order_attack_place(&mut units, (3.0, 60.0));
+        order_attack_place(&mut units, (135.8, 2715.0));
         advance(&mut units, open_ground(), &[0], 0.05);
         assert_eq!(units[0].x, 0.0);
     }
 
     #[test]
     fn those_unable_to_hit_the_ground_take_no_order_to_attack_a_place() {
-        let mut scout = unit_at(0.0, 60.0, UnitKind::Infantry);
+        let mut scout = unit_at(0.0, 2715.0, UnitKind::Infantry);
         scout.weapon = WeaponKind::Unarmed;
-        let mut drone = unit_at(0.0, 62.0, UnitKind::Aircraft);
+        let mut drone = unit_at(0.0, 2806.0, UnitKind::Aircraft);
         drone.weapon = WeaponKind::AirMissile;
-        let mut fixer = unit_at(0.0, 64.0, UnitKind::Vehicle);
+        let mut fixer = unit_at(0.0, 2896.0, UnitKind::Vehicle);
         fixer.weapon = WeaponKind::Repair;
         let mut units = [scout, drone, fixer];
         for unit in &mut units {
             unit.selected = true;
         }
-        order_attack_place(&mut units, (5.0, 60.0));
+        order_attack_place(&mut units, (226.3, 2715.0));
         assert!(units.iter().all(|u| u.target.is_none()));
     }
 
@@ -5014,16 +6152,16 @@ mod tests {
 
     #[test]
     fn a_forced_target_is_remembered_even_if_it_is_a_friend_and_its_death_frees_the_unit() {
-        let mut gunner = unit_at(0.0, 60.0, UnitKind::Infantry);
+        let mut gunner = unit_at(0.0, 2715.0, UnitKind::Infantry);
         gunner.selected = true;
-        let mut units = with_ids([gunner, unit_at(20.0, 60.0, UnitKind::Infantry)]);
+        let mut units = with_ids([gunner, unit_at(905.1, 2715.0, UnitKind::Infantry)]);
         order_force_attack(&mut units, 1, &[0]);
         assert_eq!(units[0].target, Some(Target::Forced(2)));
         for _ in 0..400 {
             advance(&mut units, open_ground(), &[0], 0.05);
         }
         assert!(
-            units[0].x > 10.0,
+            units[0].x > 452.5,
             "it went after its friend: {:?}",
             units[0]
         );
@@ -5037,7 +6175,7 @@ mod tests {
 
     #[test]
     fn no_unit_is_forced_to_target_itself() {
-        let mut gunner = unit_at(0.0, 60.0, UnitKind::Infantry);
+        let mut gunner = unit_at(0.0, 2715.0, UnitKind::Infantry);
         gunner.selected = true;
         let mut units = with_ids([gunner]);
         order_force_attack(&mut units, 0, &[0]);
@@ -5046,9 +6184,9 @@ mod tests {
 
     #[test]
     fn forcing_an_attack_on_an_enemy_is_an_ordinary_attack() {
-        let mut gunner = unit_at(0.0, 60.0, UnitKind::Infantry);
+        let mut gunner = unit_at(0.0, 2715.0, UnitKind::Infantry);
         gunner.selected = true;
-        let mut units = with_ids([gunner, enemy_at(5.0, 60.0, UnitKind::Infantry)]);
+        let mut units = with_ids([gunner, enemy_at(226.3, 2715.0, UnitKind::Infantry)]);
         order_force_attack(&mut units, 1, &TWO_SIDES);
         assert_eq!(units[0].target, Some(Target::Unit(2)));
     }
@@ -5063,7 +6201,10 @@ mod tests {
 
     #[test]
     fn a_repair_vehicle_goes_to_a_friendly_vehicle_it_was_sent_to_and_its_death_frees_it() {
-        let mut units = with_ids([fixer_at(0.0, 60.0), unit_at(20.0, 60.0, UnitKind::Vehicle)]);
+        let mut units = with_ids([
+            fixer_at(0.0, 2715.0),
+            unit_at(905.1, 2715.0, UnitKind::Vehicle),
+        ]);
         order_attack(&mut units, 1, &[0]);
         assert_eq!(units[0].target, Some(Target::Unit(2)));
         for _ in 0..400 {
@@ -5082,18 +6223,18 @@ mod tests {
     fn a_repair_vehicle_can_be_sent_only_to_friendly_vehicles_other_than_itself() {
         let ally = Unit {
             owner: 1,
-            ..unit_at(5.0, 60.0, UnitKind::Vehicle)
+            ..unit_at(226.3, 2715.0, UnitKind::Vehicle)
         };
-        let fixer = fixer_at(0.0, 60.0);
+        let fixer = fixer_at(0.0, 2715.0);
         let id = |mut unit: Unit| {
             unit.id = 9;
             unit
         };
-        assert!(fixer.can_fix(&id(unit_at(5.0, 60.0, UnitKind::Vehicle)), &[0]));
+        assert!(fixer.can_fix(&id(unit_at(226.3, 2715.0, UnitKind::Vehicle)), &[0]));
         assert!(fixer.can_fix(&id(ally), &[0, 0]), "an ally");
         assert!(!fixer.can_fix(&id(ally), &TWO_SIDES), "an enemy");
         assert!(
-            !fixer.can_fix(&id(unit_at(5.0, 60.0, UnitKind::Infantry)), &[0]),
+            !fixer.can_fix(&id(unit_at(226.3, 2715.0, UnitKind::Infantry)), &[0]),
             "infantry"
         );
         assert!(!fixer.can_fix(&fixer, &[0]), "itself");
@@ -5101,8 +6242,8 @@ mod tests {
 
     #[test]
     fn a_repair_vehicle_fixes_aircraft_only_while_they_are_grounded() {
-        let fixer = fixer_at(0.0, 60.0);
-        let mut plane = unit_at(5.0, 60.0, UnitKind::Aircraft);
+        let fixer = fixer_at(0.0, 2715.0);
+        let mut plane = unit_at(226.3, 2715.0, UnitKind::Aircraft);
         plane.id = 9;
         assert!(!fixer.can_fix(&plane, &[0]), "in the air");
         plane.altitude = 0.0;
@@ -5111,7 +6252,7 @@ mod tests {
 
     #[test]
     fn experience_gives_four_ranks_with_more_health_power_and_speed() {
-        let mut unit = unit_at(0.0, 60.0, UnitKind::Vehicle);
+        let mut unit = unit_at(0.0, 2715.0, UnitKind::Vehicle);
         let (health, power, speed) = (unit.max_health(), unit.attack_power(), unit.speed());
         assert_eq!(unit.rank(), 0);
         for (rank, needed) in (0..).zip(RANK_EXPERIENCE) {
@@ -5130,7 +6271,7 @@ mod tests {
 
     #[test]
     fn a_new_rank_brings_its_extra_health_at_once() {
-        let mut unit = unit_at(0.0, 60.0, UnitKind::Infantry);
+        let mut unit = unit_at(0.0, 2715.0, UnitKind::Infantry);
         unit.health = 40.0;
         unit.gain_experience(1);
         assert_eq!(unit.health, 40.0, "no new rank yet");
@@ -5142,10 +6283,10 @@ mod tests {
     #[test]
     fn experienced_units_get_there_faster() {
         let run_for = |experience: u32| {
-            let mut units = [unit_at(-20.0, 60.0, UnitKind::Vehicle)];
+            let mut units = [unit_at(-905.1, 2715.0, UnitKind::Vehicle)];
             units[0].experience = experience;
             units[0].heading = 0.0;
-            units[0].destination = (20.0, 60.0);
+            units[0].destination = (905.1, 2715.0);
             for _ in 0..40 {
                 advance(&mut units, open_ground(), &[], 0.05);
             }
@@ -5157,11 +6298,11 @@ mod tests {
     #[test]
     fn running_over_infantry_earns_experience() {
         let mut units = [
-            unit_at(-3.0, 60.0, UnitKind::Vehicle),
-            enemy_at(0.0, 60.0, UnitKind::Infantry),
+            unit_at(-135.8, 2715.0, UnitKind::Vehicle),
+            enemy_at(0.0, 2715.0, UnitKind::Infantry),
         ];
         units[0].heading = 0.0;
-        units[0].destination = (3.0, 60.0);
+        units[0].destination = (135.8, 2715.0);
         for _ in 0..100 {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
@@ -5197,7 +6338,7 @@ mod tests {
     fn a_drone_never_stops_it_comes_to_where_it_was_sent_and_circles_there_leaning_in() {
         let terrain = crate::battlefield::terrain(0);
         let start = (0.0, MAP_MIDDLE_Z);
-        let mut units = [drone_at(start.0 + 15.0, start.1)];
+        let mut units = [drone_at(start.0 + 678.8, start.1)];
         units[0].destination = start;
         for _ in 0..200 {
             advance(&mut units, terrain, &[0], 0.05);
@@ -5211,14 +6352,14 @@ mod tests {
             let before = (units[0].x, units[0].z, units[0].heading);
             advance(&mut units, terrain, &[0], 0.05);
             let moved = (units[0].x - before.0).hypot(units[0].z - before.1);
-            assert!(moved > 0.3, "always on the move: {moved}");
+            assert!(moved > 13.58, "always on the move: {moved}");
             headings += turn_between(before.2, units[0].heading);
             let away = (units[0].x - start.0).hypot(units[0].z - start.1);
             least = least.min(away);
             most = most.max(away);
         }
         assert!(
-            least > CIRCLE_RADIUS * 0.5 && most < CIRCLE_RADIUS * 1.5,
+            least > drone.circle_radius() * 0.5 && most < drone.circle_radius() * 1.5,
             "{least}..{most}"
         );
         assert!(headings.abs() > TAU, "round and round: {headings}");
@@ -5242,12 +6383,12 @@ mod tests {
                 let before = (units[0].x, units[0].z);
                 advance(&mut units, terrain, &[0], 0.05);
                 let moved = (units[0].x - before.0).hypot(units[0].z - before.1);
-                assert!(moved > 0.3, "stuck at {before:?} going to {edge:?}");
+                assert!(moved > 13.58, "stuck at {before:?} going to {edge:?}");
                 assert!(terrain.on_map(units[0].x, units[0].z));
             }
             let away = (units[0].x - edge.0).hypot(units[0].z - edge.1);
             assert!(
-                away < CIRCLE_RADIUS * 2.5,
+                away < units[0].circle_radius() * 2.5,
                 "still about where it was sent: {away}"
             );
         }
@@ -5259,7 +6400,7 @@ mod tests {
         let mut enemy = Unit::for_test(0.0, MAP_MIDDLE_Z, UnitKind::Aircraft);
         enemy.owner = 1;
         enemy.id = 7;
-        let mut drone = drone_at(9.0, MAP_MIDDLE_Z);
+        let mut drone = drone_at(407.3, MAP_MIDDLE_Z);
         drone.id = 1;
         drone.target = Some(Target::Unit(7));
         let mut units = [drone, enemy];
@@ -5267,7 +6408,8 @@ mod tests {
             advance(&mut units, terrain, &[0, 1], 0.05);
         }
         assert_eq!(units[0].destination, (0.0, MAP_MIDDLE_Z));
-        assert!(units[0].x.hypot(units[0].z - MAP_MIDDLE_Z) < CIRCLE_RADIUS * 1.6);
+        let circle = units[0].circle_radius();
+        assert!(units[0].x.hypot(units[0].z - MAP_MIDDLE_Z) < circle * 1.6);
     }
 
     fn ornithopter_at(x: f32, z: f32) -> Unit {
@@ -5283,7 +6425,7 @@ mod tests {
     fn an_ornithopter_starts_on_the_ground_goes_up_turns_flies_and_then_sits() {
         assert_eq!(produced(Role::Ornithopter).altitude, 0.0);
         let terrain = crate::battlefield::terrain(0);
-        let goal = (8.0, MAP_MIDDLE_Z);
+        let goal = (362.0, MAP_MIDDLE_Z);
         let mut units = [ornithopter_at(0.0, MAP_MIDDLE_Z)];
         assert!(units[0].can_be_repaired(), "while it sits");
         order_move(&mut units, goal, terrain, &[0]);
@@ -5329,7 +6471,7 @@ mod tests {
     #[test]
     fn an_ornithopter_told_to_attack_goes_up_stays_up_to_fire_and_sits_again_once_it_is_over() {
         let terrain = crate::battlefield::terrain(0);
-        let mut enemy = Unit::for_test(5.0, MAP_MIDDLE_Z, UnitKind::Infantry);
+        let mut enemy = Unit::for_test(226.3, MAP_MIDDLE_Z, UnitKind::Infantry);
         enemy.owner = 1;
         enemy.id = 7;
         let mut sitting = ornithopter_at(0.0, MAP_MIDDLE_Z);
@@ -5354,7 +6496,7 @@ mod tests {
     fn a_sitting_ornithopter_takes_off_for_an_enemy_nearby_and_sits_back_once_it_is_safe() {
         let terrain = crate::battlefield::terrain(0);
         let teams = [0, 1];
-        let mut enemy = Unit::for_test(5.0, MAP_MIDDLE_Z, UnitKind::Infantry);
+        let mut enemy = Unit::for_test(226.3, MAP_MIDDLE_Z, UnitKind::Infantry);
         enemy.owner = 1;
         enemy.id = 7;
         let mut sitting = ornithopter_at(0.0, MAP_MIDDLE_Z);
@@ -5378,7 +6520,7 @@ mod tests {
     #[test]
     fn a_sitting_ornithopter_stays_down_beside_an_enemy_building_that_makes_units() {
         let terrain = crate::battlefield::terrain(0);
-        let mut barracks = Unit::for_test(4.0, MAP_MIDDLE_Z, UnitKind::Building);
+        let mut barracks = Unit::for_test(181.0, MAP_MIDDLE_Z, UnitKind::Building);
         barracks.owner = 1;
         let mut units = [ornithopter_at(0.0, MAP_MIDDLE_Z), barracks];
         for _ in 0..40 {
@@ -5390,9 +6532,9 @@ mod tests {
     #[test]
     fn a_sitting_ornithopter_stays_down_for_far_off_enemies_and_friends() {
         let terrain = crate::battlefield::terrain(0);
-        let mut far = Unit::for_test(20.0, MAP_MIDDLE_Z, UnitKind::Infantry);
+        let mut far = Unit::for_test(905.1, MAP_MIDDLE_Z, UnitKind::Infantry);
         far.owner = 1;
-        let mut friend = Unit::for_test(3.0, MAP_MIDDLE_Z, UnitKind::Infantry);
+        let mut friend = Unit::for_test(135.8, MAP_MIDDLE_Z, UnitKind::Infantry);
         friend.owner = 2;
         let mut units = [ornithopter_at(0.0, MAP_MIDDLE_Z), far, friend];
         for _ in 0..40 {
@@ -5407,7 +6549,7 @@ mod tests {
         let reach = WeaponKind::Rockets.range();
         let mut ornithopter = ornithopter_at(0.0, MAP_MIDDLE_Z);
         ornithopter.id = 1;
-        let mut enemy = Unit::for_test(reach - 2.0, MAP_MIDDLE_Z, UnitKind::Infantry);
+        let mut enemy = Unit::for_test(reach - 90.51, MAP_MIDDLE_Z, UnitKind::Infantry);
         enemy.owner = 1;
         enemy.id = 7;
         let mut units = [ornithopter, enemy];
@@ -5425,9 +6567,9 @@ mod tests {
     #[test]
     fn nobody_shoves_a_sitting_ornithopter() {
         let terrain = crate::battlefield::terrain(0);
-        let tank_at = 0.4;
+        let tank_at = 18.1;
         let mut tank = Unit::for_test(tank_at, MAP_MIDDLE_Z, UnitKind::Vehicle);
-        tank.destination = (5.0, MAP_MIDDLE_Z);
+        tank.destination = (226.3, MAP_MIDDLE_Z);
         let mut units = [ornithopter_at(0.0, MAP_MIDDLE_Z), tank];
         units[0].selected = false;
         advance(&mut units, terrain, &[0], 0.05);
@@ -5453,7 +6595,7 @@ mod tests {
         carryall.weapon = WeaponKind::Unarmed;
         carryall.id = 1;
         carryall.selected = true;
-        let mut tank = Unit::for_test(4.0, MAP_MIDDLE_Z, UnitKind::Vehicle);
+        let mut tank = Unit::for_test(181.0, MAP_MIDDLE_Z, UnitKind::Vehicle);
         tank.id = 2;
         tank.health = 123.0;
         (vec![carryall, tank], Vec::new())
@@ -5519,12 +6661,12 @@ mod tests {
         let terrain = open_map();
         let mut units = seized(&terrain);
         let spot = (units[1].x, units[1].z);
-        units[1].destination = (spot.0 + 5.0, spot.1);
+        units[1].destination = (spot.0 + 226.3, spot.1);
         units[0].selected = true;
-        order_move(&mut units, (-10.0, MAP_MIDDLE_Z), &terrain, &[0, 1]);
+        order_move(&mut units, (-452.5, MAP_MIDDLE_Z), &terrain, &[0, 1]);
         run_theft(&mut units, &terrain, 1.0);
         assert_eq!((units[1].x, units[1].z), spot);
-        assert!((units[0].x - spot.0).hypot(units[0].z - spot.1) < 0.001);
+        assert!((units[0].x - spot.0).hypot(units[0].z - spot.1) < 0.04525);
         assert!(!units[1].is_selectable());
     }
 
@@ -5534,7 +6676,7 @@ mod tests {
         let mut units = seized(&terrain);
         run_theft(&mut units, &terrain, STRUGGLE_SECONDS + 1.0);
         units[0].selected = true;
-        order_move(&mut units, (-10.0, MAP_MIDDLE_Z), &terrain, &[0, 1]);
+        order_move(&mut units, (-452.5, MAP_MIDDLE_Z), &terrain, &[0, 1]);
         run_theft(&mut units, &terrain, 1.0);
         assert!(units[1].altitude > 0.0, "it hangs on the way");
         assert_eq!((units[1].x, units[1].z), (units[0].x, units[0].z));
@@ -5543,7 +6685,7 @@ mod tests {
         assert_eq!(units[1].altitude, 0.0);
         assert!(!units[0].carrying);
         assert_eq!(units[1].owner, 1);
-        assert!(units[1].x < -8.0, "{:?}", units[1]);
+        assert!(units[1].x < -362.0, "{:?}", units[1]);
     }
 
     #[test]
@@ -5616,7 +6758,7 @@ mod tests {
         assert_eq!(units.len(), 1, "out of the battle");
         assert_eq!(carried.len(), 1);
         assert!(units[0].carrying && units[0].target.is_none());
-        assert!(carried[0].vehicle.y > 2.0, "hauled up");
+        assert!(carried[0].vehicle.y > 90.51, "hauled up");
         assert_eq!(
             (carried[0].vehicle.x, carried[0].vehicle.z),
             (units[0].x, units[0].z)
@@ -5626,7 +6768,7 @@ mod tests {
         run_carry(&mut units, &mut carried, 2.0);
         assert_eq!(carried.len(), 1);
 
-        let goal = (9.0, MAP_MIDDLE_Z + 2.0);
+        let goal = (407.3, MAP_MIDDLE_Z + 90.51);
         order_move(&mut units, goal, terrain, &[0]);
         run_carry(&mut units, &mut carried, 4.0);
         assert!(carried.is_empty());
@@ -5635,7 +6777,7 @@ mod tests {
             .iter()
             .find(|u| u.id == 2)
             .expect("back on the ground");
-        assert!((tank.x - goal.0).hypot(tank.z - goal.1) < 0.2, "{tank:?}");
+        assert!((tank.x - goal.0).hypot(tank.z - goal.1) < 9.051, "{tank:?}");
         assert_eq!(tank.y, terrain.height_at(tank.x, tank.z));
         assert_eq!(tank.health, 123.0, "as it was");
         assert!(!tank.selected);
@@ -5674,7 +6816,7 @@ mod tests {
             !carryall.can_lift(&Unit { owner: 1, ..tank }, &[0, 1]),
             "an enemy"
         );
-        let soldier = Unit::for_test(1.0, 60.0, UnitKind::Infantry);
+        let soldier = Unit::for_test(45.25, 2715.0, UnitKind::Infantry);
         assert!(!carryall.can_lift(&soldier, &[0]));
         assert!(!carryall.can_lift(&carryall, &[0]));
         let full = Unit {
@@ -5692,7 +6834,7 @@ mod tests {
         place_base(
             &mut units,
             terrain,
-            (0.0, 60.0),
+            (0.0, 2715.0),
             (0.0, 1.0),
             (owner, TeamColor::Red),
         );
@@ -5703,12 +6845,12 @@ mod tests {
     fn each_building_makes_its_own_kind_of_unit_for_its_owner_only() {
         let mut units = base_of(1);
         assert!(
-            !produce(&mut units, open_ground(), Role::RocketLauncher, 0, 50),
+            !produce(&mut units, open_ground(), Role::SandBike, 0, 50),
             "not theirs"
         );
         for (role, kind, maker) in [
             (Role::Scout, UnitKind::Infantry, Role::Barracks),
-            (Role::RocketLauncher, UnitKind::Vehicle, Role::Factory),
+            (Role::SandBike, UnitKind::Vehicle, Role::Factory),
             (Role::AirDrone, UnitKind::Aircraft, Role::Hangar),
         ] {
             assert_eq!(role.kind(), kind);
@@ -5776,19 +6918,13 @@ mod tests {
     fn a_vehicle_comes_out_of_the_factory_door_and_drives_away_from_it() {
         let mut units = base_of(0);
         let factory = *units.iter().find(|u| u.role == Role::Factory).unwrap();
-        assert!(produce(
-            &mut units,
-            open_ground(),
-            Role::RocketLauncher,
-            0,
-            50
-        ));
+        assert!(produce(&mut units, open_ground(), Role::SandBike, 0, 50));
         let tank = *units.last().unwrap();
         let touching = factory.radius() + tank.radius();
         let away = (tank.x - factory.x).hypot(tank.z - factory.z);
-        assert!((away - touching).abs() < 0.5, "at the door");
+        assert!((away - touching).abs() < 22.63, "at the door");
         assert!(
-            ((tank.x - factory.x) + (tank.z - factory.z)).abs() < 0.01,
+            ((tank.x - factory.x) + (tank.z - factory.z)).abs() < 0.4525,
             "out along the grid"
         );
         assert!(tank.is_moving(), "on its way out");
@@ -5807,7 +6943,7 @@ mod tests {
         let scout = units.last().unwrap();
         let away = (scout.x - barracks.x).hypot(scout.z - barracks.z);
         assert!(away > barracks.radius() + scout.radius(), "{away}");
-        assert!(away < 4.0, "{away}");
+        assert!(away < 226.3, "{away}");
         assert!(!scout.is_moving());
     }
 
@@ -5815,7 +6951,7 @@ mod tests {
     fn nobody_is_sent_to_a_spot_inside_a_building() {
         let mut units = base_of(1);
         let barracks = *units.iter().find(|u| u.role == Role::Barracks).unwrap();
-        let mut tank = unit_at(barracks.x + 8.0, barracks.z, UnitKind::Vehicle);
+        let mut tank = unit_at(barracks.x + 362.0, barracks.z, UnitKind::Vehicle);
         tank.selected = true;
         units.push(tank);
         order_move(&mut units, (barracks.x, barracks.z), open_ground(), &[0, 1]);
@@ -5846,7 +6982,7 @@ mod tests {
                 assert!(!building.is_selected_in_groups());
             }
         }
-        let mut engineer = unit_at(0.0, 60.0, UnitKind::Infantry);
+        let mut engineer = unit_at(0.0, 2715.0, UnitKind::Infantry);
         engineer.role = Role::Engineer;
         let enemy = units
             .iter()
@@ -5860,11 +6996,11 @@ mod tests {
             assert_eq!(role.kind(), UnitKind::Vehicle);
             assert_eq!(role.made_in(), Some(Role::Factory));
             let mut unit = produced(role);
-            unit.destination = (unit.x + 5.0, unit.z);
+            unit.destination = (unit.x + 226.3, unit.z);
             unit.heading = 0.0;
             let mut units = [unit];
             advance(&mut units, open_ground(), &[0], 0.5);
-            assert!(units[0].stride > 0.5, "{role:?} {}", units[0].stride);
+            assert!(units[0].stride > 22.63, "{role:?} {}", units[0].stride);
             assert!(
                 units[0].pick_height() > HEIGHT / 2.0,
                 "the body is up on its legs"
@@ -5875,7 +7011,7 @@ mod tests {
     #[test]
     fn new_units_go_on_to_their_buildings_gathering_point_each_to_its_own_spot() {
         let mut units = base_of(0);
-        let point = (6.0, 52.0);
+        let point = (271.5, 2353.0);
         for building in &mut units {
             building.selected = building.role == Role::Barracks;
         }
@@ -5893,33 +7029,33 @@ mod tests {
         assert_eq!(first.destination, point);
         assert_ne!(second.destination, point);
         let near = |u: &Unit| (u.destination.0 - point.0).hypot(u.destination.1 - point.1);
-        assert!(near(second) < 3.0, "{second:?}");
-        assert!(first.z > 60.0, "they set off from the building");
+        assert!(near(second) < 135.8, "{second:?}");
+        assert!(first.z > 2715.0, "they set off from the building");
     }
 
     #[test]
     fn a_selected_tower_takes_no_move_order_but_fires_on_what_it_is_told() {
-        let mut tower = unit_at(0.0, 60.0, UnitKind::Tower);
+        let mut tower = unit_at(0.0, 2715.0, UnitKind::Tower);
         tower.selected = true;
         tower.id = 1;
         tower.weapon = WeaponKind::Missile;
-        let mut enemy = enemy_at(30.0, 60.0, UnitKind::Infantry);
+        let mut enemy = enemy_at(1358.0, 2715.0, UnitKind::Infantry);
         enemy.id = 2;
         let mut units = [tower, enemy];
-        order_move(&mut units, (5.0, 60.0), open_ground(), &TWO_SIDES);
-        assert_eq!(units[0].destination, (0.0, 60.0));
+        order_move(&mut units, (226.3, 2715.0), open_ground(), &TWO_SIDES);
+        assert_eq!(units[0].destination, (0.0, 2715.0));
         order_attack(&mut units, 1, &TWO_SIDES);
         assert_eq!(units[0].target, Some(Target::Unit(2)));
         advance(&mut units, open_ground(), &TWO_SIDES, 0.5);
         assert_eq!(
             units[0].destination,
-            (0.0, 60.0),
+            (0.0, 2715.0),
             "not even after a far target"
         );
         assert!(!units[0].is_moving());
         assert_eq!(units[0].x, 0.0);
 
-        order_move(&mut units, (5.0, 60.0), open_ground(), &TWO_SIDES);
+        order_move(&mut units, (226.3, 2715.0), open_ground(), &TWO_SIDES);
         assert_eq!(units[0].target, None, "a plain click calls it off");
     }
 
@@ -5933,7 +7069,7 @@ mod tests {
             .find(|u| u.role == Role::Barracks)
             .unwrap()
             .selected = true;
-        let mut tank = unit_at(barracks.x + 8.0, barracks.z, UnitKind::Vehicle);
+        let mut tank = unit_at(barracks.x + 362.0, barracks.z, UnitKind::Vehicle);
         tank.selected = true;
         units.push(tank);
         order_move(&mut units, (barracks.x, barracks.z), open_ground(), &[0]);
@@ -5957,15 +7093,18 @@ mod tests {
         );
         assert_eq!(units[barracks].orders_for(Role::Sniper), 1);
         assert!(
-            start_making(&mut units, Role::RocketLauncher, 0),
+            start_making(&mut units, Role::SandBike, 0),
             "the factory is not"
         );
         assert_eq!(units.len(), known, "nothing appears yet");
         assert_eq!(units[barracks].making.unwrap().0, Role::Scout);
 
         let seconds = Role::Scout.build_seconds();
-        assert!(work_on_making(&mut units, seconds / 2.0).is_empty());
-        assert_eq!(work_on_making(&mut units, seconds / 2.0), [barracks]);
+        assert!(work_on_making(&mut units, &mut [100_000; 8], seconds / 2.0).is_empty());
+        assert_eq!(
+            work_on_making(&mut units, &mut [100_000; 8], seconds / 2.0),
+            [barracks]
+        );
         let new = finish_making(&mut units, open_ground(), barracks, 50).unwrap();
         assert_eq!(units[new].role, Role::Scout);
         assert_eq!(
@@ -5976,7 +7115,7 @@ mod tests {
         assert_eq!(units[barracks].orders_for(Role::Sniper), 1);
         assert_eq!(units[barracks].waiting(), 0);
         assert!(!has_free_maker(&units, Role::Scout, 0));
-        work_on_making(&mut units, Role::Sniper.build_seconds());
+        work_on_making(&mut units, &mut [100_000; 8], Role::Sniper.build_seconds());
         finish_making(&mut units, open_ground(), barracks, 51).unwrap();
         assert_eq!(units[barracks].making, None, "nothing left");
         assert!(has_free_maker(&units, Role::Scout, 0));
@@ -5999,7 +7138,7 @@ mod tests {
         let mut made = Vec::new();
         for id in 0..order.len() as u32 {
             let role = units[barracks].making.unwrap().0;
-            work_on_making(&mut units, role.build_seconds());
+            work_on_making(&mut units, &mut [100_000; 8], role.build_seconds());
             let new = finish_making(&mut units, open_ground(), barracks, 50 + id).unwrap();
             made.push(units[new].role);
         }
@@ -6026,11 +7165,11 @@ mod tests {
         for role in order {
             start_making(&mut units, role, 0);
         }
-        work_on_making(&mut units, 1.0);
+        work_on_making(&mut units, &mut [100_000; 8], 1.0);
         let left = units[barracks].making.unwrap().1;
 
         // From the middle of the queue, with what is being made carrying on.
-        assert!(cancel_making(&mut units, Role::Sniper, 0));
+        assert!(cancel_making(&mut units, Role::Sniper, 0, &mut 0));
         assert_eq!(units[barracks].orders_for(Role::Sniper), 1);
         assert_eq!(units[barracks].making, Some((Role::Scout, left)));
         assert_eq!(
@@ -6044,17 +7183,20 @@ mod tests {
         );
 
         // The one being made: the next starts from the beginning.
-        assert!(cancel_making(&mut units, Role::Scout, 0));
+        assert!(cancel_making(&mut units, Role::Scout, 0, &mut 0));
         assert_eq!(
             units[barracks].making,
             Some((Role::Sniper, Role::Sniper.build_seconds()))
         );
         assert_eq!(units[barracks].orders_for(Role::Scout), 0);
 
-        assert!(!cancel_making(&mut units, Role::Scout, 0), "none left");
-        assert!(cancel_making(&mut units, Role::Sniper, 0));
-        assert!(cancel_making(&mut units, Role::Engineer, 0));
-        assert!(cancel_making(&mut units, Role::Engineer, 0));
+        assert!(
+            !cancel_making(&mut units, Role::Scout, 0, &mut 0),
+            "none left"
+        );
+        assert!(cancel_making(&mut units, Role::Sniper, 0, &mut 0));
+        assert!(cancel_making(&mut units, Role::Engineer, 0, &mut 0));
+        assert!(cancel_making(&mut units, Role::Engineer, 0, &mut 0));
         assert_eq!(units[barracks].making, None);
         assert!(has_free_maker(&units, Role::Scout, 0));
     }
@@ -6063,7 +7205,7 @@ mod tests {
     fn with_two_buildings_of_a_kind_the_work_goes_to_the_one_with_less_to_do() {
         let mut units = base_of(0);
         let mut second = *units.iter().find(|u| u.role == Role::Barracks).unwrap();
-        second.x += 10.0;
+        second.x += 452.5;
         second.id = 40;
         units.push(second);
         for _ in 0..4 {
@@ -6094,23 +7236,33 @@ mod tests {
 
     #[test]
     fn a_building_snaps_to_grid_squares_jumping_a_whole_square_at_a_time() {
-        let (x, z) = (10.0, 60.0);
-        let plot = Role::Tower.plot_at((x, z));
+        let (x, z) = (452.5, 2715.0);
+        let plot = Role::Tower.plot_at(Faction::Atreides, (x, z));
         assert_eq!(plot.cells().count(), 4, "a tower takes two by two");
         assert_eq!(
             plot,
-            Role::Tower.plot_at((x + 0.05, z + 0.05)),
+            Role::Tower.plot_at(Faction::Atreides, (x + 2.263, z + 2.263)),
             "no gliding"
         );
-        let next = Role::Tower.plot_at((x + 0.5, z + 0.5));
+        let next = Role::Tower.plot_at(Faction::Atreides, (x + 22.63, z + 22.63));
         assert_eq!((next.u, next.v), (plot.u + 1, plot.v), "a whole square on");
-        assert_eq!(Role::Tower.plot_at(plot.center()), plot, "and back");
-        assert_eq!(Role::Factory.plot_at((x, z)).cells().count(), 30);
+        assert_eq!(
+            Role::Tower.plot_at(Faction::Atreides, plot.center()),
+            plot,
+            "and back"
+        );
+        assert_eq!(
+            Role::Factory
+                .plot_at(Faction::Atreides, (x, z))
+                .cells()
+                .count(),
+            42
+        );
     }
 
     #[test]
     fn a_new_building_can_be_at_most_two_empty_squares_from_the_nearest_building() {
-        let mut tower = Unit::for_test(0.0, 60.0, UnitKind::Tower);
+        let mut tower = Unit::for_test(0.0, 2715.0, UnitKind::Tower);
         tower.role = Role::Tower;
         let mine = tower.plot().unwrap();
         let units = [tower];
@@ -6140,7 +7292,7 @@ mod tests {
 
     #[test]
     fn a_building_goes_up_only_between_the_frames_rising_and_coming_down() {
-        let mut barracks = Unit::for_test(0.0, 60.0, UnitKind::Building);
+        let mut barracks = Unit::for_test(0.0, 2715.0, UnitKind::Building);
         let at = |done: f32| {
             let mut unit = barracks;
             unit.constructing = CONSTRUCTION_SECONDS * (1.0 - done);
@@ -6156,7 +7308,11 @@ mod tests {
     #[test]
     fn a_new_building_needs_clear_land() {
         assert!(
-            !can_place_building(&[], open_ground(), Role::Barracks.plot_at((0.0, 60.0))),
+            !can_place_building(
+                &[],
+                open_ground(),
+                Role::Barracks.plot_at(Faction::Atreides, (0.0, 2715.0))
+            ),
             "not on the sand"
         );
         let upland = Terrain::open_upland();
@@ -6166,25 +7322,25 @@ mod tests {
         assert!(!can_place_building(
             &units,
             terrain,
-            Role::Barracks.plot_at((barracks.x, barracks.z))
+            Role::Barracks.plot_at(Faction::Atreides, (barracks.x, barracks.z))
         ));
         assert!(!can_place_building(
             &units,
             terrain,
-            Role::Barracks.plot_at((barracks.x + 1.5, barracks.z))
+            Role::Barracks.plot_at(Faction::Atreides, (barracks.x + 67.88, barracks.z))
         ));
         assert!(can_place_building(
             &units,
             terrain,
-            Role::Barracks.plot_at((barracks.x - 14.0, barracks.z))
+            Role::Barracks.plot_at(Faction::Atreides, (barracks.x - 633.6, barracks.z))
         ));
-        let mut plane = Unit::for_test(barracks.x + 8.0, barracks.z, UnitKind::Aircraft);
+        let mut plane = Unit::for_test(barracks.x + 362.0, barracks.z, UnitKind::Aircraft);
         plane.alive = true;
         assert!(
             can_place_building(
                 &[plane],
                 terrain,
-                Role::Barracks.plot_at((plane.x, plane.z))
+                Role::Barracks.plot_at(Faction::Atreides, (plane.x, plane.z))
             ),
             "what flies is not in the way"
         );
@@ -6195,10 +7351,14 @@ mod tests {
         assert!(!can_place_building(
             &[sitting],
             terrain,
-            Role::Barracks.plot_at((plane.x, plane.z))
+            Role::Barracks.plot_at(Faction::Atreides, (plane.x, plane.z))
         ));
         assert!(
-            !can_place_building(&[], terrain, Role::Barracks.plot_at((-1000.0, 60.0))),
+            !can_place_building(
+                &[],
+                terrain,
+                Role::Barracks.plot_at(Faction::Atreides, (-45250.0, 2715.0))
+            ),
             "off the map"
         );
     }
@@ -6235,10 +7395,10 @@ mod tests {
     #[test]
     fn a_unit_walks_around_a_ruin_in_its_way_without_entering_it() {
         for kind in [UnitKind::Infantry, UnitKind::Vehicle] {
-            let terrain = Terrain::open_with_ruins(vec![wall(0.0, 60.0, 0.5, 0.5, 1.0)]);
-            let mut units = [unit_at(-5.0, 60.0, kind)];
+            let terrain = Terrain::open_with_ruins(vec![wall(0.0, 2715.0, 22.63, 22.63, 45.25)]);
+            let mut units = [unit_at(-226.3, 2715.0, kind)];
             units[0].heading = 0.0;
-            units[0].destination = (5.0, 60.0);
+            units[0].destination = (226.3, 2715.0);
             for _ in 0..400 {
                 advance(&mut units, &terrain, &[0], 0.05);
                 let (near_x, near_z) =
@@ -6251,39 +7411,43 @@ mod tests {
                 );
             }
             assert!(!units[0].is_moving(), "{kind:?} got there: {:?}", units[0]);
-            assert_eq!(units[0].destination, (5.0, 60.0), "{kind:?} kept its order");
+            assert_eq!(
+                units[0].destination,
+                (226.3, 2715.0),
+                "{kind:?} kept its order"
+            );
         }
     }
 
     #[test]
     fn a_sphere_clears_rubble_lower_than_it_reaches() {
         // Its center rides higher than this rubble, so the sphere only touches when close.
-        let low = wall(0.0, 60.0, 0.05, 0.05, 0.02);
+        let low = wall(0.0, 2715.0, 2.263, 2.263, 0.9051);
         let terrain = Terrain::open_with_ruins(vec![low]);
-        let mut unit = unit_at(0.4, 60.0, UnitKind::Vehicle);
-        let height_gap = unit.sphere_y() - 0.02;
-        let reach = (0.45_f32 * 0.45 - height_gap * height_gap).max(0.0).sqrt();
-        assert!(reach < 0.45, "the sphere is narrower that low down");
+        let mut unit = unit_at(18.1, 2715.0, UnitKind::Vehicle);
+        let height_gap = unit.sphere_y() - 0.9051;
+        let reach = (0.45_f32 * 20.36 - height_gap * height_gap).max(0.0).sqrt();
+        assert!(reach < 20.36, "the sphere is narrower that low down");
         let before = unit.x;
         let touched = push_out_of_ruins(&mut unit, &terrain);
-        assert_eq!(touched, 0.35 < reach);
+        assert_eq!(touched, 15.84 < reach);
         assert_eq!(unit.x, before, "too far to touch at this distance");
     }
 
     #[test]
     fn a_unit_boxed_in_by_ruins_gives_up_instead_of_pressing_forever() {
         let terrain = Terrain::open_with_ruins(vec![
-            wall(0.0, 56.0, 4.0, 0.2, 2.0),
-            wall(0.0, 64.0, 4.0, 0.2, 2.0),
-            wall(-4.0, 60.0, 0.2, 4.0, 2.0),
-            wall(4.0, 60.0, 0.2, 4.0, 2.0),
+            wall(0.0, 2534.0, 181.0, 9.051, 90.51),
+            wall(0.0, 2896.0, 181.0, 9.051, 90.51),
+            wall(-181.0, 2715.0, 9.051, 181.0, 90.51),
+            wall(181.0, 2715.0, 9.051, 181.0, 90.51),
         ]);
-        let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry)];
-        units[0].destination = (12.0, 60.0);
+        let mut units = [unit_at(0.0, 2715.0, UnitKind::Infantry)];
+        units[0].destination = (543.1, 2715.0);
         for _ in 0..1200 {
             advance(&mut units, &terrain, &[0], 0.05);
             assert!(
-                units[0].x < 4.0 && units[0].x > -4.0,
+                units[0].x < 181.0 && units[0].x > -181.0,
                 "stays inside: {:?}",
                 units[0]
             );
@@ -6293,10 +7457,10 @@ mod tests {
 
     #[test]
     fn orders_do_not_send_anyone_into_a_ruin() {
-        let terrain = Terrain::open_with_ruins(vec![wall(0.0, 60.0, 1.0, 1.0, 1.0)]);
-        let mut units = [unit_at(-8.0, 60.0, UnitKind::Vehicle)];
+        let terrain = Terrain::open_with_ruins(vec![wall(0.0, 2715.0, 45.25, 45.25, 45.25)]);
+        let mut units = [unit_at(-362.0, 2715.0, UnitKind::Vehicle)];
         units[0].selected = true;
-        order_move(&mut units, (0.0, 60.0), &terrain, &[0]);
+        order_move(&mut units, (0.0, 2715.0), &terrain, &[0]);
         let (near_x, near_z) = nearest_on_footprint(
             &terrain.ruins()[0],
             units[0].destination.0,
@@ -6313,20 +7477,20 @@ mod tests {
     #[test]
     fn heavy_units_may_be_ordered_right_onto_an_enemy() {
         let mut units = [
-            unit_at(-8.0, 60.0, UnitKind::Vehicle),
-            enemy_at(0.0, 60.0, UnitKind::Infantry),
+            unit_at(-362.0, 2715.0, UnitKind::Vehicle),
+            enemy_at(0.0, 2715.0, UnitKind::Infantry),
         ];
         units[0].selected = true;
-        order_move(&mut units, (0.0, 60.0), open_ground(), &TWO_SIDES);
-        assert_eq!(units[0].destination, (0.0, 60.0));
+        order_move(&mut units, (0.0, 2715.0), open_ground(), &TWO_SIDES);
+        assert_eq!(units[0].destination, (0.0, 2715.0));
 
         let mut units = [
-            unit_at(-8.0, 60.0, UnitKind::Infantry),
-            enemy_at(0.0, 60.0, UnitKind::Infantry),
+            unit_at(-362.0, 2715.0, UnitKind::Infantry),
+            enemy_at(0.0, 2715.0, UnitKind::Infantry),
         ];
         units[0].selected = true;
-        order_move(&mut units, (0.0, 60.0), open_ground(), &TWO_SIDES);
-        assert_ne!(units[0].destination, (0.0, 60.0), "infantry keeps off it");
+        order_move(&mut units, (0.0, 2715.0), open_ground(), &TWO_SIDES);
+        assert_ne!(units[0].destination, (0.0, 2715.0), "infantry keeps off it");
     }
 
     /// Flat sand with nothing on it.
@@ -6337,50 +7501,165 @@ mod tests {
 
     #[test]
     fn a_laser_tank_glides_off_sideways_at_once_turning_its_nose_slowly_meanwhile() {
-        let mut glider = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        let mut glider = Unit::for_test(0.0, 2715.0, UnitKind::Vehicle);
         glider.role = Role::LaserTank;
         glider.heading = 0.0;
-        glider.destination = (0.0, 66.0);
-        let mut tank = Unit::for_test(10.0, 60.0, UnitKind::Vehicle);
+        glider.destination = (0.0, 2987.0);
+        let mut tank = Unit::for_test(452.5, 2715.0, UnitKind::Vehicle);
         tank.role = Role::Tank;
         tank.heading = 0.0;
-        tank.destination = (10.0, 66.0);
+        tank.destination = (452.5, 2987.0);
         let mut units = [glider, tank];
         advance(&mut units, open_ground(), &[0], 0.25);
-        assert!(units[0].z > 60.5, "off at once: {}", units[0].z);
-        assert!(units[1].z < 60.1, "a tank turns first");
+        assert!(units[0].z > 2738.0, "off at once: {}", units[0].z);
+        assert!(units[1].z < 2720.0, "a tank turns first");
         assert!(
-            units[0].heading > 0.1 && units[0].heading < 0.5,
+            units[0].heading > 0.1 && units[0].heading < 1.0,
             "{}",
             units[0].heading
         );
     }
 
+    /// A stealth APC with seven of its side's soldiers standing in a row nearby, all selected
+    /// but the APC.
+    fn apc_and_soldiers() -> Vec<Unit> {
+        let mut apc = Unit::for_test(0.0, 2715.0, UnitKind::Vehicle);
+        apc.role = Role::StealthApc;
+        apc.id = 100;
+        let soldiers = (0..7).map(|n| {
+            let mut soldier = Unit::for_test(135.8 + n as f32, 2715.0, UnitKind::Infantry);
+            soldier.id = n;
+            soldier.selected = true;
+            soldier
+        });
+        std::iter::once(apc).chain(soldiers).collect()
+    }
+
+    fn ride_for(units: &mut Vec<Unit>, seconds: f32) {
+        for _ in 0..(seconds / 0.05) as usize {
+            advance(units, open_ground(), &[0], 0.05);
+            board_apcs(units);
+        }
+    }
+
+    #[test]
+    fn the_nearest_five_selected_soldiers_get_into_an_apc_and_are_gone_from_the_field() {
+        let mut units = apc_and_soldiers();
+        units[3].health = 50.0;
+        order_board(&mut units, 0);
+        ride_for(&mut units, 8.0);
+        let aboard: Vec<u32> = units[0].passengers.iter().flatten().map(|p| p.id).collect();
+        assert_eq!(aboard.len(), APC_ROOM);
+        assert!((0..5).all(|id| aboard.contains(&id)), "{aboard:?}");
+        assert_eq!(units.len(), 3, "the APC and the two left over");
+        assert!(units[1..].iter().all(|u| u.id >= 5 && u.boarding.is_none()));
+    }
+
+    #[test]
+    fn a_new_order_calls_a_soldier_off_getting_in() {
+        let mut units = apc_and_soldiers();
+        order_board(&mut units, 0);
+        order_move(&mut units, (905.1, 3168.0), open_ground(), &[0]);
+        ride_for(&mut units, 1.0);
+        assert!(units[1..].iter().all(|u| u.boarding.is_none()));
+        assert!(units[0].passengers.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn deploying_an_apc_lets_everyone_out_as_they_were() {
+        let mut units = apc_and_soldiers();
+        units[1].health = 50.0;
+        units[1].experience = 7;
+        order_board(&mut units, 0);
+        ride_for(&mut units, 8.0);
+        assert_eq!(units.len(), 3);
+        units[0].selected = true;
+        toggle_deploy(&mut units, open_ground());
+        assert!(units[0].passengers.iter().all(Option::is_none));
+        assert_eq!(units.len(), 8);
+        let first = units.iter().find(|u| u.id == 0).unwrap();
+        assert_eq!((first.health, first.experience), (50.0, 7));
+        assert!(!units[0].deployed, "an APC does not dig in");
+        for soldier in units.iter().filter(|u| u.id < 5) {
+            let gap = (soldier.x - units[0].x).hypot(soldier.z - units[0].z);
+            assert!(gap < 181.0, "out by the APC: {gap}");
+        }
+    }
+
+    #[test]
+    fn an_apc_belongs_to_one_house_and_only_its_side_can_get_in() {
+        assert!(Role::RocketApc.made_by(Faction::Ordos));
+        assert!(!Role::RocketApc.made_by(Faction::Atreides));
+        assert!(Role::StealthApc.made_by(Faction::Atreides));
+        assert!(!Role::StealthApc.made_by(Faction::Harkonnen));
+        let units = apc_and_soldiers();
+        let mut enemy = units[1];
+        enemy.owner = 1;
+        assert!(can_board(&units[1], &units[0]));
+        assert!(!can_board(&enemy, &units[0]));
+        assert!(!can_board(&units[0], &units[0]), "only soldiers get in");
+        let mut stealth = units[0];
+        stealth.revealed = 0.0;
+        assert!(stealth.is_cloaked());
+    }
+
+    #[test]
+    fn a_deployed_eye_in_the_sky_is_gone_and_its_soldier_comes_down_by_parachute() {
+        let mut eye = Unit::for_test(0.0, 2715.0, UnitKind::Aircraft);
+        eye.role = Role::EyeInTheSky;
+        eye.house = Faction::Ordos;
+        eye.selected = true;
+        eye.altitude = 181.0;
+        let mut units = vec![eye];
+        toggle_deploy(&mut units, open_ground());
+        let mut next_id = 10;
+        let released = release_eyes(&mut units, open_ground(), &mut next_id);
+        assert_eq!(released.len(), 1);
+        assert!(!units[0].alive);
+        assert!(units[0].overkill() > 0.3, "it goes up in pieces");
+        let jumper = units[1];
+        assert_eq!(
+            (jumper.role, jumper.id, next_id),
+            (Role::SuicideInfantry, 10, 11)
+        );
+        assert!(jumper.selected && jumper.is_parachuting());
+        units[1].destination = (226.3, 2715.0);
+        advance(&mut units, open_ground(), &[0], 1.0);
+        assert!(units[1].altitude > 0.0 && units[1].altitude < 181.0);
+        assert_eq!(units[1].x, 0.0, "it cannot go anywhere yet");
+        for _ in 0..40 {
+            advance(&mut units, open_ground(), &[0], 0.1);
+        }
+        assert!(!units[1].is_parachuting());
+        assert!(units[1].x > 22.63, "down, it goes where it was sent");
+        assert!(Role::SuicideInfantry.can_deploy(), "and can blow itself up");
+    }
+
     #[test]
     fn a_recons_legs_step_as_it_turns_on_the_spot() {
-        let mut recon = Unit::for_test(0.0, 60.0, UnitKind::Vehicle);
+        let mut recon = Unit::for_test(0.0, 2715.0, UnitKind::Vehicle);
         recon.role = Role::Recon;
         recon.heading = 0.0;
-        recon.destination = (-6.0, 60.0);
+        recon.destination = (-271.5, 2715.0);
         let mut units = [recon];
         advance(&mut units, open_ground(), &[0], 0.2);
-        assert!(units[0].x > -0.01, "still turning around");
-        assert!(units[0].stride > 0.1, "{}", units[0].stride);
+        assert!(units[0].x > -0.4525, "still turning around");
+        assert!(units[0].stride > 4.525, "{}", units[0].stride);
     }
 
     #[test]
     fn infantry_cannot_shove_a_heavy_vehicle() {
         let mut units = [
-            unit_at(0.0, 60.0, UnitKind::Vehicle),
-            unit_at(-3.0, 60.0, UnitKind::Infantry),
+            unit_at(0.0, 2715.0, UnitKind::Vehicle),
+            unit_at(-135.8, 2715.0, UnitKind::Infantry),
         ];
-        units[1].destination = (3.0, 60.0);
+        units[1].destination = (135.8, 2715.0);
         for _ in 0..200 {
             advance(&mut units, open_ground(), &[0], 0.05);
         }
         assert_eq!(
             (units[0].x, units[0].z),
-            (0.0, 60.0),
+            (0.0, 2715.0),
             "the vehicle stays put"
         );
         assert!(
@@ -6394,11 +7673,11 @@ mod tests {
     fn real_maps_let_units_cross_them_among_the_ruins() {
         let map = terrain(0);
         let mut units = [
-            unit_at(-30.0, 40.0, UnitKind::Infantry),
-            unit_at(-30.0, 90.0, UnitKind::Vehicle),
+            unit_at(-1358.0, 1810.0, UnitKind::Infantry),
+            unit_at(-1358.0, 4073.0, UnitKind::Vehicle),
         ];
-        units[0].destination = (30.0, 40.0);
-        units[1].destination = (30.0, 90.0);
+        units[0].destination = (1358.0, 1810.0);
+        units[1].destination = (1358.0, 4073.0);
         for _ in 0..1000 {
             advance(&mut units, map, &[0], 0.05);
             for unit in &units {
@@ -6437,13 +7716,18 @@ mod tests {
 
     #[test]
     fn infantry_sets_off_at_once_in_any_direction() {
-        for destination in [(5.0, 60.0), (-5.0, 60.0), (0.0, 55.0), (0.0, 65.0)] {
-            let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry)];
+        for destination in [
+            (226.3, 2715.0),
+            (-226.3, 2715.0),
+            (0.0, 2489.0),
+            (0.0, 2942.0),
+        ] {
+            let mut units = [unit_at(0.0, 2715.0, UnitKind::Infantry)];
             units[0].destination = destination;
             advance(&mut units, open_ground(), &[], 0.05);
-            let moved = (units[0].x - 0.0).hypot(units[0].z - 60.0);
+            let moved = (units[0].x - 0.0).hypot(units[0].z - 2715.0);
             assert!(
-                (moved - 2.5 * 0.05).abs() < 0.001,
+                (moved - units[0].speed() * 0.05).abs() < 0.04525,
                 "{destination:?}: moved {moved}"
             );
         }
@@ -6452,15 +7736,15 @@ mod tests {
     #[test]
     fn a_vehicle_turns_first_and_only_then_drives() {
         // Facing north, sent south: a half turn away.
-        let mut units = [unit_at(0.0, 60.0, UnitKind::Vehicle)];
-        units[0].destination = (0.0, 66.0);
+        let mut units = [unit_at(0.0, 2715.0, UnitKind::Vehicle)];
+        units[0].destination = (0.0, 2987.0);
         let start_heading = units[0].heading;
         advance(&mut units, open_ground(), &[], 0.2);
-        assert_eq!((units[0].x, units[0].z), (0.0, 60.0), "still in place");
+        assert_eq!((units[0].x, units[0].z), (0.0, 2715.0), "still in place");
         assert_ne!(units[0].heading, start_heading, "but turning");
 
         run(&mut units, 1.5);
-        assert!(units[0].z > 60.0, "drives once it faces the way");
+        assert!(units[0].z > 2715.0, "drives once it faces the way");
         assert!(
             units[0].heading.sin() > 0.9,
             "facing south: {}",
@@ -6470,10 +7754,10 @@ mod tests {
 
     #[test]
     fn a_vehicle_facing_its_way_needs_no_turn() {
-        let mut units = [unit_at(0.0, 60.0, UnitKind::Vehicle)];
-        units[0].destination = (0.0, 50.0);
+        let mut units = [unit_at(0.0, 2715.0, UnitKind::Vehicle)];
+        units[0].destination = (0.0, 2263.0);
         advance(&mut units, open_ground(), &[], 0.05);
-        assert!(units[0].z < 60.0);
+        assert!(units[0].z < 2715.0);
     }
 
     #[test]
@@ -6486,8 +7770,8 @@ mod tests {
     #[test]
     fn units_arrive_and_stop() {
         for kind in [UnitKind::Infantry, UnitKind::Vehicle] {
-            let mut units = [unit_at(0.0, 60.0, kind)];
-            units[0].destination = (6.0, 62.0);
+            let mut units = [unit_at(0.0, 2715.0, kind)];
+            units[0].destination = (271.5, 2806.0);
             run(&mut units, 8.0);
             assert!(!units[0].is_moving(), "{kind:?} arrived");
             let settled = (units[0].x, units[0].z);
@@ -6498,8 +7782,8 @@ mod tests {
 
     #[test]
     fn units_follow_the_terrain_height_as_they_walk() {
-        let mut units = [unit_at(0.0, 60.0, UnitKind::Infantry)];
-        units[0].destination = (20.0, 45.0);
+        let mut units = [unit_at(0.0, 2715.0, UnitKind::Infantry)];
+        units[0].destination = (905.1, 2036.0);
         for _ in 0..100 {
             advance(&mut units, open_ground(), &[], 0.05);
             assert_eq!(units[0].y, open_ground().height_at(units[0].x, units[0].z));
@@ -6510,14 +7794,14 @@ mod tests {
     fn an_order_reserves_separate_spots_near_the_click() {
         let mut units: Vec<Unit> = (0..12)
             .map(|i| {
-                let mut unit = unit_at(i as f32 * 1.2 - 6.0, 60.0, UnitKind::Infantry);
+                let mut unit = unit_at(i as f32 * 54.31 - 271.5, 2715.0, UnitKind::Infantry);
                 unit.selected = true;
                 unit
             })
             .collect();
-        order_move(&mut units, (0.0, 50.0), open_ground(), &[]);
+        order_move(&mut units, (0.0, 2263.0), open_ground(), &[]);
         for (i, a) in units.iter().enumerate() {
-            let from_click = (a.destination.0 - 0.0).hypot(a.destination.1 - 50.0);
+            let from_click = (a.destination.0 - 0.0).hypot(a.destination.1 - 2263.0);
             assert!(
                 from_click < SLOT_SPACING * 3.0,
                 "near the click: {from_click}"
@@ -6525,7 +7809,7 @@ mod tests {
             for b in &units[i + 1..] {
                 let apart =
                     (a.destination.0 - b.destination.0).hypot(a.destination.1 - b.destination.1);
-                assert!(apart >= SLOT_SPACING - 0.01, "too close: {apart}");
+                assert!(apart >= SLOT_SPACING - 0.4525, "too close: {apart}");
             }
         }
     }
@@ -6533,41 +7817,41 @@ mod tests {
     #[test]
     fn an_order_keeps_off_spots_others_have_reserved() {
         let mut units = vec![
-            unit_at(0.0, 60.0, UnitKind::Infantry),
-            unit_at(2.0, 60.0, UnitKind::Infantry),
+            unit_at(0.0, 2715.0, UnitKind::Infantry),
+            unit_at(90.51, 2715.0, UnitKind::Infantry),
         ];
-        units[0].destination = (0.0, 50.0);
+        units[0].destination = (0.0, 2263.0);
         units[1].selected = true;
-        order_move(&mut units, (0.0, 50.0), open_ground(), &[]);
+        order_move(&mut units, (0.0, 2263.0), open_ground(), &[]);
         assert_ne!(units[1].destination, units[0].destination);
-        let apart = (units[1].destination.0).hypot(units[1].destination.1 - 50.0);
-        assert!(apart >= SLOT_SPACING - 0.01);
+        let apart = (units[1].destination.0).hypot(units[1].destination.1 - 2263.0);
+        assert!(apart >= SLOT_SPACING - 0.4525);
         assert_eq!(
             units[0].destination,
-            (0.0, 50.0),
+            (0.0, 2263.0),
             "unselected units keep their orders"
         );
     }
 
     #[test]
     fn a_group_ordered_again_may_reuse_its_own_spots() {
-        let mut units = vec![unit_at(0.0, 60.0, UnitKind::Infantry)];
+        let mut units = vec![unit_at(0.0, 2715.0, UnitKind::Infantry)];
         units[0].selected = true;
-        order_move(&mut units, (0.0, 50.0), open_ground(), &[]);
+        order_move(&mut units, (0.0, 2263.0), open_ground(), &[]);
         let first = units[0].destination;
-        order_move(&mut units, (0.0, 50.0), open_ground(), &[]);
+        order_move(&mut units, (0.0, 2263.0), open_ground(), &[]);
         assert_eq!(units[0].destination, first);
     }
 
     #[test]
     fn head_on_units_pass_each_other_and_both_arrive() {
         for kind in [UnitKind::Infantry, UnitKind::Vehicle] {
-            let mut units = [unit_at(-5.0, 60.0, kind), unit_at(5.0, 60.0, kind)];
-            units[0].destination = (5.0, 60.0);
-            units[1].destination = (-5.0, 60.0);
+            let mut units = [unit_at(-226.3, 2715.0, kind), unit_at(226.3, 2715.0, kind)];
+            units[0].destination = (226.3, 2715.0);
+            units[1].destination = (-226.3, 2715.0);
             for _ in 0..400 {
                 advance(&mut units, open_ground(), &[], 0.05);
-                assert!(largest_overlap(&units) < 0.05, "{kind:?} overlap");
+                assert!(largest_overlap(&units) < 2.263, "{kind:?} overlap");
             }
             assert!(
                 !units[0].is_moving() && !units[1].is_moving(),
@@ -6580,16 +7864,16 @@ mod tests {
     fn a_large_crowd_crossing_another_never_overlaps_and_everyone_arrives() {
         let mut units = Vec::new();
         for i in 0..10 {
-            for (side, kind) in [(-1.0, UnitKind::Infantry), (1.0, UnitKind::Vehicle)] {
-                let mut unit = unit_at(side * 8.0, 55.0 + i as f32 * 1.3, kind);
-                unit.destination = (-side * 8.0, 55.0 + i as f32 * 1.3);
+            for (side, kind) in [(-45.25, UnitKind::Infantry), (45.25, UnitKind::Vehicle)] {
+                let mut unit = unit_at(side * 362.0, 2489.0 + i as f32 * 58.83, kind);
+                unit.destination = (-side * 362.0, 2489.0 + i as f32 * 58.83);
                 units.push(unit);
             }
         }
         for _ in 0..1600 {
             advance(&mut units, open_ground(), &[], 0.05);
             assert!(
-                largest_overlap(&units) < 0.1,
+                largest_overlap(&units) < 5.431,
                 "overlap {}",
                 largest_overlap(&units)
             );
@@ -6602,18 +7886,18 @@ mod tests {
     fn a_unit_pushed_aside_remembers_where_it_was_sent_and_walks_back() {
         // The second starts touching the first and sets off through it, so it must shove it.
         let mut units = [
-            unit_at(0.0, 60.0, UnitKind::Infantry),
-            unit_at(-0.3, 60.0, UnitKind::Vehicle),
+            unit_at(0.0, 2715.0, UnitKind::Infantry),
+            unit_at(-13.58, 2715.0, UnitKind::Vehicle),
         ];
         let home = units[0].destination;
         units[1].heading = 0.0;
-        units[1].destination = (6.0, 60.0);
+        units[1].destination = (271.5, 2715.0);
         let mut displaced = 0.0_f32;
         for _ in 0..400 {
             advance(&mut units, open_ground(), &[], 0.05);
             displaced = displaced.max((units[0].x - home.0).hypot(units[0].z - home.1));
         }
-        assert!(displaced > 0.05, "it really was pushed: {displaced}");
+        assert!(displaced > 2.263, "it really was pushed: {displaced}");
         assert_eq!(units[0].destination, home, "the order is not forgotten");
         assert!(
             !units[0].is_moving(),
@@ -6630,10 +7914,10 @@ mod tests {
     #[test]
     fn a_blocked_unit_presses_on_for_a_while_without_losing_its_order() {
         // A wall of waiting units across its way only delays it.
-        let mut units = vec![unit_at(0.0, 65.0, UnitKind::Infantry)];
-        units[0].destination = (0.0, 55.0);
+        let mut units = vec![unit_at(0.0, 2942.0, UnitKind::Infantry)];
+        units[0].destination = (0.0, 2489.0);
         for i in -4..=4 {
-            units.push(unit_at(i as f32 * 0.6, 60.0, UnitKind::Infantry));
+            units.push(unit_at(i as f32 * 27.15, 2715.0, UnitKind::Infantry));
         }
         let sent_to = units[0].destination;
         run(&mut units, 2.0);
@@ -6643,7 +7927,7 @@ mod tests {
     fn map_with_impassable_lower_terrain() -> &'static Terrain {
         let index = crate::battlefield::MAP_PLANETS
             .iter()
-            .position(|p| *p == crate::battlefield::Planet::C)
+            .position(|p| *p == crate::battlefield::Planet::Caladan)
             .unwrap();
         terrain(index)
     }
@@ -6655,16 +7939,16 @@ mod tests {
         let mut water = None;
         'search: for x in -40..=40 {
             for z in 30..=100 {
-                if !terrain.can_walk(x as f32, z as f32)
-                    && (x as f32).abs() + (z as f32 - 64.0).abs() < 50.0
+                if !terrain.can_walk(x as f32 * 45.25, z as f32 * 45.25)
+                    && (x as f32 * 45.25).abs() + ((z as f32 * 45.25) - 2896.0).abs() < 2263.0
                 {
-                    water = Some((x as f32, z as f32));
+                    water = Some(((x as f32 * 45.25), (z as f32 * 45.25)));
                     break 'search;
                 }
             }
         }
         let water = water.expect("this map has water");
-        let mut unit = unit_at(0.0, 64.0, UnitKind::Infantry);
+        let mut unit = unit_at(0.0, 2896.0, UnitKind::Infantry);
         unit.selected = true;
         let mut units = [unit];
         order_move(&mut units, water, terrain, &[]);
@@ -6673,22 +7957,22 @@ mod tests {
 
     #[test]
     fn units_walk_around_a_mountain_and_aircraft_go_straight_over_it() {
-        let terrain = &Terrain::open_with_mountain(0.0, 40.0, 5.0);
-        let mut tank = unit_at(0.0, 31.0, UnitKind::Vehicle);
-        tank.destination = (0.0, 49.0);
-        let mut plane = unit_at(1.0, 31.0, UnitKind::Aircraft);
-        plane.altitude = 2.0;
-        plane.destination = (1.0, 49.0);
+        let terrain = &Terrain::open_with_mountain(0.0, 1810.0, 226.3);
+        let mut tank = unit_at(0.0, 1403.0, UnitKind::Vehicle);
+        tank.destination = (0.0, 2217.0);
+        let mut plane = unit_at(45.25, 1403.0, UnitKind::Aircraft);
+        plane.altitude = 90.51;
+        plane.destination = (45.25, 2217.0);
         let mut units = [tank, plane];
         let mut plane_crossed = false;
         for _ in 0..4000 {
             advance(&mut units, terrain, &[0], 0.02);
             assert!(terrain.can_walk(units[0].x, units[0].z), "{:?}", units[0]);
-            plane_crossed |= (units[1].z - 40.0).abs() < 0.5 && units[1].x.abs() < 1.5;
+            plane_crossed |= (units[1].z - 1810.0).abs() < 22.63 && units[1].x.abs() < 67.88;
         }
         assert!(plane_crossed, "right over it: {:?}", units[1]);
         assert!(
-            (units[0].x - 0.0).hypot(units[0].z - 49.0) < 0.5,
+            (units[0].x - 0.0).hypot(units[0].z - 2217.0) < 22.63,
             "it got there: {:?}",
             units[0]
         );
@@ -6696,13 +7980,13 @@ mod tests {
 
     /// A flat map with a pad at its middle and a machine out of rockets some way off.
     fn machine_and_pad(role: Role) -> [Unit; 2] {
-        let mut machine = unit_at(0.0, 50.0, UnitKind::Aircraft);
+        let mut machine = unit_at(0.0, 2263.0, UnitKind::Aircraft);
         machine.role = role;
         machine.weapon = role.weapon();
         machine.id = 1;
         machine.altitude = CRUISE_ALTITUDE;
         machine.rockets_fired = role.rocket_load().unwrap();
-        let mut pad = unit_at(8.0, 50.0, UnitKind::Building);
+        let mut pad = unit_at(362.0, 2263.0, UnitKind::Building);
         pad.role = Role::LandingPad;
         pad.weapon = WeaponKind::Unarmed;
         pad.id = 2;
@@ -6722,14 +8006,14 @@ mod tests {
     fn after_a_mission_a_machine_goes_to_its_pad_however_far_off() {
         let terrain = open_map();
         let mut units = machine_and_pad(Role::Ornithopter);
-        units[1].x = PAD_NEARBY + 12.0;
+        units[1].x = PAD_NEARBY + 543.1;
         after_a_mission(&mut units, &terrain);
         assert!(
-            (units[0].x - units[1].x).hypot(units[0].z - 50.0) < OVER_PAD,
+            (units[0].x - units[1].x).hypot(units[0].z - 2263.0) < OVER_PAD,
             "{:?}",
             units[0]
         );
-        assert_eq!(units[0].altitude, PAD_TOP, "on its deck");
+        assert_eq!(units[0].altitude, pad_top(), "on its deck");
     }
 
     #[test]
@@ -6738,10 +8022,10 @@ mod tests {
         let mut units = machine_and_pad(Role::Destroyer);
         units[1].role = Role::Mcv;
         units[1].deployed = true;
-        units[1].x = -14.0;
+        units[1].x = -633.6;
         after_a_mission(&mut units, &terrain);
         let away = (units[0].x - units[1].x).hypot(units[0].z - units[1].z);
-        assert!(away < HOME_BESIDE + 1.0, "{away}");
+        assert!(away < HOME_BESIDE + 45.25, "{away}");
         assert_eq!(units[0].altitude, 0.0, "sitting there");
     }
 
@@ -6751,12 +8035,12 @@ mod tests {
         assert_eq!(terrain.floor(), 0.0, "a map with sand");
         // Sand with higher ground close by.
         let sand = (0..200)
-            .flat_map(|i| (0..200).map(move |j| (i as f32 * 0.5 - 50.0, j as f32 * 0.5)))
+            .flat_map(|i| (0..200).map(move |j| (i as f32 * 22.63 - 2263.0, j as f32 * 22.63)))
             .find(|&(x, z)| {
                 terrain.can_walk(x, z)
-                    && terrain.height_at(x, z) < 0.05
+                    && terrain.height_at(x, z) < 2.263
                     && higher_ground_near(terrain, (x, z))
-                        .is_some_and(|(hx, hz)| (hx - x).hypot(hz - z) > 3.0)
+                        .is_some_and(|(hx, hz)| (hx - x).hypot(hz - z) > 135.8)
             })
             .unwrap();
         let mut units = [machine_and_pad(Role::Ornithopter)[0]];
@@ -6776,12 +8060,12 @@ mod tests {
         units[0].rockets_fired = 0;
         units[0].target = Some(Target::Unit(999));
         advance(&mut units, &terrain, &[0], 0.05);
-        order_move(&mut units, (-10.0, 50.0), &terrain, &[0]);
+        order_move(&mut units, (-452.5, 2263.0), &terrain, &[0]);
         for _ in 0..600 {
             advance(&mut units, &terrain, &[0], 0.05);
         }
         assert!(
-            (units[0].x + 10.0).hypot(units[0].z - 50.0) < 1.5,
+            (units[0].x + 452.5).hypot(units[0].z - 2263.0) < 67.88,
             "{:?}",
             units[0]
         );
@@ -6800,23 +8084,23 @@ mod tests {
             }
         }
         assert_eq!(units[0].rockets_fired, 0, "loaded: {:?}", units[0]);
-        assert!((units[0].x - 8.0).hypot(units[0].z - 50.0) < OVER_PAD);
-        assert_eq!(units[0].altitude, PAD_TOP, "sitting on the deck");
+        assert!((units[0].x - 362.0).hypot(units[0].z - 2263.0) < OVER_PAD);
+        assert_eq!(units[0].altitude, pad_top(), "sitting on the deck");
         assert!(units[0].has_rockets());
     }
 
     #[test]
     fn a_repair_vehicle_goes_by_itself_to_a_hurt_friend_close_by_mends_it_and_is_free_again() {
         let terrain = open_map();
-        let mut fixer = unit_at(0.0, 50.0, UnitKind::Vehicle);
+        let mut fixer = unit_at(0.0, 2263.0, UnitKind::Vehicle);
         fixer.role = Role::RepairVehicle;
         fixer.weapon = WeaponKind::Repair;
         fixer.id = 1;
-        let mut hurt = unit_at(8.0, 50.0, UnitKind::Vehicle);
+        let mut hurt = unit_at(362.0, 2263.0, UnitKind::Vehicle);
         hurt.id = 2;
         hurt.health = hurt.max_health() - 30.0;
         hurt.weapon = WeaponKind::Unarmed;
-        let mut far = unit_at(-30.0, 50.0, UnitKind::Vehicle);
+        let mut far = unit_at(-1358.0, 2263.0, UnitKind::Vehicle);
         far.id = 3;
         far.health = 1.0;
         far.weapon = WeaponKind::Unarmed;
@@ -6841,18 +8125,18 @@ mod tests {
     #[test]
     fn a_repair_vehicle_on_its_way_somewhere_or_with_a_job_does_not_rush_off() {
         let terrain = open_map();
-        let mut fixer = unit_at(0.0, 50.0, UnitKind::Vehicle);
+        let mut fixer = unit_at(0.0, 2263.0, UnitKind::Vehicle);
         fixer.role = Role::RepairVehicle;
         fixer.weapon = WeaponKind::Repair;
         fixer.id = 1;
-        fixer.destination = (-20.0, 50.0);
-        let mut hurt = unit_at(5.0, 50.0, UnitKind::Vehicle);
+        fixer.destination = (-905.1, 2263.0);
+        let mut hurt = unit_at(226.3, 2263.0, UnitKind::Vehicle);
         hurt.id = 2;
         hurt.health = 10.0;
         let mut enemy = hurt;
         enemy.id = 3;
         enemy.owner = 1;
-        enemy.z = 55.0;
+        enemy.z = 2489.0;
         let mut units = [fixer, hurt, enemy];
         advance(&mut units, &terrain, &[0, 1], 0.05);
         assert_eq!(units[0].target, None, "told to go");
@@ -6864,16 +8148,16 @@ mod tests {
 
     #[test]
     fn a_machine_sitting_on_a_pad_counts_as_grounded_and_one_up_in_the_air_does_not() {
-        let mut machine = unit_at(0.0, 50.0, UnitKind::Aircraft);
+        let mut machine = unit_at(0.0, 2263.0, UnitKind::Aircraft);
         machine.role = Role::Destroyer;
         machine.sit_on_pad(99);
         assert!(machine.is_grounded() && machine.can_be_repaired());
         assert_eq!(machine.height_as_target(), 0.0);
-        machine.altitude = PAD_TOP + 1.0;
+        machine.altitude = pad_top() + 45.25;
         assert!(!machine.is_grounded() && !machine.can_be_repaired());
-        assert_eq!(machine.height_as_target(), PAD_TOP + 1.0);
+        assert_eq!(machine.height_as_target(), pad_top() + 45.25);
         // What does not land is in the air even that low.
-        let mut carryall = unit_at(0.0, 50.0, UnitKind::Aircraft);
+        let mut carryall = unit_at(0.0, 2263.0, UnitKind::Aircraft);
         carryall.sit_on_pad(99);
         assert!(!carryall.is_grounded());
     }
@@ -6886,7 +8170,7 @@ mod tests {
         machine.x = pad.x;
         machine.z = pad.z;
         machine.destination = (pad.x, pad.z);
-        machine.altitude = PAD_TOP;
+        machine.altitude = pad_top();
         machine.pad = Some(Pad {
             id: pad.id,
             x: pad.x,
@@ -6894,7 +8178,7 @@ mod tests {
             deck: FRAC_PI_4,
         });
         machine.health = 20.0;
-        let mut fixer = unit_at(pad.x - 7.0, pad.z, UnitKind::Vehicle);
+        let mut fixer = unit_at(pad.x - 316.8, pad.z, UnitKind::Vehicle);
         fixer.role = Role::RepairVehicle;
         fixer.weapon = WeaponKind::Repair;
         fixer.id = 3;
@@ -6921,33 +8205,33 @@ mod tests {
     #[test]
     fn a_unit_gets_around_a_building_in_its_way() {
         let terrain = open_map();
-        let mut tank = unit_at(0.0, 45.0, UnitKind::Vehicle);
+        let mut tank = unit_at(0.0, 2036.0, UnitKind::Vehicle);
         tank.id = 1;
-        tank.destination = (0.0, 55.0);
-        let mut building = unit_at(0.0, 50.0, UnitKind::Building);
+        tank.destination = (0.0, 2489.0);
+        let mut building = unit_at(0.0, 2263.0, UnitKind::Building);
         building.id = 2;
         let mut units = [tank, building];
         go(&mut units, &terrain);
-        let left = (units[0].x).hypot(units[0].z - 55.0);
-        assert!(left < 0.5, "it got there: {:?}", units[0]);
+        let left = (units[0].x).hypot(units[0].z - 2489.0);
+        assert!(left < 22.63, "it got there: {:?}", units[0]);
     }
 
     #[test]
     fn a_unit_gets_around_a_row_of_others_that_are_standing_still() {
         let terrain = open_map();
-        let mut tank = unit_at(0.0, 45.0, UnitKind::Vehicle);
+        let mut tank = unit_at(0.0, 2036.0, UnitKind::Vehicle);
         tank.id = 1;
-        tank.destination = (0.0, 55.0);
+        tank.destination = (0.0, 2489.0);
         let mut units = vec![tank];
         for i in 0..11 {
-            let mut guard = unit_at(i as f32 - 5.0, 50.0, UnitKind::Vehicle);
+            let mut guard = unit_at(i as f32 - 226.3, 2263.0, UnitKind::Vehicle);
             guard.id = 2 + i;
             guard.weapon = WeaponKind::Unarmed;
             units.push(guard);
         }
         go(&mut units, &terrain);
-        let left = (units[0].x).hypot(units[0].z - 55.0);
-        assert!(left < 1.0, "it got there: {:?}", units[0]);
+        let left = (units[0].x).hypot(units[0].z - 2489.0);
+        assert!(left < 45.25, "it got there: {:?}", units[0]);
     }
 
     #[test]
@@ -6958,33 +8242,33 @@ mod tests {
             z,
             half_x,
             half_z,
-            height: 1.0,
+            height: 45.25,
             shade: 1.0,
         };
         // A wall with a return at each end, opening away from where it is going.
         let terrain = Terrain::open_with_ruins(vec![
-            piece(0.0, 50.0, 5.0, 0.1),
-            piece(-5.0, 47.0, 0.1, 3.0),
-            piece(5.0, 47.0, 0.1, 3.0),
+            piece(0.0, 2263.0, 226.3, 4.525),
+            piece(-226.3, 2127.0, 4.525, 135.8),
+            piece(226.3, 2127.0, 4.525, 135.8),
         ]);
-        let mut soldier = unit_at(0.0, 48.0, UnitKind::Infantry);
-        soldier.destination = (0.0, 56.0);
+        let mut soldier = unit_at(0.0, 2172.0, UnitKind::Infantry);
+        soldier.destination = (0.0, 2534.0);
         let mut units = [soldier];
         go(&mut units, &terrain);
-        let left = (units[0].x).hypot(units[0].z - 56.0);
-        assert!(left < 0.5, "it got there: {:?}", units[0]);
+        let left = (units[0].x).hypot(units[0].z - 2534.0);
+        assert!(left < 22.63, "it got there: {:?}", units[0]);
     }
 
     #[test]
     fn a_unit_boxed_in_gives_up_rather_than_pressing_on_for_ever() {
         let terrain = open_map();
-        let mut soldier = unit_at(0.0, 50.0, UnitKind::Infantry);
+        let mut soldier = unit_at(0.0, 2263.0, UnitKind::Infantry);
         soldier.id = 1;
-        soldier.destination = (0.0, 60.0);
+        soldier.destination = (0.0, 2715.0);
         let mut units = vec![soldier];
         for i in 0..12 {
             let (sin, cos) = (i as f32 / 12.0 * TAU).sin_cos();
-            let mut wall = unit_at(cos * 1.7, 50.0 + sin * 1.7, UnitKind::Building);
+            let mut wall = unit_at(cos * 76.93, 2263.0 + sin * 76.93, UnitKind::Building);
             wall.id = 2 + i;
             units.push(wall);
         }
@@ -6997,8 +8281,8 @@ mod tests {
     #[test]
     fn a_unit_getting_on_fine_is_not_looked_at_twice() {
         let terrain = open_map();
-        let mut tank = unit_at(0.0, 30.0, UnitKind::Vehicle);
-        tank.destination = (0.0, 90.0);
+        let mut tank = unit_at(0.0, 1358.0, UnitKind::Vehicle);
+        tank.destination = (0.0, 4073.0);
         let mut units = [tank];
         for _ in 0..200 {
             advance(&mut units, &terrain, &[], 0.05);
@@ -7016,9 +8300,9 @@ mod tests {
             machine.rockets_fired = 0;
             machine.heading = std::f32::consts::PI;
             // Far enough from the pad that it will not rise for this enemy once loaded.
-            machine.x = -25.0;
-            machine.destination = (-25.0, 50.0);
-            let mut enemy = enemy_at(-30.0, 50.0, UnitKind::Vehicle);
+            machine.x = -1131.0;
+            machine.destination = (-1131.0, 2263.0);
+            let mut enemy = enemy_at(-1290.0, 2263.0, UnitKind::Vehicle);
             enemy.id = 9;
             enemy.health = 1e7;
             enemy.weapon = WeaponKind::Unarmed;
@@ -7032,7 +8316,7 @@ mod tests {
                 assert_eq!((units[1].x, units[1].z), spot, "the pad stays put");
                 ran_out |= !units[0].has_rockets();
                 let over = (units[0].x - spot.0).hypot(units[0].z - spot.1);
-                landed |= ran_out && over < OVER_PAD && units[0].altitude == PAD_TOP;
+                landed |= ran_out && over < OVER_PAD && units[0].altitude == pad_top();
                 if landed && units[0].rockets_fired == 0 {
                     break;
                 }
@@ -7050,22 +8334,22 @@ mod tests {
     #[test]
     fn nothing_shoves_a_building_not_even_another_building_or_a_machine_coming_down() {
         let terrain = open_map();
-        let mut hangar = unit_at(0.0, 50.0, UnitKind::Building);
+        let mut hangar = unit_at(0.0, 2263.0, UnitKind::Building);
         hangar.id = 1;
-        let mut pad = unit_at(1.0, 50.0, UnitKind::Building);
+        let mut pad = unit_at(45.25, 2263.0, UnitKind::Building);
         pad.role = Role::LandingPad;
         pad.id = 2;
-        let mut machine = unit_at(2.0, 50.0, UnitKind::Aircraft);
+        let mut machine = unit_at(90.51, 2263.0, UnitKind::Aircraft);
         machine.role = Role::Ornithopter;
         machine.id = 3;
-        machine.altitude = 0.5;
-        machine.destination = (2.0, 52.0);
+        machine.altitude = 22.63;
+        machine.destination = (90.51, 2353.0);
         let mut units = [hangar, pad, machine];
         for _ in 0..40 {
             advance(&mut units, &terrain, &[0], 0.05);
         }
-        assert_eq!((units[0].x, units[0].z), (0.0, 50.0));
-        assert_eq!((units[1].x, units[1].z), (1.0, 50.0));
+        assert_eq!((units[0].x, units[0].z), (0.0, 2263.0));
+        assert_eq!((units[1].x, units[1].z), (45.25, 2263.0));
     }
 
     #[test]
@@ -7074,21 +8358,21 @@ mod tests {
         for kind in [UnitKind::Vehicle, UnitKind::Infantry] {
             let [_, mut pad] = machine_and_pad(Role::Ornithopter);
             pad.x = 0.0;
-            let mut crossing = unit_at(-4.0, 50.0, kind);
+            let mut crossing = unit_at(-181.0, 2263.0, kind);
             crossing.id = 5;
-            crossing.destination = (4.0, 50.0);
+            crossing.destination = (181.0, 2263.0);
             let mut units = [pad, crossing];
             for _ in 0..400 {
                 advance(&mut units, &terrain, &[0], 0.05);
                 let unit = units[1];
-                let from_shaft = unit.x.hypot(unit.z - 50.0);
+                let from_shaft = unit.x.hypot(unit.z - 2263.0);
                 assert!(from_shaft > PAD_DECK.1, "around it: {unit:?}");
                 assert_eq!(unit.y, terrain.height_at(unit.x, unit.z), "on the ground");
             }
-            assert_eq!((units[0].x, units[0].z), (0.0, 50.0), "the pad stays put");
+            assert_eq!((units[0].x, units[0].z), (0.0, 2263.0), "the pad stays put");
             let unit = units[1];
             assert!(
-                (unit.x - 4.0).hypot(unit.z - 50.0) < 0.3,
+                (unit.x - 181.0).hypot(unit.z - 2263.0) < 13.58,
                 "got past: {unit:?}"
             );
         }
@@ -7107,7 +8391,7 @@ mod tests {
                 advance(&mut units, &terrain, &[0], 0.05);
             }
             assert!(units[0].is_grounded(), "{:?}", units[0]);
-            let off = (units[0].heading - std::f32::consts::FRAC_PI_4).sin().abs();
+            let off = (units[0].heading - units[1].deck_heading()).sin().abs();
             assert!(off < 0.02, "{role:?} is {off} off: {:?}", units[0]);
         }
     }
@@ -7120,11 +8404,15 @@ mod tests {
         first.selected = true;
         let mut second = first;
         second.id = 3;
-        second.z = 60.0;
+        second.z = 2715.0;
         let mut units = [first, pad, second];
         order_land(&mut units, 1);
-        assert_eq!(units[0].destination, (8.0, 50.0), "the nearer lands");
-        assert_ne!(units[2].destination, (8.0, 50.0), "the other waits beside");
+        assert_eq!(units[0].destination, (362.0, 2263.0), "the nearer lands");
+        assert_ne!(
+            units[2].destination,
+            (362.0, 2263.0),
+            "the other waits beside"
+        );
         for _ in 0..1000 {
             advance(&mut units, &terrain, &[0], 0.05);
             if units[0].rockets_fired == 0 {
@@ -7140,8 +8428,8 @@ mod tests {
         let [first, pad] = machine_and_pad(Role::Ornithopter);
         let mut second = first;
         second.id = 3;
-        second.z = 53.0;
-        second.destination = (0.0, 53.0);
+        second.z = 2399.0;
+        second.destination = (0.0, 2399.0);
         let mut units = [first, pad, second];
         advance(&mut units, &terrain, &[0], 0.05);
         let using = units.iter().filter(|u| u.pad.is_some()).count();
@@ -7161,7 +8449,7 @@ mod tests {
         full.x = pad.x;
         full.z = pad.z;
         full.destination = (pad.x, pad.z);
-        full.altitude = PAD_TOP;
+        full.altitude = pad_top();
         full.pad = Some(Pad {
             id: pad.id,
             x: pad.x,
@@ -7172,8 +8460,8 @@ mod tests {
         // Far off at first, so it has to come and wait.
         let mut empty = machine_and_pad(Role::Destroyer)[0];
         empty.id = 3;
-        empty.x = -20.0;
-        empty.destination = (-20.0, 50.0);
+        empty.x = -905.1;
+        empty.destination = (-905.1, 2263.0);
         let mut loading = full;
         loading.rockets_fired = 11;
         let mut units = [loading, pad, empty];
@@ -7182,7 +8470,7 @@ mod tests {
         }
         assert!(units[0].is_on_pad(), "still loading");
         let waits = (units[2].x - spot.0).hypot(units[2].z - spot.1);
-        assert!(waits < PAD_WAITS + 0.5, "it came to wait: {waits}");
+        assert!(waits < PAD_WAITS + 22.63, "it came to wait: {waits}");
         assert!(units[2].rockets_fired > 0);
         // The one on the pad finishes loading first, then gives way, and the other gets it.
         for _ in 0..700 {
@@ -7208,7 +8496,7 @@ mod tests {
         sitting.x = pad.x;
         sitting.z = pad.z;
         sitting.destination = (pad.x, pad.z);
-        sitting.altitude = PAD_TOP;
+        sitting.altitude = pad_top();
         sitting.pad = Some(Pad {
             id: pad.id,
             x: pad.x,
@@ -7219,12 +8507,12 @@ mod tests {
         full.id = 3;
         full.pad = None;
         full.altitude = 0.0;
-        full.x = pad.x + 4.0;
+        full.x = pad.x + 181.0;
         full.destination = (full.x, full.z);
         let mut short_far = full;
         short_far.id = 4;
         short_far.rockets_fired = 1;
-        short_far.x = pad.x + PAD_NEARBY + 8.0;
+        short_far.x = pad.x + PAD_NEARBY + 362.0;
         short_far.destination = (short_far.x, short_far.z);
         let mut units = [sitting, pad, full, short_far];
         for _ in 0..40 {
@@ -7238,7 +8526,7 @@ mod tests {
         let terrain = open_map();
         let [mut machine, pad] = machine_and_pad(Role::Ornithopter);
         machine.rockets_fired = 2;
-        machine.x = pad.x - 5.0;
+        machine.x = pad.x - 226.3;
         machine.destination = (machine.x, machine.z);
         let mut units = [machine, pad];
         for _ in 0..400 {
@@ -7251,10 +8539,63 @@ mod tests {
     }
 
     #[test]
+    fn a_vehicle_driving_into_a_cliff_along_the_grid_slides_along_it() {
+        // A cliff on the first map running along the grid, just to the west of here.
+        let terrain = terrain(0);
+        let mut tank = unit_at(2783.0, 4792.0, UnitKind::Vehicle);
+        tank.destination = (1810.0, 4792.0);
+        assert!(terrain.can_walk(tank.x, tank.z) && !terrain.can_walk(tank.x - 45.25, tank.z));
+        let start = (tank.x, tank.z);
+        for _ in 0..20 {
+            walk(&mut tank, terrain, (-1.0, 0.0), 0.05);
+        }
+        let slid = (tank.x - start.0).hypot(tank.z - start.1);
+        assert!(slid > 22.63, "it got stuck, sliding {slid}");
+        assert!(terrain.can_walk(tank.x, tank.z));
+    }
+
+    #[test]
+    fn a_kobra_raises_its_cannon_bit_by_bit_and_lowers_it_again() {
+        let mut kobra = Unit::for_test(0.0, 2715.0, UnitKind::Vehicle);
+        kobra.role = Role::Kobra;
+        switch_deployed(&mut kobra);
+        let mut units = [kobra];
+        advance(&mut units, &open_map(), &[0], 0.5);
+        let partway = units[0].popped;
+        assert!(partway > 0.0 && partway < 1.0, "{partway}");
+        assert!(units[0].is_shifting_its_cannon());
+        let tip = siege_tip(partway);
+        assert!(tip[1] > SIEGE_TIP[1] && tip[1] < SIEGE_RAISED_TIP[1]);
+        for _ in 0..40 {
+            advance(&mut units, &open_map(), &[0], 0.1);
+        }
+        assert_eq!(units[0].popped, 1.0);
+        assert!(!units[0].is_shifting_its_cannon());
+        switch_deployed(&mut units[0]);
+        advance(&mut units, &open_map(), &[0], 0.5);
+        assert!(units[0].popped < 1.0, "on its way down");
+    }
+
+    #[test]
+    fn a_full_machine_with_nothing_to_do_sits_down_on_a_free_pad_close_by() {
+        let terrain = open_map();
+        for role in [Role::Ornithopter, Role::Destroyer] {
+            let [mut machine, pad] = machine_and_pad(role);
+            machine.x = pad.x - 226.3;
+            machine.destination = (machine.x, machine.z);
+            let mut units = [machine, pad];
+            for _ in 0..400 {
+                advance(&mut units, &terrain, &[0], 0.05);
+            }
+            assert!(units[0].is_on_pad(), "{role:?} {:?}", units[0]);
+        }
+    }
+
+    #[test]
     fn a_machine_out_of_rockets_with_no_pad_sits_down_and_cannot_be_sent_to_attack() {
         let terrain = open_map();
         let [machine, _] = machine_and_pad(Role::Destroyer);
-        let mut enemy = unit_at(3.0, 50.0, UnitKind::Vehicle);
+        let mut enemy = unit_at(135.8, 2263.0, UnitKind::Vehicle);
         enemy.owner = 1;
         enemy.id = 9;
         let mut units = [machine, enemy];
@@ -7288,11 +8629,11 @@ mod tests {
         let terrain = open_map();
         let mut units = machine_and_pad(Role::Ornithopter);
         advance(&mut units, &terrain, &[0], 0.05);
-        units[0].destination = (-10.0, 50.0);
+        units[0].destination = (-452.5, 2263.0);
         let mut went_there = false;
         for _ in 0..200 {
             advance(&mut units, &terrain, &[0], 0.05);
-            went_there |= units[0].x < -9.0;
+            went_there |= units[0].x < -407.3;
         }
         assert!(went_there, "it went where it was told first");
         for _ in 0..1000 {
@@ -7312,7 +8653,7 @@ mod tests {
             }
         }
         assert!(units[0].is_on_pad());
-        let mut enemy = unit_at(9.0, 52.0, UnitKind::Vehicle);
+        let mut enemy = unit_at(407.3, 2353.0, UnitKind::Vehicle);
         enemy.owner = 1;
         enemy.id = 9;
         let mut with_enemy = [units[0], units[1], enemy];
@@ -7321,7 +8662,7 @@ mod tests {
         }
         assert!(with_enemy[0].is_on_pad(), "it stays to load");
         with_enemy[0].rockets_fired = 1;
-        with_enemy[0].destination = (-10.0, 50.0);
+        with_enemy[0].destination = (-452.5, 2263.0);
         for _ in 0..200 {
             advance(&mut with_enemy, &terrain, &[0, 1], 0.05);
         }
@@ -7332,7 +8673,7 @@ mod tests {
     fn a_destroyer_is_heavier_and_slower_and_carries_fewer_rockets_than_an_ornithopter() {
         let (d, o) = (Role::Destroyer, Role::Ornithopter);
         assert!(d.max_health() > o.max_health());
-        assert!(d.speed() < o.speed());
+        assert!(d.speed(Faction::Atreides) < o.speed(Faction::Atreides));
         assert!(d.rocket_load() < o.rocket_load());
         assert!(d.lands());
         assert_eq!(d.made_in(), Some(Role::Hangar));
@@ -7341,11 +8682,11 @@ mod tests {
 
     #[test]
     fn only_what_is_not_infantry_shows_wear_and_it_grows_with_what_it_lost() {
-        let mut tank = unit_at(0.0, 50.0, UnitKind::Vehicle);
+        let mut tank = unit_at(0.0, 2263.0, UnitKind::Vehicle);
         assert_eq!(tank.wear(), 0.0);
         tank.health = tank.max_health() * 0.25;
-        assert!((tank.wear() - 0.75).abs() < 0.001);
-        let mut soldier = unit_at(0.0, 50.0, UnitKind::Infantry);
+        assert!((tank.wear() - 0.75).abs() < 0.04525);
+        let mut soldier = unit_at(0.0, 2263.0, UnitKind::Infantry);
         soldier.health = 1.0;
         assert_eq!(soldier.wear(), 0.0);
     }
@@ -7353,11 +8694,11 @@ mod tests {
     #[test]
     fn an_mcv_comes_round_to_face_the_left_bottom_edge_then_takes_a_second_to_deploy() {
         let terrain = Terrain::open_upland();
-        let mut mcv = unit_at(0.0, 50.0, UnitKind::Vehicle);
+        let mut mcv = unit_at(0.0, 2263.0, UnitKind::Vehicle);
         mcv.role = Role::Mcv;
         mcv.heading = 0.1;
         mcv.selected = true;
-        let mut units = [mcv];
+        let mut units = vec![mcv];
         toggle_deploy(&mut units, &terrain);
         assert!(!units[0].deployed, "not at once");
         assert_eq!(units[0].deployment, Deployment::Turning);
@@ -7376,9 +8717,9 @@ mod tests {
             seconds += 0.02;
             assert!(seconds < 2.0);
             // Orders make no difference to it meanwhile.
-            units[0].destination = (9.0, 60.0);
+            units[0].destination = (407.3, 2715.0);
         }
-        assert!((seconds - CONSTRUCTION_SECONDS).abs() < 0.05, "{seconds}");
+        assert!((seconds - CONSTRUCTION_SECONDS).abs() < 2.263, "{seconds}");
         assert_eq!(units[0].kind, UnitKind::Building);
         let plot = units[0].plot().unwrap();
         assert_eq!((units[0].x, units[0].z), plot.center(), "on the grid");
@@ -7386,7 +8727,7 @@ mod tests {
 
     #[test]
     fn an_mcvs_drill_lies_level_then_tips_to_45_degrees_and_bores_in_as_it_turns() {
-        let mut mcv = unit_at(0.0, 50.0, UnitKind::Vehicle);
+        let mut mcv = unit_at(0.0, 2263.0, UnitKind::Vehicle);
         mcv.role = Role::Mcv;
         let packed = mcv.drill_pose();
         assert_eq!((packed.tilt, packed.plunge), (0.0, 0.0));
@@ -7406,27 +8747,46 @@ mod tests {
     }
 
     #[test]
+    fn a_refinerys_squares_show_its_pads_out_in_front_whichever_way_it_looks() {
+        let at = (0.0, 2715.0);
+        for facing in [Facing::LeftBottom, Facing::RightTop, Facing::RightBottom] {
+            let plot = Role::Refinery.plot_facing(Faction::Atreides, at, facing);
+            let pads: Vec<_> = plot
+                .cells()
+                .filter(|&cell| Role::Refinery.is_exit(plot, facing, cell))
+                .collect();
+            assert!(pads.len() >= 3 * 4, "{facing:?}: {pads:?}");
+            let (out_x, out_z) = facing.way_out();
+            let (x, z) = plot.center();
+            assert!(pads.iter().all(|&(u, v)| {
+                let (cx, cz) = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+                (cx - x) * out_x + (cz - z) * out_z > -45.25
+            }));
+        }
+    }
+
+    #[test]
     fn a_building_turned_to_face_another_edge_changes_its_squares_and_its_way_out() {
-        let at = (0.0, 60.0);
-        let plain = Role::Factory.plot_facing(at, Facing::LeftBottom);
-        assert_eq!((plain.cols, plain.rows), (6, 5));
-        let turned = Role::Factory.plot_facing(at, Facing::RightBottom);
-        assert_eq!((turned.cols, turned.rows), (5, 6));
+        let at = (0.0, 2715.0);
+        let plain = Role::Factory.plot_facing(Faction::Atreides, at, Facing::LeftBottom);
+        assert_eq!((plain.cols, plain.rows), (7, 6));
+        let turned = Role::Factory.plot_facing(Faction::Atreides, at, Facing::RightBottom);
+        assert_eq!((turned.cols, turned.rows), (6, 7));
         assert_eq!(
-            Role::Factory.plot_facing(turned.center(), Facing::RightBottom),
+            Role::Factory.plot_facing(Faction::Atreides, turned.center(), Facing::RightBottom),
             turned
         );
         let exits = |facing: Facing| -> Vec<(i32, i32)> {
-            let plot = Role::Factory.plot_facing(at, facing);
+            let plot = Role::Factory.plot_facing(Faction::Atreides, at, facing);
             plot.cells()
                 .filter(|&cell| Role::Factory.is_exit(plot, facing, cell))
                 .collect()
         };
-        let plot = |facing| Role::Factory.plot_facing(at, facing);
+        let plot = |facing| Role::Factory.plot_facing(Faction::Atreides, at, facing);
         assert!(
             exits(Facing::LeftBottom)
                 .iter()
-                .all(|c| c.1 == plot(Facing::LeftBottom).v + 4)
+                .all(|c| c.1 == plot(Facing::LeftBottom).v + 5)
         );
         assert!(
             exits(Facing::RightTop)
@@ -7436,7 +8796,7 @@ mod tests {
         assert!(
             exits(Facing::RightBottom)
                 .iter()
-                .all(|c| c.0 == plot(Facing::RightBottom).u + 4)
+                .all(|c| c.0 == plot(Facing::RightBottom).u + 5)
         );
         assert!(
             exits(Facing::LeftTop)
@@ -7516,7 +8876,7 @@ mod tests {
                 for unit in &units {
                     assert!(can_deploy_here(unit, terrain), "map {map}: {unit:?}");
                     let from_middle = unit.x.hypot(unit.z - terrain.size().middle_z());
-                    assert!(from_middle > 40.0, "map {map}: {unit:?}");
+                    assert!(from_middle > 1810.0, "map {map}: {unit:?}");
                 }
             }
         }
@@ -7524,11 +8884,11 @@ mod tests {
 
     #[test]
     fn an_order_into_a_mountain_goes_to_its_edge() {
-        let terrain = &Terrain::open_with_mountain(0.0, 40.0, 5.0);
-        let mut tank = unit_at(0.0, 30.0, UnitKind::Vehicle);
+        let terrain = &Terrain::open_with_mountain(0.0, 1810.0, 226.3);
+        let mut tank = unit_at(0.0, 1358.0, UnitKind::Vehicle);
         tank.selected = true;
         let mut units = [tank];
-        order_move(&mut units, (0.0, 40.0), terrain, &[]);
+        order_move(&mut units, (0.0, 1810.0), terrain, &[]);
         let spot = units[0].destination;
         assert!(terrain.can_walk(spot.0, spot.1), "{spot:?}");
     }
@@ -7536,9 +8896,9 @@ mod tests {
     #[test]
     fn units_never_enter_water_and_give_up_when_it_blocks_them() {
         let terrain = map_with_impassable_lower_terrain();
-        let mut units = [unit_at(0.0, 64.0, UnitKind::Infantry)];
+        let mut units = [unit_at(0.0, 2896.0, UnitKind::Infantry)];
         // Straight across whatever lies to the far north, past the land ring.
-        units[0].destination = (0.0, 2.0);
+        units[0].destination = (0.0, 90.51);
         for _ in 0..2000 {
             advance(&mut units, terrain, &[], 0.05);
             assert!(terrain.can_walk(units[0].x, units[0].z), "{:?}", units[0]);
@@ -7592,7 +8952,7 @@ mod tests {
         let colors = crate::game::TEAM_COLORS;
         for map in 0..crate::game::MAPS.len() {
             for count in 2..=colors.len() {
-                let terrain = terrain(map);
+                let terrain = crate::battlefield::terrain(map);
                 for unit in spawn_bases(terrain, &colors[..count]) {
                     for piece in terrain.ruins() {
                         let gap_x = (unit.x - piece.x).abs() - unit.radius() - piece.half_x;
@@ -7621,7 +8981,7 @@ mod tests {
         let units = spawn_bases(terrain(0), &COLORS);
         let far = units
             .iter()
-            .find(|u| u.owner == 0 && u.x.hypot(u.z - MAP_MIDDLE_Z) > 40.0)
+            .find(|u| u.owner == 0 && u.x.hypot(u.z - MAP_MIDDLE_Z) > 1810.0)
             .unwrap();
         let (x, _) = view.project(far.x, far.y, far.z).unwrap();
         assert!(x > 2880.0, "starts off screen: {x}");
@@ -7629,45 +8989,45 @@ mod tests {
 
     #[test]
     fn selection_is_tested_on_the_ground_including_its_borders() {
-        let rectangle = (-3.0, 50.0, 8.0, 70.0);
-        let unit = unit_at(0.0, 60.0, UnitKind::Infantry);
+        let rectangle = (-135.8, 2263.0, 362.0, 3168.0);
+        let unit = unit_at(0.0, 2715.0, UnitKind::Infantry);
         assert!(in_selection(rectangle, &unit));
         assert!(
             in_selection(
                 rectangle,
                 &Unit {
-                    x: 8.0,
-                    z: 50.0,
+                    x: 362.0,
+                    z: 2263.0,
                     ..unit
                 }
             ),
             "on the border"
         );
         assert!(
-            !in_selection(rectangle, &Unit { x: -3.1, ..unit }),
+            !in_selection(rectangle, &Unit { x: -140.3, ..unit }),
             "west of it"
         );
         assert!(
-            !in_selection(rectangle, &Unit { x: 8.1, ..unit }),
+            !in_selection(rectangle, &Unit { x: 366.6, ..unit }),
             "east of it"
         );
         assert!(
-            !in_selection(rectangle, &Unit { z: 49.9, ..unit }),
+            !in_selection(rectangle, &Unit { z: 2258.0, ..unit }),
             "north of it"
         );
         assert!(
-            !in_selection(rectangle, &Unit { z: 70.1, ..unit }),
+            !in_selection(rectangle, &Unit { z: 3172.0, ..unit }),
             "south of it"
         );
     }
 
     #[test]
     fn a_units_height_does_not_change_whether_it_is_selected() {
-        let rectangle = (-3.0, 50.0, 8.0, 70.0);
-        let low = unit_at(0.0, 60.0, UnitKind::Infantry);
+        let rectangle = (-135.8, 2263.0, 362.0, 3168.0);
+        let low = unit_at(0.0, 2715.0, UnitKind::Infantry);
         assert_eq!(
             in_selection(rectangle, &low),
-            in_selection(rectangle, &Unit { y: 0.7, ..low })
+            in_selection(rectangle, &Unit { y: 31.68, ..low })
         );
     }
 
@@ -7699,12 +9059,12 @@ mod tests {
     }
 
     fn refinery_and_harvesters(harvesters: usize) -> Vec<Unit> {
-        let mut refinery = unit_at(0.0, 60.0, UnitKind::Building);
+        let mut refinery = unit_at(0.0, 2715.0, UnitKind::Building);
         refinery.role = Role::Refinery;
         refinery.weapon = WeaponKind::Unarmed;
         let mut units = vec![refinery];
         for n in 0..harvesters {
-            let mut harvester = unit_at(4.0 + 2.0 * n as f32, 68.0, UnitKind::Vehicle);
+            let mut harvester = unit_at(181.0 + 90.51 * n as f32, 3077.0, UnitKind::Vehicle);
             harvester.role = Role::Harvester;
             harvester.weapon = WeaponKind::Unarmed;
             harvester.id = 1 + n as u32;
@@ -7738,9 +9098,10 @@ mod tests {
             matches!(harvester.harvest, Harvest::Dumping(_)),
             "{harvester:?}"
         );
-        let pad = refinery.refinery_pads()[harvester.harvest.dock().unwrap().pad];
-        assert!((harvester.x - pad.0).hypot(harvester.z - pad.1) < 0.05);
-        let (out_x, out_z) = refinery.facing.way_out();
+        let dock = harvester.harvest.dock().unwrap().pad;
+        let pad = refinery.refinery_pads()[dock];
+        assert!((harvester.x - pad.0).hypot(harvester.z - pad.1) < 2.263);
+        let (out_x, out_z) = refinery.refinery_pad_ways()[dock];
         assert!(
             turn_between(harvester.heading, out_z.atan2(out_x)).abs() < 0.05,
             "its back to the refinery"
@@ -7799,7 +9160,7 @@ mod tests {
         assert!(units[1].load > 0.0);
         assert!(units[1].is_harvesting() || units[1].harvest == Harvest::Collecting);
         units[1].selected = true;
-        order_move(&mut units, (20.0, 70.0), open_ground(), &[0]);
+        order_move(&mut units, (905.1, 3168.0), open_ground(), &[0]);
         assert_eq!(units[1].harvest, Harvest::Idle);
         let load = units[1].load;
         work(&mut units, &mut money, 0.5);
@@ -7813,5 +9174,252 @@ mod tests {
             tend_harvesters(&mut alone, &Terrain::open_upland(), &mut money, 0.05);
         }
         assert_eq!(alone[0].load, 0.0, "nothing on the upper ground");
+    }
+
+    #[test]
+    fn making_pays_bit_by_bit_and_waits_while_the_money_runs_short() {
+        let mut units = base_of(0);
+        let barracks = units.iter().position(|u| u.role == Role::Barracks).unwrap();
+        let (cost, seconds) = (Role::Engineer.cost(), Role::Engineer.build_seconds());
+        start_making(&mut units, Role::Engineer, 0);
+        let mut money = [cost / 4];
+        work_on_making(&mut units, &mut money, seconds / 2.0);
+        assert_eq!(money[0], 0, "it spends what there is");
+        let left = units[barracks].making.unwrap().1;
+        assert!(
+            (left - seconds * 0.75).abs() < 0.01,
+            "and gets that far: {left}"
+        );
+        assert!(work_on_making(&mut units, &mut money, seconds).is_empty());
+        assert_eq!(units[barracks].making.unwrap().1, left, "then it waits");
+        money[0] = 10_000;
+        assert_eq!(work_on_making(&mut units, &mut money, seconds), [barracks]);
+        assert_eq!(
+            money[0],
+            10_000 - cost * 3 / 4,
+            "the rest is paid as it goes on"
+        );
+        assert_eq!(still_owed(&units, 0), 0);
+    }
+
+    #[test]
+    fn calling_off_what_is_being_made_gives_back_what_was_paid_for_it() {
+        let mut units = base_of(0);
+        start_making(&mut units, Role::Engineer, 0);
+        start_making(&mut units, Role::Scout, 0);
+        let mut money = [10_000];
+        work_on_making(&mut units, &mut money, Role::Engineer.build_seconds() / 2.0);
+        let paid = 10_000 - money[0];
+        assert_eq!(paid, Role::Engineer.cost() / 2);
+        let owed = Role::Engineer.cost() - paid + Role::Scout.cost();
+        assert_eq!(still_owed(&units, 0), owed);
+        assert!(cancel_making(&mut units, Role::Scout, 0, &mut money[0]));
+        assert_eq!(money[0], 10_000 - paid, "nothing was paid for what waited");
+        assert!(cancel_making(&mut units, Role::Engineer, 0, &mut money[0]));
+        assert_eq!(money[0], 10_000);
+    }
+
+    #[test]
+    fn everything_that_can_be_made_costs_something() {
+        let mut house_roles = Vec::new();
+        for house in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
+            house_roles.push(Role::Palace(house));
+            house_roles.extend(Role::towers_of(house));
+        }
+        let roles = [
+            Role::LightInfantry,
+            Role::Engineer,
+            Role::Harvester,
+            Role::Mcv,
+            Role::Carryall,
+            Role::AdvancedCarryall,
+            Role::Devastator,
+            Role::Refinery,
+            Role::Barracks,
+        ];
+        for role in roles.into_iter().chain(house_roles) {
+            assert!(role.cost() > 0, "{role:?}");
+        }
+        assert!(Role::Carryall.cost() < Role::AdvancedCarryall.cost());
+    }
+
+    /// The player's carryall, circling at its height here.
+    fn carryall_at(x: f32, z: f32, id: u32) -> Unit {
+        let mut carryall = unit_at(x, z, UnitKind::Aircraft);
+        carryall.role = Role::Carryall;
+        carryall.weapon = WeaponKind::Unarmed;
+        carryall.altitude = CRUISE_ALTITUDE;
+        carryall.id = id;
+        carryall
+    }
+
+    /// The player's empty harvester here, on its way to the sand there.
+    fn harvester_off_to(x: f32, z: f32, to: (f32, f32), id: u32) -> Unit {
+        let mut harvester = unit_at(x, z, UnitKind::Vehicle);
+        harvester.role = Role::Harvester;
+        harvester.weapon = WeaponKind::Unarmed;
+        harvester.id = id;
+        harvester.harvest = Harvest::Seeking;
+        (harvester.field, harvester.destination) = (to, to);
+        harvester
+    }
+
+    /// Runs carryalls and harvesters for a while. Returns the ids of the harvesters that were
+    /// carried meanwhile.
+    fn fly(units: &mut Vec<Unit>, seconds: f32) -> Vec<u32> {
+        const DT: f32 = 0.05;
+        let mut carried = Vec::new();
+        let mut lifted = Vec::new();
+        for _ in 0..(seconds / DT) as usize {
+            advance(units, open_ground(), &[0], DT);
+            tend_harvesters(units, open_ground(), &mut [0], DT);
+            tend_carryalls(units, open_ground());
+            carry(units, &mut carried, open_ground(), &[0], DT);
+            for held in units.iter().filter(|u| u.theft.is_some()) {
+                if !lifted.contains(&held.id) {
+                    lifted.push(held.id);
+                }
+            }
+        }
+        lifted
+    }
+
+    #[test]
+    fn a_carryall_takes_a_harvester_with_a_long_way_to_go_and_puts_it_down_there() {
+        let to = (0.0, 4525.0);
+        let mut units = vec![
+            carryall_at(226.3, 2715.0, 0),
+            harvester_off_to(0.0, 2715.0, to, 1),
+        ];
+        assert!(units[0].is_moving(), "with nothing to do it circles");
+        let driving = (to.1 - 2715.0) / units[1].speed();
+        let lifted = fly(&mut units, driving * 0.8);
+        assert_eq!(lifted, [1]);
+        let harvester = units[1];
+        assert_eq!(harvester.theft, None, "it is put down");
+        assert_eq!(harvester.harvest, Harvest::Collecting, "and harvests");
+        let (x, z) = harvester.field;
+        assert!((x - to.0).hypot(z - to.1) < 22.63, "there: {harvester:?}");
+        assert_eq!(units[0].lift, None);
+        assert!(units[0].is_moving(), "and the carryall circles again");
+    }
+
+    #[test]
+    fn a_carryall_leaves_alone_a_harvester_with_only_a_short_way_to_go() {
+        let to = (0.0, 2715.0 + LIFT_WORTH * 0.8);
+        let mut units = vec![
+            carryall_at(135.8, 2715.0, 0),
+            harvester_off_to(0.0, 2715.0, to, 1),
+        ];
+        assert!(fly(&mut units, 10.0).is_empty());
+        assert_eq!(
+            units[1].harvest,
+            Harvest::Collecting,
+            "it got there by itself"
+        );
+    }
+
+    #[test]
+    fn carryalls_share_the_harvesters_out_and_one_sees_to_them_one_after_another() {
+        let far = |x: f32| (x, 6336.0);
+        let mut units = vec![
+            carryall_at(0.0, 2625.0, 0),
+            carryall_at(905.1, 2625.0, 1),
+            harvester_off_to(0.0, 2715.0, far(0.0), 2),
+            harvester_off_to(905.1, 2715.0, far(905.1), 3),
+        ];
+        fly(&mut units, 1.0);
+        let fetching = |unit: &Unit| match unit.lift {
+            Some(Lift::Fetch { harvester, .. }) => Some(harvester),
+            _ => None,
+        };
+        assert_eq!(fetching(&units[0]), Some(2), "each the nearest");
+        assert_eq!(fetching(&units[1]), Some(3));
+
+        let mut units = vec![
+            carryall_at(0.0, 2625.0, 0),
+            harvester_off_to(0.0, 2715.0, far(0.0), 2),
+            harvester_off_to(543.1, 2715.0, far(543.1), 3),
+        ];
+        let mut lifted = fly(&mut units, 60.0);
+        lifted.sort();
+        assert_eq!(lifted, [2, 3]);
+    }
+
+    #[test]
+    fn a_carryall_can_be_selected_but_never_sent_anywhere() {
+        let mut units = vec![carryall_at(0.0, 2715.0, 0)];
+        units[0].selected = true;
+        let before = units[0].destination;
+        order_move(&mut units, (452.5, 3168.0), open_ground(), &[0]);
+        assert!(units[0].is_selectable());
+        assert_eq!(units[0].destination, before);
+        assert!(!Role::Carryall.goes_where_told());
+    }
+
+    #[test]
+    fn a_harvester_given_is_brought_from_past_the_edge_and_its_carryall_stays_or_leaves() {
+        let mut refinery = unit_at(0.0, 2715.0, UnitKind::Building);
+        refinery.role = Role::Refinery;
+        refinery.weapon = WeaponKind::Unarmed;
+        let mut units = vec![refinery];
+        deliver_harvester(&mut units, open_ground(), (0, true), (3, 4));
+        fly(&mut units, 60.0);
+        assert!(
+            units
+                .iter()
+                .any(|u| u.id == 3 && u.alive && open_ground().on_map(u.x, u.z)),
+            "it stays, its owner's now"
+        );
+        let mut units = vec![refinery];
+        deliver_harvester(&mut units, open_ground(), (0, false), (1, 2));
+        let (carryall, harvester) = (units[1], units[2]);
+        assert_eq!(carryall.role, Role::Carryall);
+        assert!(
+            !open_ground().on_map(carryall.x, carryall.z),
+            "from past the edge"
+        );
+        assert_eq!(harvester.theft.map(|t| t.carrier), Some(1), "under it");
+        let lifted = fly(&mut units, 60.0);
+        assert_eq!(lifted, [2]);
+        assert!(units.iter().all(|u| u.role != Role::Carryall), "gone again");
+        let harvester = units.iter().find(|u| u.id == 2).unwrap();
+        assert_eq!(harvester.theft, None);
+        assert!(
+            open_ground().on_map(harvester.x, harvester.z) && harvester.load > 0.0,
+            "it is down and harvesting: {harvester:?}"
+        );
+    }
+
+    #[test]
+    fn a_crate_pays_whoever_reaches_it_on_the_ground() {
+        let mut crates = vec![Crate {
+            x: 0.0,
+            z: 2715.0,
+            money: 500,
+            left: 10.0,
+        }];
+        let mut money = [0, 0];
+        let mut flier = carryall_at(0.0, 2715.0, 0);
+        flier.owner = 1;
+        let far = unit_at(226.3, 2715.0, UnitKind::Infantry);
+        assert!(open_crates(&[flier, far], &mut crates, &mut money, 1.0).is_empty());
+        let near = unit_at(13.58, 2715.0, UnitKind::Vehicle);
+        assert_eq!(
+            open_crates(&[near], &mut crates, &mut money, 1.0),
+            [(0, 500)]
+        );
+        assert_eq!((money, crates.len()), ([500, 0], 0));
+
+        let mut crates = vec![Crate {
+            x: 0.0,
+            z: 2715.0,
+            money: 500,
+            left: 10.0,
+        }];
+        assert!(open_crates(&[far], &mut crates, &mut money, 9.0).is_empty());
+        assert_eq!(crates.len(), 1);
+        assert!(open_crates(&[far], &mut crates, &mut money, 1.5).is_empty());
+        assert!(crates.is_empty(), "left too long, it is gone");
     }
 }

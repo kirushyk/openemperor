@@ -2,7 +2,7 @@
 
 use crate::battlefield::{self, Camera};
 use crate::fog::{Fog, Sight};
-use crate::hud::{self, DEPLOY_BUTTON};
+use crate::hud::{self, DEPLOY_BUTTON, SELL_BUTTON};
 use crate::platform::{Event, Key, Modifier};
 use crate::strategy::Strategy;
 use crate::units::{self, Role, Unit, UnitKind};
@@ -63,9 +63,9 @@ fn vehicle_builds(house: Faction) -> &'static [Role] {
         Faction::Atreides => &[
             Role::SandBike,
             Role::RepairVehicle,
-            Role::RocketLauncher,
             Role::Mongoose,
             Role::Minotaurus,
+            Role::StealthApc,
         ],
         Faction::Harkonnen => &[
             Role::Tank,
@@ -75,34 +75,54 @@ fn vehicle_builds(house: Faction) -> &'static [Role] {
             Role::FlameTank,
             Role::Devastator,
         ],
-        Faction::Ordos => &[
-            Role::Recon,
-            Role::LaserTank,
-            Role::RocketLauncher,
-            Role::Kobra,
-        ],
+        Faction::Ordos => &[Role::Recon, Role::LaserTank, Role::Kobra, Role::RocketApc],
     }
 }
 /// The Vehicles menu's cells free for ground vehicles, in order.
-const VEHICLE_CELLS: [usize; 7] = [0, 1, 2, 3, 4, 5, 10];
+const VEHICLE_CELLS: [usize; 6] = [0, 1, 2, 3, 4, 5];
 /// What the Vehicles menu's bottom row makes, from its left end.
 const BOTTOM_VEHICLE_BUILDS: [Role; 3] =
     [Role::AirDefensePlatform, Role::AirDrone, Role::Ornithopter];
 const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
 /// The Vehicles menu's cell for the Advanced Carryall, just above the bottom row.
-const CARRYALL_CELL: usize = BOTTOM_ROW_START - hud::GRID_COLUMNS;
+const ADVANCED_CARRYALL_CELL: usize = BOTTOM_ROW_START - hud::GRID_COLUMNS;
+/// The Vehicles menu's cell for the Carryall, beside the Advanced Carryall.
+const CARRYALL_CELL: usize = ADVANCED_CARRYALL_CELL + 1;
 /// The Vehicles menu's cell for a spare MCV, beside the superweapon.
 const MCV_CELL: usize = SUPERWEAPON_CELL + 1;
 /// The Vehicles menu's cell for the Harvester, every house's, beside the spare MCV.
 const HARVESTER_CELL: usize = MCV_CELL + 1;
 /// The Vehicles menu's cell for the Destroyer, just above the Ornithopter.
 const DESTROYER_CELL: usize = BOTTOM_ROW_START - 1;
+/// The Vehicles menu's cell for the Air Drone, in the middle of the bottom row.
+const AIR_DRONE_CELL: usize = BOTTOM_ROW_START + 1;
+
+/// The aircraft a house has of its own, in the cells that are another house's for others.
+fn own_aircraft(house: Faction, cell: usize) -> Option<Role> {
+    match (house, cell) {
+        (Faction::Ordos, DESTROYER_CELL) => Some(Role::EyeInTheSky),
+        (Faction::Ordos, AIR_DRONE_CELL) => Some(Role::AirMine),
+        _ => None,
+    }
+}
 /// Seconds of battle before the superweapon can fire again.
 pub const SUPERWEAPON_RECHARGE: f32 = 60.0;
+/// How long a side has to have fewer harvesters than refineries before it is given one.
+const HARVESTER_GIFT_SECONDS: f32 = 60.0;
+/// With crates on, the most seconds between one crate dropping somewhere and the next, how long
+/// one lies before it is gone, the most lying about at once, and the most and least money in
+/// one, in steps of the least.
+const CRATE_SECONDS: f32 = 40.0;
+const CRATE_LASTS: f32 = 60.0;
+const CRATES_AT_MOST: usize = 6;
+const CRATE_MONEY: (i32, i32) = (250, 1500);
 
+/// What opponents make before anything else, while they have fewer than this many of each for
+/// each of their refineries: harvesters to bring in money, and carryalls to help them.
+const OPPONENT_ECONOMY: [(Role, usize); 2] = [(Role::Harvester, 2), (Role::Carryall, 1)];
 /// What opponents build, one at random whenever they get to. They leave out what only helps
 /// others, since they have no plan for it yet.
-const OPPONENT_BUILDS: [Role; 25] = [
+const OPPONENT_BUILDS: [Role; 28] = [
     Role::LightInfantry,
     Role::Sniper,
     Role::KInfantry,
@@ -123,11 +143,14 @@ const OPPONENT_BUILDS: [Role; 25] = [
     Role::Recon,
     Role::LaserTank,
     Role::Kobra,
+    Role::RocketApc,
+    Role::StealthApc,
     Role::RocketLauncher,
     Role::AirDefensePlatform,
     Role::AirDrone,
     Role::Ornithopter,
     Role::Destroyer,
+    Role::AirMine,
 ];
 /// What the Buildings menu makes, in order.
 const BUILDING_BUILDS: [Role; 4] = [
@@ -198,6 +221,22 @@ pub enum CursorLook {
     Land,
     /// The selected harvesters would go and harvest the sand here.
     Harvest,
+    /// The selected would march here together.
+    March,
+    /// The selected soldiers would get into the APC under the cursor.
+    Board,
+    /// A click would sell what is here, or anything of the player's it is put on.
+    Sell,
+}
+
+/// What the next click on the map does instead of what it usually would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClickMode {
+    /// Sends the selected marching there together, after Z.
+    March,
+    /// Sells the player's building there for half what it cost, with the sell button down,
+    /// until it is let go.
+    Sell,
 }
 
 /// The new building the player has on the way: one at a time.
@@ -224,7 +263,8 @@ pub struct ChatLine {
 pub enum PlaceSquare {
     /// The building can go here.
     Free,
-    /// It can go here, and this is where what it makes comes out.
+    /// It can go here, and this is where what it makes comes out, or where a refinery's
+    /// harvesters come in.
     Exit,
     /// Sand, a cliff, something standing there, or too far from any building.
     Blocked,
@@ -581,9 +621,10 @@ pub enum Toggle {
     FogOfWar,
 }
 
-/// Option values. Not applied to anything yet, and not saved between runs.
+/// Option values, not saved between runs. Only the game speed is applied so far.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
+    /// From 1 to `UPDATES_PER_SECOND.len()`, as on the original's slider.
     pub game_speed: i32,
     pub scroll_rate: i32,
     pub mouse_speed: i32,
@@ -596,10 +637,22 @@ pub struct Settings {
     pub voice_volume: i32,
 }
 
+/// How many times a second the original game updates at each step of its Game Speed slider,
+/// from the slowest. The battle runs this much faster than at `units::UPDATES_PER_SECOND`.
+pub const UPDATES_PER_SECOND: [f32; 7] = [8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0];
+
+impl Settings {
+    /// How many seconds of battle go by for each second that passes.
+    pub fn battle_pace(&self) -> f32 {
+        let step = (self.game_speed - 1).clamp(0, UPDATES_PER_SECOND.len() as i32 - 1);
+        UPDATES_PER_SECOND[step as usize] / units::UPDATES_PER_SECOND
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            game_speed: 5,
+            game_speed: 6,
             scroll_rate: 5,
             mouse_speed: 5,
             tool_tips: true,
@@ -805,7 +858,13 @@ impl Slider {
 type SliderRow = (SliderId, &'static str, i32, i32, &'static [&'static str]);
 
 const GAME_SLIDERS: &[SliderRow] = &[
-    (SliderId::GameSpeed, "Game Speed", 1, 10, &[]),
+    (
+        SliderId::GameSpeed,
+        "Game Speed",
+        1,
+        UPDATES_PER_SECOND.len() as i32,
+        &[],
+    ),
     (SliderId::ScrollRate, "Scroll Rate", 1, 10, &[]),
     (SliderId::MouseSpeed, "Mouse Speed", 1, 10, &[]),
 ];
@@ -1349,6 +1408,8 @@ pub struct Game {
     pub combat: Combat,
     /// The superweapon is chosen and waiting for a click on the map.
     pub aiming_strike: bool,
+    /// What the next click on the map does instead, if anything.
+    pub click_mode: Option<ClickMode>,
     /// Seconds until the superweapon can fire again.
     pub strike_recharge: f32,
     /// Where a selection drag started, as a point on the map (x, z), so that it stays put
@@ -1373,6 +1434,16 @@ pub struct Game {
     pub energy: i32,
     /// The player's money first, then each opponent's.
     money: Vec<i32>,
+    /// The refineries whose owners have had the harvester each new one brings, by id.
+    refineries_served: Vec<u32>,
+    /// How long each side, the player first, has had fewer harvesters than refineries.
+    short_of_harvesters: Vec<f32>,
+    /// Money lying about the battlefield, with crates on.
+    pub crates: Vec<units::Crate>,
+    /// Seconds until the next crate drops.
+    crate_wait: f32,
+    /// Where crates' places and money come from.
+    crate_random: u32,
     /// Newest last, at most `hud::CHAT_LINES`.
     pub chat: Vec<ChatLine>,
     /// Which owners were already reported defeated.
@@ -1436,6 +1507,7 @@ impl Game {
             strategies: Vec::new(),
             combat: Combat::default(),
             aiming_strike: false,
+            click_mode: None,
             strike_recharge: 0.0,
             selection_anchor: None,
             press_point: (0.0, 0.0),
@@ -1448,6 +1520,11 @@ impl Game {
             build_tab: BuildTab::Infantry,
             energy: STARTING_ENERGY,
             money: vec![DEFAULT_BATTLE_MONEY],
+            refineries_served: Vec::new(),
+            short_of_harvesters: Vec::new(),
+            crates: Vec::new(),
+            crate_wait: 0.0,
+            crate_random: 1,
             chat: Vec::new(),
             reported_defeated: Vec::new(),
             fog: None,
@@ -1533,7 +1610,11 @@ impl Game {
 
     /// The selection while dragging one: a rectangle on the ground as (west, north, east,
     /// south), between where the drag started on the map and the ground under the cursor.
+    /// There is none while a press is placing a building: a drag then only turns it.
     pub fn selection_ground(&self) -> Option<(f32, f32, f32, f32)> {
+        if self.placing_press.is_some() {
+            return None;
+        }
         let (x, z) = self.selection_anchor?;
         let (cursor_x, cursor_z) = self.view().ground_at(self.mouse.0, self.mouse.1)?;
         Some((
@@ -1654,13 +1735,15 @@ impl Game {
     /// What a cell of the build menu makes, for the player's house.
     pub fn build_role(&self, tab: BuildTab, cell: usize) -> Option<Role> {
         let house = self.faction_of(0);
-        match tab {
+        let role = match tab {
             BuildTab::Infantry => INFANTRY_BUILDS
                 .iter()
                 .find(|(of, _)| *of == house)
                 .and_then(|(_, builds)| builds.get(cell))
                 .copied(),
-            BuildTab::Vehicles if cell == CARRYALL_CELL => Some(Role::AdvancedCarryall),
+            BuildTab::Vehicles if own_aircraft(house, cell).is_some() => own_aircraft(house, cell),
+            BuildTab::Vehicles if cell == ADVANCED_CARRYALL_CELL => Some(Role::AdvancedCarryall),
+            BuildTab::Vehicles if cell == CARRYALL_CELL => Some(Role::Carryall),
             BuildTab::Vehicles if cell == MCV_CELL => Some(Role::Mcv),
             BuildTab::Vehicles if cell == HARVESTER_CELL => Some(Role::Harvester),
             BuildTab::Vehicles if cell == DESTROYER_CELL => Some(Role::Destroyer),
@@ -1679,7 +1762,9 @@ impl Game {
                 .into_iter()
                 .chain(Role::towers_of(house))
                 .nth(cell),
-        }
+        };
+        // Another house's cells stay empty.
+        role.filter(|role| role.made_by(house))
     }
 
     /// What the player's palace can fire, if they have one and superweapons are allowed. A
@@ -1696,27 +1781,55 @@ impl Game {
             })
     }
 
-    /// Each opponent keeps all its buildings busy, starting something at random the moment one
-    /// is free. What comes out joins its army at the rally point, where `Strategy` takes over.
+    /// Each opponent keeps its buildings busy with what it can pay for: once a building is
+    /// free, it starts harvesters and carryalls while it is short of them, or else something at
+    /// random. It keeps back what its base still needs and what it owes for what is being made
+    /// already. What comes out joins its army at the rally point, where `Strategy` takes over.
     fn run_opponents(&mut self) {
         let terrain = battlefield::terrain(self.battle_map);
         for owner in 1..self.teams.len() {
+            let has = |units: &[Unit], role: Role| {
+                units
+                    .iter()
+                    .filter(|u| u.alive && u.owner == owner)
+                    .map(|u| usize::from(u.role == role) + u.orders_for(role))
+                    .sum::<usize>()
+            };
             let mut standing = self
                 .units
                 .iter()
                 .filter(|u| u.alive && u.owner == owner)
                 .count();
+            let saving = self
+                .strategies
+                .get(owner - 1)
+                .map_or(0, |plan| plan.saving_for(&self.units));
+            let money = self.money.get(owner).copied().unwrap_or(0);
+            let mut spare = money - saving - units::still_owed(&self.units, owner);
             while standing < OPPONENT_UNITS_AT_MOST {
-                let can_build: Vec<Role> = OPPONENT_BUILDS
-                    .into_iter()
-                    .filter(|&role| units::has_free_maker(&self.units, role, owner))
-                    .collect();
-                if can_build.is_empty() {
-                    break;
-                }
-                let (x, _) = terrain.random_point(&mut self.opponent_random);
-                let which = (x.abs() * 1000.0) as usize;
-                units::start_making(&mut self.units, can_build[which % can_build.len()], owner);
+                let affordable = |role: Role| {
+                    role.cost() <= spare && units::has_free_maker(&self.units, role, owner)
+                };
+                let refineries = has(&self.units, Role::Refinery);
+                let short = OPPONENT_ECONOMY.into_iter().find(|&(role, each)| {
+                    affordable(role) && has(&self.units, role) < each * refineries
+                });
+                let role = match short {
+                    Some((role, _)) => role,
+                    None => {
+                        let can_build: Vec<Role> = OPPONENT_BUILDS
+                            .into_iter()
+                            .filter(|&r| affordable(r))
+                            .collect();
+                        if can_build.is_empty() {
+                            break;
+                        }
+                        let (x, _) = terrain.random_point(&mut self.opponent_random);
+                        can_build[(x.abs() * 22.1) as usize % can_build.len()]
+                    }
+                };
+                units::start_making(&mut self.units, role, owner);
+                spare -= role.cost();
                 standing += 1;
             }
         }
@@ -1725,7 +1838,7 @@ impl Game {
     /// Moves along what every building is making, and lets out what is done.
     fn work_on_making(&mut self, dt: f32) {
         let terrain = battlefield::terrain(self.battle_map);
-        for maker in units::work_on_making(&mut self.units, dt) {
+        for maker in units::work_on_making(&mut self.units, &mut self.money, dt) {
             let id = self.next_unit_id;
             let Some(new) = units::finish_making(&mut self.units, terrain, maker, id) else {
                 continue;
@@ -1742,6 +1855,85 @@ impl Game {
                 let point =
                     rally.unwrap_or_else(|| terrain.random_point(&mut self.opponent_random));
                 units::send_to_spot(&mut self.units, new, point, terrain);
+            }
+        }
+    }
+
+    /// Sends each refinery just finished the harvester it brings its owner, the first time it
+    /// is finished only: one taken over brings none. Its carryall stays, the owner's. And each
+    /// side that has had fewer harvesters than refineries for a while is given one more, its
+    /// carryall flying off again.
+    fn deliver_harvesters(&mut self, dt: f32) {
+        let terrain = battlefield::terrain(self.battle_map);
+        for i in 0..self.units.len() {
+            let refinery = self.units[i];
+            if refinery.role != Role::Refinery
+                || !refinery.alive
+                || refinery.is_under_construction()
+                || self.refineries_served.contains(&refinery.id)
+            {
+                continue;
+            }
+            self.refineries_served.push(refinery.id);
+            let ids = (self.next_unit_id, self.next_unit_id + 1);
+            self.next_unit_id += 2;
+            units::deliver_harvester(&mut self.units, terrain, (i, true), ids);
+            if refinery.owner == 0 {
+                self.post_chat("Harvester on its way".to_string());
+            }
+        }
+        for owner in 0..self.short_of_harvesters.len() {
+            let short = &mut self.short_of_harvesters[owner];
+            let Some(refinery) = units::short_of_harvesters(&self.units, owner) else {
+                *short = 0.0;
+                continue;
+            };
+            *short += dt;
+            if *short < HARVESTER_GIFT_SECONDS {
+                continue;
+            }
+            *short = 0.0;
+            let ids = (self.next_unit_id, self.next_unit_id + 1);
+            self.next_unit_id += 2;
+            units::deliver_harvester(&mut self.units, terrain, (refinery, false), ids);
+            if owner == 0 {
+                self.post_chat("Harvester on its way".to_string());
+            }
+        }
+    }
+
+    /// With crates on in a skirmish, drops one now and then somewhere on the ground nobody
+    /// stands on, and pays whoever reaches one what is in it.
+    fn drop_crates(&mut self, dt: f32) {
+        const CLEAR: f32 = 113.1;
+        if self.battle_kind != BattleKind::Skirmish || !self.skirmish.crates {
+            return;
+        }
+        let terrain = battlefield::terrain(self.battle_map);
+        self.crate_wait -= dt;
+        if self.crate_wait <= 0.0 {
+            let random = &mut self.crate_random;
+            self.crate_wait = CRATE_SECONDS * (0.3 + 0.7 * battlefield::next_random(random));
+            let (x, z) = terrain.random_point(random);
+            let (least, most) = CRATE_MONEY;
+            let steps = (battlefield::next_random(random) * (most / least) as f32) as i32;
+            let clear = self
+                .units
+                .iter()
+                .all(|u| (u.x - x).hypot(u.z - z) > CLEAR + u.radius());
+            if self.crates.len() < CRATES_AT_MOST && terrain.can_walk(x, z) && clear {
+                self.crates.push(units::Crate {
+                    x,
+                    z,
+                    money: least * (1 + steps),
+                    left: CRATE_LASTS,
+                });
+            }
+        }
+        let opened = units::open_crates(&self.units, &mut self.crates, &mut self.money, dt);
+        for (owner, money) in opened {
+            if owner == 0 {
+                self.post_chat(format!("Crate: ${money}"));
             }
         }
     }
@@ -1880,12 +2072,13 @@ impl Game {
         }
     }
 
-    /// Moves along the building on its way, while the player has a deployed MCV to build it.
+    /// Moves along the building on its way, while the player has a deployed MCV to build it and
+    /// money to pay for it as it goes.
     fn work_on_site(&mut self, dt: f32) {
         if let Site::Building(role, left) = self.site
             && self.can_produce(role)
         {
-            let left = left - dt;
+            let left = units::work_and_pay(role, left, dt, &mut self.money[0]);
             self.site = if left > 0.0 {
                 Site::Building(role, left)
             } else {
@@ -1948,6 +2141,14 @@ impl Game {
         }
     }
 
+    /// Once a drag has turned the building being placed, its squares and the way it now looks,
+    /// for an arrow pointing that way until the button comes up.
+    pub fn placing_arrow(&self) -> Option<(units::Plot, (f32, f32))> {
+        self.placing_press.filter(|press| press.turned)?;
+        let (_, plot) = self.placing_plot()?;
+        Some((plot, self.placing_facing.way_out()))
+    }
+
     /// The place on the land itself under the cursor, up on what stands high too.
     pub fn land_under_cursor(&self) -> Option<(f32, f32)> {
         let terrain = battlefield::terrain(self.battle_map);
@@ -1962,7 +2163,10 @@ impl Game {
         let (x, y) = self.placing_press.map_or(self.mouse, |press| press.from);
         let terrain = battlefield::terrain(self.battle_map);
         let at = self.view().land_at(terrain, x, y)?;
-        Some((role, role.plot_facing(at, self.placing_facing)))
+        Some((
+            role,
+            role.plot_facing(self.faction_of(0), at, self.placing_facing),
+        ))
     }
 
     /// The grid squares of the building being placed and what each shows: blocked unless it
@@ -2074,11 +2278,18 @@ impl Game {
                 CursorLook::Carry
             }
         };
+        match self.click_mode {
+            Some(ClickMode::Sell) => return CursorLook::Sell,
+            Some(ClickMode::March) if self.would_go_here() => return CursorLook::March,
+            _ => {}
+        }
         match self.forced_order_under_cursor() {
             Some(AttackOrder::Place(_)) => CursorLook::Attack,
             Some(AttackOrder::Unit(unit)) => look_at(&self.units[unit]),
             None => match self.attackable_under_cursor() {
                 Some(unit) => look_at(&self.units[unit]),
+                None if self.boardable_under_cursor().is_some() => CursorLook::Board,
+                None if self.unloadable_under_cursor().is_some() => CursorLook::Deploy,
                 None if self.deployable_under_cursor().is_some() => {
                     match self
                         .deployable_under_cursor()
@@ -2098,6 +2309,20 @@ impl Game {
         }
     }
 
+    /// The player's building under the cursor, finished or not, that a click would sell.
+    fn sellable_under_cursor(&self) -> Option<usize> {
+        self.unit_under_cursor()
+            .filter(|&i| self.units[i].owner == 0 && self.units[i].kind.is_building())
+    }
+
+    /// Sells the player's building for half what it cost: it is gone, and the money theirs.
+    fn sell(&mut self, building: usize) {
+        let sold = self.units.remove(building);
+        let money = sold.role.cost() / 2;
+        self.money[0] += money;
+        self.post_chat(format!("{} sold: ${money}", sold.role.name()));
+    }
+
     /// The selected unit under the cursor that a click would deploy or bring back from that.
     fn deployable_under_cursor(&self) -> Option<usize> {
         if !self.can_order_attack_here() {
@@ -2108,6 +2333,29 @@ impl Game {
         self.unit_under_cursor().filter(|&unit| {
             let unit = &self.units[unit];
             unit.selected && unit.role.can_deploy() && units::can_deploy_here(unit, terrain)
+        })
+    }
+
+    /// The APC under the cursor that a click would send the selected soldiers into.
+    fn boardable_under_cursor(&self) -> Option<usize> {
+        if !self.can_order_attack_here() {
+            return None;
+        }
+        let selected = self.selected_units();
+        self.unit_under_cursor().filter(|&apc| {
+            let apc = &self.units[apc];
+            selected.iter().any(|s| units::can_board(s, apc))
+        })
+    }
+
+    /// The selected APC under the cursor that a click would let everyone on board out of.
+    fn unloadable_under_cursor(&self) -> Option<usize> {
+        if !self.can_order_attack_here() {
+            return None;
+        }
+        self.unit_under_cursor().filter(|&apc| {
+            let apc = &self.units[apc];
+            apc.selected && apc.passengers.iter().any(Option::is_some)
         })
     }
 
@@ -2147,7 +2395,7 @@ impl Game {
         }
         let terrain = battlefield::terrain(self.battle_map);
         self.land_under_cursor()
-            .filter(|&at| units::is_sand(terrain, at))
+            .filter(|&at| units::has_substance(terrain, at))
     }
 
     /// Whether a click here would send somewhere any of what is selected: whatever can move, or
@@ -2160,7 +2408,7 @@ impl Game {
                     UnitKind::Building => {
                         !matches!(u.role, Role::LandingPad | Role::Refinery | Role::Palace(_))
                     }
-                    _ => true,
+                    _ => u.role.goes_where_told(),
                 }
         };
         self.can_order_attack_here()
@@ -2172,7 +2420,10 @@ impl Game {
     /// Whether a click would send a selected carryall here to put down what it holds.
     fn would_put_down_here(&self) -> bool {
         self.can_order_attack_here()
-            && self.selected_units().iter().any(|u| u.carrying)
+            && self
+                .selected_units()
+                .iter()
+                .any(|u| u.carrying && u.role.goes_where_told())
             && self.unit_under_cursor().is_none()
             && self.view().ground_at(self.mouse.0, self.mouse.1).is_some()
     }
@@ -2211,6 +2462,14 @@ impl Game {
             self.selection_anchor = None;
             return;
         }
+        if self.click_mode == Some(ClickMode::Sell) {
+            // It stays down for the next sale until it is let go.
+            if let Some(building) = self.sellable_under_cursor() {
+                self.sell(building);
+            }
+            self.selection_anchor = None;
+            return;
+        }
         if self.aiming_strike {
             let target = self.land_under_cursor();
             if let (Some(weapon), Some((target_x, target_z))) = (self.superweapon(), target) {
@@ -2239,6 +2498,11 @@ impl Game {
             }
         } else if let Some(chosen) = self.attackable_under_cursor() {
             units::order_attack(&mut self.units, chosen, &self.teams);
+        } else if let Some(apc) = self.boardable_under_cursor().filter(|_| !adding) {
+            units::order_board(&mut self.units, apc);
+        } else if let Some(apc) = self.unloadable_under_cursor().filter(|_| !adding) {
+            let terrain = battlefield::terrain(self.battle_map);
+            units::unload(&mut self.units, terrain, apc);
         } else if let Some(unit) = self.deployable_under_cursor().filter(|_| !adding) {
             // So two clicks on one that is not selected yet select it, then switch it.
             units::start_deploying(&mut self.units[unit]);
@@ -2259,13 +2523,16 @@ impl Game {
         } else if adding {
             // Nothing picked, nothing to add.
         } else if let Some(target) = self.land_under_cursor() {
-            units::order_move(
-                &mut self.units,
-                target,
-                battlefield::terrain(self.battle_map),
-                &self.teams,
-            );
+            let terrain = battlefield::terrain(self.battle_map);
+            if self.click_mode == Some(ClickMode::March) {
+                units::order_march(&mut self.units, target, terrain, &self.teams);
+            } else {
+                units::order_move(&mut self.units, target, terrain, &self.teams);
+            }
             units::set_gathering(&mut self.units, target);
+        }
+        if self.click_mode == Some(ClickMode::March) {
+            self.click_mode = None;
         }
         self.selection_anchor = None;
     }
@@ -2305,7 +2572,9 @@ impl Game {
     /// walls between them.
     fn cursor_is_on_building(&self, view: &battlefield::View, unit: &Unit) -> bool {
         const WALLS_SHARE_OF_TOP: f32 = 0.7;
-        let plot = unit.role.plot_facing((unit.x, unit.z), unit.facing);
+        let plot = unit
+            .role
+            .plot_facing(unit.house, (unit.x, unit.z), unit.facing);
         let (low_u, low_v) = (plot.u as f32, plot.v as f32);
         let (high_u, high_v) = (low_u + plot.cols as f32, low_v + plot.rows as f32);
         let ground = [
@@ -2315,7 +2584,7 @@ impl Game {
             (low_u, high_v),
         ]
         .map(|(u, v)| battlefield::grid_to_world(u, v));
-        let top = unit.y + unit.role.building_top() * WALLS_SHARE_OF_TOP;
+        let top = unit.y + unit.role.building_top(unit.house) * WALLS_SHARE_OF_TOP;
         let corners_at = |y: f32| -> Option<Vec<(f32, f32)>> {
             ground.iter().map(|&(x, z)| view.project(x, y, z)).collect()
         };
@@ -2434,11 +2703,15 @@ impl Game {
                 self.combat
                     .explode_destroyed(unit.center(), unit.radius() * 2.0, overkill);
             }
+            // Whoever it has on board dies with it.
+            let aboard = unit.passengers.iter().flatten().count() as i32;
             if unit.owner == 0 {
                 self.lost.count(unit);
+                self.lost.infantry += aboard;
                 lost_names.push(unit.name());
             } else if units::are_enemies(&self.teams, 0, unit.owner) {
                 self.killed.count(unit);
+                self.killed.infantry += aboard;
             }
         }
         self.units.retain(|u| u.alive);
@@ -2580,6 +2853,11 @@ impl Game {
         } else {
             vec![DEFAULT_BATTLE_MONEY; 2]
         };
+        self.refineries_served.clear();
+        self.short_of_harvesters = vec![0.0; self.money.len()];
+        self.crates.clear();
+        self.crate_wait = CRATE_SECONDS / 2.0;
+        self.crate_random = map as u32 * 2 + 7;
         self.chat.clear();
         let colors: Vec<TeamColor> = self.stats_rows().iter().map(|row| row.color).collect();
         self.teams = (0..colors.len()).collect();
@@ -2614,6 +2892,7 @@ impl Game {
             .collect();
         self.combat = Combat::default();
         self.aiming_strike = false;
+        self.click_mode = None;
         self.strike_recharge = 0.0;
         self.set_screen(Screen::Loading);
     }
@@ -2852,7 +3131,7 @@ impl Game {
         if self.confirming.take().is_some() {
             return;
         }
-        if self.aiming_strike {
+        if self.aiming_strike || self.click_mode.take().is_some() {
             self.aiming_strike = false;
             self.selection_anchor = None;
             return;
@@ -2884,6 +3163,7 @@ impl Game {
         self.menu_seconds += dt;
         self.screen_elapsed += dt;
         if self.in_battle && !self.is_paused() {
+            let dt = dt * self.settings.battle_pace();
             self.battle_time += dt;
             let battle_time = self.battle_time;
             self.chat
@@ -2891,8 +3171,13 @@ impl Game {
             let terrain = battlefield::terrain(self.battle_map);
             units::advance(&mut self.units, terrain, &self.teams, dt);
             units::tend_harvesters(&mut self.units, terrain, &mut self.money, dt);
+            units::tend_carryalls(&mut self.units, terrain);
+            units::board_apcs(&mut self.units);
             self.combat
                 .advance(&mut self.units, &self.teams, terrain, dt);
+            for eye in units::release_eyes(&mut self.units, terrain, &mut self.next_unit_id) {
+                self.combat.drop_bombs(&eye, terrain);
+            }
             self.combat.stir_tornados(terrain, dt);
             units::carry(&mut self.units, &mut self.carried, terrain, &self.teams, dt);
             if self.superweapon().is_some() {
@@ -2908,9 +3193,10 @@ impl Game {
                 self.settle_casualties();
                 if self.outcome.is_none() {
                     self.run_opponents();
-                    for plan in &mut self.strategies {
+                    for (owner, plan) in (1..).zip(&mut self.strategies) {
+                        let money = &mut self.money[owner];
                         if let Some(building) =
-                            plan.grow(&mut self.units, terrain, dt, self.next_unit_id)
+                            plan.grow(&mut self.units, terrain, money, dt, self.next_unit_id)
                         {
                             self.units.push(building);
                             self.next_unit_id += 1;
@@ -2919,6 +3205,8 @@ impl Game {
                     }
                     self.work_on_making(dt);
                     self.work_on_site(dt);
+                    self.deliver_harvesters(dt);
+                    self.drop_crates(dt);
                 }
             }
             self.update_fog();
@@ -2980,20 +3268,26 @@ impl Game {
                 }
             }
             Event::RightDown => {
-                if self.aiming_strike {
-                    // Only calls off the superweapon; the selection stands.
+                if self.aiming_strike || self.click_mode.is_some() {
+                    // Only calls off the superweapon, marching or selling; the selection stands.
                     self.aiming_strike = false;
+                    self.click_mode = None;
                     self.selection_anchor = None;
                 } else if self.screen == Screen::InGame
                     && !self.key_paused
                     && let Some(Action::BuildCell(cell)) = self.hovered()
                 {
                     // On a build button it calls off one of those, and the selection stands.
+                    // What was paid for it so far comes back.
                     if let Some(role) = self.build_role(self.build_tab, cell) {
                         if self.site_of(role) {
+                            self.money[0] += match self.site {
+                                Site::Building(_, left) => units::paid_for(role, left),
+                                _ => role.cost(),
+                            };
                             self.site = Site::Idle;
                         } else {
-                            units::cancel_making(&mut self.units, role, 0);
+                            units::cancel_making(&mut self.units, role, 0, &mut self.money[0]);
                         }
                     }
                 } else if let Site::Placing(role) = self.site {
@@ -3072,6 +3366,13 @@ impl Game {
                 }
                 (Screen::InGame, Key::Tab) => self.stats_open = !self.stats_open,
                 (Screen::InGame, Key::Char('d' | 'D')) if !self.key_paused => self.toggle_deploy(),
+                (Screen::InGame, Key::Char('s' | 'S')) if !self.key_paused => {
+                    units::order_stop(&mut self.units);
+                }
+                (Screen::InGame, Key::Char('z' | 'Z')) if !self.key_paused => {
+                    let any = self.units.iter().any(|u| u.selected && u.owner == 0);
+                    self.click_mode = any.then_some(ClickMode::March);
+                }
                 (Screen::InGame, Key::Char('a' | 'A')) if !self.key_paused => {
                     self.select_among(|u| !u.kind.is_building());
                 }
@@ -3157,6 +3458,12 @@ impl Game {
             Action::BuildTab(_) => {}
             Action::BuildCell(cell) => self.activate_build_cell(cell),
             Action::HudWide(DEPLOY_BUTTON) => self.toggle_deploy(),
+            Action::HudSmall(SELL_BUTTON) if self.in_battle => {
+                self.click_mode = match self.click_mode {
+                    Some(ClickMode::Sell) => None,
+                    _ => Some(ClickMode::Sell),
+                };
+            }
             // Not designed yet: these buttons respond to hover but do nothing.
             Action::Multiplayer
             | Action::LoadGame
@@ -3175,7 +3482,7 @@ impl Game {
                 }
                 return;
             }
-            // There is no cost yet. A busy building queues it.
+            // It is paid for while it is made. A busy building queues it.
             units::start_making(&mut self.units, role, 0);
         } else if self.build_tab == BuildTab::Vehicles
             && cell == SUPERWEAPON_CELL
@@ -3443,8 +3750,11 @@ mod tests {
             let s = sliders(tab, W, H)[i];
             (s.min, s.max)
         };
-        for i in 0..3 {
+        assert_eq!(range(Tab::Game, 0), (1, UPDATES_PER_SECOND.len() as i32));
+        for i in 1..3 {
             assert_eq!(range(Tab::Game, i), (1, 10));
+        }
+        for i in 0..3 {
             assert_eq!(range(Tab::Sound, i), (0, 100));
         }
         assert_eq!(range(Tab::Graphics, 0), (0, 2));
@@ -3455,17 +3765,17 @@ mod tests {
     fn dragging_changes_the_value_and_clamps_past_the_ends() {
         let mut game = in_options();
         let s = slider(&game, SliderId::GameSpeed);
-        drag(&mut game, SliderId::GameSpeed, s.x_of(8));
-        assert_eq!(game.settings.game_speed, 8);
+        drag(&mut game, SliderId::GameSpeed, s.x_of(4));
+        assert_eq!(game.settings.game_speed, 4);
         drag(&mut game, SliderId::GameSpeed, -1000.0);
         assert_eq!(game.settings.game_speed, 1);
         drag(&mut game, SliderId::GameSpeed, W + 1000.0);
-        assert_eq!(game.settings.game_speed, 10);
+        assert_eq!(game.settings.game_speed, 7);
         assert_eq!(game.dragging, None);
 
         // After release, moving the mouse no longer changes anything.
         game.handle(Event::MouseMove(s.x_of(3), s.cy));
-        assert_eq!(game.settings.game_speed, 10);
+        assert_eq!(game.settings.game_speed, 7);
     }
 
     #[test]
@@ -4203,6 +4513,278 @@ mod tests {
     }
 
     #[test]
+    fn a_building_on_its_way_is_paid_for_as_it_goes_up_and_comes_back_if_called_off() {
+        let mut game = in_battle();
+        game.skirmish.crates = false;
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        let before = game.player_money();
+        click_hud(&mut game, Action::BuildCell(REFINERY_CELL));
+        assert!(matches!(game.site, Site::Building(Role::Refinery, _)));
+        game.update(Role::Refinery.build_seconds() / 2.0);
+        let paid = before - game.player_money();
+        assert!((paid - Role::Refinery.cost() / 2).abs() <= 2, "{paid}");
+        let cell = hud::all_buttons(W, H)
+            .into_iter()
+            .find(|b| b.action == Action::BuildCell(REFINERY_CELL))
+            .unwrap();
+        game.handle(Event::MouseMove(
+            cell.x + cell.w / 2.0,
+            cell.y + cell.h / 2.0,
+        ));
+        game.handle(Event::RightDown);
+        assert_eq!(game.site, Site::Idle);
+        assert_eq!(game.player_money(), before, "it all comes back");
+    }
+
+    #[test]
+    fn without_the_money_for_it_nothing_gets_made_until_there_is() {
+        let mut game = in_battle();
+        game.skirmish.crates = false;
+        game.money[0] = 0;
+        units::start_making(&mut game.units, Role::SandBike, 0);
+        game.update(Role::SandBike.build_seconds());
+        assert_eq!(game.making_progress(Role::SandBike), Some(0.0));
+        game.money[0] = Role::SandBike.cost();
+        game.update(Role::SandBike.build_seconds() / 2.0);
+        let progress = game.making_progress(Role::SandBike).unwrap();
+        assert!((progress - 0.5).abs() < 0.01, "{progress}");
+    }
+
+    #[test]
+    fn each_new_refinery_brings_one_harvester_under_a_carryall_which_then_stays() {
+        let mut game = in_battle();
+        game.skirmish.crates = false;
+        let mine = |game: &Game, role: Role| {
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0 && u.role == role)
+                .count()
+        };
+        let harvesters = mine(&game, Role::Harvester);
+        game.site = Site::Placing(Role::Refinery);
+        let (x, y) = buildable_spot_on_screen(&mut game);
+        click_at(&mut game, x, y);
+        game.update(units::CONSTRUCTION_SECONDS + 0.1);
+        assert_eq!(mine(&game, Role::Harvester), harvesters + 1);
+        assert_eq!(mine(&game, Role::Carryall), 1, "it comes under a carryall");
+        assert!(
+            game.chat
+                .iter()
+                .any(|line| line.text == "Harvester on its way")
+        );
+        for _ in 0..90 * 10 {
+            game.update(0.1);
+        }
+        assert_eq!(mine(&game, Role::Harvester), harvesters + 1, "only the one");
+        assert_eq!(
+            mine(&game, Role::Carryall),
+            1,
+            "and the carryall is the player's"
+        );
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.role == Role::Harvester)
+                .all(|u| u.theft.is_none()),
+            "it is down"
+        );
+    }
+
+    #[test]
+    fn a_side_short_of_harvesters_for_a_minute_is_given_one_under_a_carryall_that_leaves() {
+        let mut game = in_battle();
+        game.skirmish.crates = false;
+        let mine = |game: &Game, role: Role| {
+            game.units
+                .iter()
+                .filter(|u| u.alive && u.owner == 0 && u.role == role)
+                .count()
+        };
+        game.site = Site::Placing(Role::Refinery);
+        let (x, y) = buildable_spot_on_screen(&mut game);
+        click_at(&mut game, x, y);
+        game.update(units::CONSTRUCTION_SECONDS + 0.1);
+        let refineries = mine(&game, Role::Refinery);
+        assert_eq!(refineries, 1);
+        game.units
+            .retain(|u| u.owner != 0 || !matches!(u.role, Role::Harvester | Role::Carryall));
+        game.update(HARVESTER_GIFT_SECONDS - 1.0);
+        assert_eq!(mine(&game, Role::Harvester), 0, "not yet");
+        game.update(1.5);
+        assert_eq!(mine(&game, Role::Harvester), 1);
+        assert_eq!(mine(&game, Role::Carryall), 1);
+        for _ in 0..90 * 10 {
+            game.update(0.1);
+        }
+        assert_eq!(mine(&game, Role::Carryall), 0, "it flies off again");
+        assert!(
+            mine(&game, Role::Harvester) <= refineries,
+            "no more than it needs"
+        );
+    }
+
+    #[test]
+    fn the_dollar_button_sells_the_players_buildings_for_half_until_it_is_let_go() {
+        let mut game = in_battle();
+        game.fog = None;
+        assert_eq!(
+            hud::command_buttons(game.width, game.height)[SELL_BUTTON].label,
+            "$"
+        );
+        let pad = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::LandingPad)
+            .unwrap();
+        let at = game.units[pad];
+        game.camera.look_at(at.x, at.z);
+        let (x, y) = game.view().project(at.x, at.pick_height(), at.z).unwrap();
+        click_hud(&mut game, Action::HudSmall(SELL_BUTTON));
+        game.handle(Event::MouseMove(x, y));
+        assert_eq!(game.cursor_look(), CursorLook::Sell);
+        let before = game.player_money();
+        click_at(&mut game, x, y);
+        assert!(game.units.iter().all(|u| u.id != at.id), "sold");
+        assert_eq!(game.player_money(), before + Role::LandingPad.cost() / 2);
+        assert_eq!(game.click_mode, Some(ClickMode::Sell), "still selling");
+        game.handle(Event::RightDown);
+        assert_eq!(game.click_mode, None);
+    }
+
+    #[test]
+    fn s_stops_the_selected_where_they_are() {
+        let mut game = in_battle();
+        let (first, second) = two_soldiers(&game);
+        select_ids(&mut game, &[first, second]);
+        let terrain = battlefield::terrain(game.battle_map);
+        let far = game
+            .units
+            .iter()
+            .find(|u| u.id == first)
+            .map(|u| (u.x + 905.1, u.z))
+            .unwrap();
+        units::order_move(&mut game.units, far, terrain, &game.teams);
+        game.update(0.5);
+        game.handle(Event::KeyDown(Key::Char('s')));
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.selected)
+                .all(|u| u.destination == (u.x, u.z) && u.target.is_none())
+        );
+    }
+
+    #[test]
+    fn z_then_a_click_marches_the_selected_keeping_their_shape_at_the_slowest_pace() {
+        let mut game = in_battle();
+        game.fog = None;
+        let mut ground = game
+            .units
+            .iter()
+            .filter(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
+            .map(|u| u.id);
+        let (first, second) = (ground.next().unwrap(), ground.next().unwrap());
+        select_ids(&mut game, &[first, second]);
+        let spot = |game: &Game, id: u32| {
+            let u = game.units.iter().find(|u| u.id == id).unwrap();
+            (u.x, u.z)
+        };
+        let (x, y) = buildable_spot_on_screen(&mut game);
+        let (a, b) = (spot(&game, first), spot(&game, second));
+        game.handle(Event::KeyDown(Key::Char('z')));
+        assert_eq!(game.click_mode, Some(ClickMode::March));
+        game.handle(Event::MouseMove(x, y));
+        assert_eq!(game.cursor_look(), CursorLook::March);
+        click_at(&mut game, x, y);
+        assert_eq!(game.click_mode, None, "for one click only");
+        let to = |id: u32| game.units.iter().find(|u| u.id == id).unwrap().destination;
+        let (to_a, to_b) = (to(first), to(second));
+        let apart = |p: (f32, f32), q: (f32, f32)| (p.0 - q.0, p.1 - q.1);
+        let (was, now) = (apart(a, b), apart(to_a, to_b));
+        assert!(
+            (was.0 - now.0).hypot(was.1 - now.1) < 0.4525,
+            "the same shape: {was:?} {now:?}"
+        );
+        let paces: Vec<f32> = [first, second]
+            .map(|id| game.units.iter().find(|u| u.id == id).unwrap().speed())
+            .into();
+        assert_eq!(paces[0], paces[1], "at one pace");
+    }
+
+    #[test]
+    fn with_crates_on_they_drop_now_and_then_and_pay_whoever_reaches_one() {
+        let mut game = in_battle();
+        assert!(game.skirmish.crates);
+        for _ in 0..(CRATE_SECONDS * 4.0) as usize {
+            game.update(1.0);
+        }
+        assert!(!game.crates.is_empty());
+        let found = game.crates[0];
+        let terrain = battlefield::terrain(game.battle_map);
+        assert!(terrain.can_walk(found.x, found.z));
+        assert!((CRATE_MONEY.0..=CRATE_MONEY.1).contains(&found.money));
+        let vehicle = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Vehicle)
+            .unwrap();
+        let before = game.player_money();
+        (game.units[vehicle].x, game.units[vehicle].z) = (found.x, found.z);
+        game.units[vehicle].destination = (found.x, found.z);
+        game.update(0.01);
+        assert!(game.crates.iter().all(|c| (c.x, c.z) != (found.x, found.z)));
+        assert!(game.player_money() >= before + found.money);
+        let line = format!("Crate: ${}", found.money);
+        assert!(game.chat.iter().any(|l| l.text == line));
+
+        let lying = game.crates.clone();
+        for _ in 0..CRATE_LASTS as usize {
+            game.update(1.0);
+        }
+        assert!(
+            lying
+                .iter()
+                .all(|old| game.crates.iter().all(|c| (c.x, c.z) != (old.x, old.z))),
+            "those nobody reached are gone"
+        );
+
+        let mut game = in_battle();
+        game.skirmish.crates = false;
+        for _ in 0..(CRATE_SECONDS * 4.0) as usize {
+            game.update(1.0);
+        }
+        assert!(game.crates.is_empty(), "none with crates off");
+    }
+
+    #[test]
+    fn opponents_pay_their_way_never_running_into_debt_and_put_up_a_refinery() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        game.skirmish.crates = false;
+        for _ in 0..180 * 10 {
+            game.update(0.1);
+            assert!(
+                game.money.iter().all(|&money| money >= 0),
+                "{:?}",
+                game.money
+            );
+        }
+        let theirs = |role: Role| {
+            game.units
+                .iter()
+                .filter(|u| u.owner == 1 && u.role == role)
+                .count()
+        };
+        assert!(theirs(Role::Refinery) >= 1);
+        assert!(
+            theirs(Role::Harvester) >= 2,
+            "the one it brought and one made"
+        );
+        assert!(game.money[1] < DEFAULT_BATTLE_MONEY, "it spends");
+    }
+
+    #[test]
     fn a_destroyed_vehicle_goes_up_in_a_big_blast_and_its_pieces_fly_then_are_gone() {
         let mut game = in_battle();
         let vehicle = game
@@ -4245,7 +4827,8 @@ mod tests {
         let (x, y) = buildable_spot_on_screen(&mut game);
         game.handle(Event::MouseMove(x, y));
         let squares = game.placing_squares();
-        assert_eq!(squares.len(), 30);
+        let (cols, rows) = Role::Factory.plot_size(game.faction_of(0));
+        assert_eq!(squares.len(), (cols * rows) as usize);
         assert!(squares.iter().all(|&(_, s)| s != PlaceSquare::Blocked));
         let exits: Vec<_> = squares
             .iter()
@@ -4448,8 +5031,8 @@ mod tests {
         // Everyone of the player's stands in the open beside armed enemies, unarmed.
         let enemy = game.units.iter().find(|u| u.owner == 1).copied().unwrap();
         for unit in game.units.iter_mut().filter(|u| u.owner == 0) {
-            unit.x = enemy.x + 1.0;
-            unit.z = enemy.z + 1.0;
+            unit.x = enemy.x + 45.25;
+            unit.z = enemy.z + 45.25;
             unit.destination = (unit.x, unit.z);
             unit.cooldown = 100_000.0;
             unit.health = 1.0;
@@ -4472,9 +5055,10 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         with_bases(&mut game);
-        // Nobody fires on these without an order.
-        game.units
-            .retain(|u| u.owner != 1 || u.kind != UnitKind::Building);
+        // Nobody fires on these without an order, and the drone circles out of reach.
+        game.units.retain(|u| {
+            u.owner != 1 || !(u.kind == UnitKind::Building || u.role == Role::AirDrone)
+        });
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         let enemies = game
             .units
@@ -4487,9 +5071,9 @@ mod tests {
             .find(|u| u.owner == 1)
             .map(|u| (u.x, u.z))
             .unwrap();
-        // Everyone of the player's walks into range and fires by themselves.
+        // Everyone of the player's marches into range together and fires by themselves.
         select_first_group(&mut game);
-        units::order_move(
+        units::order_march(
             &mut game.units,
             target,
             battlefield::terrain(game.battle_map),
@@ -4510,8 +5094,8 @@ mod tests {
     fn nothing_fires_while_the_game_is_paused() {
         let mut game = in_battle();
         let enemy = game.units.iter().find(|u| u.owner == 1).copied().unwrap();
-        game.units[0].x = enemy.x + 1.0;
-        game.units[0].z = enemy.z + 1.0;
+        game.units[0].x = enemy.x + 45.25;
+        game.units[0].z = enemy.z + 45.25;
         game.units[0].destination = (game.units[0].x, game.units[0].z);
         let health = game.units[0].health;
         game.handle(Event::KeyDown(Key::Escape));
@@ -4529,23 +5113,23 @@ mod tests {
             .push(crate::weapons::PoisonZone { x, z, life: 30.0 });
         game.combat.blasts.push(crate::weapons::Blast {
             at: (x, 0.0, z),
-            radius: 2.0,
+            radius: 90.51,
             life: 0.5,
         });
         game.combat.beams.push(crate::weapons::Beam {
-            from: (x, 1.0, z),
-            to: (x + 3.0, 1.0, z),
+            from: (x, 45.25, z),
+            to: (x + 135.8, 45.25, z),
             life: 0.5,
             repair: false,
         });
         game.combat.beams.push(crate::weapons::Beam {
-            from: (x, 1.0, z),
-            to: (x + 3.0, 1.0, z),
+            from: (x, 45.25, z),
+            to: (x + 135.8, 45.25, z),
             life: 0.5,
             repair: true,
         });
         game.combat.flares.push(crate::weapons::Flare {
-            at: (x, 1.0, z),
+            at: (x, 45.25, z),
             direction: (1.0, 0.0, 0.0),
             size: 7.0,
             life: 0.5,
@@ -4908,7 +5492,8 @@ mod tests {
         assert!(game.units[index].selected);
         assert_eq!(selected_count(&game), 1);
 
-        click_at(&mut game, W / 2.0 + 500.0, H / 2.0 + 200.0);
+        let (x, y) = clear_spot_on_screen();
+        click_at(&mut game, x, y);
         assert!(game.units[index].is_moving(), "sent there");
     }
 
@@ -4936,12 +5521,12 @@ mod tests {
         let mut game = in_battle();
         assert!(crate::render::build_frame(&game).lights.is_empty());
         let (x, y, z) = game.units[0].center();
-        game.combat.explode((x, y, z), 1.0);
+        game.combat.explode((x, y, z), 45.25);
         let frame = crate::render::build_frame(&game);
         assert_eq!(frame.lights.len(), 1);
         assert_eq!(frame.lights[0].place[0], x);
         for _ in 0..crate::platform::MAX_LIGHTS * 2 {
-            game.combat.explode((x, y, z), 1.0);
+            game.combat.explode((x, y, z), 45.25);
         }
         let many = crate::render::build_frame(&game).lights.len();
         assert_eq!(many, crate::platform::MAX_LIGHTS);
@@ -4953,7 +5538,7 @@ mod tests {
         game.fog = None;
         game.combat
             .eruptions
-            .push(crate::weapons::Eruption::at_for_test((0.0, 0.0, 40.0)));
+            .push(crate::weapons::Eruption::at_for_test((0.0, 0.0, 1810.0)));
         let frame = crate::render::build_frame(&game);
         assert_eq!(frame.lights.len(), 1);
         assert!(frame.lights[0].color[0] > 0.0);
@@ -4981,7 +5566,7 @@ mod tests {
             .position(|u| u.owner == 0 && u.role == Role::LandingPad)
             .unwrap();
         game.units[pad].selected = true;
-        units::set_gathering(&mut game.units, (0.0, 40.0));
+        units::set_gathering(&mut game.units, (0.0, 1810.0));
         assert_eq!(game.units[pad].gathering, None, "it makes nothing to send");
     }
 
@@ -5044,7 +5629,7 @@ mod tests {
         game.next_unit_id += 1;
         let terrain = battlefield::terrain(game.battle_map);
         let at = terrain
-            .nearest_walkable((4.0, battlefield::MAP_MIDDLE_Z))
+            .nearest_walkable((181.0, battlefield::MAP_MIDDLE_Z))
             .unwrap();
         let tank = units::new_building(terrain, at, Role::Tank, (1, TeamColor::Red), id);
         game.units.push(tank);
@@ -5105,7 +5690,7 @@ mod tests {
             carrier,
             struggle: 0.0,
         });
-        game.units[enemy].altitude = 1.0;
+        game.units[enemy].altitude = 45.25;
         assert!(cables(&game) > 0, "still hanging on them");
     }
 
@@ -5162,7 +5747,7 @@ mod tests {
         assert_eq!(game.home(), (player.x, player.z));
         assert_eq!((game.camera.x, game.camera.z), (player.x, player.z));
         assert!(
-            player.x.hypot(player.z - MapSize::L.middle_z()) > 40.0,
+            player.x.hypot(player.z - MapSize::L.middle_z()) > 1810.0,
             "not in the middle: {player:?}"
         );
     }
@@ -5282,6 +5867,67 @@ mod tests {
     }
 
     #[test]
+    fn ordos_make_the_air_mine_and_the_eye_in_the_sky_where_others_have_their_own_aircraft() {
+        for (house, drone, destroyer) in [
+            (Faction::Ordos, Some(Role::AirMine), Some(Role::EyeInTheSky)),
+            (Faction::Atreides, Some(Role::AirDrone), None),
+            (Faction::Harkonnen, None, Some(Role::Destroyer)),
+        ] {
+            let game = in_battle_as(house);
+            assert_eq!(game.build_role(BuildTab::Vehicles, AIR_DRONE_CELL), drone);
+            assert_eq!(
+                game.build_role(BuildTab::Vehicles, DESTROYER_CELL),
+                destroyer
+            );
+        }
+    }
+
+    #[test]
+    fn soldiers_board_an_apc_with_their_own_cursor_get_out_on_deploy_and_die_with_it() {
+        let (mut game, apc) = k_infantry_under_cursor();
+        game.units[apc].role = Role::StealthApc;
+        game.units[apc].kind = UnitKind::Vehicle;
+        let (x, y) = game.mouse;
+        let terrain = battlefield::terrain(game.battle_map);
+        let side = (0, game.stats_rows()[0].color);
+        let near = (game.units[apc].x + 90.51, game.units[apc].z);
+        let id = game.next_unit_id;
+        game.next_unit_id += 1;
+        let mut soldier = units::new_building(terrain, near, Role::LightInfantry, side, id);
+        soldier.selected = true;
+        game.units.push(soldier);
+        assert_eq!(game.cursor_look(), CursorLook::Board);
+        assert!(
+            line_vertices(&game, crate::render::MOVE_CURSOR) > 0,
+            "it draws"
+        );
+        click_at(&mut game, x, y);
+        for _ in 0..100 {
+            game.update(0.05);
+        }
+        assert!(
+            game.units.iter().all(|u| u.id != id),
+            "on board, out of sight"
+        );
+        let apc = game
+            .units
+            .iter()
+            .position(|u| u.role == Role::StealthApc)
+            .unwrap();
+        game.units[apc].selected = true;
+        assert_eq!(game.cursor_look(), CursorLook::Deploy);
+        click_at(&mut game, x, y);
+        assert!(game.units.iter().any(|u| u.id == id), "out again");
+
+        game.units.retain(|u| u.id != id);
+        game.units[apc].passengers[0] = Some(units::Passenger::for_test(Role::LightInfantry));
+        let lost = game.lost.infantry;
+        game.units[apc].alive = false;
+        game.update(0.01);
+        assert_eq!(game.lost.infantry, lost + 1, "the passenger died with it");
+    }
+
+    #[test]
     fn hovering_a_selected_deployable_unit_shows_what_a_click_would_do_and_a_click_does_it() {
         let (mut game, soldier) = k_infantry_under_cursor();
         assert_eq!(game.cursor_look(), CursorLook::Arrow, "not selected yet");
@@ -5362,14 +6008,14 @@ mod tests {
             .unwrap();
         game.units.retain(|u| u.owner == 0 || !u.role.makes_units());
         let others = red(&game).len();
-        game.units[barracks].gathering = Some((3.0, 70.0));
+        game.units[barracks].gathering = Some((135.8, 3168.0));
         assert_eq!(red(&game).len(), others, "only while it is selected");
 
         game.units[barracks].selected = true;
         let flag = red(&game);
         assert_eq!(flag.len(), others + 3, "one triangle");
         assert!(
-            flag.iter().any(|&(x, z)| (x, z) == (3.0, 70.0)),
+            flag.iter().any(|&(x, z)| (x, z) == (135.8, 3168.0)),
             "at the point"
         );
         assert!(line_vertices(&game, crate::render::ORDER_LINE) > 0);
@@ -5431,7 +6077,7 @@ mod tests {
     /// Puts an enemy on screen beside the first group and says where to point at it.
     fn enemy_beside_first_group(game: &mut Game) -> (usize, (f32, f32)) {
         let index = game.units.iter().position(|u| u.owner == 1).unwrap();
-        let (x, z) = (game.camera.x + 6.0, game.camera.z);
+        let (x, z) = (game.camera.x + 271.5, game.camera.z);
         let unit = &mut game.units[index];
         (unit.x, unit.z, unit.destination) = (x, z, (x, z));
         let unit = game.units[index];
@@ -5471,7 +6117,7 @@ mod tests {
         let own = game.units[0];
         let (own_x, own_y) = game
             .view()
-            .project(own.x, own.y + own.altitude + 0.25, own.z)
+            .project(own.x, own.y + own.altitude + 11.31, own.z)
             .unwrap();
         game.handle(Event::MouseMove(own_x, own_y));
         assert!(!game.cursor_means_attack(), "nor over one's own");
@@ -5492,7 +6138,7 @@ mod tests {
         }
         assert!(game.cursor_means_attack());
         game.units[enemy].kind = UnitKind::Aircraft;
-        game.units[enemy].altitude = 3.0;
+        game.units[enemy].altitude = 135.8;
         let flier = game.units[enemy];
         let (x, y) = game
             .view()
@@ -5778,7 +6424,7 @@ mod tests {
     fn an_enemy_tower_can_be_clicked_and_destroyed_and_counts_as_a_building() {
         let mut game = in_battle();
         let tower = tower_of(&game, 1);
-        let (x, z) = (game.camera.x + 6.0, game.camera.z);
+        let (x, z) = (game.camera.x + 271.5, game.camera.z);
         (
             game.units[tower].x,
             game.units[tower].z,
@@ -5856,7 +6502,7 @@ mod tests {
             assert_eq!(new.owner, 0);
             assert_eq!(new.color, game.units[0].color);
             let tower = game.units[tower_of(&game, 0)];
-            assert!((new.x - tower.x).hypot(new.z - tower.z) < 12.0, "{new:?}");
+            assert!((new.x - tower.x).hypot(new.z - tower.z) < 543.1, "{new:?}");
             assert!(
                 game.units[..before].iter().all(|u| u.id != new.id),
                 "its id is its own"
@@ -5872,9 +6518,9 @@ mod tests {
                 &[
                     "Sand Bike",
                     "Repair Vehicle",
-                    "Rocket Launcher",
                     "Mongoose",
                     "Minotaurus",
+                    "Stealth APC",
                 ][..],
             ),
             (
@@ -5890,7 +6536,7 @@ mod tests {
             ),
             (
                 Faction::Ordos,
-                &["Recon", "Laser Tank", "Rocket Launcher", "Kobra"][..],
+                &["Recon", "Laser Tank", "Kobra", "Rocket APC"][..],
             ),
         ] {
             let mut game = in_battle_as(house);
@@ -5903,10 +6549,9 @@ mod tests {
                 assert_eq!(game.units[before].kind, UnitKind::Vehicle);
                 assert_eq!(game.units[before].house, house);
             }
-            assert_eq!(
-                game.build_role(BuildTab::Vehicles, VEHICLE_CELLS[names.len()]),
-                None
-            );
+            if let Some(&cell) = VEHICLE_CELLS.get(names.len()) {
+                assert_eq!(game.build_role(BuildTab::Vehicles, cell), None);
+            }
         }
         let mut game = in_battle();
         give_palace(&mut game);
@@ -5988,6 +6633,38 @@ mod tests {
         click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START + 2));
         assert_eq!(game.units.last().unwrap().name(), "Ornithopter");
         assert_eq!(game.units.last().unwrap().altitude, 0.0);
+    }
+
+    #[test]
+    fn a_carryall_has_a_model_one_big_lamp_two_jet_flames_and_leaves_vapor_from_its_jets() {
+        let lit = |game: &Game| {
+            crate::render::build(game)
+                .iter()
+                .filter(|v| v.a == 0.0 && v.r > 0.0)
+                .count()
+        };
+        let mut game = in_battle();
+        game.skirmish.crates = false;
+        game.units
+            .retain(|u| matches!(u.kind, UnitKind::Infantry | UnitKind::Building));
+        game.units
+            .retain(|u| !matches!(u.role, Role::LandingPad | Role::Mcv));
+        let objects = |game: &Game| crate::render::build_frame(game).objects.len();
+        let (dark, bare) = (lit(&game), objects(&game));
+        assert_eq!(dark, 0);
+        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+        click_hud(&mut game, Action::BuildCell(CARRYALL_CELL));
+        assert_eq!(game.units.last().unwrap().name(), "Carryall");
+        assert!(objects(&game) > bare + 500, "a model of its own");
+        assert_eq!(lit(&game), 3 + 2 * 2 * 2, "a lamp, and two flames");
+        game.update(0.5);
+        let jets = game.units.last().unwrap().wing_tips();
+        assert!(
+            game.combat.wisps.iter().any(|w| jets
+                .iter()
+                .any(|j| crate::units::distance(*j, w.position) < 45.25)),
+            "vapor behind its jets"
+        );
     }
 
     #[test]
@@ -6160,10 +6837,10 @@ mod tests {
             .unwrap();
         let (far, _) = drawn(&mut game, tank_at(cx, cz));
         assert!(far > 0 && far < near, "{far} {near}");
-        assert_eq!(drawn(&mut game, tank_at(cx + 500.0, cz)), (0, 0));
+        assert_eq!(drawn(&mut game, tank_at(cx + 22630.0, cz)), (0, 0));
         // Just past the screen's west edge, the sun throws its shadow east, back onto it.
         let (objects, casters) = (0..400)
-            .map(|step| drawn(&mut game, tank_at(cx - step as f32 * 0.05, cz)))
+            .map(|step| drawn(&mut game, tank_at(cx - step as f32 * 2.263, cz)))
             .find(|&(objects, _)| objects == 0)
             .unwrap();
         assert_eq!(objects, 0);
@@ -6174,14 +6851,14 @@ mod tests {
     fn striders_draw_at_rest_on_the_move_and_with_their_cannons_recoiling() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        click_hud(&mut game, Action::BuildCell(4));
-        click_hud(&mut game, Action::BuildCell(5));
+        click_hud(&mut game, Action::BuildCell(2));
+        click_hud(&mut game, Action::BuildCell(3));
         assert!(!crate::render::build(&game).is_empty());
         let strider = game.units.last_mut().unwrap();
         assert_eq!(strider.role, Role::Minotaurus);
         strider.recoil = [1.0, 0.5, 0.0, 0.0];
-        strider.stride = 1.3;
-        strider.destination.0 += 5.0;
+        strider.stride = 58.83;
+        strider.destination.0 += 226.3;
         strider.selected = true;
         assert!(!crate::render::build(&game).is_empty());
     }
@@ -6275,7 +6952,7 @@ mod tests {
                 .rally(&game.units, &game.teams)
                 .unwrap();
             let off = (unit.destination.0 - rally.0).hypot(unit.destination.1 - rally.1);
-            assert!(off < 6.0, "{unit:?} goes to {rally:?}");
+            assert!(off < 271.5, "{unit:?} goes to {rally:?}");
         }
         assert!(
             !game.chat.iter().any(|line| line.text.ends_with("ready")),
@@ -6302,7 +6979,7 @@ mod tests {
         assert!(game.strategies[0].attackers.is_empty(), "still waiting");
         let gathered = soldiers(&game)
             .iter()
-            .filter(|u| (u.x - rally.0).hypot(u.z - rally.1) < 9.0)
+            .filter(|u| (u.x - rally.0).hypot(u.z - rally.1) < 407.3)
             .count();
         assert!(
             gathered * 3 >= soldiers(&game).len() * 2,
@@ -6337,7 +7014,7 @@ mod tests {
         let side = (1, TeamColor::Red);
         let standing = game.units.iter().filter(|u| u.owner == 1).count();
         for i in standing..OPPONENT_UNITS_AT_MOST {
-            let at = (200.0 + i as f32, 40.0);
+            let at = (9051.0 + i as f32, 1810.0);
             let extra = units::new_building(terrain, at, Role::Tank, side, 5000 + i as u32);
             game.units.push(extra);
         }
@@ -6651,7 +7328,10 @@ mod tests {
         assert_eq!(ours(&game), known + 1);
         let built = *game.units.last().unwrap();
         assert_eq!((built.role, built.owner), (Role::Factory, 0));
-        assert_eq!((built.x, built.z), Role::Factory.plot_at(spot).center());
+        assert_eq!(
+            (built.x, built.z),
+            Role::Factory.plot_at(game.faction_of(0), spot).center()
+        );
         assert_eq!(built.color, game.units[0].color);
     }
 
@@ -6691,7 +7371,7 @@ mod tests {
         }
         let mcv = game.units[0];
         assert!(
-            (game.camera.x - mcv.x).hypot(game.camera.z - mcv.z) < 3.0,
+            (game.camera.x - mcv.x).hypot(game.camera.z - mcv.z) < 135.8,
             "in view"
         );
         for tab in [BuildTab::Infantry, BuildTab::Vehicles, BuildTab::Buildings] {
@@ -6743,11 +7423,13 @@ mod tests {
     /// A spot on the sand with upper ground close enough to drive to.
     fn sand_by_upland(terrain: &battlefield::Terrain) -> (f32, f32) {
         (0..160)
-            .flat_map(|i| (0..160).map(move |j| (i as f32 * 0.5 - 40.0, j as f32 * 0.5 + 20.0)))
+            .flat_map(|i| {
+                (0..160).map(move |j| (i as f32 * 22.63 - 1810.0, j as f32 * 22.63 + 905.1))
+            })
             .find(|&(x, z)| {
                 terrain.can_walk(x, z)
                     && !terrain.on_upper_ground(x, z)
-                    && units::deploy_spot_near(terrain, (x, z)).is_some()
+                    && units::deploy_spot_near(&[], terrain, Faction::Atreides, (x, z)).is_some()
             })
             .unwrap()
     }
@@ -6764,7 +7446,7 @@ mod tests {
             mcv.destination = sand;
         }
         game.units.truncate(2);
-        game.units[1].x += 0.01;
+        game.units[1].x += 0.4525;
         game.units[0].selected = true;
         let hover = |game: &mut Game| {
             let mcv = game.units[0];
@@ -6784,7 +7466,8 @@ mod tests {
         game.handle(Event::KeyDown(Key::Char('d')));
         assert!(!game.units[0].deployed, "not on the sand");
         assert_eq!(chat_texts(&game), [CANNOT_DEPLOY]);
-        let upland = units::deploy_spot_near(terrain, sand).unwrap();
+        let upland =
+            units::deploy_spot_near(&game.units, terrain, game.units[0].house, sand).unwrap();
         (game.units[0].x, game.units[0].z) = upland;
         game.units[0].destination = upland;
         assert_eq!(
@@ -6830,12 +7513,12 @@ mod tests {
             game.units[mcv].radius() > UnitKind::Vehicle.radius(),
             "huge"
         );
-        game.units[mcv].destination = (at.0, at.1 + 6.0);
+        game.units[mcv].destination = (at.0, at.1 + 271.5);
         for _ in 0..100 {
             game.update(0.05);
         }
         let moved = (game.units[mcv].x - at.0).hypot(game.units[mcv].z - at.1);
-        assert!(moved > 3.0, "it drives: {moved}");
+        assert!(moved > 135.8, "it drives: {moved}");
         units::switch_deployed(&mut game.units[mcv]);
         assert_eq!(game.units[mcv].kind, UnitKind::Building);
         assert!(!game.units[mcv].is_moving(), "and stays put");
@@ -6918,7 +7601,7 @@ mod tests {
                 assert_eq!(game.build_role(BuildTab::Buildings, cell), Some(role));
                 assert!(role.made_by(house));
                 assert_eq!(role.kind(), UnitKind::Tower);
-                assert_eq!(role.plot_size(), (2, 2));
+                assert_eq!(role.plot_size(house), (2, 2));
                 assert!(role.build_seconds() > 0.0, "{role:?}");
             }
             for other in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
@@ -7106,7 +7789,7 @@ mod tests {
         // Disarmed, tough enough to outlast the player's own fire, and moved into view.
         game.units[tower].cooldown = 1e9;
         game.units[tower].health = 1e9;
-        let (x, z) = (game.camera.x + 6.0, game.camera.z);
+        let (x, z) = (game.camera.x + 271.5, game.camera.z);
         (
             game.units[tower].x,
             game.units[tower].z,
@@ -7118,7 +7801,7 @@ mod tests {
         let engineer_id = game.units[engineer].id;
         let enemy = game.units.iter().position(|u| u.id == id).unwrap();
         // On the far side from the player's group, so that nobody stands in the way.
-        let (x, z) = (game.units[engineer].x - 5.0, game.units[engineer].z);
+        let (x, z) = (game.units[engineer].x - 226.3, game.units[engineer].z);
         (
             game.units[enemy].x,
             game.units[enemy].z,
@@ -7146,30 +7829,53 @@ mod tests {
     #[test]
     fn the_bottom_of_the_vehicles_menu_makes_the_air_defense_platform_the_drone_and_the_ornithopter()
      {
+        for (house, cells) in [
+            (
+                Faction::Atreides,
+                &[
+                    (12, "Air Defense Platform"),
+                    (13, "Air Drone"),
+                    (14, "Ornithopter"),
+                ][..],
+            ),
+            (
+                Faction::Harkonnen,
+                &[(14, "Ornithopter"), (11, "Destroyer")][..],
+            ),
+        ] {
+            let mut game = in_battle_as(house);
+            click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
+            for &(cell, name) in cells {
+                let before = game.units.len();
+                click_hud(&mut game, Action::BuildCell(cell));
+                assert_eq!(game.units[before].name(), name, "{house:?}");
+                assert_eq!(game.units[before].kind, UnitKind::Aircraft);
+            }
+            assert_eq!(
+                game.build_role(BuildTab::Vehicles, 13).is_some(),
+                house == Faction::Atreides
+            );
+            assert_eq!(
+                game.build_role(BuildTab::Vehicles, 11).is_some(),
+                house == Faction::Harkonnen
+            );
+            assert!(!crate::render::build(&game).is_empty());
+        }
+    }
+
+    #[test]
+    fn the_vehicles_menu_makes_both_carryalls_above_the_bottom_row() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         for (cell, name) in [
-            (12, "Air Defense Platform"),
-            (13, "Air Drone"),
-            (14, "Ornithopter"),
-            (11, "Destroyer"),
+            (ADVANCED_CARRYALL_CELL, "Advanced Carryall"),
+            (CARRYALL_CELL, "Carryall"),
         ] {
             let before = game.units.len();
             click_hud(&mut game, Action::BuildCell(cell));
             assert_eq!(game.units[before].name(), name);
-            assert_eq!(game.units[before].kind, UnitKind::Aircraft);
+            assert!(game.units[before].altitude > 0.0, "it flies");
         }
-        assert!(!crate::render::build(&game).is_empty());
-    }
-
-    #[test]
-    fn the_vehicles_menu_makes_the_advanced_carryall_above_the_bottom_row() {
-        let mut game = in_battle();
-        click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
-        let before = game.units.len();
-        click_hud(&mut game, Action::BuildCell(CARRYALL_CELL));
-        assert_eq!(game.units[before].name(), "Advanced Carryall");
-        assert!(game.units[before].altitude > 0.0, "it hangs in the air");
     }
 
     #[test]
@@ -7206,9 +7912,9 @@ mod tests {
         let (x, z) = (game.camera.x, game.camera.z);
         for gas in [false, true] {
             game.combat.sprays.push(crate::weapons::Spray {
-                from: (x, 1.0, z),
+                from: (x, 45.25, z),
                 heading: 0.5,
-                reach: 4.5,
+                reach: 203.6,
                 half_angle: 0.3,
                 gas,
                 life: 0.5,
@@ -7249,9 +7955,9 @@ mod tests {
         for (i, name) in [
             Some("Sand Bike"),
             Some("Repair Vehicle"),
-            Some("Rocket Launcher"),
             Some("Mongoose"),
             Some("Minotaurus"),
+            Some("Stealth APC"),
             None,
             Some("Superweapon A"),
             Some("MCV"),
@@ -7356,7 +8062,7 @@ mod tests {
             .filter(|u| u.is_selectable() && !u.kind.is_building())
             .count();
         for unit in game.units.iter_mut().filter(|u| u.owner == 0) {
-            unit.x += 500.0;
+            unit.x += 22630.0;
         }
         game.handle(Event::KeyDown(Key::Char('a')));
         assert_eq!(selected_count(&game), everyone);
@@ -7375,7 +8081,7 @@ mod tests {
             .iter()
             .position(|u| u.owner == 0 && u.role == Role::LightInfantry)
             .unwrap();
-        let away = (game.units[tank].x + 20.0, game.units[tank].z);
+        let away = (game.units[tank].x + 905.1, game.units[tank].z);
         game.units[tank].x = away.0;
         game.units[tank].destination = away;
         let stays = game.units[other].destination;
@@ -7383,7 +8089,7 @@ mod tests {
         game.handle(Event::KeyDown(Key::Char('h')));
         let sent = game.units[tank].destination;
         assert!(
-            (sent.0 - game.home().0).hypot(sent.1 - game.home().1) < 8.0,
+            (sent.0 - game.home().0).hypot(sent.1 - game.home().1) < 362.0,
             "{sent:?}"
         );
         assert_ne!(sent, away);
@@ -7436,13 +8142,13 @@ mod tests {
 
         let tank = tank_of(&game);
         game.units[tank].selected = true;
-        game.units[tank].destination = (game.units[tank].x + 6.0, game.units[tank].z);
+        game.units[tank].destination = (game.units[tank].x + 271.5, game.units[tank].z);
         game.handle(Event::KeyDown(Key::Char('F')));
         let id = game.units[tank].id;
         assert_eq!(game.following, Some(id));
         let close = |game: &Game| {
             let unit = game.units.iter().find(|u| u.id == id).unwrap();
-            (unit.x - game.camera.x).hypot(unit.z - game.camera.z) < 0.01
+            (unit.x - game.camera.x).hypot(unit.z - game.camera.z) < 0.4525
         };
         assert!(close(&game), "at once");
         let start = game.camera.x;
@@ -7743,7 +8449,7 @@ mod tests {
             .filter(|&(x, y)| !hud::covers(x, y, W, H))
             .find(|&(x, y)| {
                 game.view().land_at(terrain, x, y).is_some_and(|at| {
-                    let plot = role.plot_facing(at, game.placing_facing);
+                    let plot = role.plot_facing(game.faction_of(0), at, game.placing_facing);
                     units::can_place_building(&game.units, terrain, plot)
                         && units::is_near_building_of(&game.units, plot, 0)
                 })
@@ -8014,7 +8720,7 @@ mod tests {
     #[test]
     fn without_fog_everything_shows_and_with_it_the_unexplored_is_black() {
         let plain = in_battle();
-        assert_eq!(plain.sight_at(30.0, 30.0), Sight::Visible);
+        assert_eq!(plain.sight_at(1358.0, 1358.0), Sight::Visible);
         assert!(plain.units.iter().all(|u| plain.shows(u)));
 
         let fog = in_fog_battle();
@@ -8057,7 +8763,7 @@ mod tests {
         game.units.insert(enemy, unit);
 
         select_first_group(&mut game);
-        let (x, z) = (game.camera.x + 6.0, game.camera.z);
+        let (x, z) = (game.camera.x + 271.5, game.camera.z);
         let unit = &mut game.units[enemy];
         (unit.x, unit.z, unit.destination, unit.cooldown) = (x, z, (x, z), 1e9);
         let unit = game.units[enemy];
@@ -8091,7 +8797,7 @@ mod tests {
         let kept = game.units[keep].id;
         game.units.retain(|u| u.owner != 0 || u.id == kept);
         let keep = game.units.iter().position(|u| u.owner == 0).unwrap();
-        (game.units[keep].x, game.units[keep].destination.0) = (x + 40.0, x + 40.0);
+        (game.units[keep].x, game.units[keep].destination.0) = (x + 1810.0, x + 1810.0);
         let enemy = game.units.iter().position(|u| u.owner == 1).unwrap();
         (
             game.units[enemy].x,
@@ -8117,7 +8823,7 @@ mod tests {
     #[test]
     fn moving_units_uncover_more_of_the_map() {
         let mut game = in_fog_battle();
-        let (far_x, far_z) = (game.camera.x - 25.0, game.camera.z);
+        let (far_x, far_z) = (game.camera.x - 1131.0, game.camera.z);
         assert_eq!(game.sight_at(far_x, far_z), Sight::Unexplored);
         let scout = game
             .units
@@ -8141,17 +8847,17 @@ mod tests {
     fn fog_draws_without_trouble_with_effects_in_and_out_of_view() {
         let mut game = in_fog_battle();
         let (x, z) = (game.camera.x, game.camera.z);
-        for (x, z) in [(x, z), (0.0, 5.0)] {
+        for (x, z) in [(x, z), (0.0, 226.3)] {
             game.combat
                 .poison
                 .push(crate::weapons::PoisonZone { x, z, life: 30.0 });
             game.combat.blasts.push(crate::weapons::Blast {
                 at: (x, 0.0, z),
-                radius: 2.0,
+                radius: 90.51,
                 life: 0.5,
             });
             game.combat.flares.push(crate::weapons::Flare {
-                at: (x, 1.0, z),
+                at: (x, 45.25, z),
                 direction: (1.0, 0.0, 0.0),
                 size: 7.0,
                 life: 0.5,
@@ -8334,11 +9040,11 @@ mod tests {
             assert!(!sent.is_empty());
             for (i, a) in sent.iter().enumerate() {
                 assert!(
-                    (a.0 - target.0).hypot(a.1 - target.1) < 5.0,
+                    (a.0 - target.0).hypot(a.1 - target.1) < 226.3,
                     "near the click"
                 );
                 for b in &sent[i + 1..] {
-                    assert!((a.0 - b.0).hypot(a.1 - b.1) > 1.0, "not one point");
+                    assert!((a.0 - b.0).hypot(a.1 - b.1) > 45.25, "not one point");
                 }
             }
         }
@@ -8529,7 +9235,7 @@ mod tests {
         );
         let under_cursor = game.view().ground_at(W - 1.0, H / 2.0).unwrap();
         assert!(
-            (east - under_cursor.0).abs() < 0.001,
+            (east - under_cursor.0).abs() < 0.04525,
             "the other corner stays under the cursor"
         );
         let on_screen = game.view().project(anchored.0, 0.0, anchored.1).unwrap();
@@ -8586,11 +9292,11 @@ mod tests {
         let corner_b = view.ground_at(b.0, b.1).unwrap();
         // Just inside the far edge's width on the ground, though the near edge is what
         // would bound it in a rectangle drawn on the screen.
-        let inside_x = corner_b.0 - 0.1;
+        let inside_x = corner_b.0 - 4.525;
         game.units[0].x = inside_x;
-        game.units[0].z = corner_a.1 + 0.1;
-        game.units[1].x = corner_b.0 + 0.1;
-        game.units[1].z = corner_a.1 + 0.1;
+        game.units[0].z = corner_a.1 + 4.525;
+        game.units[1].x = corner_b.0 + 4.525;
+        game.units[1].z = corner_a.1 + 4.525;
         drag_select(&mut game, a, b);
         assert!(game.units[0].selected, "inside on the ground");
         assert!(!game.units[1].selected, "outside on the ground");
@@ -9666,6 +10372,7 @@ mod tests {
         let plain = game.placing_plot().unwrap().1;
 
         game.handle(Event::MouseDown);
+        assert_eq!(game.placing_arrow(), None, "no arrow before it turns");
         game.handle(Event::MouseMove(x + 60.0, y - 60.0));
         assert_eq!(
             game.placing_plot().unwrap().1.u,
@@ -9673,12 +10380,19 @@ mod tests {
             "the squares stay put"
         );
         assert_eq!(game.placing_facing, units::Facing::RightTop);
+        assert!(game.selection_ground().is_none(), "no selection box");
+        assert_eq!(
+            game.placing_arrow().map(|(_, way)| way),
+            Some(units::Facing::RightTop.way_out()),
+            "an arrow points the way it looks"
+        );
         game.handle(Event::MouseMove(x + 60.0, y + 60.0));
         assert_eq!(game.placing_facing, units::Facing::RightBottom);
         assert_eq!(exits(&game), 2);
         let turned = game.placing_plot().unwrap().1;
         assert_eq!((turned.cols, turned.rows), (plain.rows, plain.cols));
         game.handle(Event::MouseUp);
+        assert_eq!(game.placing_arrow(), None, "the arrow goes with the button");
         assert_eq!(game.units.len(), before, "a drag builds nothing");
         assert_eq!(game.site, Site::Placing(Role::Factory), "still placing");
 
@@ -9688,10 +10402,10 @@ mod tests {
         assert_eq!(game.units.len(), before + 1, "the next click does");
         let built = *game.units.last().unwrap();
         assert_eq!(built.facing, units::Facing::RightBottom);
-        assert_eq!(
-            (built.plot().unwrap().cols, built.plot().unwrap().rows),
-            (5, 6)
-        );
+        assert_eq!((built.plot().unwrap().cols, built.plot().unwrap().rows), {
+            let (cols, rows) = Role::Factory.plot_size(built.house);
+            (rows, cols)
+        });
     }
 
     #[test]
@@ -9737,8 +10451,8 @@ mod tests {
     fn an_explosion_adds_balls_of_light_over_it() {
         let mut game = cursor_on_open_ground();
         let before = crate::render::build_frame(&game).effects.len();
-        let at = (game.camera.x, 0.5, game.camera.z);
-        game.combat.explode(at, 1.0);
+        let at = (game.camera.x, 22.63, game.camera.z);
+        game.combat.explode(at, 45.25);
         game.combat.particles.clear();
         let effects = crate::render::build_frame(&game).effects;
         let added: Vec<_> = effects[before..].iter().filter(|v| v.a == 0.0).collect();
@@ -9950,7 +10664,9 @@ mod tests {
         game.camera.look_at(unit.x, unit.z);
         let view = game.view();
         let (middle_x, middle_y) = view.project(unit.x, unit.pick_height(), unit.z).unwrap();
-        let plot = unit.role.plot_facing((unit.x, unit.z), unit.facing);
+        let plot = unit
+            .role
+            .plot_facing(unit.house, (unit.x, unit.z), unit.facing);
         let (x, z) = battlefield::grid_to_world(
             plot.u as f32 + plot.cols as f32 - 0.5,
             plot.v as f32 + plot.rows as f32 / 2.0,
@@ -10033,7 +10749,7 @@ mod tests {
         let mut game = in_battle();
         game.fog = None;
         let terrain = battlefield::terrain(game.battle_map);
-        let at = (game.units[0].x + 14.0, game.units[0].z + 14.0);
+        let at = (game.units[0].x + 633.6, game.units[0].z + 633.6);
         let refinery =
             units::new_building(terrain, at, Role::Refinery, (0, game.units[0].color), 9_999);
         game.units.push(refinery);
@@ -10073,7 +10789,7 @@ mod tests {
                     && game.unit_under_cursor().is_none()
                     && game
                         .land_under_cursor()
-                        .is_some_and(|at| units::is_sand(terrain, at))
+                        .is_some_and(|at| units::has_substance(terrain, at))
             })
             .unwrap();
         game.handle(Event::MouseMove(sand.0, sand.1));
@@ -10108,7 +10824,7 @@ mod tests {
         let mut game = in_battle();
         game.fog = Some(Fog::new());
         game.update_fog();
-        let (x, z) = (game.units[0].x + 60.0, game.units[0].z + 60.0);
+        let (x, z) = (game.units[0].x + 2715.0, game.units[0].z + 2715.0);
         assert_ne!(game.sight_at(x, z), Sight::Visible);
         assert!(!game.has_outpost());
         let at = (game.units[0].x, game.units[0].z);
@@ -10192,16 +10908,16 @@ mod tests {
         )
         .unwrap();
         assert!(
-            (game.camera.x - expected.0).abs() < 1.0,
+            (game.camera.x - expected.0).abs() < 45.25,
             "went east: {}",
             game.camera.x
         );
         assert!(game.camera.x > Camera::centered().x);
 
         click_at(&mut game, x + size / 2.0, y + size / 2.0);
-        assert!((game.camera.x - Camera::centered().x).abs() < 0.01);
+        assert!((game.camera.x - Camera::centered().x).abs() < 0.4525);
         assert!(
-            (game.camera.z - Camera::centered().z).abs() < 0.01,
+            (game.camera.z - Camera::centered().z).abs() < 0.4525,
             "the middle is the map's middle"
         );
     }
@@ -10220,18 +10936,18 @@ mod tests {
         game.handle(Event::MouseMove(start.0, start.1));
         game.handle(Event::MouseDown);
         assert!(
-            (game.camera.z - world(start).1).abs() < 0.01,
+            (game.camera.z - world(start).1).abs() < 0.4525,
             "moves on press"
         );
 
         let next = at(0.6, 0.45);
         game.handle(Event::MouseMove(next.0, next.1));
         assert!(
-            (game.camera.x - world(next).0).abs() < 0.01,
+            (game.camera.x - world(next).0).abs() < 0.4525,
             "follows the drag"
         );
         assert!(
-            (game.camera.z - world(next).1).abs() < 0.01,
+            (game.camera.z - world(next).1).abs() < 0.4525,
             "follows the drag"
         );
 
@@ -10260,7 +10976,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            (game.camera.x - east_x).abs() < 0.01,
+            (game.camera.x - east_x).abs() < 0.4525,
             "holds to the minimap's edge"
         );
         let held = game.camera;
@@ -10304,7 +11020,7 @@ mod tests {
         let mut landed = game.camera;
         landed.look_at(before.x, before.z);
         assert!(
-            (landed.x - before.x).abs() < 0.01 && (landed.z - before.z).abs() < 0.01,
+            (landed.x - before.x).abs() < 0.4525 && (landed.z - before.z).abs() < 0.4525,
             "already on the map"
         );
     }

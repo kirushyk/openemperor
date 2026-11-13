@@ -190,6 +190,21 @@ A long open lifting frame that hangs in the air.
 - **Headlamps:** two big floodlights under the nose, one each side of the clamp frame.
 - **Team color:** the nacelle front rings and a band across the spine's middle.
 
+### Carryall
+
+A small airplane that never hangs in the air: it circles, like the air drone.
+
+- **Fuselage:** a slim round fuselage (12 sides) with a dark glass cockpit on top.
+- **Front wing:** low under the nose, like a racing car's front wing: a wide main plane, a flap
+  above and behind it, and an end plate at each end.
+- **Middle wings:** straight wings with a jet engine on each end: a round nacelle with an
+  intake ring at the front and a darker nozzle at the back. Vapor streams from the nozzles, and
+  each has a small flame.
+- **Tail:** a wing between twin fins.
+- **Underside:** four clamps where the cables and the carried harvester hang.
+- **Headlamp:** one big lamp in the tip of its nose.
+- **Team color:** the front wing's end plates, the intake rings and the fin tips.
+
 ### Air Defense Platform (now about 50, aim about 400)
 
 A hovering gun platform on two floats.

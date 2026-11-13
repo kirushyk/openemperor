@@ -19,6 +19,8 @@ const WIDE_COUNT: usize = 2;
 const TAB_W: f32 = 84.0;
 /// Which of the two wide buttons is Deploy.
 pub const DEPLOY_BUTTON: usize = 0;
+/// Which of the small buttons sells buildings.
+pub const SELL_BUTTON: usize = 0;
 
 pub const GRID_COLUMNS: usize = 3;
 pub const GRID_ROWS: usize = 5;
@@ -82,7 +84,7 @@ pub fn money_anchor(width: f32, height: f32) -> (f32, f32) {
 
 /// The row of small square buttons under the minimap, then the row of two wide ones.
 pub fn command_buttons(width: f32, height: f32) -> Vec<Button> {
-    const SMALL_LABELS: [&str; SMALL_COUNT] = ["1", "2", "3", "4", "5"];
+    const SMALL_LABELS: [&str; SMALL_COUNT] = ["$", "2", "3", "4", "5"];
     const WIDE_LABELS: [&str; WIDE_COUNT] = ["Deploy", "Fake B"];
     let s = ui_scale(height);
     let left = panel_x(width, height);

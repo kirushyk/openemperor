@@ -55,7 +55,7 @@ impl Fog {
         let radius = seer.sight_over(floor);
         let (u, v) = world_to_grid(seer.x, seer.z);
         // A step along one grid axis covers 0.7 of a world unit, so this reaches far enough.
-        let reach = radius * 1.5;
+        let reach = radius * 0.03315;
         let span = |center: f32| {
             let low = (center - reach).floor().max(0.0) as usize;
             let high = ((center + reach).ceil().max(0.0) as usize).min(MapSize::L.cells());
@@ -106,24 +106,24 @@ mod tests {
     #[test]
     fn everything_starts_unexplored() {
         let fog = Fog::new();
-        assert_eq!(fog.at(0.0, 60.0), Sight::Unexplored);
+        assert_eq!(fog.at(0.0, 2715.0), Sight::Unexplored);
         assert_eq!(Sight::Unexplored.shade(), 0.0, "fully black");
     }
 
     #[test]
     fn from_higher_ground_a_unit_sees_farther() {
-        let mut high = unit_at(0.0, 60.0);
-        high.y = 1.2;
-        let beyond = high.sight() + 1.5;
+        let mut high = unit_at(0.0, 2715.0);
+        high.y = 54.31;
+        let beyond = high.sight() + 67.88;
         let mut fog = Fog::new();
-        fog.update([unit_at(0.0, 60.0)].iter(), 0.0);
-        assert_eq!(fog.at(beyond, 60.0), Sight::Unexplored);
+        fog.update([unit_at(0.0, 2715.0)].iter(), 0.0);
+        assert_eq!(fog.at(beyond, 2715.0), Sight::Unexplored);
         fog.update([high].iter(), 0.0);
-        assert_eq!(fog.at(beyond, 60.0), Sight::Visible, "from up there");
+        assert_eq!(fog.at(beyond, 2715.0), Sight::Visible, "from up there");
         let mut fog = Fog::new();
-        fog.update([high].iter(), 1.2);
+        fog.update([high].iter(), 54.31);
         assert_eq!(
-            fog.at(beyond, 60.0),
+            fog.at(beyond, 2715.0),
             Sight::Unexplored,
             "not above the floor itself"
         );
@@ -131,20 +131,20 @@ mod tests {
 
     #[test]
     fn a_unit_sees_around_itself_as_far_as_its_sight_and_no_further() {
-        let unit = unit_at(0.0, 60.0);
+        let unit = unit_at(0.0, 2715.0);
         let mut fog = Fog::new();
         fog.update([unit].iter(), 0.0);
-        assert_eq!(fog.at(0.0, 60.0), Sight::Visible);
+        assert_eq!(fog.at(0.0, 2715.0), Sight::Visible);
         for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-            let near = unit.sight() - 1.0;
-            let far = unit.sight() + 1.0;
+            let near = unit.sight() - 45.25;
+            let far = unit.sight() + 45.25;
             assert_eq!(
-                fog.at(dx * near, 60.0 + dz * near),
+                fog.at(dx * near, 2715.0 + dz * near),
                 Sight::Visible,
                 "{dx},{dz}"
             );
             assert_eq!(
-                fog.at(dx * far, 60.0 + dz * far),
+                fog.at(dx * far, 2715.0 + dz * far),
                 Sight::Unexplored,
                 "{dx},{dz}"
             );
@@ -154,23 +154,23 @@ mod tests {
     #[test]
     fn what_nobody_sees_any_more_stays_explored_and_dimmed() {
         let mut fog = Fog::new();
-        fog.update([unit_at(0.0, 60.0)].iter(), 0.0);
-        fog.update([unit_at(30.0, 60.0)].iter(), 0.0);
-        assert_eq!(fog.at(0.0, 60.0), Sight::Explored);
-        assert_eq!(fog.at(30.0, 60.0), Sight::Visible);
+        fog.update([unit_at(0.0, 2715.0)].iter(), 0.0);
+        fog.update([unit_at(1358.0, 2715.0)].iter(), 0.0);
+        assert_eq!(fog.at(0.0, 2715.0), Sight::Explored);
+        assert_eq!(fog.at(1358.0, 2715.0), Sight::Visible);
         let dim = Sight::Explored.shade();
         assert!(dim > 0.0 && dim < Sight::Visible.shade());
 
-        fog.update([unit_at(0.0, 60.0)].iter(), 0.0);
-        assert_eq!(fog.at(0.0, 60.0), Sight::Visible, "seen again");
+        fog.update([unit_at(0.0, 2715.0)].iter(), 0.0);
+        assert_eq!(fog.at(0.0, 2715.0), Sight::Visible, "seen again");
     }
 
     #[test]
     fn nobody_left_means_nothing_is_visible_but_what_was_seen_is_remembered() {
         let mut fog = Fog::new();
-        fog.update([unit_at(0.0, 60.0)].iter(), 0.0);
+        fog.update([unit_at(0.0, 2715.0)].iter(), 0.0);
         fog.update([].iter(), 0.0);
-        assert_eq!(fog.at(0.0, 60.0), Sight::Explored);
+        assert_eq!(fog.at(0.0, 2715.0), Sight::Explored);
     }
 
     #[test]
@@ -178,6 +178,6 @@ mod tests {
         let mut fog = Fog::new();
         fog.update([unit_at(0.0, 0.0)].iter(), 0.0);
         assert_eq!(fog.at(0.0, 0.0), Sight::Visible);
-        assert_eq!(fog.at(0.0, -5.0), Sight::Unexplored);
+        assert_eq!(fog.at(0.0, -226.3), Sight::Unexplored);
     }
 }

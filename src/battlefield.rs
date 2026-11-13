@@ -52,16 +52,18 @@ impl MapSize {
 }
 
 /// World units per grid step along each world axis.
-const CELL: f32 = 0.5;
-/// How long the side of a grid square is, in world units.
-pub const CELL_SIDE: f32 = CELL * std::f32::consts::SQRT_2;
+const CELL: f32 = CELL_SIDE / std::f32::consts::SQRT_2;
+/// How long the side of a grid square is, in world units. A world unit is a coordinate of the
+/// original game, whose tiles are 32 across and whose models, speeds and sizes are all given in
+/// those coordinates.
+pub const CELL_SIDE: f32 = 32.0;
 /// How far upper ground rises above the low land, in world units.
-const GROUND_HEIGHT: f32 = 1.4;
+const GROUND_HEIGHT: f32 = 63.36;
 /// How far the low land lies above its water or lava, on the planets that have them.
-const LOWLAND_HEIGHT: f32 = 0.7;
+const LOWLAND_HEIGHT: f32 = 31.68;
 /// What the ground shader is told for the height of upper ground: past this it would take the
 /// land for high mountainside.
-const UPPER_LEVEL: f32 = 0.7;
+const UPPER_LEVEL: f32 = 31.68;
 /// The way to the sun, as a unit vector: high up on the screen's left and a little behind what
 /// it lights, so that shadows fall to the right and towards the camera.
 pub const SUN: [f32; 3] = [-0.50, 0.80, -0.33];
@@ -89,13 +91,22 @@ const ISLAND_SLOPE_RUN: f32 = 12.0;
 const SLOPE_HALF_ANGLE: f32 = 0.22;
 const SLOPE_EDGE_ANGLE: f32 = 0.07;
 /// Past this much height from one grid point to the next there is no walking up: it is cliff.
-const CLIFF_STEP: f32 = 0.3;
+const CLIFF_STEP: f32 = 13.58;
 /// How many smaller islands, with slopes all the way round, each map tries to have.
 const EXTRA_ISLANDS: usize = 6;
 /// How much open ground, in world units, is left around the map's middle.
-const MIDDLE_CLEAR: f32 = 14.0;
+const MIDDLE_CLEAR: f32 = 633.6;
 
 const SAND: [f32; 3] = [0.78, 0.64, 0.40];
+/// How far a field of substance reaches from its middle, about: across, a quarter of the
+/// screen.
+const FIELD_RADIUS: f32 = 226.3;
+/// How many fields of substance a map of size S has out on it, besides one near each place
+/// for a base.
+const MORE_FIELDS: usize = 3;
+/// The pinkish orange of the sand where there is substance, and the paler grains dotted in it.
+pub const SUBSTANCE: [f32; 3] = [0.88, 0.5, 0.36];
+const SUBSTANCE_GRAINS: [f32; 3] = [0.96, 0.8, 0.56];
 const GROUND: [f32; 3] = [0.40, 0.30, 0.21];
 
 /// Which world a map is on, which sets how its two heights look.
@@ -167,10 +178,10 @@ const GRAIN: f32 = 0.22;
 
 /// Zooming moves the camera between two fixed positions and narrows the field of view at
 /// the same time, in one movement. Top: high and looking almost straight down.
-const TOP_HEIGHT: f32 = 30.0;
+const TOP_HEIGHT: f32 = 1358.0;
 const TOP_PITCH_DEGREES: f32 = 75.0;
 /// Bottom: low and looking almost forward, 30 degrees down from the ground.
-const BOTTOM_HEIGHT: f32 = 8.0;
+const BOTTOM_HEIGHT: f32 = 362.0;
 const BOTTOM_PITCH_DEGREES: f32 = 30.0;
 /// How much the field of view narrows at the very end of the zoom.
 const MAX_LENS: f32 = 2.0;
@@ -180,14 +191,14 @@ const ZOOM_PER_NOTCH: f32 = 0.05;
 const ZOOM_EASING: f32 = 10.0;
 /// Vertical field of view, as the tangent of half its angle (about 40 degrees in total).
 const HALF_FOV_TAN: f32 = 0.364;
-const NEAR: f32 = 1.0;
+const NEAR: f32 = 45.25;
 /// Nothing is farther than this from the camera.
-const FAR: f32 = 500.0;
+const FAR: f32 = 22630.0;
 
 /// Pixels from the screen edge that start scrolling, on a 1080-pixel-tall screen.
 const EDGE_MARGIN: f32 = 4.0;
 /// World units per second, per point of the Scroll Rate option.
-const SCROLL_PER_RATE: f32 = 15.0;
+const SCROLL_PER_RATE: f32 = 678.8;
 
 /// World z of the map's middle; its x is 0.
 #[cfg(test)]
@@ -198,7 +209,7 @@ const RUIN_COUNT: usize = 24;
 const MOUNTAIN_COUNT: usize = 9;
 const PIT_COUNT: usize = 8;
 /// Past this much rise or fall from the land, nothing can walk.
-const STEEPEST_WALK: f32 = 0.25;
+const STEEPEST_WALK: f32 = 11.31;
 
 /// One block of a destroyed building: a stretch of broken wall, or rubble.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -460,6 +471,10 @@ pub struct Terrain {
     normals: Vec<[f32; 3]>,
     /// Where lava erupts now and then.
     vents: Vec<(f32, f32)>,
+    /// The middles of the fields of substance, where harvesters harvest.
+    fields: Vec<(f32, f32)>,
+    /// Which grid points are in a field of substance.
+    substance: Vec<bool>,
     /// Which grid points a route may go through, worked out the first time it is needed.
     walkable: OnceLock<Vec<bool>>,
 }
@@ -480,9 +495,9 @@ pub fn next_random(state: &mut u32) -> f32 {
 /// The remains of one square building: what is left of its four walls, in broken stretches
 /// of uneven height, and some rubble inside.
 fn add_ruin(pieces: &mut Vec<RuinPiece>, terrain: &Terrain, x: f32, z: f32, random: &mut u32) {
-    const THICKNESS: f32 = 0.09;
+    const THICKNESS: f32 = 4.073;
     const STRETCHES: usize = 3;
-    let half = 1.0 + next_random(random) * 1.0;
+    let half = 45.25 + next_random(random) * 45.25;
     let y = terrain.height_at(x, z);
     for side in 0..4 {
         for stretch in 0..STRETCHES {
@@ -504,13 +519,13 @@ fn add_ruin(pieces: &mut Vec<RuinPiece>, terrain: &Terrain, x: f32, z: f32, rand
                 z: z + dz,
                 half_x,
                 half_z,
-                height: 0.2 + next_random(random) * 1.1,
+                height: 9.051 + next_random(random) * 49.78,
                 shade: 0.7 + next_random(random) * 0.3,
             });
         }
     }
     for _ in 0..4 {
-        let size = 0.1 + next_random(random) * 0.18;
+        let size = 4.525 + next_random(random) * 8.146;
         pieces.push(RuinPiece {
             x: x + (next_random(random) * 2.0 - 1.0) * half * 0.8,
             y,
@@ -613,6 +628,8 @@ impl Terrain {
             ruins: Vec::new(),
             normals: Vec::new(),
             vents: Vec::new(),
+            fields: Vec::new(),
+            substance: vec![false; GRID_POINTS],
             walkable: OnceLock::new(),
         };
         terrain.paint_sides(seed);
@@ -633,7 +650,7 @@ impl Terrain {
             let v = inset + next_random(&mut random) * span;
             let (x, z) = grid_to_world(u, v);
             if placed < ruin_count
-                && terrain.keeps_middle_clear(x, z, 1.0)
+                && terrain.keeps_middle_clear(x, z, 45.25)
                 && !is_on(&on_way, x, z)
                 && terrain.can_hold_ruin(x, z)
             {
@@ -642,15 +659,97 @@ impl Terrain {
             }
         }
         terrain.ruins = pieces;
+        terrain.lay_fields(seed, &mut random);
         terrain.normals = terrain.find_normals();
         terrain.vents = terrain.find_vents(&mut random);
         terrain
     }
 
+    /// Lays out the fields of substance: one near each place for a base, out towards the map's
+    /// middle, so that every side has one to harvest, and more about the map. Each is a blob
+    /// on the flat low land, its sand pinkish orange and dotted with paler grains.
+    fn lay_fields(&mut self, seed: u32, random: &mut u32) {
+        /// How far out from a place for a base its field is looked for, ring by ring, and how
+        /// far either way of straight towards the middle.
+        const NEAR_BASE: [f32; 12] = [
+            724.1, 859.8, 995.6, 1131.0, 1267.0, 1403.0, 1539.0, 1674.0, 1810.0, 1991.0, 2172.0,
+            2353.0,
+        ];
+        const TURNS: [f32; 9] = [0.0, 0.25, -0.25, 0.5, -0.5, 0.75, -0.75, 1.0, -1.0];
+        let middle = (0.0, self.size.middle_z());
+        let mut fields = Vec::new();
+        for spot in start_spots(self.size) {
+            let toward = (middle.1 - spot.1).atan2(middle.0 - spot.0);
+            let found = NEAR_BASE
+                .iter()
+                .flat_map(|&reach| TURNS.map(|turn| (reach, toward + turn)))
+                .map(|(reach, angle)| (spot.0 + reach * angle.cos(), spot.1 + reach * angle.sin()))
+                .find(|&at| self.can_hold_field(at, &fields));
+            fields.extend(found);
+        }
+        let wanted = fields.len() + self.size.spread(MORE_FIELDS);
+        for _ in 0..wanted * 100 {
+            let at = self.random_point(random);
+            if fields.len() < wanted && self.can_hold_field(at, &fields) {
+                fields.push(at);
+            }
+        }
+        for (n, &(fx, fz)) in fields.iter().enumerate() {
+            let mut substance = Vec::new();
+            self.for_points_near(fx, fz, FIELD_RADIUS * 1.3, |index, x, z| {
+                let (dx, dz) = (x - fx, z - fz);
+                let wobble = fractal_noise([dx * 0.005524, dz * 0.005524, n as f32], seed + 700);
+                let reach = FIELD_RADIUS * (0.7 + 0.6 * wobble);
+                let away = dx.hypot(dz) / reach;
+                if away < 1.0 {
+                    substance.push((index, away));
+                }
+            });
+            for (index, away) in substance {
+                if self.is_ground[index] || self.is_liquid[index] || self.relief[index] != 0.0 {
+                    continue;
+                }
+                self.substance[index] = true;
+                let grain = (index as u32).wrapping_mul(0x9E37_79B1) ^ seed;
+                let color = if xorshift(&mut (grain | 1)) % 100 < 18 {
+                    SUBSTANCE_GRAINS
+                } else {
+                    SUBSTANCE
+                };
+                // Thinning out to the sand around it at its edge.
+                let share = (1.0 - away * away).min(0.75) / 0.75;
+                self.colors[index] = mix(self.colors[index], color, share * 0.8);
+            }
+        }
+        self.fields = fields;
+    }
+
+    /// Whether a field of substance could lie with its middle here: on flat low land, clear of
+    /// the ruins and well apart from the other fields.
+    fn can_hold_field(&self, (x, z): (f32, f32), fields: &[(f32, f32)]) -> bool {
+        let apart = fields
+            .iter()
+            .all(|&(fx, fz)| (fx - x).hypot(fz - z) >= FIELD_RADIUS * 3.0);
+        let clear_of_ruins = self.ruins.iter().all(|ruin| {
+            (ruin.x - x).hypot(ruin.z - z) > FIELD_RADIUS + ruin.half_x.max(ruin.half_z) + 45.25
+        });
+        let reach = FIELD_RADIUS * 0.7;
+        let flat = (0..9).all(|n| {
+            let (sin, cos) = (n as f32 * std::f32::consts::TAU / 8.0).sin_cos();
+            let out = if n == 8 { 0.0 } else { reach };
+            let (x, z) = (x + cos * out, z + sin * out);
+            self.can_walk(x, z)
+                && !self.on_upper_ground(x, z)
+                && self.relief_at(x, z) == 0.0
+                && self.rise_at(x, z) == 0.0
+        });
+        apart && clear_of_ruins && flat
+    }
+
     /// Spots well out in the lava, apart from each other, if this map has any.
     fn find_vents(&self, random: &mut u32) -> Vec<(f32, f32)> {
         const VENTS: usize = 10;
-        const APART: f32 = 9.0;
+        const APART: f32 = 407.3;
         /// How far under the noise's threshold it must be, to be well away from the shore.
         const OUT_IN_IT: f32 = 0.02;
         let mut vents: Vec<(f32, f32)> = Vec::new();
@@ -734,9 +833,9 @@ impl Terrain {
                 );
                 let (x, z) = grid_to_world(u, v);
                 let radius = if is_mountain {
-                    2.6 + next_random(random) * 3.4
+                    117.7 + next_random(random) * 153.9
                 } else {
-                    1.8 + next_random(random) * 2.4
+                    81.46 + next_random(random) * 108.6
                 };
                 if self.has_room_for_relief(x, z, radius, on_way) {
                     let size = 0.7 + next_random(random) * 0.6;
@@ -756,7 +855,7 @@ impl Terrain {
     /// Whether a mountain or pit could go here: out on the low land clear of the islands and
     /// of the ways between the bases and of other relief, with a way around it.
     fn has_room_for_relief(&self, x: f32, z: f32, radius: f32, on_way: &[bool]) -> bool {
-        const AROUND: f32 = 2.0;
+        const AROUND: f32 = 90.51;
         (0..16).all(|i| {
             let (sin, cos) = (i as f32 / 16.0 * std::f32::consts::TAU).sin_cos();
             [radius, radius + AROUND].iter().all(|reach| {
@@ -779,13 +878,13 @@ impl Terrain {
         is_mountain: bool,
         seed: u32,
     ) {
-        const PEAK: f32 = 5.0;
-        const PIT_DEPTH: f32 = 1.6;
+        const PEAK: f32 = 226.3;
+        const PIT_DEPTH: f32 = 72.41;
         const ROCK: [f32; 3] = [0.56, 0.50, 0.45];
         const SNOW: [f32; 3] = [0.86, 0.87, 0.90];
         const DARK_ROCK: [f32; 3] = [0.38, 0.33, 0.30];
         const FLOOR: [f32; 3] = [0.05, 0.04, 0.04];
-        let reach = radius + 1.0;
+        let reach = radius + 45.25;
         for v in 0..=self.size.cells() {
             for u in 0..=self.size.cells() {
                 let (px, pz) = grid_to_world(u as f32, v as f32);
@@ -862,7 +961,7 @@ impl Terrain {
 
     /// Ruins stand out on flat low land, well clear of the water or lava.
     fn can_hold_ruin(&self, x: f32, z: f32) -> bool {
-        const SITE: f32 = 3.6;
+        const SITE: f32 = 162.9;
         [
             (-SITE, -SITE),
             (SITE, -SITE),
@@ -879,7 +978,7 @@ impl Terrain {
             let (x, z) = (x + dx, z + dz);
             self.relief_at(x, z) == 0.0
                 && self.rise_at(x, z) == 0.0
-                && self.height_at(x, z) >= self.floor() - 0.001
+                && self.height_at(x, z) >= self.floor() - 0.04525
         })
     }
 
@@ -940,6 +1039,9 @@ impl Terrain {
             ruins,
             normals: vec![[0.0, 1.0, 0.0]; GRID_POINTS],
             vents: Vec::new(),
+            // All of it has substance, though no field is laid out on it to splash.
+            fields: Vec::new(),
+            substance: vec![true; GRID_POINTS],
             walkable: OnceLock::new(),
         }
     }
@@ -950,6 +1052,8 @@ impl Terrain {
         Terrain {
             is_ground: vec![true; GRID_POINTS],
             rise: vec![1.0; GRID_POINTS],
+            fields: Vec::new(),
+            substance: vec![false; GRID_POINTS],
             ..Terrain::open_with_ruins(Vec::new())
         }
     }
@@ -1003,6 +1107,37 @@ impl Terrain {
         &self.vents
     }
 
+    /// The middles of the fields of substance.
+    pub fn fields(&self) -> &[(f32, f32)] {
+        &self.fields
+    }
+
+    /// The middle of the field of substance nearest to a place, if there is any.
+    pub fn nearest_field(&self, (x, z): (f32, f32)) -> Option<(f32, f32)> {
+        let away = |&(fx, fz): &(f32, f32)| (fx - x).hypot(fz - z);
+        self.fields
+            .iter()
+            .min_by(|a, b| away(a).total_cmp(&away(b)))
+            .copied()
+    }
+
+    /// Whether a place is in a field of substance.
+    pub fn has_substance(&self, x: f32, z: f32) -> bool {
+        self.nearest_point(x, z)
+            .is_some_and(|index| self.substance[index])
+    }
+
+    /// The index of the grid point nearest to a place on the map.
+    fn nearest_point(&self, x: f32, z: f32) -> Option<usize> {
+        if !self.on_map(x, z) {
+            return None;
+        }
+        let (u, v) = world_to_grid(x, z);
+        let last = self.size.cells();
+        let (u, v) = (u.round() as usize, v.round() as usize);
+        Some(grid_index(u.min(last), v.min(last)))
+    }
+
     /// Whether this grid point is on a mountain or in a pit that nothing can walk on.
     pub fn is_relief(&self, u: usize, v: usize) -> bool {
         self.relief[grid_index(u, v)].abs() >= STEEPEST_WALK
@@ -1028,7 +1163,7 @@ impl Terrain {
     fn route_grid(&self) -> &[bool] {
         self.walkable.get_or_init(|| {
             /// How far from a ruin a route keeps.
-            const CLEAR_OF_RUINS: f32 = 0.7;
+            const CLEAR_OF_RUINS: f32 = 31.68;
             let mut grid: Vec<bool> = (0..GRID_POINTS)
                 .map(|index| {
                     let (u, v) = (index % (MOST_CELLS + 1), index / (MOST_CELLS + 1));
@@ -1054,7 +1189,7 @@ impl Terrain {
     fn for_points_near(&self, x: f32, z: f32, reach: f32, mut visit: impl FnMut(usize, f32, f32)) {
         let (u, v) = world_to_grid(x, z);
         // A step along one grid axis covers 0.7 of a world unit, so this reaches far enough.
-        let span = reach * 1.5 + 1.0;
+        let span = reach * 0.03315 + 1.0;
         let last = self.size.cells() as i32;
         let range = |center: f32| {
             ((center - span).floor() as i32).max(0)..=((center + span).ceil() as i32).min(last)
@@ -1070,27 +1205,40 @@ impl Terrain {
     /// Whether someone could walk straight from one point to the other, past ruins too. What
     /// lies right at either end is no matter: it may well stand beside a wall.
     pub fn line_is_clear(&self, from: (f32, f32), to: (f32, f32)) -> bool {
-        Self::line_is_clear_on(self.route_grid(), from, to)
+        self.line_is_clear_on(self.route_grid(), from, to)
     }
 
-    fn line_is_clear_on(grid: &[bool], from: (f32, f32), to: (f32, f32)) -> bool {
-        const STEP: f32 = 0.2;
-        const ENDS: f32 = 0.75;
+    /// Whether the grid's points along a line are all open, and the ground itself can be walked
+    /// along it with room for a vehicle each side: a line between two open points can still cut
+    /// across the corner of a cliff between them.
+    fn line_is_clear_on(&self, grid: &[bool], from: (f32, f32), to: (f32, f32)) -> bool {
+        const STEP: f32 = 9.051;
+        const ENDS: f32 = 33.94;
+        /// How far each side of the line the ground has to be open too.
+        const ROOM: f32 = 20.36;
         let length = (to.0 - from.0).hypot(to.1 - from.1);
         let steps = (length / STEP).ceil().max(1.0) as usize;
+        let (side_x, side_z) = (
+            -(to.1 - from.1) / length.max(0.004525) * ROOM,
+            (to.0 - from.0) / length.max(0.004525) * ROOM,
+        );
         (1..=steps).all(|i| {
             let t = i as f32 / steps as f32;
             let along = t * length;
             if along < ENDS || length - along < ENDS {
                 return true;
             }
-            let (u, v) = world_to_grid(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+            let (x, z) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+            let (u, v) = world_to_grid(x, z);
             let (u, v) = (u.round(), v.round());
             u >= 0.0
                 && v >= 0.0
                 && u <= MOST_CELLS as f32
                 && v <= MOST_CELLS as f32
                 && grid[grid_index(u as usize, v as usize)]
+                && [-1.0, 0.0, 1.0]
+                    .iter()
+                    .all(|&k| self.can_walk(x + side_x * k, z + side_z * k))
         })
     }
 
@@ -1146,18 +1294,28 @@ impl Terrain {
         const DIAGONAL: u32 = 14;
         const NOWHERE: usize = usize::MAX;
         let walkable = |index: usize| grid_walkable[index];
-        // The walkable grid point nearest a world point.
+        // The walkable grid point nearest a world point, truly nearest: by a square ring at
+        // a time, one across a cliff's corner could come before one just beside it.
         let snap = |(x, z): (f32, f32)| -> Option<usize> {
+            const REACH: i32 = 4;
             let (u, v) = world_to_grid(x, z);
             let (u, v) = (u.round() as i32, v.round() as i32);
             let last = self.size.cells() as i32;
-            (0..=4).find_map(|reach: i32| {
-                (-reach..=reach)
-                    .flat_map(|du| (-reach..=reach).map(move |dv| (u + du, v + dv)))
-                    .filter(|&(u, v)| u >= 0 && v >= 0 && u <= last && v <= last)
-                    .map(|(u, v)| grid_index(u as usize, v as usize))
-                    .find(|&index| walkable(index))
-            })
+            (-REACH..=REACH)
+                .flat_map(|du| (-REACH..=REACH).map(move |dv| (u + du, v + dv)))
+                .filter(|&(u, v)| u >= 0 && v >= 0 && u <= last && v <= last)
+                .map(|(u, v)| grid_index(u as usize, v as usize))
+                .filter(|&index| walkable(index))
+                .min_by(|&a, &b| {
+                    let away = |index: usize| {
+                        let (px, pz) = grid_to_world(
+                            (index % (MOST_CELLS + 1)) as f32,
+                            (index / (MOST_CELLS + 1)) as f32,
+                        );
+                        (px - x).hypot(pz - z)
+                    };
+                    away(a).total_cmp(&away(b))
+                })
         };
         let (start, goal) = (snap(from)?, snap(to)?);
         let grid = |index: usize| {
@@ -1234,7 +1392,7 @@ impl Terrain {
         route
             .iter()
             .map(|&index| point(index))
-            .find(|&spot| Self::line_is_clear_on(grid_walkable, from, spot))
+            .find(|&spot| self.line_is_clear_on(grid_walkable, from, spot))
             .or_else(|| route.iter().rev().nth(1).map(|&index| point(index)))
     }
 
@@ -1259,13 +1417,8 @@ impl Terrain {
     /// Whether a point is on the upper terrain: not on the sand, nor the lower ground that stands
     /// for it on other planets, nor in water or lava.
     pub fn on_upper_ground(&self, x: f32, z: f32) -> bool {
-        if !self.on_map(x, z) {
-            return false;
-        }
-        let (u, v) = world_to_grid(x, z);
-        let last = self.size.cells();
-        let (u, v) = (u.round() as usize, v.round() as usize);
-        self.is_ground(u.min(last), v.min(last))
+        self.nearest_point(x, z)
+            .is_some_and(|index| self.is_ground[index])
     }
 
     /// The lowest ground anyone can stand on: the sand, or the land above water and lava.
@@ -1358,8 +1511,16 @@ impl Camera {
 
     /// Moves the target, sliding along the map's edges rather than leaving the diamond.
     fn move_by(&mut self, dx: f32, dz: f32) {
-        let (u, v) = world_to_grid(self.x + dx, self.z + dz);
-        (self.x, self.z) = grid_to_world(u.clamp(0.0, self.last), v.clamp(0.0, self.last));
+        let (x, z) = (self.x + dx, self.z + dz);
+        let (u, v) = world_to_grid(x, z);
+        let on_map = |t: f32| (0.0..=self.last).contains(&t);
+        // Grid steps do not come back from world units exactly: only what is off the map is
+        // brought back onto it through them.
+        (self.x, self.z) = if on_map(u) && on_map(v) {
+            (x, z)
+        } else {
+            grid_to_world(u.clamp(0.0, self.last), v.clamp(0.0, self.last))
+        };
     }
 
     /// One frame of edge scrolling. Slower when low, so the ground crosses the screen at
@@ -1382,14 +1543,17 @@ impl Camera {
         let (u, v) = world_to_grid(self.x, self.z);
         let (du, dv) = world_to_grid(dx, dz);
         let last = self.last;
+        // Grid steps do not come back from world units exactly, so an edge or the middle of one
+        // counts as reached within a hair of it.
+        const EDGE: f32 = 1e-3;
         let blocked = |position: f32, step: f32| {
-            (position >= last && step > 0.0) || (position <= 0.0 && step < 0.0)
+            (position >= last - EDGE && step > 0.0) || (position <= EDGE && step < 0.0)
         };
         let slide = |other: f32, step: f32| {
             let middle = last / 2.0;
-            let end = if other < middle {
+            let end = if other < middle - EDGE {
                 0.0
-            } else if other > middle {
+            } else if other > middle + EDGE {
                 last
             } else if step > 0.0 {
                 0.0
@@ -1518,17 +1682,17 @@ impl View {
     pub fn sun_matrix(&self, focus: (f32, f32), width: f32, height: f32) -> [f32; 16] {
         /// The pixels across the backend's shadow map.
         const SHADOW_MAP: f32 = 4096.0;
-        const MOST_REACH: f32 = 90.0;
-        const ROOM: f32 = 8.0;
+        const MOST_REACH: f32 = 4073.0;
+        const ROOM: f32 = 362.0;
         /// How far along the sun's rays it takes in.
-        const THROUGH: f32 = 90.0;
+        const THROUGH: f32 = 4073.0;
         let reach = self.ground_seen(width, height).map_or(MOST_REACH, |seen| {
             let far_x = (seen.0 - focus.0).abs().max((seen.2 - focus.0).abs());
             let far_z = (seen.1 - focus.1).abs().max((seen.3 - focus.1).abs());
             (far_x.hypot(far_z) + ROOM).min(MOST_REACH)
         });
         // In whole steps, so that it does not change size with every small move.
-        let reach = (reach / 4.0).ceil() * 4.0;
+        let reach = (reach / 181.0).ceil() * 181.0;
         let cross = |a: [f32; 3], b: [f32; 3]| {
             [
                 a[1] * b[2] - a[2] * b[1],
@@ -1623,7 +1787,7 @@ impl View {
         let depth = |point: (f32, f32)| self.relative(point.0, 0.0, point.1).2;
         let (depth_a, depth_b) = (depth(a), depth(b));
         // Just in front of the limit, so that rounding cannot put a cut end behind it.
-        let limit = NEAR + 0.01;
+        let limit = NEAR + 0.4525;
         if depth_a < limit && depth_b < limit {
             return None;
         }
@@ -1800,16 +1964,16 @@ pub fn draw(
     height: f32,
 ) {
     /// Under a liquid's surface along the shore, however shallow the bottom is there.
-    const SHORE: f32 = 0.12;
+    const SHORE: f32 = 5.431;
     /// How far down a liquid looks for how far under the threshold its noise is.
-    const DEPTH: f32 = 6.0;
+    const DEPTH: f32 = 271.5;
     /// How far down its bed really lies for the same, under the surface drawn over it.
-    const BED_DEPTH: f32 = 2.0;
+    const BED_DEPTH: f32 = 90.51;
     /// What the bed under the water is made of, so the shore runs down into it as sand.
     const BEACH: [f32; 3] = [0.74, 0.68, 0.48];
     /// The same under the lava, burnt black.
     const BASALT: [f32; 3] = [0.10, 0.08, 0.07];
-    const ROOM: f32 = 8.0;
+    const ROOM: f32 = 362.0;
     let shore = match terrain.material() {
         Material::Water => Some(BEACH),
         Material::Lava => Some(BASALT),
@@ -1826,13 +1990,13 @@ pub fn draw(
             // The bed, dry land to the shader, with the liquid's own surface drawn over it.
             Some(color) if terrain.is_liquid[index] => {
                 let bed = -(SHORE + terrain.deep[index] * BED_DEPTH);
-                (bed + terrain.relief[index], color, 0.001)
+                (bed + terrain.relief[index], color, 0.04525)
             }
             // A pit in the land stays dry, however far down it goes.
             Some(_) => (
                 terrain.vertex_height(u, v),
                 terrain.colors[index],
-                land.max(0.001),
+                land.max(0.04525),
             ),
             None => (terrain.vertex_height(u, v), terrain.colors[index], land),
         };
@@ -2129,7 +2293,7 @@ mod tests {
         open.scroll((d, d), 5, 0.1);
         let free = (open.x - start.x).hypot(open.z - start.z);
         assert!(slid > 0.0, "does not stop at the edge");
-        assert!((slid - free).abs() < 0.01, "{slid} vs {free}");
+        assert!((slid - free).abs() < 0.4525, "{slid} vs {free}");
     }
 
     #[test]
@@ -2179,7 +2343,10 @@ mod tests {
                 top_left.1 < bottom_left.1,
                 "far edge is north of the near edge"
             );
-            assert!((top_left.1 - top_right.1).abs() < 0.001, "edges stay level");
+            assert!(
+                (top_left.1 - top_right.1).abs() < 0.04525,
+                "edges stay level"
+            );
             assert!(
                 top_left.1 < camera.z && camera.z < bottom_left.1,
                 "contains the target"
@@ -2191,10 +2358,13 @@ mod tests {
     fn ground_at_reverses_projection() {
         for zoom in [0.0, 0.5, 1.0] {
             let view = View::new(at_zoom(zoom), W, H);
-            let (x, z) = (5.0, at_zoom(zoom).z - 3.0);
+            let (x, z) = (226.3, at_zoom(zoom).z - 135.8);
             let (sx, sy) = view.project(x, 0.0, z).unwrap();
             let (gx, gz) = view.ground_at(sx, sy).unwrap();
-            assert!((gx - x).abs() < 0.01 && (gz - z).abs() < 0.01, "at {zoom}");
+            assert!(
+                (gx - x).abs() < 0.4525 && (gz - z).abs() < 0.4525,
+                "at {zoom}"
+            );
         }
     }
 
@@ -2228,9 +2398,9 @@ mod tests {
     #[test]
     fn ground_lines_project_and_are_cut_behind_the_camera() {
         let mut camera = at_zoom(0.5);
-        camera.z = 30.0;
+        camera.z = 1358.0;
         let view = View::new(camera, W, H);
-        let (ahead, behind) = ((2.0, 25.0), (2.0, 80.0));
+        let (ahead, behind) = ((90.51, 1131.0), (90.51, 3620.0));
         assert!(
             view.project(behind.0, 0.0, behind.1).is_none(),
             "really behind"
@@ -2246,12 +2416,15 @@ mod tests {
         );
         assert!(b.1 > a.1, "it runs towards the viewer");
         assert!(
-            view.project_ground_line((0.0, 80.0), (5.0, 90.0)).is_none(),
+            view.project_ground_line((0.0, 3620.0), (226.3, 4073.0))
+                .is_none(),
             "all behind"
         );
 
-        let whole = view.project_ground_line((0.0, 20.0), (5.0, 22.0)).unwrap();
-        assert_eq!(whole.0, view.project(0.0, 0.0, 20.0).unwrap());
+        let whole = view
+            .project_ground_line((0.0, 905.1), (226.3, 995.6))
+            .unwrap();
+        assert_eq!(whole.0, view.project(0.0, 0.0, 905.1).unwrap());
     }
 
     #[test]
@@ -2291,7 +2464,7 @@ mod tests {
                 let (ground_x, ground_z) = view.ground_at(x, H).unwrap();
                 assert!(
                     out.iter()
-                        .any(|v| (v.x - ground_x).abs() < 1.0 && (v.z - ground_z).abs() < 1.0),
+                        .any(|v| (v.x - ground_x).abs() < 45.25 && (v.z - ground_z).abs() < 45.25),
                     "terrain reaches the bottom of the screen at {zoom}"
                 );
             }
@@ -2455,14 +2628,14 @@ mod tests {
                     {
                         low += 1;
                         assert!(!terrain.on_upper_ground(x, z), "{planet:?} at {u},{v}");
-                        assert!((terrain.height_at(x, z) - LOWLAND_HEIGHT).abs() < 0.001);
+                        assert!((terrain.height_at(x, z) - LOWLAND_HEIGHT).abs() < 0.04525);
                     }
                 }
             }
             assert!(low > GRID_POINTS / 8, "{planet:?}: {low}");
             assert!(liquid > GRID_POINTS / 40, "{planet:?}: {liquid}");
             for piece in terrain.ruins() {
-                assert!(terrain.height_at(piece.x, piece.z) >= LOWLAND_HEIGHT - 0.001);
+                assert!(terrain.height_at(piece.x, piece.z) >= LOWLAND_HEIGHT - 0.04525);
             }
         }
     }
@@ -2470,7 +2643,7 @@ mod tests {
     #[test]
     fn upper_ground_is_twice_as_high_as_it_was() {
         let top = Terrain::open_upland();
-        assert_eq!(top.height_at(0.0, 50.0), 1.4);
+        assert_eq!(top.height_at(0.0, 2263.0), 63.36);
     }
 
     #[test]
@@ -2491,7 +2664,13 @@ mod tests {
         for map in 0..crate::game::MAPS.len() {
             let terrain = terrain(map);
             for (x, z) in start_spots(size) {
-                for (dx, dz) in [(0.0, 0.0), (9.0, 0.0), (-9.0, 0.0), (0.0, 9.0), (0.0, -9.0)] {
+                for (dx, dz) in [
+                    (0.0, 0.0),
+                    (407.3, 0.0),
+                    (-407.3, 0.0),
+                    (0.0, 407.3),
+                    (0.0, -407.3),
+                ] {
                     let (x, z) = (x + dx, z + dz);
                     assert!(terrain.on_upper_ground(x, z), "map {map} at {x},{z}");
                     assert!(terrain.can_walk(x, z), "map {map} at {x},{z}");
@@ -2552,33 +2731,89 @@ mod tests {
         assert!(with_two > 0 && with_three > 0, "{with_two} {with_three}");
     }
 
+    /// Which grid points a route can get to from this one.
+    fn reached_from(terrain: &Terrain, (u, v): (usize, usize)) -> Vec<bool> {
+        let cells = terrain.size().cells();
+        let grid = terrain.route_grid();
+        let mut reached = vec![false; GRID_POINTS];
+        reached[grid_index(u, v)] = true;
+        let mut open = vec![(u, v)];
+        while let Some((u, v)) = open.pop() {
+            for (nu, nv) in [
+                (u + 1, v),
+                (u, v + 1),
+                (u.wrapping_sub(1), v),
+                (u, v.wrapping_sub(1)),
+            ] {
+                if nu <= cells && nv <= cells {
+                    let index = grid_index(nu, nv);
+                    if grid[index] && !reached[index] {
+                        reached[index] = true;
+                        open.push((nu, nv));
+                    }
+                }
+            }
+        }
+        reached
+    }
+
+    #[test]
+    fn every_base_has_a_field_of_substance_of_its_own_and_can_get_to_every_field() {
+        for map in 0..crate::game::MAPS.len() {
+            let terrain = terrain(map);
+            let fields = terrain.fields();
+            assert!(fields.len() > START_SPOTS, "map {map}: {}", fields.len());
+            let spot = start_cells(terrain.size())[0];
+            let reached = reached_from(terrain, (spot.0 as usize, spot.1 as usize));
+            for &(x, z) in fields {
+                assert!(terrain.has_substance(x, z), "map {map}: its middle");
+                let (u, v) = world_to_grid(x, z);
+                let index = grid_index(u.round() as usize, v.round() as usize);
+                assert!(reached[index], "map {map}: {x},{z}");
+            }
+            for (x, z) in start_spots(terrain.size()) {
+                let near = terrain.nearest_field((x, z)).unwrap();
+                let away = (near.0 - x).hypot(near.1 - z);
+                assert!(away < 2715.0, "map {map}: {away} from the base at {x},{z}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_fields_have_substance_and_it_shows_pinker_than_the_sand() {
+        let terrain = terrain(0);
+        let cells = terrain.size().cells();
+        let mut with = 0;
+        for v in 0..=cells {
+            for u in 0..=cells {
+                let index = grid_index(u, v);
+                if !terrain.substance[index] {
+                    continue;
+                }
+                with += 1;
+                assert!(!terrain.is_ground[index] && !terrain.is_liquid[index]);
+                let (x, z) = grid_to_world(u as f32, v as f32);
+                let near = terrain.nearest_field((x, z)).unwrap();
+                assert!((near.0 - x).hypot(near.1 - z) < FIELD_RADIUS * 1.3);
+            }
+        }
+        let lower = (0..=cells * cells)
+            .filter(|&i| i < GRID_POINTS && !terrain.is_ground[i] && terrain.rise[i] == 0.0)
+            .count();
+        assert!(with > 0 && with < lower / 4, "{with} of {lower}");
+        let (x, z) = terrain.fields()[0];
+        let (u, v) = world_to_grid(x, z);
+        let [r, g, _] = terrain.color_at(u.round() as usize, v.round() as usize);
+        let [sand_r, sand_g, _] = SAND;
+        assert!(r - g > sand_r - sand_g, "pinker");
+    }
+
     #[test]
     fn every_base_can_get_to_every_other_only_down_its_slopes() {
         for map in 0..crate::game::MAPS.len() {
             let terrain = terrain(map);
-            let cells = terrain.size().cells();
             let spots = start_cells(terrain.size());
-            let grid = terrain.route_grid();
-            let mut reached = vec![false; GRID_POINTS];
-            let start = grid_index(spots[0].0 as usize, spots[0].1 as usize);
-            reached[start] = true;
-            let mut open = vec![(spots[0].0 as usize, spots[0].1 as usize)];
-            while let Some((u, v)) = open.pop() {
-                for (nu, nv) in [
-                    (u + 1, v),
-                    (u, v + 1),
-                    (u.wrapping_sub(1), v),
-                    (u, v.wrapping_sub(1)),
-                ] {
-                    if nu <= cells && nv <= cells {
-                        let index = grid_index(nu, nv);
-                        if grid[index] && !reached[index] {
-                            reached[index] = true;
-                            open.push((nu, nv));
-                        }
-                    }
-                }
-            }
+            let reached = reached_from(terrain, (spots[0].0 as usize, spots[0].1 as usize));
             for &(u, v) in &spots {
                 assert!(
                     reached[grid_index(u as usize, v as usize)],
@@ -2613,7 +2848,7 @@ mod tests {
             let terrain = terrain(map);
             for island in islands.iter().filter(|i| i.sloped_all_round) {
                 let (x, z) = grid_to_world(island.at.0, island.at.1);
-                assert!((terrain.height_at(x, z) - terrain.floor() - GROUND_HEIGHT).abs() < 0.01);
+                assert!((terrain.height_at(x, z) - terrain.floor() - GROUND_HEIGHT).abs() < 0.4525);
                 assert!(terrain.can_walk(x, z), "map {map}");
                 assert!(!terrain.on_upper_ground(x, z), "map {map}: {:?}", island.at);
             }
@@ -2660,10 +2895,10 @@ mod tests {
     fn the_cursor_finds_the_land_up_on_high_ground_where_it_is_seen() {
         let terrain = Terrain::open_upland();
         let view = View::new(Camera::centered(), W, H);
-        let spot = (3.0, MAP_MIDDLE_Z + 2.0);
-        let (x, y) = view.project(spot.0, 1.4, spot.1).unwrap();
+        let spot = (135.8, MAP_MIDDLE_Z + 90.51);
+        let (x, y) = view.project(spot.0, 63.36, spot.1).unwrap();
         let (found_x, found_z) = view.land_at(&terrain, x, y).unwrap();
-        assert!((found_x - spot.0).abs() < 0.02 && (found_z - spot.1).abs() < 0.02);
+        assert!((found_x - spot.0).abs() < 0.9051 && (found_z - spot.1).abs() < 0.9051);
     }
 
     #[test]
@@ -2716,8 +2951,8 @@ mod tests {
             let terrain = terrain(map);
             let highest = terrain.relief.iter().copied().fold(0.0, f32::max);
             let deepest = terrain.relief.iter().copied().fold(0.0, f32::min);
-            assert!(highest > 1.5, "map {map} has mountains: {highest}");
-            assert!(deepest < -0.7, "map {map} has pits: {deepest}");
+            assert!(highest > 67.88, "map {map} has mountains: {highest}");
+            assert!(deepest < -31.68, "map {map} has pits: {deepest}");
             let mut blocked = 0;
             for v in 0..=terrain.size().cells() {
                 for u in 0..=terrain.size().cells() {
@@ -2744,12 +2979,12 @@ mod tests {
 
     #[test]
     fn only_lava_has_vents_and_they_lie_out_in_it_apart_from_each_other() {
-        let lava = terrain(map_on(Planet::G));
+        let lava = terrain(map_on(Planet::GeidiPrime));
         assert!(lava.vents().len() >= 3, "{}", lava.vents().len());
         for (i, &(x, z)) in lava.vents().iter().enumerate() {
             assert!(lava.on_map(x, z) && !lava.can_walk(x, z), "{x},{z}");
             for &(ox, oz) in &lava.vents()[i + 1..] {
-                assert!((x - ox).hypot(z - oz) >= 9.0);
+                assert!((x - ox).hypot(z - oz) >= 407.3);
             }
         }
         for planet in [
@@ -2768,7 +3003,7 @@ mod tests {
         let mut camera = Camera::centered_on(MapSize::L);
         assert_eq!(camera.z, MapSize::L.middle_z());
         assert_eq!(MapSize::L.middle_z(), MAP_MIDDLE_Z);
-        camera.look_at(0.0, 1000.0);
+        camera.look_at(0.0, 45250.0);
         let (u, v) = world_to_grid(camera.x, camera.z);
         assert!((u - 256.0).abs() < 0.01 && (v - 256.0).abs() < 0.01);
     }
@@ -2814,10 +3049,10 @@ mod tests {
 
     #[test]
     fn water_lies_below_its_surface_and_the_land_above_it_for_the_ground_shader() {
-        let map = map_on(Planet::C);
+        let map = map_on(Planet::Caladan);
         let terrain = terrain(map);
         let mut out = Vec::new();
-        for (x, z) in [(0.0, 64.0), (-20.0, 40.0), (20.0, 90.0)] {
+        for (x, z) in [(0.0, 2896.0), (-905.1, 1810.0), (905.1, 4073.0)] {
             let mut camera = Camera::centered();
             camera.x = x;
             camera.z = z;
@@ -2855,8 +3090,8 @@ mod tests {
             let (x, z) = grid_to_world(64.0, 64.0);
             for point in [
                 (x, 0.0, z),
-                (x + 3.0, 2.0, z - 4.0),
-                (x - 6.0, 0.7, z + 1.0),
+                (x + 135.8, 90.51, z - 181.0),
+                (x - 271.5, 31.68, z + 45.25),
             ] {
                 let (px, py, depth) = through(view.matrix(), point);
                 let (sx, sy, sd) = view.project_deep(point.0, point.1, point.2).unwrap();
@@ -2874,8 +3109,8 @@ mod tests {
     fn what_is_nearer_the_camera_has_less_depth_in_the_matrix() {
         let view = View::new(at_zoom(0.5), W, H);
         let (x, z) = grid_to_world(64.0, 64.0);
-        let (_, _, far) = through(view.matrix(), (x, 0.0, z - 5.0));
-        let (_, _, near_it) = through(view.matrix(), (x, 0.0, z + 5.0));
+        let (_, _, far) = through(view.matrix(), (x, 0.0, z - 226.3));
+        let (_, _, near_it) = through(view.matrix(), (x, 0.0, z + 226.3));
         assert!(near_it < far);
     }
 
@@ -2883,8 +3118,8 @@ mod tests {
     fn a_mirror_shows_what_is_above_it_lower_on_the_screen_and_what_is_at_it_in_place() {
         let view = View::new(Camera::centered(), W, H);
         let (x, z) = grid_to_world(64.0, 64.0);
-        let above = through(view.matrix(), (x, 2.0, z));
-        let reflected = through(view.mirror_matrix(), (x, 2.0, z));
+        let above = through(view.matrix(), (x, 90.51, z));
+        let reflected = through(view.mirror_matrix(), (x, 90.51, z));
         assert!(reflected.1 > above.1);
         let at_it = through(view.matrix(), (x, 0.0, z));
         let at_it_reflected = through(view.mirror_matrix(), (x, 0.0, z));
@@ -2908,14 +3143,14 @@ mod tests {
             ground_x.abs() < 0.01 && ground_y.abs() < 0.01,
             "in the middle of its map"
         );
-        let (_, _, high) = at(5.0);
+        let (_, _, high) = at(226.3);
         assert!(high < ground, "nearer the sun");
         assert!(ground > 0.0 && ground < 1.0);
     }
 
     #[test]
     fn normals_are_unit_length_and_lean_away_from_rising_land() {
-        let terrain = Terrain::open_with_mountain(0.0, 40.0, 5.0);
+        let terrain = Terrain::open_with_mountain(0.0, 1810.0, 226.3);
         let normals = terrain.find_normals();
         for normal in &normals {
             let length = normal.iter().map(|c| c * c).sum::<f32>().sqrt();
@@ -2930,25 +3165,25 @@ mod tests {
         let wall = RuinPiece {
             x: 0.0,
             y: 0.0,
-            z: 40.0,
-            half_x: 6.0,
-            half_z: 0.1,
-            height: 1.0,
+            z: 1810.0,
+            half_x: 271.5,
+            half_z: 4.525,
+            height: 45.25,
             shade: 1.0,
         };
         let terrain = Terrain::open_with_ruins(vec![wall]);
-        let (from, to) = ((0.0, 35.0), (0.0, 45.0));
+        let (from, to) = ((0.0, 1584.0), (0.0, 2036.0));
         assert!(!terrain.line_is_clear(from, to), "the wall is in the way");
         let next = terrain.next_on_route(from, to).unwrap();
-        assert!(next.0.abs() > 3.0, "off to one end of it: {next:?}");
+        assert!(next.0.abs() > 135.8, "off to one end of it: {next:?}");
 
         let open = Terrain::open_with_ruins(Vec::new());
         assert!(open.line_is_clear(from, to));
         let around = open
-            .next_on_route_around(from, to, &[(0.0, 40.0, 2.0)])
+            .next_on_route_around(from, to, &[(0.0, 1810.0, 90.51)])
             .unwrap();
         assert!(open.line_is_clear(from, around));
-        assert!(around != to && around.0.abs() > 0.5, "{around:?}");
+        assert!(around != to && around.0.abs() > 22.63, "{around:?}");
         assert_eq!(
             open.next_on_route_around(from, to, &[]).map(|_| ()),
             Some(())
@@ -2960,28 +3195,28 @@ mod tests {
         let wall = RuinPiece {
             x: 0.0,
             y: 0.0,
-            z: 40.0,
-            half_x: 6.0,
-            half_z: 0.1,
-            height: 1.0,
+            z: 1810.0,
+            half_x: 271.5,
+            half_z: 4.525,
+            height: 45.25,
             shade: 1.0,
         };
         let terrain = Terrain::open_with_ruins(vec![wall]);
         // Beside the wall, going away from it.
-        assert!(terrain.line_is_clear((0.0, 39.5), (0.0, 30.0)));
-        assert!(terrain.line_is_clear((0.0, 30.0), (0.0, 39.5)));
+        assert!(terrain.line_is_clear((0.0, 1788.0), (0.0, 1358.0)));
+        assert!(terrain.line_is_clear((0.0, 1358.0), (0.0, 1788.0)));
     }
 
     #[test]
     fn a_route_goes_around_a_mountain_and_there_is_none_into_a_walled_off_place() {
-        let (x, z) = (0.0, 40.0);
-        let terrain = Terrain::open_with_mountain(x, z, 5.0);
-        let (from, to) = ((x, z - 9.0), (x, z + 9.0));
+        let (x, z) = (0.0, 1810.0);
+        let terrain = Terrain::open_with_mountain(x, z, 226.3);
+        let (from, to) = ((x, z - 407.3), (x, z + 407.3));
         assert!(!terrain.line_is_clear(from, to));
         let next = terrain.next_on_route(from, to).expect("a way around");
         assert!(terrain.line_is_clear(from, next));
         assert!(
-            next != to && next.0.abs() > 1.0,
+            next != to && next.0.abs() > 45.25,
             "off to one side: {next:?}"
         );
 

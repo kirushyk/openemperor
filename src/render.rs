@@ -491,6 +491,38 @@ impl Canvas {
         self.four_arrows(at, (7.0 * s + pulse, 18.0 * s + pulse), s);
     }
 
+    /// The move cursor around a small wedge of five dots, a group keeping its shape on the way.
+    fn march_cursor(&mut self, (x, y): (f32, f32), s: f32, seconds: f32) {
+        const DOTS: [(f32, f32); 5] = [
+            (0.0, -6.0),
+            (-6.0, 0.0),
+            (6.0, 0.0),
+            (-12.0, 6.0),
+            (12.0, 6.0),
+        ];
+        self.move_cursor((x, y), s, seconds);
+        let edge = (2.0 * s).max(1.0);
+        for (dx, dy) in DOTS {
+            let (dx, dy) = (x + dx * s * 0.6, y + dy * s * 0.6);
+            self.circle(dx, dy, 2.0 * s + edge, CURSOR_EDGE);
+            self.circle(dx, dy, 2.0 * s, MOVE_CURSOR);
+        }
+    }
+
+    /// A gold dollar sign in a gold ring, beating, for selling what is under it.
+    fn sell_cursor(&mut self, (x, y): (f32, f32), s: f32, seconds: f32) {
+        let thickness = (4.0 * s).max(1.0);
+        let edge = (2.0 * s).max(1.0);
+        let radius = 20.0 * s + 2.0 * s * (seconds * CURSOR_PULSE * TAU).sin();
+        self.ring((x, y), radius, thickness + edge * 2.0, CURSOR_EDGE);
+        self.ring((x, y), radius, thickness, GOLD);
+        let px = (3.0 * s).round().max(1.0);
+        for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+            self.text_centered("$", x + dx * edge, y + dy * edge, px, CURSOR_EDGE);
+        }
+        self.text_centered("$", x, y, px, GOLD);
+    }
+
     /// A green ring with four arrows outside it, pushing away from it as a unit spreads out to
     /// dig in.
     fn deploy_cursor(&mut self, at: (f32, f32), s: f32, seconds: f32) {
@@ -535,8 +567,36 @@ impl Canvas {
             );
         }
         // The arrow drops from high over the ring down onto it, then starts again.
+        self.dropping_arrow((x, y - 46.0 * s), y - 28.0 * s, s, seconds);
+    }
+
+    /// A green ring around an open box, with an arrow dropping into it again and again, for
+    /// soldiers getting into an APC.
+    fn board_cursor(&mut self, (x, y): (f32, f32), s: f32, seconds: f32) {
+        self.green_ring((x, y), 26.0 * s, s);
+        let edge = (2.0 * s).max(1.0);
+        let thickness = (4.0 * s).max(1.0);
+        let (half, top, bottom) = (12.0 * s, y - 2.0 * s, y + 12.0 * s);
+        let open_box = [
+            (x - half, top),
+            (x - half, bottom),
+            (x + half, bottom),
+            (x + half, top),
+        ];
+        for (grow, color) in [(edge * 2.0, CURSOR_EDGE), (0.0, MOVE_CURSOR)] {
+            for piece in open_box.windows(2) {
+                self.line(piece[0], piece[1], thickness + grow, color);
+            }
+        }
+        self.dropping_arrow((x, y - 20.0 * s), y + 8.0 * s, s, seconds);
+    }
+
+    /// A green arrow pointing down, falling with its tip from one point down to a height, then
+    /// starting again.
+    fn dropping_arrow(&mut self, (x, from): (f32, f32), to: f32, s: f32, seconds: f32) {
+        let edge = (2.0 * s).max(1.0);
         let fall = (seconds * CURSOR_PULSE).fract();
-        let tip = y - 28.0 * s - 18.0 * s * (1.0 - fall);
+        let tip = from + (to - from) * fall;
         let (half, tall) = (8.0 * s, 11.0 * s);
         self.triangle(
             [
@@ -677,11 +737,11 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
         .iter()
         .filter(|eruption| seen(eruption.at))
         .map(|eruption| {
-            let flicker = 0.85 + 0.15 * (game.battle_time() * 23.0 + eruption.at.0).sin();
+            let flicker = 0.85 + 0.15 * (game.battle_time() * 23.0 + eruption.at.0 * 0.0221).sin();
             let light = eruption.strength() * 1.8 * flicker;
             PointLight {
-                place: [eruption.at.0, eruption.at.1 + 2.0, eruption.at.2],
-                radius: 11.0,
+                place: [eruption.at.0, eruption.at.1 + 90.51, eruption.at.2],
+                radius: 497.8,
                 color: [light, light * 0.4, light * 0.1],
                 unused: 0.0,
             }
@@ -695,8 +755,8 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
         .map(|blast| {
             let light = blast.life * blast.life * 1.3;
             PointLight {
-                place: [blast.at.0, blast.at.1 + 0.6, blast.at.2],
-                radius: blast.radius * 3.0 + 1.5,
+                place: [blast.at.0, blast.at.1 + 27.15, blast.at.2],
+                radius: blast.radius * 3.0 + 67.88,
                 color: [light, light * 0.55, light * 0.2],
                 unused: 0.0,
             }
@@ -708,8 +768,8 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
         .map(|unit| {
             let flicker = 0.8 + 0.2 * (game.battle_time() * 17.0 + unit.id as f32).sin();
             PointLight {
-                place: [unit.x, unit.pick_height() + 0.5, unit.z],
-                radius: 3.0 + unit.radius() * 2.0,
+                place: [unit.x, unit.pick_height() + 22.63, unit.z],
+                radius: 135.8 + unit.radius() * 2.0,
                 color: [0.9 * flicker, 0.42 * flicker, 0.1 * flicker],
                 unused: 0.0,
             }
@@ -724,8 +784,8 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
         .map(|flare| {
             let light = flare.life * flare.size * 0.07;
             PointLight {
-                place: [flare.at.0, flare.at.1 + 0.2, flare.at.2],
-                radius: 1.2 + flare.size * 0.14,
+                place: [flare.at.0, flare.at.1 + 9.051, flare.at.2],
+                radius: 54.31 + flare.size * 6.336,
                 color: [light, light * 0.68, light * 0.3],
                 unused: 0.0,
             }
@@ -748,7 +808,17 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 
 fn unit_vector(a: [f32; 3]) -> [f32; 3] {
     let length = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt().max(1e-6);
-    a.map(|c| c / length)
+    [a[0] / length, a[1] / length, a[2] / length]
+}
+
+/// A point this far along a way from another. Spelled out, as it is worked out for corners of
+/// models by the thousand every frame.
+fn offset(from: [f32; 3], way: [f32; 3], by: f32) -> [f32; 3] {
+    [
+        from[0] + way[0] * by,
+        from[1] + way[1] * by,
+        from[2] + way[2] * by,
+    ]
 }
 
 fn canvas_of(game: &Game) -> Canvas {
@@ -896,6 +966,9 @@ fn canvas_of(game: &Game) -> Canvas {
         CursorLook::Deploy => canvas.deploy_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::Undeploy => canvas.undeploy_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::Land => canvas.land_cursor(game.mouse, s, game.screen_elapsed()),
+        CursorLook::March => canvas.march_cursor(game.mouse, s, game.screen_elapsed()),
+        CursorLook::Board => canvas.board_cursor(game.mouse, s, game.screen_elapsed()),
+        CursorLook::Sell => canvas.sell_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::Arrow => canvas.cursor(game.mouse, s),
     }
     let lies_on_map = matches!(
@@ -904,6 +977,7 @@ fn canvas_of(game: &Game) -> Canvas {
             | CursorLook::Harvest
             | CursorLook::Carry
             | CursorLook::Move
+            | CursorLook::March
             | CursorLook::Deploy
             | CursorLook::Undeploy
     );
@@ -921,10 +995,10 @@ fn lay_cursor_on_map(canvas: &mut Canvas, game: &Game, drawn: usize) {
         return;
     };
     let y = terrain.height_at(x, z);
-    let (Some(middle), Some(east)) = (view.project(x, y, z), view.project(x + 1.0, y, z)) else {
+    let (Some(middle), Some(east)) = (view.project(x, y, z), view.project(x + 45.25, y, z)) else {
         return;
     };
-    let world_per_pixel = 1.0 / (east.0 - middle.0).abs().max(1.0);
+    let world_per_pixel = 45.25 / (east.0 - middle.0).abs().max(1.0);
     for vertex in &mut canvas.vertices[drawn..] {
         let (dx, dz) = (vertex.x - game.mouse.0, vertex.y - game.mouse.1);
         let (px, pz) = (x + dx * world_per_pixel, z + dz * world_per_pixel);
@@ -1181,7 +1255,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
                 }
                 draw_unit(canvas, game, &view, unit);
                 draw_health_bar(canvas, game, &view, unit);
-                draw_rockets_left(canvas, game, &view, unit);
+                draw_pips(canvas, game, &view, unit);
                 draw_medals(canvas, game, &view, unit);
                 draw_group_number(canvas, game, &view, unit);
             }
@@ -1211,8 +1285,19 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
             draw_flames(canvas, game, &view, &wreck.unit);
         }
     }
+    let terrain = battlefield::terrain(game.battle_map);
+    for found in game
+        .crates
+        .iter()
+        .filter(|c| game.sight_at(c.x, c.z) == Sight::Visible)
+    {
+        models::draw_crate(
+            canvas,
+            (found.x, terrain.height_at(found.x, found.z), found.z),
+        );
+    }
     // A body reaches no farther than this from its first joint.
-    const RAGDOLL_REACH: f32 = 1.5;
+    const RAGDOLL_REACH: f32 = 67.88;
     let ragdolls: Vec<_> = game
         .combat
         .ragdolls
@@ -1235,11 +1320,12 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         draw_shatter(canvas, game, &view, shatter);
     }
     draw_placing_squares(canvas, game, &view);
+    draw_placing_arrow(canvas, game, &view);
     draw_on_threads(canvas, &flying, |canvas, &unit| {
         draw_carried(canvas, game, &view, unit);
         draw_unit(canvas, game, &view, unit);
         draw_health_bar(canvas, game, &view, unit);
-        draw_rockets_left(canvas, game, &view, unit);
+        draw_pips(canvas, game, &view, unit);
         draw_medals(canvas, game, &view, unit);
         draw_group_number(canvas, game, &view, unit);
     });
@@ -1313,7 +1399,7 @@ fn cast_only(canvas: &mut Canvas, (x, y, z): Point, half: f32) {
 }
 
 /// How far over the ground what lies on it goes, to show over it in the depth test.
-const OVER_GROUND: f32 = 0.04;
+const OVER_GROUND: f32 = 1.81;
 
 /// A flat disc at one height, seen in perspective, fading out towards its rim if asked.
 fn draw_flat_disc(
@@ -1360,6 +1446,63 @@ fn draw_placing_squares(canvas: &mut Canvas, game: &Game, view: &battlefield::Vi
         canvas.deep_fill(view, [a, b, c]);
         canvas.deep_fill(view, [a, c, d]);
     }
+}
+
+/// While a drag turns the building being placed, a small arrow lying on the ground just out
+/// from the edge of its squares, pointing the way it will look.
+fn draw_placing_arrow(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
+    /// How long it is, about a square and a half, how long and wide its head is, and how wide
+    /// its shaft.
+    const LENGTH: f32 = 1.5 * battlefield::CELL_SIDE;
+    const HEAD: (f32, f32) = (0.45, 0.25);
+    const SHAFT: f32 = 0.08;
+    const COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.8];
+    let Some((plot, (out_x, out_z))) = game.placing_arrow() else {
+        return;
+    };
+    let terrain = battlefield::terrain(game.battle_map);
+    let (x, z) = plot.center();
+    let corners = [
+        (0, 0),
+        (plot.cols, 0),
+        (plot.cols, plot.rows),
+        (0, plot.rows),
+    ];
+    let edge = corners
+        .map(|(u, v)| {
+            let (cx, cz) = battlefield::grid_to_world((plot.u + u) as f32, (plot.v + v) as f32);
+            (cx - x) * out_x + (cz - z) * out_z
+        })
+        .into_iter()
+        .fold(0.0, f32::max);
+    let point = |along: f32, across: f32| {
+        let (px, pz) = (
+            x + out_x * along - out_z * across,
+            z + out_z * along + out_x * across,
+        );
+        (
+            (
+                px,
+                terrain.height_at(px, pz).max(0.0) + OVER_GROUND * 2.0,
+                pz,
+            ),
+            COLOR,
+        )
+    };
+    let tip = edge + LENGTH;
+    let neck = tip - HEAD.0;
+    let [a, b, c, d] = [
+        point(edge, -SHAFT),
+        point(neck, -SHAFT),
+        point(neck, SHAFT),
+        point(edge, SHAFT),
+    ];
+    canvas.deep_fill(view, [a, b, c]);
+    canvas.deep_fill(view, [a, c, d]);
+    canvas.deep_fill(
+        view,
+        [point(neck, -HEAD.1), point(tip, 0.0), point(neck, HEAD.1)],
+    );
 }
 
 fn draw_draped_disc(
@@ -1442,18 +1585,18 @@ fn draw_radiation_motes(
     fade: f32,
 ) {
     const MOTES: usize = 24;
-    const CLIMB: f32 = 2.5;
+    const CLIMB: f32 = 113.1;
     let terrain = battlefield::terrain(game.battle_map);
     let time = game.battle_time();
     for i in 0..MOTES {
-        let seed = i as f32 * 7.31 + zone.x * 0.13 + zone.z * 0.17;
+        let seed = i as f32 * 7.31 + zone.x * 0.002873 + zone.z * 0.003757;
         let angle = seed.sin() * TAU;
         let out = STRIKE_RADIUS * (0.5 + 0.5 * (seed * 3.7).sin()).sqrt();
         let (mx, mz) = (zone.x + angle.cos() * out, zone.z + angle.sin() * out);
         let phase = (time * 0.35 + (seed * 1.9).sin() * 0.5 + 0.5).fract();
         let y = terrain.height_at(mx, mz) + phase * CLIMB;
         let glow = POISON_FILL.map(|c| c * 0.35 * fade * (1.0 - phase) * phase * 4.0);
-        draw_glare(canvas, view, (mx, y, mz), 0.25, glow);
+        draw_glare(canvas, view, (mx, y, mz), 11.31, glow);
     }
 }
 
@@ -1512,30 +1655,70 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
         let (dx, dy, dz) = missile.direction;
         let back = |by: f32| (x - dx * by, y - dy * by, z - dz * by);
         if missile.is_plasma() {
-            canvas.deep_line(view, back(0.0), back(1.1), (5.0 * s).max(2.0), PLASMA_TRAIL);
-            draw_glare(canvas, view, missile.position, 0.55, [0.25, 0.45, 1.0]);
-            draw_glare(canvas, view, missile.position, 0.2, [0.85, 0.92, 1.0]);
-            cast_only(canvas, missile.position, 0.08);
+            canvas.deep_line(
+                view,
+                back(0.0),
+                back(49.78),
+                (5.0 * s).max(2.0),
+                PLASMA_TRAIL,
+            );
+            draw_glare(canvas, view, missile.position, 24.89, [0.25, 0.45, 1.0]);
+            draw_glare(canvas, view, missile.position, 9.051, [0.85, 0.92, 1.0]);
+            cast_only(canvas, missile.position, 3.62);
             continue;
         }
         let wide = (4.0 * s).max(1.0);
-        canvas.deep_line(view, back(0.35), back(0.8), wide, MISSILE_FLAME);
-        canvas.deep_line(view, back(0.0), back(0.35), wide, MISSILE_BODY);
-        cast_only(canvas, back(0.2), 0.05);
+        canvas.deep_line(view, back(15.84), back(36.2), wide, MISSILE_FLAME);
+        canvas.deep_line(view, back(0.0), back(15.84), wide, MISSILE_BODY);
+        cast_only(canvas, back(9.051), 2.263);
     }
     for shell in game.combat.shells.iter().filter(|s| seen(s.position())) {
         let (x, y, z) = shell.position();
         if let Some(turn) = shell.cistern_turn() {
             let (sin, cos) = turn.sin_cos();
             let end = |by: f32| (x + cos * by, y + sin * by, z);
-            cast_only(canvas, (x, y, z), 0.08);
-            canvas.deep_line(view, end(-0.16), end(0.16), (7.0 * s).max(3.0), SHELL_BODY);
+            cast_only(canvas, (x, y, z), 3.62);
+            canvas.deep_line(
+                view,
+                end(-7.241),
+                end(7.241),
+                (7.0 * s).max(3.0),
+                SHELL_BODY,
+            );
             let band = with_alpha(GAS_COLOR, 1.0);
-            canvas.deep_line(view, end(-0.05), end(0.05), (8.0 * s).max(3.5), band);
+            canvas.deep_line(view, end(-2.263), end(2.263), (8.0 * s).max(3.5), band);
+            continue;
+        }
+        if shell.is_bomb() {
+            // A fat dark body nose first along its fall, with its fins behind.
+            let (bx, by, bz) = shell.a_moment_ago();
+            let (dx, dy, dz) = (x - bx, y - by, z - bz);
+            let length = (dx * dx + dy * dy + dz * dz).sqrt();
+            let (dx, dy, dz) = if length > 0.004525 {
+                (dx / length, dy / length, dz / length)
+            } else {
+                (0.0, -1.0, 0.0)
+            };
+            let behind = |by: f32| (x - dx * by, y - dy * by, z - dz * by);
+            cast_only(canvas, (x, y, z), 5.431);
+            canvas.deep_line(
+                view,
+                (x, y, z),
+                behind(18.1),
+                (9.0 * s).max(3.0),
+                SHELL_BODY,
+            );
+            canvas.deep_line(
+                view,
+                behind(14.48),
+                behind(20.36),
+                (13.0 * s).max(4.0),
+                SHELL_BODY,
+            );
             continue;
         }
         if let Some(tracer) = shell.tracer() {
-            cast_only(canvas, (x, y, z), 0.05);
+            cast_only(canvas, (x, y, z), 2.263);
             let path = std::iter::once((x, y, z)).chain(tracer);
             let next = tracer.into_iter();
             for (i, (from, to)) in path.zip(next).enumerate() {
@@ -1550,7 +1733,7 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
             }
             continue;
         }
-        cast_only(canvas, (x, y, z), 0.1);
+        cast_only(canvas, (x, y, z), 4.525);
         if let Some((px, py, depth)) = view.project_deep(x, y, z) {
             let mark = canvas.vertices.len();
             canvas.circle(px, py, (5.0 * s).max(2.0), SHELL_BODY);
@@ -1560,12 +1743,12 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     for strike in &game.combat.strikes {
         let height = strike.height();
         let (top, bottom) = (
-            (strike.x, height + 3.0, strike.z),
+            (strike.x, height + 135.8, strike.z),
             (strike.x, height, strike.z),
         );
         canvas.deep_line(view, top, bottom, 14.0 * s, with_alpha(POISON_FILL, 0.35));
         canvas.deep_line(view, top, bottom, 6.0 * s, MISSILE_BODY);
-        cast_only(canvas, (strike.x, height + 1.5, strike.z), 0.15);
+        cast_only(canvas, (strike.x, height + 67.88, strike.z), 6.788);
         draw_draped_disc(
             canvas,
             game,
@@ -1614,7 +1797,7 @@ fn draw_flare(
     scale: f32,
 ) {
     /// How far its middle flame reaches, in world units, for a flare of size 1.
-    const FLAME_REACH: f32 = 0.07;
+    const FLAME_REACH: f32 = 3.168;
     const SIDE_ANGLE: f32 = 0.5;
     let (x, y, z) = flare.at;
     let Some((px, py, depth)) = view.project_deep(x, y, z) else {
@@ -1684,10 +1867,10 @@ fn draw_eruption(
     let (x, ground, z) = eruption.at;
     let surface = ground + OVER_GROUND;
     let strength = eruption.strength();
-    let flicker = 0.8 + 0.2 * (game.battle_time() * 31.0 + x).sin();
-    let height = 6.0 * strength * flicker;
+    let flicker = 0.8 + 0.2 * (game.battle_time() * 31.0 + x * 0.0221).sin();
+    let height = 271.5 * strength * flicker;
     let hot = [1.0, 0.55, 0.12].map(|c: f32| c * strength * flicker);
-    let pool_radius = 3.2 * strength;
+    let pool_radius = 144.8 * strength;
     let pool = |i: usize| {
         let (sin, cos) = (i as f32 / POOL_WEDGES as f32 * TAU).sin_cos();
         (x + pool_radius * cos, surface, z + pool_radius * sin)
@@ -1703,9 +1886,9 @@ fn draw_eruption(
         );
     }
     // Two blades across each other, so that it has width from any side.
-    for (dx, dz) in [(0.55, 0.0), (0.0, 0.55)] {
+    for (dx, dz) in [(24.89, 0.0), (0.0, 24.89)] {
         let (left, right) = ((x - dx, ground, z - dz), (x + dx, ground, z + dz));
-        let (tip_x, tip_z) = (x + 0.2 * (game.battle_time() * 7.0).sin(), z);
+        let (tip_x, tip_z) = (x + 9.051 * (game.battle_time() * 7.0).sin(), z);
         canvas.deep_light(
             view,
             [
@@ -1750,7 +1933,7 @@ fn draw_mushroom(
     for i in 0..SKIRT {
         let angle = i as f32 / SKIRT as f32 * TAU + jitter(i);
         let out = radius * (0.4 + 0.8 * rise);
-        let at = (x + angle.cos() * out, ground + 0.3, z + angle.sin() * out);
+        let at = (x + angle.cos() * out, ground + 13.58, z + angle.sin() * out);
         draw_puff(canvas, view, at, radius * 0.14, thin * 0.6, Some(tint(0.3)));
     }
     for level in 0..STEM_LEVELS {
@@ -1824,9 +2007,9 @@ fn draw_tornado(
 ) {
     const RINGS: usize = 9;
     const AROUND: usize = 14;
-    const HEIGHT: f32 = 6.0;
-    const FOOT: f32 = 0.15;
-    const MOUTH: f32 = 1.8;
+    const HEIGHT: f32 = 271.5;
+    const FOOT: f32 = 6.788;
+    const MOUTH: f32 = 81.46;
     let terrain = battlefield::terrain(game.battle_map);
     let dust = crate::weapons::dust_color(terrain);
     let time = game.battle_time() + tornado.phase;
@@ -1836,7 +2019,7 @@ fn draw_tornado(
     let corner = |ring: usize, i: usize| -> (Point, Color) {
         let up = ring as f32 / RINGS as f32;
         let radius = FOOT + (MOUTH - FOOT) * up.powf(1.7);
-        let sway = (time * 0.9 + up * 3.0).sin() * 0.5 * up;
+        let sway = (time * 0.9 + up * 3.0).sin() * 22.63 * up;
         let angle = i as f32 / AROUND as f32 * TAU;
         let (sin, cos) = (angle + time * 5.0 + up * 5.0).sin_cos();
         let streak = 0.5 + 0.5 * (angle * 3.0 + up * 11.0 - time * 6.0).sin();
@@ -1880,7 +2063,7 @@ fn draw_blast_glow(canvas: &mut Canvas, view: &battlefield::View, blast: &crate:
         [life, 0.8 * life, 0.45 * life],
     );
     // Scattered by where it went off, so that no two explosions look alike.
-    let turn = x * 7.3 + z * 3.1;
+    let turn = x * 0.1613 + z * 0.0685;
     for burst in 0..BURSTS {
         let (sin, cos) = (turn + burst as f32 * TAU / BURSTS as f32).sin_cos();
         let out = radius * (1.1 - life * 0.7);
@@ -1953,7 +2136,7 @@ fn draw_spray(canvas: &mut Canvas, view: &battlefield::View, spray: &crate::weap
     const WEDGES: usize = 10;
     const NEAR_ALPHA: f32 = 0.8;
     const FAR_ALPHA: f32 = 0.1;
-    const FAR_HEIGHT: f32 = 0.4;
+    const FAR_HEIGHT: f32 = 18.1;
     let (x, y, z) = spray.from;
     let color = if spray.gas { GAS_COLOR } else { FIRE_COLOR };
     let far = |i: usize| {
@@ -2003,20 +2186,21 @@ fn draw_flamelet(
     draw_glare(canvas, view, flamelet.position, size, glow);
 }
 
-/// Around each selected armed tower, a low see-through green wall as far out as it reaches.
+/// Around each selected armed tower and air defense platform, a low see-through green wall
+/// as far out as it reaches.
 fn draw_tower_ranges(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     const SIDES: usize = 96;
-    const WALL_HEIGHT: f32 = 0.45;
+    const WALL_HEIGHT: f32 = 20.36;
     const FOOT_ALPHA: f32 = 0.38;
     const TOP_ALPHA: f32 = 0.08;
     const WALL_GREEN: [f32; 3] = [0.3, 1.0, 0.4];
     let terrain = battlefield::terrain(game.battle_map);
-    for tower in game
-        .units
-        .iter()
-        .filter(|u| u.selected && u.kind == UnitKind::Tower && u.weapon.is_armed())
-    {
-        let radius = tower.weapon.range();
+    for tower in game.units.iter().filter(|u| {
+        u.selected
+            && (u.kind == UnitKind::Tower || u.role == Role::AirDefensePlatform)
+            && u.weapon.is_armed()
+    }) {
+        let radius = tower.range();
         let foot = |i: usize| {
             let (sin, cos) = (i as f32 / SIDES as f32 * TAU).sin_cos();
             let (x, z) = (tower.x + radius * cos, tower.z + radius * sin);
@@ -2049,7 +2233,7 @@ fn draw_strike_aim(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     let thickness = (3.0 * ui_scale(game.height)).max(1.0);
     let point = |i: usize| {
         let (sin, cos) = (i as f32 / SIDES as f32 * TAU).sin_cos();
-        view.project(x + radius * cos, 0.02, z + radius * sin)
+        view.project(x + radius * cos, 0.9051, z + radius * sin)
     };
     for i in (0..SIDES).step_by(2) {
         if let (Some(a), Some(c)) = (point(i), point(i + 1)) {
@@ -2067,7 +2251,7 @@ fn draw_group_number(canvas: &mut Canvas, game: &Game, view: &battlefield::View,
     let Some(number) = game.group_number(unit.id) else {
         return;
     };
-    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else {
+    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 45.25, unit.z) else {
         return;
     };
     let s = ui_scale(game.height);
@@ -2079,7 +2263,7 @@ fn draw_health_bar(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
     if unit.health >= unit.max_health() {
         return;
     }
-    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else {
+    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 45.25, unit.z) else {
         return;
     };
     let s = ui_scale(game.height);
@@ -2089,18 +2273,24 @@ fn draw_health_bar(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
     canvas.rect(x - width / 2.0, y, width * share, height, HEALTH_GOOD);
 }
 
-/// A row of pips under where a health bar goes, for a machine short of rockets: lit for those
-/// it has left, dark for those it has fired.
-fn draw_rockets_left(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
-    let (Some(left), Some(load)) = (unit.rockets_left(), unit.role.rocket_load()) else {
+/// A row of pips under where a health bar goes: for a machine short of rockets, lit for those
+/// it has left and dark for those it has fired; and for an APC of the player's with anyone on
+/// board, lit for the seats taken.
+fn draw_pips(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    let pips = match (unit.rockets_left(), unit.role.rocket_load()) {
+        (Some(left), Some(load)) if left < load => Some((left, load)),
+        _ if unit.owner == 0 && unit.role.carries_infantry() => {
+            let aboard = unit.passengers.iter().flatten().count() as u8;
+            (aboard > 0).then_some((aboard, units::APC_ROOM as u8))
+        }
+        _ => None,
+    };
+    let Some((left, load)) = pips else {
         return;
     };
-    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else {
+    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 45.25, unit.z) else {
         return;
     };
-    if left == load {
-        return;
-    }
     let s = ui_scale(game.height);
     let (pip, gap) = ((3.0 * s).max(2.0), (1.5 * s).max(1.0));
     let width = f32::from(load) * (pip + gap) - gap;
@@ -2122,7 +2312,7 @@ fn draw_medals(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit:
     if rank == 0 {
         return;
     }
-    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 1.0, unit.z) else {
+    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 45.25, unit.z) else {
         return;
     };
     let s = ui_scale(game.height);
@@ -2197,21 +2387,21 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
 /// A red triangular flag on a pole, stirring a little, where a building sends what it makes. It
 /// leans towards the camera, or from straight above it would hardly show.
 fn draw_gathering_flag(canvas: &mut Canvas, game: &Game, (x, z): (f32, f32)) {
-    const POLE_HEIGHT: f32 = 1.5;
-    const FLAG_TALL: f32 = 0.5;
-    const FLAG_LEANS: f32 = 0.7;
-    const FLAG_LONG: f32 = 1.0;
+    const POLE_HEIGHT: f32 = 67.88;
+    const FLAG_TALL: f32 = 22.63;
+    const FLAG_LEANS: f32 = 31.68;
+    const FLAG_LONG: f32 = 45.25;
     let ground = battlefield::terrain(game.battle_map)
         .height_at(x, z)
         .max(0.0);
     let top = ground + POLE_HEIGHT;
     draw_turned_box(
         canvas,
-        (x, z, 0.035, 0.035, 0.0),
+        (x, z, 1.584, 1.584, 0.0),
         (ground, top),
         [0.82, 0.82, 0.8],
     );
-    let stir = (game.screen_elapsed() * 3.0 + x).sin() * 0.07;
+    let stir = (game.screen_elapsed() * 3.0 + x * 0.0221).sin() * 3.168;
     let normal = unit_vector([0.0, FLAG_LEANS, FLAG_TALL]);
     canvas.objects.extend(
         [
@@ -2235,8 +2425,8 @@ fn draw_dashed_line(
     to: (f32, f32),
     color: Color,
 ) {
-    const DASH: f32 = 0.45;
-    const GAP: f32 = 0.3;
+    const DASH: f32 = 20.36;
+    const GAP: f32 = 13.58;
     let thickness = (2.0 * ui_scale(game.height)).max(1.0);
     let screen = (0.0, 0.0, game.width, game.height);
     let terrain = battlefield::terrain(game.battle_map);
@@ -2264,11 +2454,11 @@ fn draw_dashed_line(
 fn draw_carried(canvas: &mut Canvas, game: &Game, view: &battlefield::View, carrier: &Unit) {
     let cables = |canvas: &mut Canvas, bottom_y: f32| {
         let (sin, cos) = carrier.heading.sin_cos();
-        for side in [-0.15, 0.15] {
+        for side in [-6.788, 6.788] {
             let (x, z) = (carrier.x - sin * side, carrier.z + cos * side);
             let top = (x, carrier.y + carrier.altitude, z);
-            let bottom = (x, bottom_y + 0.25, z);
-            canvas.solid_bar(top, bottom, 0.012, [cos, 0.0, sin], CABLE);
+            let bottom = (x, bottom_y + 11.31, z);
+            canvas.solid_bar(top, bottom, 0.5431, [cos, 0.0, sin], CABLE);
         }
     };
     if let Some(stolen) = stolen_by(game, carrier) {
@@ -2292,8 +2482,8 @@ fn stolen_by<'a>(game: &'a Game, carrier: &Unit) -> Option<&'a Unit> {
 fn shaken(game: &Game, unit: &Unit, seed: f32) -> Unit {
     let time = game.battle_time() * 37.0 + seed;
     let mut shown = *unit;
-    shown.x += 0.07 * time.sin();
-    shown.z += 0.05 * (time * 1.3).cos();
+    shown.x += 3.168 * time.sin();
+    shown.z += 2.263 * (time * 1.3).cos();
     shown.heading += 0.12 * (time * 0.7).sin();
     shown
 }
@@ -2323,20 +2513,21 @@ const FAR_PIXELS: f32 = 40.0;
 /// A ball around all of a unit that is drawn: its middle and its radius.
 fn bounds(unit: &Unit) -> (Point, f32) {
     let height = match (unit.kind, unit.role) {
-        (UnitKind::Infantry, _) => 0.7,
-        (_, Role::Minotaurus) => 1.35,
-        (_, Role::Mongoose) => 0.95,
-        (_, Role::Devastator) => 3.2,
+        (UnitKind::Infantry, _) => 31.68,
+        (_, Role::Minotaurus) => 61.09,
+        (_, Role::Mongoose) => 42.99,
+        (_, Role::Devastator) => 144.8,
         // Its pipe stands high once it is deployed.
         // Its drill sticks out a long way in front.
-        (_, Role::Mcv) => 3.0,
+        (_, Role::Mcv) => 135.8,
         // Its cannon stands high once it is deployed.
-        (_, Role::Kobra) => 2.3,
+        (_, Role::Kobra) => 104.1,
         // It may have a vehicle hanging under it.
-        (_, Role::AdvancedCarryall) => 1.4,
-        (UnitKind::Vehicle | UnitKind::Aircraft, _) => 0.5,
-        (UnitKind::Tower, _) => units::TUBE_HEIGHT + 0.4,
-        (UnitKind::Building, role) => role.building_top(),
+        (_, Role::AdvancedCarryall | Role::Carryall) => 99.56,
+        (_, Role::Harvester) => 63.36,
+        (UnitKind::Vehicle | UnitKind::Aircraft, _) => 22.63,
+        (UnitKind::Tower, _) => (units::TUBE_HEIGHT + 0.4) * unit.stretch()[1],
+        (UnitKind::Building, role) => role.building_top(unit.house),
     };
     let middle = (unit.x, unit.y + unit.altitude + height / 2.0, unit.z);
     (middle, unit.radius() * 1.5 + height / 2.0)
@@ -2407,7 +2598,13 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
     draw_seen_model(canvas, game, unit, seen);
     if matches!(seen, Seen::Near | Seen::Far) {
         if unit.role == Role::AirDrone {
-            draw_drone_flame(canvas, game, view, unit);
+            draw_jet_flame(canvas, game, view, unit, models::DRONE_NOZZLE);
+        }
+        if unit.role == Role::Carryall {
+            let [a, u, c] = units::CARRYALL_JET_NOZZLE;
+            for c in [-c, c] {
+                draw_jet_flame(canvas, game, view, unit, [a, u, c]);
+            }
         }
         if unit.wear() > units::BURNS_PAST {
             draw_flames(canvas, game, view, unit);
@@ -2477,7 +2674,7 @@ fn break_apart(
 ) {
     const IMPLODE_SECONDS: f32 = 0.1;
     const PULLED_IN: f32 = 0.4;
-    const GRAVITY: f32 = 9.0;
+    const GRAVITY: f32 = 407.3;
     const DRAG: f32 = 2.2;
     const SHRINKS_FROM: f32 = 0.35;
     const GLOW_SECONDS: f32 = 0.3;
@@ -2502,11 +2699,11 @@ fn break_apart(
         ];
         let from = [0, 1, 2].map(|i| middle[i] - center[i]);
         let way = unit_vector([
-            from[0] + (next() - 0.5) * 0.8,
-            from[1] + 0.25 + next() * 0.7,
-            from[2] + (next() - 0.5) * 0.8,
+            from[0] + (next() - 0.5) * 36.2,
+            from[1] + 11.31 + next() * 31.68,
+            from[2] + (next() - 0.5) * 36.2,
         ]);
-        let speed = 3.0 + next() * 9.0;
+        let speed = 135.8 + next() * 407.3;
         let thrown = speed * (1.0 - (-DRAG * flight).exp()) / DRAG;
         let axis = unit_vector([next() - 0.5, next() - 0.5, next() - 0.5]);
         let (sin, cos) = ((6.0 + next() * 22.0) * flight).sin_cos();
@@ -2518,7 +2715,7 @@ fn break_apart(
         let mut at =
             [0, 1, 2].map(|i| center[i] + from[i] * (1.0 - PULLED_IN * pull) + way[i] * thrown);
         at[1] -= 0.5 * GRAVITY * flight * flight;
-        at[1] = at[1].max(terrain.height_at(at[0], at[2]) + 0.02);
+        at[1] = at[1].max(terrain.height_at(at[0], at[2]) + 0.9051);
         for vertex in triangle {
             let [x, y, z] = turned([
                 vertex.x - middle[0],
@@ -2550,11 +2747,17 @@ fn draw_standing_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
     }
 }
 
-/// The flame burning out of an air drone's nozzle, flickering.
-fn draw_drone_flame(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+/// The flame burning out of a jet's nozzle, given as [along, up, across] on an aircraft's
+/// model, flickering.
+fn draw_jet_flame(
+    canvas: &mut Canvas,
+    game: &Game,
+    view: &battlefield::View,
+    unit: &Unit,
+    [a, u, c]: [f32; 3],
+) {
     let place = models::Place::in_air(unit);
-    let [a, u, c] = models::DRONE_NOZZLE;
-    let reach = 0.45 + 0.12 * (game.battle_time() * 40.0).sin();
+    let reach = 0.45 + 0.12 * (game.battle_time() * 40.0 + c).sin();
     let at = |p: [f32; 3]| {
         let [x, y, z] = place.point(p);
         (x, y, z)
@@ -2605,8 +2808,15 @@ fn draw_mcv_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
     for i in 0..PUFFS {
         // Each puff rises, drifts with the wind and spreads as it fades.
         let age = (time * 0.3 + i as f32 / PUFFS as f32 + unit.id as f32 * 0.13).fract();
-        let at = (x + age * 1.1, y + 0.1 + age * 2.2, z + age * 0.4);
-        draw_puff(canvas, view, at, 0.18 + age * 0.55, 1.0 - age, Some(SMOKE));
+        let at = (x + age * 49.78, y + 4.525 + age * 99.56, z + age * 18.1);
+        draw_puff(
+            canvas,
+            view,
+            at,
+            8.146 + age * 24.89,
+            1.0 - age,
+            Some(SMOKE),
+        );
     }
     draw_red_glares(canvas, view, &models::mcv_glares(unit, faction), time);
 }
@@ -2619,7 +2829,7 @@ fn draw_red_glares(canvas: &mut Canvas, view: &battlefield::View, glares: &[Poin
             canvas,
             view,
             glare,
-            0.06 + 0.1 * blink,
+            2.715 + 4.525 * blink,
             [0.9 * blink, 0.05 * blink, 0.02],
         );
     }
@@ -2643,8 +2853,10 @@ fn draw_palace_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View
         [1.0, 3.5, -1.0],
         [-1.0, 3.5, 1.0],
     ];
+    let [stretch_x, stretch_y, stretch_z] = unit.stretch();
     let (sin, cos) = unit.facing.turn().sin_cos();
     let at = |[x, y, z]: [f32; 3]| {
+        let (x, y, z) = (x * stretch_x, y * stretch_y, z * stretch_z);
         (
             unit.x + x * cos - z * sin,
             unit.y + y,
@@ -2652,7 +2864,7 @@ fn draw_palace_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View
         )
     };
     for spot in WHITE {
-        draw_glare(canvas, view, at(spot), 0.32, [1.0, 1.0, 0.95]);
+        draw_glare(canvas, view, at(spot), 14.48, [1.0, 1.0, 0.95]);
     }
     draw_red_glares(canvas, view, &RED.map(at), game.battle_time());
 }
@@ -2775,8 +2987,8 @@ fn stain_model(canvas: &mut Canvas, drawn: usize, unit: &Unit) {
     for vertex in &mut canvas.objects[drawn..] {
         let (dx, dy, dz) = (vertex.x - unit.x, vertex.y - unit.y, vertex.z - unit.z);
         vertex.stain = [
-            dx * cos + dz * sin + dy * 0.7 + own,
-            dz * cos - dx * sin - dy * 0.6,
+            (dx * cos + dz * sin + dy * 0.7) * 0.0221 + own,
+            (dz * cos - dx * sin - dy * 0.6) * 0.0221,
             amount,
         ];
     }
@@ -2785,8 +2997,8 @@ fn stain_model(canvas: &mut Canvas, drawn: usize, unit: &Unit) {
 /// Flames standing on what is badly damaged: blades of light licking up from it, more of them
 /// on what is bigger.
 fn draw_flames(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
-    let size = unit.radius().max(0.4);
-    let count = (size * 4.0) as usize + 2;
+    let size = unit.radius().max(18.1);
+    let count = (size * 0.08839) as usize + 2;
     let time = game.battle_time();
     let top = unit.pick_height();
     for i in 0..count {
@@ -2795,23 +3007,23 @@ fn draw_flames(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit:
         let (sin, cos) = seed.sin_cos();
         let out = size * 0.55 * ((i as f32 + 0.5) / count as f32).sqrt();
         let (x, z) = (unit.x + cos * out, unit.z + sin * out);
-        let tall = (0.35 + 0.25 * (time * 11.0 + seed).sin()) * (0.7 + size * 0.5);
-        let half = 0.09 + 0.05 * size;
-        let tip = (x + 0.06 * (time * 7.0 + seed).sin(), top + tall, z);
+        let tall = (0.35 + 0.25 * (time * 11.0 + seed).sin()) * (31.68 + size * 0.5);
+        let half = 4.073 + 0.05 * size;
+        let tip = (x + 2.715 * (time * 7.0 + seed).sin(), top + tall, z);
         let hot = [0.75, 0.32, 0.05];
         canvas.deep_light(
             view,
             [
-                ((x - half, top - 0.1, z), hot),
-                ((x + half, top - 0.1, z), hot),
+                ((x - half, top - 4.525, z), hot),
+                ((x + half, top - 4.525, z), hot),
                 (tip, [0.0; 3]),
             ],
         );
         canvas.deep_light(
             view,
             [
-                ((x, top - 0.1, z - half), hot),
-                ((x, top - 0.1, z + half), hot),
+                ((x, top - 4.525, z - half), hot),
+                ((x, top - 4.525, z + half), hot),
                 (tip, [0.0; 3]),
             ],
         );
@@ -2825,14 +3037,16 @@ const SEARCHLIGHT_LENS: [f32; 3] = [1.0, 0.98, 0.88];
 const GUNMETAL: [f32; 3] = [0.22, 0.23, 0.25];
 
 /// Where a landing pad's searchlight is, relative to the pad's middle, and how high.
-const SEARCHLIGHT: (f32, f32, f32) = (0.84, units::PAD_TOP + 0.45, -0.52);
+const SEARCHLIGHT: (f32, f32, f32) = (0.52, units::PAD_TOP + 0.45, 0.84);
 
 /// A beam going up into the sky from a landing pad's mast, slowly sweeping around.
 fn draw_searchlight(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
-    const HEIGHT: f32 = 9.0;
-    const SWEEP: f32 = 3.5;
+    const HEIGHT: f32 = 407.3;
+    const SWEEP: f32 = 158.4;
     // Where the mast ends up once the pad is laid along the grid.
+    let [stretch_x, stretch_y, stretch_z] = unit.stretch();
     let (dx, dy, dz) = SEARCHLIGHT;
+    let (dx, dy, dz) = (dx * stretch_x, dy * stretch_y, dz * stretch_z);
     let (sin, cos) = unit.facing.turn().sin_cos();
     let lamp = (
         unit.x + dx * cos - dz * sin,
@@ -2843,7 +3057,7 @@ fn draw_searchlight(canvas: &mut Canvas, game: &Game, view: &battlefield::View, 
     let (sin, cos) = angle.sin_cos();
     let far = (lamp.0 + cos * SWEEP, lamp.1 + HEIGHT, lamp.2 + sin * SWEEP);
     // Across the way it points, as the camera sees it, so that it shows as a broad beam.
-    let (across_x, across_z) = (0.75, 0.0);
+    let (across_x, across_z) = (33.94, 0.0);
     let near_half = 0.08;
     let bright = [0.55, 0.55, 0.5];
     let corner = |at: Point, by: f32| (at.0 + across_x * by, at.1, at.2 + across_z * by);
@@ -2871,7 +3085,7 @@ fn draw_landing_pad(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     let legs = house_paint(unit.house).0;
     flat(
         canvas,
-        (x, z, 0.36, 0.3),
+        (x, z, 0.3, 0.36),
         (y, top - 0.14),
         color.map(|c| c * 0.75),
     );
@@ -2898,9 +3112,9 @@ fn draw_landing_pad(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     );
     // The H, thin on the deck.
     let mark = (top, top + 0.012);
-    flat(canvas, (x - 0.22, z, 0.06, 0.32), mark, MARK);
-    flat(canvas, (x + 0.22, z, 0.06, 0.32), mark, MARK);
-    flat(canvas, (x, z, 0.2, 0.05), mark, MARK);
+    flat(canvas, (x, z - 0.22, 0.32, 0.06), mark, MARK);
+    flat(canvas, (x, z + 0.22, 0.32, 0.06), mark, MARK);
+    flat(canvas, (x, z, 0.05, 0.2), mark, MARK);
     // The ring around it.
     let ring = |i: usize| {
         let (sin, cos) = (i as f32 / RING_SIDES as f32 * TAU).sin_cos();
@@ -2937,8 +3151,12 @@ fn draw_landing_pad(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
 /// The red lamps either side of a refinery's exhaust stacks, a little under their tops.
 fn stack_lamps(unit: &Unit) -> [Point; 4] {
     let [(ax, ay, az), (bx, by, bz)] = unit.stack_tops();
+    let [across, up, _] = unit.stretch();
     let (sin, cos) = unit.facing.turn().sin_cos();
-    let side = |(x, y, z): Point, way: f32| (x + way * cos, y - 0.2, z + way * sin);
+    let side = |(x, y, z): Point, way: f32| {
+        let way = way * across;
+        (x + way * cos, y - 0.2 * up, z + way * sin)
+    };
     [
         side((ax, ay, az), -STACK_HALF - 0.03),
         side((ax, ay, az), STACK_HALF + 0.03),
@@ -2952,33 +3170,37 @@ const STACK_HALF: f32 = 0.13;
 
 /// A refinery, with its front on its south side: a long hall at the back with a tank on it
 /// and two tall exhaust stacks with red lamps near their tops, and in front of it three pads
-/// for harvesters to back onto, each with a chute into the hall.
+/// for harvesters to back onto, fanned out with the side ones at 45 degrees to the middle one,
+/// each with a chute into the hall.
 fn draw_refinery(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     const DECK: [f32; 3] = [0.24, 0.24, 0.26];
     const STRIPE: [f32; 3] = [0.9, 0.72, 0.16];
     const RED_LAMP: [f32; 3] = [0.7, 0.06, 0.04];
     let (x, z, y) = (unit.x, unit.z, unit.y);
     let (walls, roof) = house_paint(unit.house);
-    let mut part = |(px, pz, half_x, half_z): (f32, f32, f32, f32), heights, color| {
+    let mut turned_part = |(px, pz, half_x, half_z, heading), heights, color| {
         draw_turned_box(
             canvas,
-            (x + px, z + pz, half_x, half_z, 0.0),
+            (x + px, z + pz, half_x, half_z, heading),
             heights,
             color,
         );
     };
+    let mut part = |(px, pz, half_x, half_z): (f32, f32, f32, f32), heights, color| {
+        turned_part((px, pz, half_x, half_z, 0.0), heights, color);
+    };
     // The hall, its roof, and the owner's band along its front.
-    part((0.0, -1.3, 1.95, 0.72), (y, y + 1.2), walls);
-    part((0.0, -1.3, 1.85, 0.62), (y + 1.2, y + 1.32), roof);
-    part((0.0, -0.57, 1.95, 0.012), (y + 0.9, y + 1.02), color);
+    part((0.0, -1.95, 2.6, 0.8), (y, y + 1.4), walls);
+    part((0.0, -1.95, 2.5, 0.7), (y + 1.4, y + 1.52), roof);
+    part((0.0, -1.15, 2.6, 0.012), (y + 1.05, y + 1.18), color);
     // The tank on its roof, banded.
-    part((0.0, -1.35, 0.5, 0.45), (y + 1.32, y + 2.0), roof);
-    part((0.0, -1.35, 0.51, 0.46), (y + 1.75, y + 1.85), color);
+    part((0.0, -2.0, 0.65, 0.6), (y + 1.52, y + 2.4), roof);
+    part((0.0, -2.0, 0.66, 0.61), (y + 2.1, y + 2.22), color);
     // The stacks: a broad foot, a tall shaft, a band and a dark rim at the top, and red lamps.
     let top = units::REFINERY_STACK_TOP;
     for (sx, sz) in units::REFINERY_STACKS {
-        part((sx, sz, 0.22, 0.22), (y + 1.2, y + 1.7), walls);
-        part((sx, sz, STACK_HALF, STACK_HALF), (y + 1.7, y + top), roof);
+        part((sx, sz, 0.22, 0.22), (y + 1.4, y + 1.9), walls);
+        part((sx, sz, STACK_HALF, STACK_HALF), (y + 1.9, y + top), roof);
         part(
             (sx, sz, STACK_HALF + 0.01, STACK_HALF + 0.01),
             (y + top - 0.55, y + top - 0.45),
@@ -2994,26 +3216,29 @@ fn draw_refinery(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
             part(lamp, (y + top - 0.23, y + top - 0.17), RED_LAMP);
         }
     }
-    // The pads, striped round their edges, each with a chute into the hall at its back.
+    // The pads, striped round their edges, each with a chute into the hall at its back: each
+    // turned along its own way out.
     let (half_x, half_z) = units::REFINERY_PAD_HALF;
-    for (px, pz) in units::REFINERY_PADS {
-        part((px, pz, half_x, half_z), (y, y + 0.05), STRIPE);
-        part(
-            (px, pz, half_x - 0.06, half_z - 0.06),
+    let (hub_x, hub_z) = units::REFINERY_PAD_HUB;
+    for pad in 0..units::REFINERY_PAD_TURNS.len() {
+        let ((px, pz), (out_x, out_z)) = units::refinery_pad(pad);
+        let heading = out_z.atan2(out_x);
+        turned_part((px, pz, half_z, half_x, heading), (y, y + 0.05), STRIPE);
+        turned_part(
+            (px, pz, half_z - 0.06, half_x - 0.06, heading),
             (y + 0.05, y + 0.06),
             DECK,
         );
-        part((px, -0.45, 0.32, 0.12), (y, y + 0.55), BUILDING_DOOR);
-        part((px, -0.45, 0.36, 0.14), (y + 0.55, y + 0.62), color);
+        let chute = (hub_x + out_x, hub_z + out_z);
+        let chute_part = |half_width| (chute.0, chute.1, 0.5, half_width, heading);
+        turned_part(chute_part(0.32), (y, y + 0.7), BUILDING_DOOR);
+        turned_part(chute_part(0.36), (y + 0.7, y + 0.78), color);
     }
 }
 
 fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
     let [r, g, b, _] = team_color(unit.color);
     let color = [r, g, b];
-    let (forward_x, forward_z) = (unit.heading.cos(), unit.heading.sin());
-    let ahead = |by: f32| (unit.x + forward_x * by, unit.z + forward_z * by);
-    let mut part = |footprint, heights, color| draw_turned_box(canvas, footprint, heights, color);
     if unit.role == Role::Mcv {
         models::draw_mcv(canvas, unit, unit.house, game.battle_time(), color);
         return;
@@ -3039,78 +3264,88 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
             models::draw_popup_turret(canvas, unit, color, house_paint(unit.house).0)
         }
         UnitKind::Tower => {
-            let wall_of = |half: f32| (unit.x, unit.z, half, half, std::f32::consts::FRAC_PI_4);
-            let wall = wall_of(0.5);
-            let head_base = units::TUBE_HEIGHT - 0.2;
-            let (wall_color, head_color) = house_paint(unit.house);
-            part(wall, (unit.y, unit.y + head_base), wall_color);
-            let head = (unit.x, unit.z, 0.3, 0.3, unit.heading);
-            let top_of_head = (unit.y + head_base, unit.y + head_base + 0.34);
-            part(head, top_of_head, head_color);
-            let band = (unit.x, unit.z, 0.31, 0.31, unit.heading);
-            part(band, (top_of_head.0, top_of_head.0 + 0.06), color);
-            let (ahead_x, ahead_z) = ahead(0.4);
-            let height = (
-                unit.y + units::TUBE_HEIGHT - 0.06,
-                unit.y + units::TUBE_HEIGHT + 0.06,
-            );
-            if unit.role == Role::FlameTower {
-                // One fat nozzle, with the color of fire on its way out.
-                let nozzle = (ahead_x, ahead_z, 0.3, 0.1, unit.heading);
-                part(nozzle, height, FIRE_COLOR);
-                return;
-            }
-            if unit.role == Role::GunPost {
-                // One machine gun on a low parapet of sandbags.
-                part(wall_of(0.62), (unit.y, unit.y + 0.3), SANDBAGS);
-                let gun = (ahead_x, ahead_z, 0.32, 0.035, unit.heading);
-                part(gun, height, GUNMETAL);
-                return;
-            }
-            // A searchlight on the roof, turning with the head.
-            let roof = unit.y + head_base + 0.34;
-            let (lamp_x, lamp_z) = ahead(0.05);
-            part(
-                (lamp_x, lamp_z, 0.08, 0.07, unit.heading),
-                (roof, roof + 0.12),
-                SEARCHLIGHT_HOUSING,
-            );
-            let (lens_x, lens_z) = ahead(0.135);
-            part(
-                (lens_x, lens_z, 0.006, 0.055, unit.heading),
-                (roof + 0.015, roof + 0.105),
-                SEARCHLIGHT_LENS,
-            );
-            if unit.role == Role::GunTower {
-                // Two machine guns side by side on a breech block.
-                let right = (-forward_z, forward_x);
-                let (breech_x, breech_z) = ahead(0.14);
-                let breech = (
-                    breech_x,
-                    breech_z,
-                    0.12,
-                    units::TUBE_SPREAD + 0.06,
-                    unit.heading,
-                );
-                let gun_height = unit.y + units::TUBE_HEIGHT;
-                part(breech, (gun_height - 0.08, gun_height + 0.07), GUNMETAL);
-                for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
-                    let (x, z) = ahead(0.45);
-                    let barrel = (
-                        x + right.0 * side,
-                        z + right.1 * side,
-                        0.25,
-                        0.03,
-                        unit.heading,
-                    );
-                    part(barrel, (gun_height - 0.03, gun_height + 0.03), GUNMETAL);
-                }
-                return;
-            }
-            for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
-                draw_tube(canvas, unit, side, color.map(|c| c * 0.5));
-            }
+            let drawn = canvas.objects.len();
+            draw_tower(canvas, unit, color);
+            stretch_drawn(canvas, drawn, unit, 0.0);
         }
+    }
+}
+
+/// A tower made in its own size, its head turned to its heading.
+fn draw_tower(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
+    let (forward_x, forward_z) = (unit.heading.cos(), unit.heading.sin());
+    let ahead = |by: f32| (unit.x + forward_x * by, unit.z + forward_z * by);
+    let mut part = |footprint, heights, color| draw_turned_box(canvas, footprint, heights, color);
+    let wall_of = |half: f32| (unit.x, unit.z, half, half, std::f32::consts::FRAC_PI_4);
+    let wall = wall_of(0.5);
+    let head_base = units::TUBE_HEIGHT - 0.2;
+    let (wall_color, head_color) = house_paint(unit.house);
+    part(wall, (unit.y, unit.y + head_base), wall_color);
+    let head = (unit.x, unit.z, 0.3, 0.3, unit.heading);
+    let top_of_head = (unit.y + head_base, unit.y + head_base + 0.34);
+    part(head, top_of_head, head_color);
+    let band = (unit.x, unit.z, 0.31, 0.31, unit.heading);
+    part(band, (top_of_head.0, top_of_head.0 + 0.06), color);
+    let (ahead_x, ahead_z) = ahead(0.4);
+    let height = (
+        unit.y + units::TUBE_HEIGHT - 0.06,
+        unit.y + units::TUBE_HEIGHT + 0.06,
+    );
+    if unit.role == Role::FlameTower {
+        // One fat nozzle, with the color of fire on its way out.
+        let nozzle = (ahead_x, ahead_z, 0.3, 0.1, unit.heading);
+        part(nozzle, height, FIRE_COLOR);
+        return;
+    }
+    if unit.role == Role::GunPost {
+        // One machine gun on a low parapet of sandbags.
+        part(wall_of(0.62), (unit.y, unit.y + 0.3), SANDBAGS);
+        let gun = (ahead_x, ahead_z, 0.32, 0.035, unit.heading);
+        part(gun, height, GUNMETAL);
+        return;
+    }
+    // A searchlight on the roof, turning with the head.
+    let roof = unit.y + head_base + 0.34;
+    let (lamp_x, lamp_z) = ahead(0.05);
+    part(
+        (lamp_x, lamp_z, 0.08, 0.07, unit.heading),
+        (roof, roof + 0.12),
+        SEARCHLIGHT_HOUSING,
+    );
+    let (lens_x, lens_z) = ahead(0.135);
+    part(
+        (lens_x, lens_z, 0.006, 0.055, unit.heading),
+        (roof + 0.015, roof + 0.105),
+        SEARCHLIGHT_LENS,
+    );
+    if unit.role == Role::GunTower {
+        // Two machine guns side by side on a breech block.
+        let right = (-forward_z, forward_x);
+        let (breech_x, breech_z) = ahead(0.14);
+        let breech = (
+            breech_x,
+            breech_z,
+            0.12,
+            units::TUBE_SPREAD + 0.06,
+            unit.heading,
+        );
+        let gun_height = unit.y + units::TUBE_HEIGHT;
+        part(breech, (gun_height - 0.08, gun_height + 0.07), GUNMETAL);
+        for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
+            let (x, z) = ahead(0.45);
+            let barrel = (
+                x + right.0 * side,
+                z + right.1 * side,
+                0.25,
+                0.03,
+                unit.heading,
+            );
+            part(barrel, (gun_height - 0.03, gun_height + 0.03), GUNMETAL);
+        }
+        return;
+    }
+    for side in [-units::TUBE_SPREAD, units::TUBE_SPREAD] {
+        draw_tube(canvas, unit, side, color.map(|c| c * 0.5));
     }
 }
 
@@ -3209,17 +3444,27 @@ pub fn knee_of(hip: (f32, f32), foot: (f32, f32), thigh: f32, shin: f32) -> (f32
     )
 }
 
-/// Turns what was just drawn of a building to line up with the map's grid squares, and brings
-/// it up to its size.
+/// Stretches what was just drawn of a building to the original's size, and turns it to line up
+/// with the map's grid squares.
 fn lay_on_grid(canvas: &mut Canvas, drawn: usize, unit: &Unit) {
-    let size = unit.role.drawn_scale();
-    let (sin, cos) = unit.facing.turn().sin_cos();
+    stretch_drawn(canvas, drawn, unit, unit.facing.turn());
+}
+
+/// Stretches what was just drawn of a unit to the original's size about where it stands, and
+/// turns it this far.
+fn stretch_drawn(canvas: &mut Canvas, drawn: usize, unit: &Unit, turn: f32) {
+    let [stretch_x, stretch_y, stretch_z] = unit.stretch();
+    let (sin, cos) = turn.sin_cos();
     for vertex in &mut canvas.objects[drawn..] {
-        let (dx, dz) = (vertex.x - unit.x, vertex.z - unit.z);
-        vertex.x = unit.x + (dx * cos - dz * sin) * size;
-        vertex.z = unit.z + (dx * sin + dz * cos) * size;
-        vertex.y = unit.y + (vertex.y - unit.y) * size;
+        let (dx, dz) = (
+            (vertex.x - unit.x) * stretch_x,
+            (vertex.z - unit.z) * stretch_z,
+        );
+        vertex.x = unit.x + dx * cos - dz * sin;
+        vertex.z = unit.z + dx * sin + dz * cos;
+        vertex.y = unit.y + (vertex.y - unit.y) * stretch_y;
         let [nx, ny, nz] = vertex.normal;
+        let [nx, ny, nz] = unit_vector([nx / stretch_x, ny / stretch_y, nz / stretch_z]);
         vertex.normal = [nx * cos - nz * sin, ny, nx * sin + nz * cos];
     }
 }
@@ -3386,7 +3631,7 @@ fn draw_turned_box(
 
 fn draw_selected_ring(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
     const SIDES: usize = 16;
-    let radius = unit.radius() + 0.1;
+    let radius = unit.radius() + 4.525;
     let thickness = (2.0 * ui_scale(game.height)).max(1.0);
     let point = |i: usize| {
         let (sin, cos) = (i as f32 / SIDES as f32 * TAU).sin_cos();
@@ -3555,6 +3800,13 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
         }
         if makes.is_some_and(|role| game.is_ready_to_place(role)) {
             canvas.text_centered("Ready", cx, cell.y + cell.h - 12.0 * s, chat_px(game), GOLD);
+        } else if let Some(role) = makes {
+            // Its price, dimmed while there is not that much money.
+            let price = format!("${}", role.cost());
+            let affordable = role.cost() <= game.player_money();
+            let color = if can_make && affordable { TEXT } else { QUIET };
+            let y = cell.y + cell.h - 12.0 * s;
+            canvas.text_left(&price, cell.x + 6.0 * s, y, chat_px(game), color);
         }
         if let Some(count) = makes.and_then(|role| game.queue_badge(role)) {
             let px = small_text_px(game.height);
@@ -3619,7 +3871,8 @@ fn short_name(role: Role) -> &'static str {
         Role::RocketLauncher => "RktLnch",
         Role::Mongoose => "Mongse",
         Role::Minotaurus => "Minotr",
-        Role::AdvancedCarryall => "Carry",
+        Role::AdvancedCarryall => "AdvCarry",
+        Role::Carryall => "Carry",
         Role::AirDefensePlatform => "AirDef",
         Role::AirDrone => "Drone",
         Role::Ornithopter => "Ornith",
@@ -3643,9 +3896,12 @@ fn short_name(role: Role) -> &'static str {
         Role::SandBike => "Bike",
         Role::DiskSaw => "Saw",
         Role::FlameTank => "FlmTank",
-        Role::Devastator => "Walker",
+        Role::Devastator => "Devastator",
         Role::LaserTank => "Laser",
         Role::Kobra => "Siege",
+        Role::RocketApc | Role::StealthApc => "APC",
+        Role::AirMine => "A Mine",
+        Role::EyeInTheSky => "Eye",
         _ => role.name(),
     }
 }
@@ -4053,11 +4309,13 @@ fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
     }
     let dot = (3.0 * ui_scale(game.height)).round().max(2.0);
     let enemies_on_radar = game.has_outpost();
-    for unit in game
-        .units
-        .iter()
-        .filter(|u| game.shows(u) && (enemies_on_radar || !game.is_enemy_of_player(u)))
-    {
+    // A carryall bringing a harvester shows once it is over the map.
+    let terrain = battlefield::terrain(game.battle_map);
+    for unit in game.units.iter().filter(|u| {
+        game.shows(u)
+            && terrain.on_map(u.x, u.z)
+            && (enemies_on_radar || !game.is_enemy_of_player(u))
+    }) {
         let (x, y) = battlefield::world_to_minimap(rect, game.middle_z(), unit.x, unit.z);
         let color = if unit.selected {
             VIEW_OUTLINE
@@ -4299,5 +4557,169 @@ mod thread_tests {
         });
         let drawn: Vec<f32> = canvas.vertices.iter().map(|v| v.x).collect();
         assert_eq!(drawn, things);
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+    use crate::units::Facing;
+
+    /// How big what was drawn of a unit comes out, as (along, up, across) in its own frame:
+    /// along its heading for a machine, and across and back from its front for a building.
+    fn drawn_size(canvas: &Canvas, unit: &Unit, turn: f32) -> [f32; 3] {
+        let (sin, cos) = turn.sin_cos();
+        let local: Vec<[f32; 3]> = canvas
+            .objects
+            .iter()
+            .map(|v| {
+                let (dx, dz) = (v.x - unit.x, v.z - unit.z);
+                [dx * cos + dz * sin, v.y - unit.y, dz * cos - dx * sin]
+            })
+            .collect();
+        let span = |axis: usize| {
+            let lo = local.iter().map(|p| p[axis]).fold(f32::MAX, f32::min);
+            let hi = local.iter().map(|p| p[axis]).fold(f32::MIN, f32::max);
+            (lo, hi)
+        };
+        let ((x_lo, x_hi), (y_lo, y_hi), (z_lo, z_hi)) = (span(0), span(1), span(2));
+        // What stands on the ground is as tall as its top; what flies, as thick as it is.
+        let up = if unit.kind.flies() { y_hi - y_lo } else { y_hi };
+        [x_hi - x_lo, up, z_hi - z_lo]
+    }
+
+    fn assert_original_size(role: Role, house: Faction, drawn: [f32; 3]) {
+        let wanted = role.original_size(house);
+        for (axis, (drawn, wanted)) in drawn.into_iter().zip(wanted).enumerate() {
+            assert!(
+                (drawn / wanted - 1.0).abs() < 0.03,
+                "{role:?} of {house:?}, axis {axis}: drawn {drawn}, the original's {wanted}"
+            );
+        }
+    }
+
+    #[test]
+    fn machines_come_out_as_big_as_the_originals() {
+        let roles = [
+            Role::Tank,
+            Role::RepairVehicle,
+            Role::Mcv,
+            Role::Harvester,
+            Role::SandBike,
+            Role::DiskSaw,
+            Role::FlameTank,
+            Role::Devastator,
+            Role::Recon,
+            Role::LaserTank,
+            Role::Kobra,
+            Role::RocketApc,
+            Role::StealthApc,
+            Role::Catapult,
+            Role::RocketLauncher,
+            Role::Mongoose,
+            Role::Minotaurus,
+            Role::AdvancedCarryall,
+            Role::Carryall,
+            Role::AirDefensePlatform,
+            Role::AirDrone,
+            Role::Ornithopter,
+            Role::Destroyer,
+            Role::AirMine,
+            Role::EyeInTheSky,
+        ];
+        for role in roles {
+            let mut unit = Unit::for_test(0.0, 0.0, role.kind());
+            (unit.role, unit.kind, unit.altitude, unit.heading) = (role, role.kind(), 0.0, 0.0);
+            let mut canvas = Canvas::default();
+            if role == Role::Mcv {
+                models::draw_mcv(&mut canvas, &unit, unit.house, 0.0, [1.0; 3]);
+            } else {
+                models::draw_machine(&mut canvas, &unit, 0.0, [1.0; 3]);
+            }
+            assert_original_size(role, unit.house, drawn_size(&canvas, &unit, 0.0));
+        }
+    }
+
+    #[test]
+    fn towers_the_pad_and_a_deployed_mcv_come_out_as_big_as_the_originals() {
+        for role in [
+            Role::Tower,
+            Role::FlameTower,
+            Role::GunTower,
+            Role::GunPost,
+            Role::GasTower,
+            Role::LaserTower,
+        ] {
+            let mut unit = Unit::for_test(0.0, 0.0, role.kind());
+            (unit.role, unit.kind, unit.heading, unit.popped) = (role, role.kind(), 0.0, 1.0);
+            let mut canvas = Canvas::default();
+            if role.pops_up() {
+                models::draw_popup_turret(&mut canvas, &unit, [1.0; 3], [1.0; 3]);
+            } else {
+                draw_tower(&mut canvas, &unit, [1.0; 3]);
+                stretch_drawn(&mut canvas, 0, &unit, 0.0);
+            }
+            // Square on the grid, which lies at an eighth of a turn to the world.
+            let turn = if role.pops_up() { 0.0 } else { FRAC_PI_4 };
+            let [_, up, _] = drawn_size(&canvas, &unit, turn);
+            // Its squares are what it stands on: its guns may reach out past them.
+            canvas.objects.retain(|v| v.y < 1.0);
+            let [across, _, ahead] = drawn_size(&canvas, &unit, turn);
+            assert_original_size(role, unit.house, [across, up, ahead]);
+        }
+        let mut pad = Unit::for_test(0.0, 0.0, UnitKind::Building);
+        pad.role = Role::LandingPad;
+        let mut canvas = Canvas::default();
+        draw_landing_pad(&mut canvas, &pad, [1.0; 3]);
+        lay_on_grid(&mut canvas, 0, &pad);
+        let drawn = drawn_size(&canvas, &pad, pad.facing.turn());
+        assert_original_size(Role::LandingPad, pad.house, drawn);
+        for house in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
+            let mut mcv = Unit::for_test(0.0, 0.0, UnitKind::Building);
+            (mcv.role, mcv.house, mcv.deployed, mcv.heading) = (Role::Mcv, house, true, 0.0);
+            let mut canvas = Canvas::default();
+            models::draw_mcv(&mut canvas, &mcv, house, 0.0, [1.0; 3]);
+            let (cols, rows) = Role::Mcv.plot_size(house);
+            let yard = [
+                rows as f32 * battlefield::CELL_SIDE,
+                107.0,
+                cols as f32 * battlefield::CELL_SIDE,
+            ];
+            for (drawn, wanted) in drawn_size(&canvas, &mcv, 0.0).into_iter().zip(yard) {
+                assert!(
+                    (drawn / wanted - 1.0).abs() < 0.03,
+                    "{house:?}: {drawn} {wanted}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn buildings_come_out_as_big_as_the_originals_on_their_grid_squares() {
+        let houses = [Faction::Atreides, Faction::Harkonnen, Faction::Ordos];
+        for house in houses {
+            for role in [
+                Role::Barracks,
+                Role::Factory,
+                Role::Hangar,
+                Role::Refinery,
+                Role::Outpost,
+                Role::Palace(house),
+            ] {
+                for facing in [Facing::LeftBottom, Facing::RightTop] {
+                    let mut unit = Unit::for_test(0.0, 0.0, UnitKind::Building);
+                    (unit.role, unit.house, unit.facing) = (role, house, facing);
+                    let mut canvas = Canvas::default();
+                    if role == Role::Refinery {
+                        draw_refinery(&mut canvas, &unit, [1.0; 3]);
+                    } else {
+                        draw_building(&mut canvas, &unit, [1.0; 3], 0.0, 0.0);
+                    }
+                    lay_on_grid(&mut canvas, 0, &unit);
+                    let drawn = drawn_size(&canvas, &unit, facing.turn());
+                    assert_original_size(role, house, drawn);
+                }
+            }
+        }
     }
 }

@@ -2,7 +2,7 @@
 //! blocks, round tubes and bodies lofted from rings. Faces that neither the camera nor the sun
 //! can see are left out as they are made.
 
-use super::{Canvas, Point, cross, knee_of, unit_vector};
+use super::{Canvas, Point, cross, knee_of, offset, unit_vector};
 use crate::battlefield::{CELL_SIDE, SUN};
 use crate::game::Faction;
 use crate::platform::WorldVertex;
@@ -87,6 +87,14 @@ const DETONATOR: Paint = Paint {
     color: [0.95, 0.08, 0.05],
     shine: 0.3,
 };
+const WOOD: Paint = Paint {
+    color: [0.56, 0.38, 0.2],
+    shine: 0.05,
+};
+const GOLD: Paint = Paint {
+    color: [0.95, 0.75, 0.25],
+    shine: 1.0,
+};
 /// How much the owner's paint shines: a soft, wide sheen.
 const PAINT_SHINE: f32 = 0.35;
 
@@ -115,15 +123,14 @@ impl Watchers {
     fn see(&self, points: &[[f32; 3]; 3], normals: &[[f32; 3]; 3]) -> bool {
         const SLACK: f32 = -0.05;
         let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let normal = unit_vector([0, 1, 2].map(|i| normals[0][i] + normals[1][i] + normals[2][i]));
+        let [n0, n1, n2] = *normals;
+        let normal = unit_vector(offset(offset(n0, n1, 1.0), n2, 1.0));
         if dot(normal, SUN) > SLACK {
             return true;
         }
-        let middle = [0, 1, 2].map(|i| (points[0][i] + points[1][i] + points[2][i]) / 3.0);
-        let faces = |eye: [f32; 3]| {
-            let to = unit_vector([0, 1, 2].map(|i| eye[i] - middle[i]));
-            dot(normal, to) > SLACK
-        };
+        let [p0, p1, p2] = *points;
+        let middle = offset(offset(p0, p1, 1.0), p2, 1.0).map(|c| c / 3.0);
+        let faces = |eye: [f32; 3]| dot(normal, unit_vector(offset(eye, middle, -1.0))) > SLACK;
         let [x, y, z] = self.eye;
         self.camera && (faces(self.eye) || self.mirrored && faces([x, -y, z]))
     }
@@ -140,8 +147,14 @@ pub struct Place {
 }
 
 impl Place {
-    /// Standing on the ground under the unit, turned to its heading.
+    /// Standing on the ground under the unit, turned to its heading, its model stretched to the
+    /// original's size.
     pub fn on_ground(unit: &Unit) -> Self {
+        Place::level(unit).stretched(unit.stretch())
+    }
+
+    /// Standing on the ground under the unit, turned to its heading.
+    fn level(unit: &Unit) -> Self {
         let (sin, cos) = unit.heading.sin_cos();
         Place {
             origin: [unit.x, unit.y, unit.z],
@@ -151,25 +164,54 @@ impl Place {
         }
     }
 
-    /// Where the unit is up in the air, leaning with it into its turns.
+    /// Where the unit is up in the air, leaning with it into its turns, its model stretched to
+    /// the original's size.
     pub fn in_air(unit: &Unit) -> Self {
-        let mut place = Place::on_ground(unit);
+        let mut place = Place::level(unit);
         place.origin[1] += unit.altitude;
         let (sin, cos) = unit.bank.sin_cos();
         let (right, up) = (place.across, place.up);
         place.across = [0, 1, 2].map(|i| right[i] * cos - up[i] * sin);
         place.up = [0, 1, 2].map(|i| right[i] * sin + up[i] * cos);
-        place
+        place.stretched(unit.stretch())
+    }
+
+    /// The same place, with what is made in it stretched this many times [along, up, across].
+    fn stretched(self, [along, up, across]: [f32; 3]) -> Self {
+        Place {
+            along: self.along.map(|c| c * along),
+            up: self.up.map(|c| c * up),
+            across: self.across.map(|c| c * across),
+            ..self
+        }
+    }
+
+    /// A surface's normal given as [along, up, across], in the world: still at right angles to
+    /// the surface however the place is stretched.
+    fn normal(&self, [a, u, c]: [f32; 3]) -> [f32; 3] {
+        let (along, up, across) = (self.along, self.up, self.across);
+        let (to_along, to_up, to_across) =
+            (cross(up, across), cross(across, along), cross(along, up));
+        // A mirrored place turns the faces inside out, and these back with them.
+        let turned = (0..3).map(|i| along[i] * to_along[i]).sum::<f32>().signum();
+        unit_vector([0, 1, 2].map(|i| (to_along[i] * a + to_up[i] * u + to_across[i] * c) * turned))
     }
 
     /// A point given as [along, up, across] from the origin, in the world.
-    pub fn point(&self, [a, u, c]: [f32; 3]) -> [f32; 3] {
-        [0, 1, 2].map(|i| self.origin[i] + self.along[i] * a + self.up[i] * u + self.across[i] * c)
+    pub fn point(&self, point: [f32; 3]) -> [f32; 3] {
+        let [x, y, z] = self.way(point);
+        [self.origin[0] + x, self.origin[1] + y, self.origin[2] + z]
     }
 
-    /// A way given as [along, up, across], in the world.
+    /// A way given as [along, up, across], in the world. Spelled out, as it is made for every
+    /// corner of every model.
     pub fn way(&self, [a, u, c]: [f32; 3]) -> [f32; 3] {
-        [0, 1, 2].map(|i| self.along[i] * a + self.up[i] * u + self.across[i] * c)
+        let (along, up, across) = (self.along, self.up, self.across);
+        [
+            along[0] * a + up[0] * u + across[0] * c,
+            along[1] * a + up[1] * u + across[1] * c,
+            along[2] * a + up[2] * u + across[2] * c,
+        ]
     }
 
     /// The same place with its origin moved by [along, up, across].
@@ -296,7 +338,7 @@ impl<'a> Model<'a> {
 
     fn triangle(&mut self, points: [[f32; 3]; 3], normals: [[f32; 3]; 3], paint: Paint) {
         let points = points.map(|p| self.place.point(p));
-        let normals = normals.map(|n| self.place.way(n));
+        let normals = normals.map(|n| self.place.normal(n));
         if self.watchers.is_some_and(|w| !w.see(&points, &normals)) {
             return;
         }
@@ -413,7 +455,7 @@ impl<'a> Model<'a> {
     }
 
     fn tube(&mut self, tube: Tube, paint: Paint) {
-        let way: [f32; 3] = [0, 1, 2].map(|i| tube.to[i] - tube.from[i]);
+        let way = offset(tube.to, tube.from, -1.0);
         let length = (way[0] * way[0] + way[1] * way[1] + way[2] * way[2]).sqrt();
         if length <= 0.0 {
             return;
@@ -430,15 +472,17 @@ impl<'a> Model<'a> {
         let turn = if tube.round { 0.0 } else { PI / sides as f32 };
         let out = |step: f32| {
             let (sin, cos) = (turn + step / sides as f32 * TAU).sin_cos();
-            [0, 1, 2].map(|i| u[i] * cos + v[i] * sin)
+            offset(u.map(|c| c * cos), v, sin)
         };
-        let ring =
-            |base: [f32; 3], radius: f32, o: [f32; 3]| [0, 1, 2].map(|i| base[i] + o[i] * radius);
+        let ring = |base: [f32; 3], radius: f32, o: [f32; 3]| offset(base, o, radius);
         let (near, far) = tube.radii;
         let slope = (near - far) / length;
-        let normal = |o: [f32; 3]| unit_vector([0, 1, 2].map(|i| o[i] + w[i] * slope));
+        let normal = |o: [f32; 3]| unit_vector(offset(o, w, slope));
+        // Each side starts where the one before it ended.
+        let mut o1 = out(0.0);
         for side in 0..sides {
-            let (o0, o1) = (out(side as f32), out(side as f32 + 1.0));
+            let o0 = o1;
+            o1 = out(side as f32 + 1.0);
             let corners = [
                 ring(tube.from, near, o0),
                 ring(tube.from, near, o1),
@@ -736,6 +780,8 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         Role::Mongoose => &[[0.39, 0.58, 0.0]],
         Role::Minotaurus => &[[0.41, 1.15, -0.06], [0.41, 1.15, 0.06]],
         Role::AdvancedCarryall => &[[0.55, 0.03, -0.08], [0.55, 0.03, 0.08]],
+        // One big lamp in the tip of its nose.
+        Role::Carryall => &[[0.5, 0.07, 0.0]],
         Role::AirDefensePlatform => &[[0.41, 0.05, -0.27], [0.41, 0.05, 0.27]],
         Role::Ornithopter => &[[0.23, 0.08, 0.0]],
         Role::Destroyer => &[[0.45, 0.09, -0.06], [0.45, 0.09, 0.06]],
@@ -753,6 +799,8 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
         Role::LaserTank => &[[0.48, 0.17, 0.0]],
         // On top of its right track.
         Role::Kobra => &[[0.36, 0.25, 0.33]],
+        Role::RocketApc => &[[0.53, 0.2, 0.0]],
+        Role::StealthApc => &[[0.56, 0.24, -0.19], [0.56, 0.24, 0.19]],
         _ => &[],
     }
 }
@@ -761,6 +809,7 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
 fn lamp_radius(role: Role) -> f32 {
     match role {
         Role::AdvancedCarryall => 0.045,
+        Role::Carryall => 0.055,
         Role::Minotaurus => 0.035,
         Role::Devastator => 0.06,
         Role::Tower | Role::GunTower => 0.045,
@@ -779,6 +828,39 @@ pub struct Beam {
     pub half: f32,
     pub reach: f32,
     pub spread: f32,
+}
+
+/// Crates of money lying on the ground in a bunch: wooden boxes of a few sizes, each turned its
+/// own way and bound with steel bands with a gold plate on its lid, one of them stacked on two
+/// others.
+pub fn draw_crate(canvas: &mut Canvas, (x, y, z): Point) {
+    // Each box as where its middle is from the bunch's middle (across, up from its foot,
+    // ahead), how far it reaches each way, and how far it is turned.
+    const BOXES: [([f32; 3], f32, f32); 5] = [
+        ([-0.2, 0.0, -0.1], 0.2, 0.78),
+        ([0.2, 0.0, -0.08], 0.17, 0.95),
+        ([-0.02, 0.0, 0.26], 0.15, 0.5),
+        ([0.0, 0.4, -0.09], 0.15, 1.1),
+        ([0.32, 0.0, 0.28], 0.11, 0.2),
+    ];
+    for ([across, up, ahead], half, turn) in BOXES {
+        let (sin, cos) = f32::sin_cos(turn);
+        let place = Place {
+            origin: [x + across * 45.25, y + up * 45.25, z + ahead * 45.25],
+            along: [cos, 0.0, sin],
+            up: [0.0, 1.0, 0.0],
+            across: [-sin, 0.0, cos],
+        }
+        .stretched([45.25; 3]);
+        let model = &mut Model::new(canvas, place);
+        model.bevel([0.0, half, 0.0], [half; 3], 0.02, WOOD);
+        for along in [-0.55, 0.55] {
+            let band = [0.015, half + 0.004, half + 0.004];
+            model.block([along * half, half, 0.0], band, STEEL);
+        }
+        let plate = half * 0.32;
+        model.block([0.0, half * 2.0, 0.0], [plate, 0.006, plate], GOLD);
+    }
 }
 
 /// A pop-up turret: a low round collar in the ground with a bulge in its middle, which rises
@@ -838,27 +920,26 @@ pub fn beams(unit: &Unit) -> Vec<Beam> {
         Place::on_ground(unit)
     };
     let (reach, spread) = match unit.role {
-        Role::AdvancedCarryall => (8.0, 2.6),
-        Role::AirDefensePlatform => (4.5, 0.8),
-        Role::Ornithopter | Role::Destroyer => (5.0, 1.2),
-        Role::Minotaurus => (3.5, 1.0),
-        Role::Mcv => (4.5, 1.5),
+        Role::AdvancedCarryall | Role::Carryall => (362.0, 117.7),
+        Role::AirDefensePlatform => (203.6, 36.2),
+        Role::Ornithopter | Role::Destroyer => (226.3, 54.31),
+        Role::Minotaurus => (158.4, 45.25),
+        Role::Mcv => (203.6, 67.88),
         // A searchlight throws a long, narrow beam far over the ground as the tower looks out.
-        Role::Tower | Role::GunTower => (8.0, 0.9),
-        _ if spots.len() == 1 => (2.6, 1.0),
-        _ => (2.6, 0.75),
+        Role::Tower | Role::GunTower => (362.0, 40.73),
+        _ if spots.len() == 1 => (117.7, 45.25),
+        _ => (117.7, 33.94),
     };
     let (sin, cos) = unit.heading.sin_cos();
-    let size = unit.role.drawn_scale();
     spots
         .iter()
         .map(|&spot| {
-            let [x, y, z] = place.point(spot.map(|c| c * size));
+            let [x, y, z] = place.point(spot);
             Beam {
                 lens: (x, y, z),
                 ahead: [cos, 0.0, sin],
                 right: [-sin, 0.0, cos],
-                half: lamp_radius(unit.role),
+                half: lamp_radius(unit.role) * unit.stretch()[2],
                 reach,
                 spread,
             }
@@ -874,8 +955,6 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
     } else {
         Place::on_ground(unit)
     };
-    let origin = place.origin;
-    let drawn = canvas.objects.len();
     let model = &mut Model::new(canvas, place);
     match unit.role {
         Role::Tank => tank(model, unit, team),
@@ -885,7 +964,8 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
         Role::RocketLauncher => rocket_launcher(model, unit, team),
         Role::Mongoose => strider(model, unit, team),
         Role::Minotaurus => heavy_strider(model, unit, team),
-        Role::AdvancedCarryall => carryall(model, team),
+        Role::AdvancedCarryall => advanced_carryall(model, team),
+        Role::Carryall => carryall(model, team),
         Role::AirDefensePlatform => air_defense_platform(model, team),
         Role::AirDrone => air_drone(model, team),
         Role::Ornithopter => ornithopter(model, unit, time, team),
@@ -897,17 +977,15 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
         Role::Recon => recon(model, unit, team),
         Role::LaserTank => laser_tank(model, time, team),
         Role::Kobra => siege_tank(model, unit, team),
+        Role::RocketApc => rocket_apc(model, time, team),
+        Role::AirMine => air_mine(model, time, team),
+        Role::EyeInTheSky => eye_in_the_sky(model, time, team),
+        Role::StealthApc => stealth_apc(model, team),
         _ => return,
     }
     let radius = lamp_radius(unit.role);
     for &spot in lamp_spots(unit.role) {
         model.lamp(spot, radius);
-    }
-    let size = unit.role.drawn_scale();
-    for vertex in &mut canvas.objects[drawn..] {
-        vertex.x = origin[0] + (vertex.x - origin[0]) * size;
-        vertex.y = origin[1] + (vertex.y - origin[1]) * size;
-        vertex.z = origin[2] + (vertex.z - origin[2]) * size;
     }
 }
 
@@ -921,7 +999,7 @@ fn lattice(
     bays: usize,
     paint: Paint,
 ) {
-    const ROD: f32 = 0.014;
+    const ROD: f32 = 0.6336;
     let way = [0, 1, 2].map(|i| to[i] - from[i]);
     let length = unit_vector(way);
     let other = if length[1].abs() < 0.9 {
@@ -957,12 +1035,12 @@ fn lattice(
 
 /// One side of the scaffolding, this high: posts, a ledger every level and cross braces.
 fn scaffold(model: &mut Model, from: [f32; 2], to: [f32; 2], height: f32) {
-    const LEVEL: f32 = 0.5;
-    const ROD: f32 = 0.013;
-    if height <= 0.02 {
+    const LEVEL: f32 = 22.63;
+    const ROD: f32 = 0.5883;
+    if height <= 0.9051 {
         return;
     }
-    let bays = (((to[0] - from[0]).hypot(to[1] - from[1]) / 0.75).ceil() as usize).max(1);
+    let bays = (((to[0] - from[0]).hypot(to[1] - from[1]) / 33.94).ceil() as usize).max(1);
     let at = |bay: usize, y: f32| {
         let t = bay as f32 / bays as f32;
         [
@@ -1003,57 +1081,57 @@ fn crane(
     appear: f32,
 ) {
     let mast = height * appear;
-    model.bevel([a, 0.05, c], [0.32, 0.05, 0.32], 0.02, GUNMETAL);
+    model.bevel([a, 2.263, c], [14.48, 2.263, 14.48], 0.9051, GUNMETAL);
     lattice(
         model,
-        [a, 0.08, c],
+        [a, 3.62, c],
         [a, mast, c],
-        (0.13, 0.13),
+        (5.883, 5.883),
         7,
         CRANE_YELLOW,
     );
     let (sin, cos) = slew.sin_cos();
     let jib = jib * appear;
     let at = |reach: f32, up: f32| [a + cos * reach, mast + up, c + sin * reach];
-    model.bevel([a, mast + 0.08, c], [0.17, 0.09, 0.17], 0.02, GUNMETAL);
+    model.bevel([a, mast + 3.62, c], [7.693, 4.073, 7.693], 0.9051, GUNMETAL);
     // The arrow, thinning to its tip, and the short arm behind that balances it.
     lattice(
         model,
-        at(0.12, 0.16),
-        at(jib, 0.16),
-        (0.11, 0.025),
+        at(5.431, 7.241),
+        at(jib, 7.241),
+        (4.978, 1.131),
         8,
         CRANE_YELLOW,
     );
     lattice(
         model,
-        at(-0.12, 0.16),
-        at(-jib * 0.36, 0.16),
-        (0.08, 0.06),
+        at(-5.431, 7.241),
+        at(-jib * 0.36, 7.241),
+        (3.62, 2.715),
         3,
         CRANE_YELLOW,
     );
     model.tube(
-        tube(at(-jib * 0.36, 0.08), at(-jib * 0.2, 0.08), 0.13)
+        tube(at(-jib * 0.36, 3.62), at(-jib * 0.2, 3.62), 5.883)
             .sides(4)
             .faceted(),
         GUNMETAL,
     );
     // The top of the tower and the ties from it that hold both arms up.
-    let peak = at(0.0, 0.85 * appear);
-    model.bar(at(0.0, 0.16), peak, 0.022, CRANE_YELLOW);
-    model.bar(peak, at(jib * 0.72, 0.2), 0.007, STEEL);
-    model.bar(peak, at(-jib * 0.33, 0.2), 0.007, STEEL);
+    let peak = at(0.0, 38.47 * appear);
+    model.bar(at(0.0, 7.241), peak, 0.9956, CRANE_YELLOW);
+    model.bar(peak, at(jib * 0.72, 9.051), 0.3168, STEEL);
+    model.bar(peak, at(-jib * 0.33, 9.051), 0.3168, STEEL);
     // The trolley running along the arrow, and what it hoists.
     let reach = jib * (0.45 + 0.35 * (done * TAU).sin());
     let hook_up = mast * (0.42 + 0.3 * (done * TAU * 1.5).cos());
-    let trolley = at(reach, 0.08);
-    model.bevel(trolley, [0.08, 0.035, 0.08], 0.01, GUNMETAL);
+    let trolley = at(reach, 3.62);
+    model.bevel(trolley, [3.62, 1.584, 3.62], 0.4525, GUNMETAL);
     let hook = [trolley[0], hook_up, trolley[2]];
-    model.bar(trolley, hook, 0.006, BORE);
-    model.bevel(hook, [0.05, 0.05, 0.05], 0.01, CRANE_YELLOW);
-    let girder = |reach: f32| [hook[0] + cos * reach, hook[1] - 0.08, hook[2] + sin * reach];
-    model.bar(girder(-0.4), girder(0.4), 0.035, STEEL);
+    model.bar(trolley, hook, 0.2715, BORE);
+    model.bevel(hook, [2.263, 2.263, 2.263], 0.4525, CRANE_YELLOW);
+    let girder = |reach: f32| [hook[0] + cos * reach, hook[1] - 3.62, hook[2] + sin * reach];
+    model.bar(girder(-18.1), girder(18.1), 1.584, STEEL);
 }
 
 /// What puts a building up in its one second, in three stages: scaffolding on all four sides
@@ -1076,12 +1154,12 @@ pub fn draw_construction(canvas: &mut Canvas, unit: &Unit) {
         across: [-sin, 0.0, cos],
     };
     let model = &mut Model::new(canvas, place);
-    let (cols, rows) = unit
-        .plot()
-        .map_or(unit.role.plot_size(), |plot| (plot.cols, plot.rows));
-    let half_a = cols as f32 * CELL_SIDE / 2.0 + 0.15;
-    let half_c = rows as f32 * CELL_SIDE / 2.0 + 0.15;
-    let top = unit.role.building_top() + 0.25;
+    let (cols, rows) = unit.plot().map_or(unit.role.plot_size(unit.house), |plot| {
+        (plot.cols, plot.rows)
+    });
+    let half_a = cols as f32 * CELL_SIDE / 2.0 + 6.788;
+    let half_c = rows as f32 * CELL_SIDE / 2.0 + 6.788;
+    let top = unit.role.building_top(unit.house) + 11.31;
     let corners = [
         [-half_a, -half_c],
         [half_a, -half_c],
@@ -1100,7 +1178,7 @@ pub fn draw_construction(canvas: &mut Canvas, unit: &Unit) {
     if appear <= 0.0 {
         return;
     }
-    let (height, jib, out) = (top + 1.5, half_a.max(half_c) * 1.35 + 0.8, 0.55);
+    let (height, jib, out) = (top + 67.88, half_a.max(half_c) * 1.35 + 36.2, 24.89);
     crane(
         model,
         [-half_a - out, -half_c - out],
@@ -1113,7 +1191,7 @@ pub fn draw_construction(canvas: &mut Canvas, unit: &Unit) {
     crane(
         model,
         [half_a + out, half_c + out],
-        height - 0.45,
+        height - 20.36,
         jib * 0.87,
         3.6 - work * TAU * 0.75,
         (work + 0.3) % 1.0,
@@ -1362,8 +1440,13 @@ pub fn draw_infantry(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3
     const UPPER_ARM: f32 = 0.15;
     const FOREARM: f32 = 0.15;
     let team = team(color);
-    let place = Place::on_ground(unit);
+    // Coming down by parachute, it hangs in the air under it.
+    let mut place = Place::on_ground(unit);
+    place.origin[1] += unit.altitude;
     let model = &mut Model::new(canvas, place);
+    if unit.is_parachuting() {
+        parachute(model, team);
+    }
     let kneeling = unit.deployed && matches!(unit.role, Role::KInfantry | Role::MortarInfantry);
     let phase = unit.stride * PACE;
     let walking = unit.is_moving() && !kneeling;
@@ -1442,10 +1525,21 @@ pub fn draw_infantry(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3
     }
 }
 
+/// A painted canopy high over a soldier's head, on four lines down to the shoulders.
+fn parachute(model: &mut Model, team: Paint) {
+    const TOP: f32 = 1.15;
+    const HALF: f32 = 0.42;
+    model.ball([0.0, TOP, 0.0], [HALF, 0.18, HALF], true, team);
+    for (along, across) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+        let rim = [along * HALF * 0.7, TOP, across * HALF * 0.7];
+        model.bar([along * 0.03, 0.52, across * 0.08], rim, 0.004, WHITE);
+    }
+}
+
 /// A fallen soldier as its joints lie now, sinking away at the end.
 pub fn draw_ragdoll(canvas: &mut Canvas, ragdoll: &Ragdoll, color: [f32; 3]) {
     let team = team(color);
-    let sink = (ragdoll.age - (RAGDOLL_SECONDS - RAGDOLL_SINK_SECONDS)).max(0.0) * 0.4;
+    let sink = (ragdoll.age - (RAGDOLL_SECONDS - RAGDOLL_SINK_SECONDS)).max(0.0) * 18.1;
     let place = Place {
         origin: [0.0, -sink, 0.0],
         along: [1.0, 0.0, 0.0],
@@ -1460,18 +1554,20 @@ pub fn draw_ragdoll(canvas: &mut Canvas, ragdoll: &Ragdoll, color: [f32; 3]) {
     let chest = joint(RAGDOLL_CHEST);
     let pelvis = joint(RAGDOLL_PELVIS);
     let head = joint(RAGDOLL_HEAD);
-    model.tube(tube(pelvis, chest, 0.07).taper(0.085).sides(8), team);
-    model.tube(tube(chest, head, 0.026).sides(6), SKIN);
-    model.ball(head, [0.05, 0.056, 0.05], false, SKIN);
+    // As thick as the soldier was drawn.
+    let r = |radius: f32| radius * ragdoll.unit.stretch()[1];
+    model.tube(tube(pelvis, chest, r(0.07)).taper(r(0.085)).sides(8), team);
+    model.tube(tube(chest, head, r(0.026)).sides(6), SKIN);
+    model.ball(head, [r(0.05), r(0.056), r(0.05)], false, SKIN);
     for side in 0..2 {
         let (elbow, hand) = (joint(RAGDOLL_ELBOWS[side]), joint(RAGDOLL_HANDS[side]));
-        model.tube(tube(chest, elbow, 0.026).taper(0.022).sides(6), team);
-        model.tube(tube(elbow, hand, 0.021).taper(0.018).sides(6), team);
-        model.ball(hand, [0.024; 3], false, SKIN);
+        model.tube(tube(chest, elbow, r(0.026)).taper(r(0.022)).sides(6), team);
+        model.tube(tube(elbow, hand, r(0.021)).taper(r(0.018)).sides(6), team);
+        model.ball(hand, [r(0.024); 3], false, SKIN);
         let (knee, foot) = (joint(RAGDOLL_KNEES[side]), joint(RAGDOLL_FEET[side]));
-        model.tube(tube(pelvis, knee, 0.037).taper(0.03).sides(6), team);
-        model.tube(tube(knee, foot, 0.029).taper(0.023).sides(6), BOOTS);
-        model.ball(foot, [0.04, 0.025, 0.04], false, BOOTS);
+        model.tube(tube(pelvis, knee, r(0.037)).taper(r(0.03)).sides(6), team);
+        model.tube(tube(knee, foot, r(0.029)).taper(r(0.023)).sides(6), BOOTS);
+        model.ball(foot, [r(0.04), r(0.025), r(0.04)], false, BOOTS);
     }
 }
 
@@ -2091,7 +2187,7 @@ fn heavy_strider(model: &mut Model, unit: &Unit, team: Paint) {
 
 /// A long lifting frame: a lattice spine with a painted band, an engine nacelle on a pylon at
 /// each side, a clamp frame underneath and two floodlights under its nose.
-fn carryall(model: &mut Model, team: Paint) {
+fn advanced_carryall(model: &mut Model, team: Paint) {
     let ribs = [-0.45, -0.27, -0.09, 0.09, 0.27, 0.45];
     let (low, high, apart) = (0.08, 0.17, 0.1);
     for c in [-apart, apart] {
@@ -2145,6 +2241,140 @@ fn carryall(model: &mut Model, team: Paint) {
     for along in [-0.15, 0.15] {
         for c in [-0.15, 0.15] {
             model.block([along, 0.03, c], [0.03, 0.04, 0.02], GUNMETAL);
+        }
+    }
+}
+
+/// A carryall: a slim fuselage with a glass cockpit and a big lamp under its nose. Ahead, low
+/// under the nose, is a wide wing with a flap over it between two painted end plates, like a
+/// racing car's front wing; in the middle a straight wing with a jet at each end, its intake
+/// ringed with paint; and at the tail a wing between twin fins with painted tips.
+fn carryall(model: &mut Model, team: Paint) {
+    model.loft(Loft {
+        rings: &[
+            [-0.58, 0.13, 0.0, 0.0],
+            [-0.54, 0.13, 0.03, 0.035],
+            [-0.3, 0.12, 0.055, 0.065],
+            [0.08, 0.11, 0.075, 0.085],
+            [0.3, 0.1, 0.06, 0.07],
+            [0.44, 0.08, 0.035, 0.04],
+            [0.5, 0.07, 0.0, 0.0],
+        ],
+        sides: 12,
+        paint: STEEL,
+        top: None,
+    });
+    model.ball([0.24, 0.16, 0.0], [0.13, 0.05, 0.05], true, GLASS);
+    // A thin flat slab across, `half` thick, from its back edge to its front edge, each given
+    // as [along, up], and from one side to the other.
+    let slab = |model: &mut Model, back: [f32; 2], front: [f32; 2], half: f32, (c0, c1), paint| {
+        let at = |[a, u]: [f32; 2], up: f32, c: f32| [a, u + up, c];
+        model.hexa(
+            [
+                at(back, -half, c0),
+                at(front, -half, c0),
+                at(front, -half, c1),
+                at(back, -half, c1),
+                at(back, half, c0),
+                at(front, half, c0),
+                at(front, half, c1),
+                at(back, half, c1),
+            ],
+            paint,
+        );
+    };
+    // The front wing: its main plane, the flap above and behind it, and the end plates.
+    let span = (-0.3, 0.3);
+    slab(model, [0.4, 0.035], [0.54, 0.03], 0.007, span, STEEL);
+    slab(model, [0.36, 0.08], [0.44, 0.055], 0.006, span, STEEL);
+    for c in [-0.06, 0.06] {
+        model.bar([0.46, 0.035, c], [0.42, 0.085, c * 0.6], 0.008, GUNMETAL);
+    }
+    for c in [-0.3, 0.3] {
+        model.hexa(
+            [
+                [0.34, 0.02, c - 0.006],
+                [0.55, 0.02, c - 0.006],
+                [0.55, 0.02, c + 0.006],
+                [0.34, 0.02, c + 0.006],
+                [0.34, 0.11, c - 0.006],
+                [0.5, 0.07, c - 0.006],
+                [0.5, 0.07, c + 0.006],
+                [0.34, 0.11, c + 0.006],
+            ],
+            team,
+        );
+    }
+    // The middle wing and its two jets.
+    let [nozzle, up, out] = units::CARRYALL_JET_NOZZLE;
+    for side in [-1.0f32, 1.0] {
+        slab(
+            model,
+            [-0.06, up],
+            [0.13, up],
+            0.01,
+            (side * 0.06, side * out),
+            STEEL,
+        );
+        let c = side * out;
+        let intake = nozzle + 0.32;
+        model.tube(
+            tube([nozzle, up, c], [intake, up, c], 0.05).sides(12),
+            STEEL,
+        );
+        model.tube(
+            tube([intake, up, c], [intake + 0.03, up, c], 0.054)
+                .sides(12)
+                .ends(false, false),
+            team,
+        );
+        model.tube(
+            tube([intake - 0.02, up, c], [intake + 0.025, up, c], 0.036)
+                .sides(10)
+                .ends(false, true),
+            BORE,
+        );
+        model.tube(
+            tube([nozzle, up, c], [nozzle - 0.04, up, c], 0.045)
+                .taper(0.036)
+                .sides(10)
+                .ends(false, false),
+            GUNMETAL,
+        );
+        model.tube(
+            tube([nozzle + 0.01, up, c], [nozzle - 0.035, up, c], 0.03)
+                .sides(8)
+                .ends(false, true),
+            BORE,
+        );
+    }
+    // The tail wing between its twin fins.
+    let tail = (-0.2, 0.2);
+    slab(model, [-0.58, 0.14], [-0.44, 0.14], 0.007, tail, STEEL);
+    for c in [-0.2, 0.2] {
+        let fin = |a: f32, u: f32, side: f32| [a, u, c + side * 0.006];
+        for ((low, high), paint) in [((0.13, 0.27), STEEL), ((0.27, 0.32), team)] {
+            let back = |u: f32| -0.6 - (u - 0.13) * 0.4;
+            let front = |u: f32| -0.43 - (u - 0.13) * 0.6;
+            model.hexa(
+                [
+                    fin(back(low), low, -1.0),
+                    fin(front(low), low, -1.0),
+                    fin(front(low), low, 1.0),
+                    fin(back(low), low, 1.0),
+                    fin(back(high), high, -1.0),
+                    fin(front(high), high, -1.0),
+                    fin(front(high), high, 1.0),
+                    fin(back(high), high, 1.0),
+                ],
+                paint,
+            );
+        }
+    }
+    // The clamps the cables hang from.
+    for along in [-0.1, 0.1] {
+        for c in [-0.1, 0.1] {
+            model.block([along, 0.05, c], [0.025, 0.025, 0.018], GUNMETAL);
         }
     }
 }
@@ -2554,12 +2784,12 @@ pub fn mcv_searchlight(unit: &Unit, faction: Faction, time: f32) -> Beam {
     let [x, y, z] = Place::on_ground(unit).point(mcv_searchlight_spot(faction));
     let (sin, cos) = mcv_sweep(unit, time).sin_cos();
     Beam {
-        lens: (x + cos * 0.12, y, z + sin * 0.12),
+        lens: (x + cos * 5.431, y, z + sin * 5.431),
         ahead: [cos, 0.0, sin],
         right: [-sin, 0.0, cos],
-        half: 0.06,
-        reach: 9.0,
-        spread: 1.1,
+        half: 2.715,
+        reach: 407.3,
+        spread: 49.78,
     }
 }
 
@@ -3062,6 +3292,152 @@ fn laser_tank(model: &mut Model, time: f32, team: Paint) {
     model.ball([0.0, 0.54 + float, 0.0], [0.045; 3], false, LASER_CRYSTAL);
 }
 
+/// An APC's armored box: a flat back and sides, its roof painted, and its front sloping
+/// down from the roof to the nose. Returns how high its roof is.
+fn apc_hull(model: &mut Model, foot: f32, team: Paint) -> f32 {
+    let top = foot + 0.21;
+    let (tail, nose, brow) = (-0.5, 0.55, 0.28);
+    let (low, high) = (0.3, 0.25);
+    model.hexa(
+        [
+            [tail, foot, -low],
+            [nose, foot, -low],
+            [nose, foot, low],
+            [tail, foot, low],
+            [tail + 0.03, top, -high],
+            [brow, top, -high],
+            [brow, top, high],
+            [tail + 0.03, top, high],
+        ],
+        STEEL,
+    );
+    model.block([-0.1, top + 0.004, 0.0], [0.3, 0.004, 0.18], team);
+    // The rear door the soldiers get in and out by.
+    model.block(
+        [tail - 0.004, foot + 0.1, 0.0],
+        [0.004, 0.08, 0.13],
+        GUNMETAL,
+    );
+    let slope = unit_vector([top - foot, nose - brow, 0.0]);
+    let screen = |t: f32, c: f32| [nose - (nose - brow) * t + 0.004, foot + (top - foot) * t, c];
+    model.quad(
+        [
+            screen(0.55, -0.16),
+            screen(0.55, 0.16),
+            screen(0.9, 0.16),
+            screen(0.9, -0.16),
+        ],
+        slope,
+        GLASS,
+    );
+    top
+}
+
+/// House O's rocket APC: an armored box hovering on a skirt, with a rocket pod on each side
+/// of its roof.
+fn rocket_apc(model: &mut Model, time: f32, team: Paint) {
+    let float = 0.02 * (time * 3.0).sin();
+    model.bevel([0.0, 0.11 + float, 0.0], [0.5, 0.05, 0.31], 0.04, GUNMETAL);
+    let top = apc_hull(model, 0.16 + float, team);
+    let [ahead, up, side] = units::APC_ROCKET_TIP;
+    let up = up + float;
+    for side in [-side, side] {
+        model.block([0.05, top + 0.02, side * 0.8], [0.08, 0.02, 0.04], GUNMETAL);
+        model.tube(
+            tube([-0.18, up, side], [ahead - 0.02, up, side], 0.07).sides(model.sides(10)),
+            team,
+        );
+        model.tube(
+            tube([ahead - 0.02, up, side], [ahead, up, side], 0.05).sides(model.sides(8)),
+            BORE,
+        );
+    }
+}
+
+/// House A's stealth APC: an armored box on six wheels, with twin guns in a small turret.
+fn stealth_apc(model: &mut Model, team: Paint) {
+    for along in [-0.32, 0.0, 0.32] {
+        for side in [-1.0, 1.0] {
+            model.wheel([along, 0.1, side * 0.25], 0.1, 0.08, 12, RUBBER);
+            model.wheel([along, 0.1, side * 0.25], 0.05, 0.088, 8, STEEL);
+        }
+    }
+    model.block([0.0, 0.15, 0.0], [0.48, 0.04, 0.2], GUNMETAL);
+    let top = apc_hull(model, 0.19, team);
+    let [ahead, up, side] = units::APC_GUN_TIP;
+    model.bevel([0.05, up, 0.0], [0.13, up - top, 0.1], 0.02, team);
+    for side in [-side, side] {
+        model.tube(
+            tube([0.15, up, side], [ahead, up, side], 0.014).sides(6),
+            GUNMETAL,
+        );
+    }
+}
+
+/// An air mine: a round pod bobbing in the air with a painted band, and six rockets around
+/// it pointing out, slowly turning, their noses painted.
+fn air_mine(model: &mut Model, time: f32, team: Paint) {
+    const ROCKETS: usize = 6;
+    let bob = 0.03 * (time * 2.0).sin();
+    model.ball([0.0, bob, 0.0], [0.15; 3], false, GUNMETAL);
+    let band = tube([0.0, bob - 0.02, 0.0], [0.0, bob + 0.02, 0.0], 0.16);
+    model.tube(band.sides(model.sides(14)), team);
+    let spin = time * 0.6;
+    for n in 0..ROCKETS {
+        let (sin, cos) = (spin + n as f32 / ROCKETS as f32 * TAU).sin_cos();
+        let at = |out: f32| [cos * out, bob, sin * out];
+        model.tube(tube(at(0.1), at(0.3), 0.028).sides(6), ROCKET);
+        model.tube(tube(at(0.3), at(0.37), 0.028).taper(0.0).sides(6), team);
+    }
+}
+
+/// An Eye in the Sky: a broad dome hanging in the air on four rotors, with a red eye at its
+/// front and six heavy bombs in a ring under it.
+fn eye_in_the_sky(model: &mut Model, time: f32, team: Paint) {
+    const BOMBS: usize = 6;
+    const RADIUS: f32 = 0.42;
+    model.ball([0.0, 0.0, 0.0], [RADIUS, 0.17, RADIUS], true, STEEL);
+    let sides = model.sides(16);
+    model.tube(
+        tube([0.0, -0.07, 0.0], [0.0, 0.0, 0.0], RADIUS).sides(sides),
+        GUNMETAL,
+    );
+    model.tube(
+        tube([0.0, -0.01, 0.0], [0.0, 0.03, 0.0], RADIUS + 0.01).sides(sides),
+        team,
+    );
+    model.ball([RADIUS - 0.04, 0.03, 0.0], [0.07; 3], false, LASER_CRYSTAL);
+    let spin = time * 25.0;
+    for (along, across) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+        let hub = [along * 0.5, 0.06, across * 0.5];
+        model.bar([along * 0.25, 0.04, across * 0.25], hub, 0.02, GUNMETAL);
+        model.tube(
+            tube([hub[0], 0.02, hub[2]], [hub[0], 0.1, hub[2]], 0.04).sides(8),
+            GUNMETAL,
+        );
+        let (sin, cos) = (spin * along * across).sin_cos();
+        let blade = [cos * 0.17, 0.0, sin * 0.17];
+        model.bar(
+            [hub[0] - blade[0], 0.11, hub[2] - blade[2]],
+            [hub[0] + blade[0], 0.11, hub[2] + blade[2]],
+            0.012,
+            STEEL,
+        );
+    }
+    for n in 0..BOMBS {
+        let (sin, cos) = (n as f32 / BOMBS as f32 * TAU).sin_cos();
+        let (a, c) = (cos * 0.24, sin * 0.24);
+        model.tube(tube([a, -0.08, c], [a, -0.28, c], 0.055).sides(8), GUNMETAL);
+        model.tube(
+            tube([a, -0.28, c], [a, -0.36, c], 0.055)
+                .taper(0.0)
+                .sides(8),
+            GUNMETAL,
+        );
+        model.block([a, -0.1, c], [0.07, 0.025, 0.006], team);
+    }
+}
+
 /// A laser's crystal, glowing red.
 const LASER_CRYSTAL: Paint = Paint {
     color: [1.0, 0.2, 0.15],
@@ -3069,7 +3445,8 @@ const LASER_CRYSTAL: Paint = Paint {
 };
 
 /// A Kobra: a hull on two tracks with a cannon longer than itself resting on top. Deployed,
-/// a leg of three segments raises the cannon high, pointing up at a slant.
+/// a leg of three segments unfolds from the deck and raises the cannon high, pointing up at a
+/// slant, and folds back down as it packs up.
 fn siege_tank(model: &mut Model, unit: &Unit, team: Paint) {
     let track = Track {
         rear: -0.42,
@@ -3083,7 +3460,7 @@ fn siege_tank(model: &mut Model, unit: &Unit, team: Paint) {
     tracks(model, unit, &track, 0.33);
     model.bevel([0.0, 0.25, 0.0], [0.48, 0.1, 0.24], 0.03, STEEL);
     model.bevel([-0.15, 0.37, 0.0], [0.28, 0.03, 0.2], 0.02, team);
-    if !unit.deployed {
+    if unit.popped <= 0.0 {
         // Resting on a cradle at each end.
         model.bevel([-0.35, 0.42, 0.0], [0.05, 0.05, 0.08], 0.01, GUNMETAL);
         model.bevel([0.38, 0.42, 0.0], [0.05, 0.05, 0.08], 0.01, GUNMETAL);
@@ -3098,18 +3475,29 @@ fn siege_tank(model: &mut Model, unit: &Unit, team: Paint) {
         );
         return;
     }
-    let joints = [
+    const FOLDED: [[f32; 3]; 4] = [
+        [-0.1, 0.38, 0.0],
+        [0.2, 0.4, 0.0],
+        [-0.12, 0.42, 0.0],
+        [0.1, 0.45, 0.0],
+    ];
+    const RAISED: [[f32; 3]; 4] = [
         [-0.1, 0.38, 0.0],
         [0.18, 0.85, 0.0],
         [-0.1, 1.28, 0.0],
         [0.1, 1.6, 0.0],
     ];
+    let t = unit.popped;
+    let ease = t * t * (3.0 - 2.0 * t);
+    let joints: [[f32; 3]; 4] = std::array::from_fn(|j| {
+        std::array::from_fn(|c| FOLDED[j][c] + (RAISED[j][c] - FOLDED[j][c]) * ease)
+    });
     for pair in joints.windows(2) {
         model.tube(tube(pair[0], pair[1], 0.055).sides(8), STEEL);
         model.ball(pair[1], [0.07; 3], false, BRONZE);
     }
     let pivot = joints[3];
-    let [tip, height] = units::SIEGE_RAISED_TIP;
+    let [tip, height] = units::siege_tip(unit.popped);
     let way = [tip - pivot[0], height - pivot[1], 0.0];
     let back = [pivot[0] - way[0] * 0.7, pivot[1] - way[1] * 0.7, 0.0];
     let brake = [pivot[0] + way[0] * 0.9, pivot[1] + way[1] * 0.9, 0.0];

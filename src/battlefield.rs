@@ -1,180 +1,52 @@
-//! The 3D battlefield: terrain and camera, projected on the CPU.
+//! The battlefield: one of the original's maps, and the camera over it, projected on the CPU.
 //!
-//! Terrain is drawn back to front, so it needs no depth buffer and the graphics backends
-//! still only receive colored triangles.
+//! A map is the original's own: square cells `CELL_SIDE` across, `width` of them along world x
+//! and `height` along world z, a height at each corner of a cell, one of the original's kinds of
+//! ground in each, spice in some, and the places its sides start from. World x runs along the
+//! columns, y up and z along the rows, in the original's own coordinates. Grid points (u, v) are
+//! the corners of the cells: column u, row v.
 //!
-//! The map is a square grid turned 45 degrees into a diamond. Grid coordinates (u, v) run
-//! 0..=MAP_CELLS: north is (0, 0), east (MAP_CELLS, 0), west (0, MAP_CELLS) and south
-//! (MAP_CELLS, MAP_CELLS). World x points east, y up and z south.
+//! The camera looks at the map turned an eighth of a turn, as the original's does, so that it
+//! shows as a diamond: its first corner, (0, 0), at the top.
 
 use crate::fog::Fog;
-use crate::planet::fractal_noise;
-use crate::platform::{Material, NO_PICTURE, WorldVertex};
+use crate::platform::Material;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::f32::consts::FRAC_1_SQRT_2;
 use std::sync::OnceLock;
 
-/// Grid cells along each side of a map of size S.
-pub const MAP_CELLS: usize = 128;
+/// The middle of the biggest map, which tests are mostly set on.
+#[cfg(test)]
+pub const MAP_MIDDLE: (f32, f32) = (
+    MOST_CELLS as f32 * CELL_SIDE / 2.0,
+    MOST_CELLS as f32 * CELL_SIDE / 2.0,
+);
+
 /// Along each side of the biggest map. Every map's grid is kept to this stride, so a grid point
 /// is found the same way on all of them.
-const MOST_CELLS: usize = 256;
+pub const MOST_CELLS: usize = 256;
 pub const GRID_POINTS: usize = (MOST_CELLS + 1) * (MOST_CELLS + 1);
 
-/// How big a map is. Its features stay the same size: there is just more of them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MapSize {
-    /// Four times the area `MAP_CELLS` would give, with room for eight bases.
-    L,
-}
-
-impl MapSize {
-    /// How many of something a map of this size has, for how many a map of size S has.
-    fn spread(self, on_small: usize) -> usize {
-        (on_small as f32 * self.scale() * self.scale()).round() as usize
-    }
-
-    pub fn cells(self) -> usize {
-        match self {
-            MapSize::L => MOST_CELLS,
-        }
-    }
-
-    /// How many times as long and wide as size S.
-    pub fn scale(self) -> f32 {
-        self.cells() as f32 / MAP_CELLS as f32
-    }
-
-    /// How far south of the north corner the middle of the map is.
-    pub fn middle_z(self) -> f32 {
-        self.cells() as f32 * CELL
-    }
-}
-
-/// World units per grid step along each world axis.
-const CELL: f32 = CELL_SIDE / std::f32::consts::SQRT_2;
-/// How long the side of a grid square is, in world units. A world unit is a coordinate of the
-/// original game, whose tiles are 32 across and whose models, speeds and sizes are all given in
-/// those coordinates.
+/// How long the side of a cell is, in world units: a coordinate of the original game, whose
+/// cells are 32 across and whose models, speeds and sizes are all given in those coordinates.
 pub const CELL_SIDE: f32 = 32.0;
-/// How far upper ground rises above the low land, in world units.
-const GROUND_HEIGHT: f32 = 63.36;
-/// How far the low land lies above its water or lava, on the planets that have them.
-const LOWLAND_HEIGHT: f32 = 31.68;
-/// What the ground shader is told for the height of upper ground: past this it would take the
-/// land for high mountainside.
-const UPPER_LEVEL: f32 = 31.68;
 /// The way to the sun, as a unit vector: high up on the screen's left and a little behind what
 /// it lights, so that shadows fall to the right and towards the camera.
-pub const SUN: [f32; 3] = [-0.50, 0.80, -0.33];
-/// Noise below this is water or lava, where a planet has them and there is room.
-const LIQUID_BELOW: f32 = 0.5;
-/// How many cells of low land lie between the foot of an island's side and the water or lava.
-const LIQUID_CLEAR: f32 = 5.0;
-/// How far from a way kept open, in cells, mountains and pits have to stand.
-const RELIEF_OFF_WAYS: f32 = 9.0;
-/// Half the width, in cells, of the ways kept open between the bases and to the map's middle.
-const ROAD_HALF_WIDTH: f32 = 14.0;
-/// How many places for a base each map has: its four corners and the middles of its four edges.
-pub const START_SPOTS: usize = 8;
-/// How far in from the map's edges a base's island stands, in cells.
-const START_INSET: f32 = 36.0;
-/// How wide a base's island is, from its middle, in cells.
-const START_RADIUS: f32 = 30.0;
-/// How many cells a sharp cliff drops over, and a gentle slope.
-const CLIFF_RUN: f32 = 1.0;
-const SLOPE_RUN: f32 = 16.0;
-/// How long the slope down off one of the smaller islands is, in cells.
-const ISLAND_SLOPE_RUN: f32 = 12.0;
-/// How wide a slope in a base's cliffs is either side of its line, in radians, and over how
-/// much more it narrows away into cliff.
-const SLOPE_HALF_ANGLE: f32 = 0.22;
-const SLOPE_EDGE_ANGLE: f32 = 0.07;
-/// Past this much height from one grid point to the next there is no walking up: it is cliff.
-const CLIFF_STEP: f32 = 13.58;
-/// How many smaller islands, with slopes all the way round, each map tries to have.
-const EXTRA_ISLANDS: usize = 6;
-/// How much open ground, in world units, is left around the map's middle.
-const MIDDLE_CLEAR: f32 = 633.6;
+pub const SUN: [f32; 3] = [-0.5869, 0.80, 0.1202];
+/// How a map is lit when it does not say: from `SUN`, by a cool sky and a warm sun.
+pub const DAYLIGHT: Light = Light {
+    sun: SUN,
+    ambient: [0.42, 0.45, 0.52],
+    sunlight: [0.62, 0.58, 0.50],
+};
+/// The sand's color, for the dust thrown up from it.
+pub const SAND: [f32; 3] = [0.78, 0.64, 0.40];
 
-const SAND: [f32; 3] = [0.78, 0.64, 0.40];
-/// How far a field of substance reaches from its middle, about: across, a quarter of the
-/// screen.
-const FIELD_RADIUS: f32 = 226.3;
-/// How many fields of substance a map of size S has out on it, besides one near each place
-/// for a base.
-const MORE_FIELDS: usize = 3;
-/// The pinkish orange of the sand where there is substance, and the paler grains dotted in it.
-pub const SUBSTANCE: [f32; 3] = [0.88, 0.5, 0.36];
-const SUBSTANCE_GRAINS: [f32; 3] = [0.96, 0.8, 0.56];
-const GROUND: [f32; 3] = [0.40, 0.30, 0.21];
-
-/// Which world a map is on, which sets how its two heights look.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Planet {
-    /// Sand and rocky ground.
-    Arrakis,
-    /// Home of faction A: water and grass.
-    Caladan,
-    /// Home of faction O: ice and snow.
-    Draconis,
-    /// Home of faction H: lava and the same ground as planet A.
-    GeidiPrime,
-    /// A prison planet, nobody's home.
-    SelusaSecundus,
-    /// Home of the mini faction T.
-    Tleilax,
-}
-
-impl Planet {
-    fn lower_color(self) -> [f32; 3] {
-        match self {
-            Planet::Arrakis => SAND,
-            Planet::Caladan => [0.13, 0.36, 0.60],
-            Planet::Draconis => [0.66, 0.82, 0.93],
-            Planet::GeidiPrime => [0.90, 0.28, 0.05],
-            Planet::SelusaSecundus => [0.44, 0.42, 0.40],
-            Planet::Tleilax => [0.47, 0.50, 0.30],
-        }
-    }
-
-    /// The low land that can be walked on but not built on.
-    fn lowland_color(self) -> [f32; 3] {
-        match self {
-            Planet::Caladan => [0.74, 0.68, 0.48],
-            Planet::GeidiPrime => [0.45, 0.45, 0.45],
-            _ => self.lower_color(),
-        }
-    }
-
-    fn upper_color(self) -> [f32; 3] {
-        match self {
-            Planet::Arrakis | Planet::GeidiPrime => GROUND,
-            Planet::Caladan => [0.24, 0.50, 0.20],
-            Planet::Draconis => [0.96, 0.97, 1.00],
-            Planet::SelusaSecundus => [0.24, 0.23, 0.25],
-            Planet::Tleilax => [0.30, 0.25, 0.30],
-        }
-    }
-
-    /// Water and lava: nothing can stand on the lower terrain.
-    fn lower_is_solid(self) -> bool {
-        !matches!(self, Planet::Caladan | Planet::GeidiPrime)
-    }
-}
-
-/// The planet of each map in `game::MAPS`.
-pub const MAP_PLANETS: [Planet; crate::game::MAPS.len()] = [
-    Planet::Arrakis,
-    Planet::Caladan,
-    Planet::Draconis,
-    Planet::GeidiPrime,
-    Planet::SelusaSecundus,
-    Planet::Tleilax,
-];
-
-/// How strongly the surface grain varies the color, either way.
-const GRAIN: f32 = 0.22;
+/// Which ways on the ground the screen's right and its bottom are, as (x, z): the map's columns
+/// run down to the right and its rows down to the left.
+const SCREEN_RIGHT: (f32, f32) = (FRAC_1_SQRT_2, -FRAC_1_SQRT_2);
+const SCREEN_DOWN: (f32, f32) = (FRAC_1_SQRT_2, FRAC_1_SQRT_2);
 
 /// Zooming moves the camera between two fixed positions and narrows the field of view at
 /// the same time, in one movement. Top: high and looking almost straight down.
@@ -200,283 +72,123 @@ const EDGE_MARGIN: f32 = 4.0;
 /// World units per second, per point of the Scroll Rate option.
 const SCROLL_PER_RATE: f32 = 678.8;
 
-/// World z of the map's middle; its x is 0.
-#[cfg(test)]
-pub const MAP_MIDDLE_Z: f32 = MOST_CELLS as f32 * CELL;
-
-/// How many destroyed buildings each map tries to place.
-const RUIN_COUNT: usize = 24;
-const MOUNTAIN_COUNT: usize = 9;
-const PIT_COUNT: usize = 8;
-/// Past this much rise or fall from the land, nothing can walk.
-const STEEPEST_WALK: f32 = 11.31;
-
-/// One block of a destroyed building: a stretch of broken wall, or rubble.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RuinPiece {
-    pub x: f32,
-    /// Height of the ground under it.
-    pub y: f32,
-    pub z: f32,
-    pub half_x: f32,
-    pub half_z: f32,
-    pub height: f32,
-    /// How light its concrete is, so that pieces do not all look alike.
-    pub shade: f32,
+/// The original's kinds of ground, in the order its `Rules.txt` lists them, which is the order
+/// its maps number them in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ground {
+    Sand,
+    /// Where buildings go up.
+    Rock,
+    Cliff,
+    /// Rock that can be driven on but not built on.
+    NbRock,
+    /// Rock only infantry can cross.
+    InfRock,
+    DustBowl,
+    MapEdge,
+    Ramp,
 }
 
-/// A stretch of upper ground standing up out of the low land.
-struct Island {
-    /// Its middle, in grid cells.
-    at: (f32, f32),
-    radius: f32,
-    /// How many cells its slopes run down over.
-    slope_run: f32,
-    /// The ways, in radians, a base's island has a slope down through its cliffs.
-    slopes: Vec<f32>,
-    /// A smaller island: slopes all the way round.
-    sloped_all_round: bool,
-    peninsula: Option<Peninsula>,
-}
-
-/// A little tongue of upper ground sticking out from an island, with cliffs all round it.
-#[derive(Clone, Copy)]
-struct Peninsula {
-    from: (f32, f32),
-    to: (f32, f32),
-    radius: f32,
-}
-
-impl Island {
-    /// How far up its side a grid point is, from 0 at its foot to 1 on top, and how far inside
-    /// its edge the point is.
-    fn rise_at(&self, point: (f32, f32), wobble: f32) -> (f32, f32) {
-        let (du, dv) = (point.0 - self.at.0, point.1 - self.at.1);
-        let wobble = wobble * self.radius / START_RADIUS;
-        let inside = self.radius - du.hypot(dv) + wobble;
-        let tongue = self.peninsula.map_or(f32::MIN, |p| {
-            p.radius - distance_to_segment(point, p.from, p.to) + wobble * 0.4
-        });
-        let (edge, gentle) = if tongue > inside {
-            (tongue, 0.0)
-        } else {
-            (inside, self.slope_share(dv.atan2(du)))
-        };
-        let run = CLIFF_RUN + (self.slope_run - CLIFF_RUN) * gentle;
-        let up = ((edge + run) / run).clamp(0.0, 1.0);
-        (up * up * (3.0 - 2.0 * up), edge)
-    }
-
-    /// How far off its edge any water or lava has to stay, in cells: past the foot of its
-    /// slopes if it has them all round, and just off the foot of its cliffs if not.
-    fn shore_gap(&self) -> f32 {
-        LIQUID_CLEAR
-            + if self.sloped_all_round {
-                self.slope_run
-            } else {
-                0.0
-            }
-    }
-
-    /// How much of a slope there is on this side of it, from 0 for cliff to 1.
-    fn slope_share(&self, angle: f32) -> f32 {
-        if self.sloped_all_round {
-            return 1.0;
-        }
-        self.slopes
-            .iter()
-            .map(|&slope| {
-                let past = angle_between(angle, slope) - SLOPE_HALF_ANGLE;
-                (1.0 - past / SLOPE_EDGE_ANGLE).clamp(0.0, 1.0)
-            })
-            .fold(0.0, f32::max)
-    }
-}
-
-fn distance_to_segment(point: (f32, f32), from: (f32, f32), to: (f32, f32)) -> f32 {
-    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-    let along = ((point.0 - from.0) * dx + (point.1 - from.1) * dy) / (dx * dx + dy * dy).max(1e-6);
-    let along = along.clamp(0.0, 1.0);
-    (point.0 - from.0 - dx * along).hypot(point.1 - from.1 - dy * along)
-}
-
-/// How far apart two directions are, the short way round, in radians.
-fn angle_between(a: f32, b: f32) -> f32 {
-    let turn = (a - b).rem_euclid(std::f32::consts::TAU);
-    turn.min(std::f32::consts::TAU - turn)
-}
-
-/// The middles of the places for bases in grid cells, clockwise from the north corner: every
-/// other one a corner, and between them the middles of the edges.
-fn start_cells(size: MapSize) -> [(f32, f32); START_SPOTS] {
-    let cells = size.cells() as f32;
-    let (low, middle, high) = (START_INSET, cells / 2.0, cells - START_INSET);
-    [
-        (low, low),
-        (middle, low),
-        (high, low),
-        (high, middle),
-        (high, high),
-        (middle, high),
-        (low, high),
-        (low, middle),
-    ]
-}
-
-/// The places for bases on the map, as world points, clockwise from the north corner.
-pub fn start_spots(size: MapSize) -> [(f32, f32); START_SPOTS] {
-    start_cells(size).map(|(u, v)| grid_to_world(u, v))
-}
-
-/// The ways, as segments between grid points, that stay open from each base to its neighbours
-/// and to the map's middle.
-fn open_ways(size: MapSize) -> Vec<((f32, f32), (f32, f32))> {
-    let spots = start_cells(size);
-    let middle = size.cells() as f32 / 2.0;
-    (0..START_SPOTS)
-        .flat_map(|i| {
-            [
-                (spots[i], (middle, middle)),
-                (spots[i], spots[(i + 1) % START_SPOTS]),
-            ]
-        })
-        .collect()
-}
-
-/// A place for a little peninsula on a base's island, clear of its slopes and of the map's edges.
-fn find_peninsula(
-    at: (f32, f32),
-    slopes: &[f32],
-    size: MapSize,
-    random: &mut u32,
-) -> Option<Peninsula> {
-    const AWAY_FROM_SLOPES: f32 = 0.75;
-    let cells = size.cells() as f32;
-    (0..24).find_map(|_| {
-        let angle = next_random(random) * std::f32::consts::TAU;
-        let length = 12.0 + next_random(random) * 8.0;
-        let radius = 5.0 + next_random(random) * 3.0;
-        let (sin, cos) = angle.sin_cos();
-        let out = |reach: f32| (at.0 + cos * reach, at.1 + sin * reach);
-        let to = out(START_RADIUS + length);
-        let margin = radius + 2.0;
-        let on_map =
-            (margin..cells - margin).contains(&to.0) && (margin..cells - margin).contains(&to.1);
-        let clear = slopes
-            .iter()
-            .all(|&slope| angle_between(angle, slope) > AWAY_FROM_SLOPES);
-        (on_map && clear).then_some(Peninsula {
-            from: out(START_RADIUS * 0.8),
-            to,
-            radius,
-        })
-    })
-}
-
-/// A map's islands: one for each base, cliffs all round but for two or three slopes, some maps
-/// with little peninsulas, and then smaller ones with slopes all the way round.
-fn islands_of(map: usize, size: MapSize, random: &mut u32) -> Vec<Island> {
-    let spots = start_cells(size);
-    let middle = size.cells() as f32 / 2.0;
-    let has_peninsulas = map % 3 != 2;
-    let mut islands: Vec<Island> = spots
-        .iter()
-        .enumerate()
-        .map(|(i, &at)| {
-            let mut toward = |to: (f32, f32)| {
-                (to.1 - at.1).atan2(to.0 - at.0) + (next_random(random) - 0.5) * 0.1
-            };
-            let ways = [
-                toward((middle, middle)),
-                toward(spots[(i + 1) % START_SPOTS]),
-                toward(spots[(i + START_SPOTS - 1) % START_SPOTS]),
-            ];
-            // Two of the three ways have a slope, or sometimes all of them.
-            let closed = if next_random(random) < 0.5 {
-                ways.len()
-            } else {
-                (next_random(random) * ways.len() as f32) as usize
-            };
-            let slopes: Vec<f32> = (0..ways.len())
-                .filter(|&way| way != closed)
-                .map(|way| ways[way])
-                .collect();
-            let peninsula = (has_peninsulas && next_random(random) < 0.6)
-                .then(|| find_peninsula(at, &slopes, size, random))
-                .flatten();
-            Island {
-                at,
-                radius: START_RADIUS,
-                slope_run: SLOPE_RUN,
-                slopes,
-                sloped_all_round: false,
-                peninsula,
-            }
-        })
-        .collect();
-    let mut extras = 0;
-    let span = size.cells() as f32 - 28.0;
-    for _ in 0..600 {
-        if extras == EXTRA_ISLANDS {
-            break;
-        }
-        let at = (
-            14.0 + next_random(random) * span,
-            14.0 + next_random(random) * span,
-        );
-        let radius = 9.0 + next_random(random) * 5.0;
-        let from_middle = (at.0 - middle).hypot(at.1 - middle);
-        let keeps_off_middle =
-            from_middle * CELL_SIDE > MIDDLE_CLEAR + (radius + ISLAND_SLOPE_RUN) * CELL_SIDE;
-        let has_room = islands.iter().all(|other| {
-            let from_it = (at.0 - other.at.0).hypot(at.1 - other.at.1);
-            from_it > other.radius + radius + 8.0
-                && other
-                    .peninsula
-                    .is_none_or(|p| distance_to_segment(at, p.from, p.to) > p.radius + radius + 4.0)
-        });
-        if keeps_off_middle && has_room {
-            islands.push(Island {
-                at,
-                radius,
-                slope_run: ISLAND_SLOPE_RUN,
-                slopes: Vec::new(),
-                sloped_all_round: true,
-                peninsula: None,
-            });
-            extras += 1;
+impl Ground {
+    fn of(number: u8) -> Self {
+        match number {
+            1 => Ground::Rock,
+            2 => Ground::Cliff,
+            3 => Ground::NbRock,
+            4 => Ground::InfRock,
+            5 => Ground::DustBowl,
+            6 => Ground::MapEdge,
+            7 => Ground::Ramp,
+            _ => Ground::Sand,
         }
     }
-    islands
+
+    /// Whether it can be gone over this way: cliffs only in the air, the rock with its stairs
+    /// on foot too.
+    fn lets(self, going: Going) -> bool {
+        match self {
+            Ground::Cliff | Ground::MapEdge => going == Going::Flying,
+            Ground::InfRock => going != Going::Driving,
+            _ => true,
+        }
+    }
 }
+
+/// How someone gets about, which decides where they can go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Going {
+    OnFoot,
+    Driving,
+    Flying,
+}
+
+/// The parts of a map's file the original keeps its map in, ahead of the map's shape: each a
+/// tag, its length and then itself.
+const SIZE: u32 = 0xa000_0002;
+const HEIGHTS: u32 = 0xa000_0001;
+const GROUNDS: u32 = 0xa000_0003;
+const SPICE: u32 = 0xa000_0004;
+const AREAS: u32 = 0xa000_0005;
+/// How long an area's or a list's name is, and one of its points: a number, then x and z.
+const AREA_NAME: usize = 20;
+const AREA_POINT: usize = 20;
+/// The area holding the places the sides start from.
+const BASES: &[u8] = b"Base";
+/// As much spice as a cell holds.
+const FULL_SPICE: u8 = 255;
+/// How wide the map's radar picture is, in its pixels, one to a cell.
+const RADAR_SIDE: usize = 256;
 
 pub struct Terrain {
-    planet: Planet,
-    size: MapSize,
-    /// Which grid points are on top of upper ground, where bases can go.
-    is_ground: Vec<bool>,
-    /// How far up from the low land each grid point is, from 0 to 1 on top of upper ground.
-    rise: Vec<f32>,
-    /// Which grid points lie under water or lava.
-    is_liquid: Vec<bool>,
-    /// Which grid points are on a cliff too sharp to walk.
-    is_cliff: Vec<bool>,
-    /// How far mountains rise from the land, or pits sink into it, at each grid point.
-    relief: Vec<f32>,
-    /// How far the lower terrain lies under its noise's threshold, at each grid point.
-    deep: Vec<f32>,
-    colors: Vec<[f32; 3]>,
-    ruins: Vec<RuinPiece>,
-    /// Which way the land faces at each grid point, for the backend to light it by.
-    normals: Vec<[f32; 3]>,
-    /// Where lava erupts now and then.
-    vents: Vec<(f32, f32)>,
-    /// The middles of the fields of substance, where harvesters harvest.
-    fields: Vec<(f32, f32)>,
-    /// Which grid points are in a field of substance.
-    substance: Vec<bool>,
-    /// Which grid points a route may go through, worked out the first time it is needed.
-    walkable: OnceLock<Vec<bool>>,
+    width: usize,
+    height: usize,
+    /// How high each grid point is, by `grid_index`.
+    heights: Vec<f32>,
+    /// The ground of each cell, row by row.
+    grounds: Vec<Ground>,
+    /// How much spice each cell has, row by row: none at 0, as much as a cell holds at 255.
+    spice: Vec<u8>,
+    /// Where each side may start, as world points.
+    starts: Vec<(f32, f32)>,
+    /// The color of each cell on the radar, row by row.
+    radar: Vec<[f32; 3]>,
+    light: Light,
+    /// Which grid points a route may go through, each way of going, worked out the first time
+    /// it is needed.
+    walkable: [OnceLock<Vec<bool>>; 3],
+}
+
+/// How a map is lit: the way to its sun as a unit vector, the light everything gets from all
+/// around, and the light a face turned to the sun gets on top of that.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Light {
+    pub sun: [f32; 3],
+    pub ambient: [f32; 3],
+    pub sunlight: [f32; 3],
+}
+
+impl Light {
+    /// A map's light as its `test.lit` has it: the way to the sun as x, y and z, with z the
+    /// other way along from ours, then the ambient light and the sunlight, each as red, green
+    /// and blue from 0 to 255. What comes after those lights something else.
+    pub fn read(text: &str) -> Option<Self> {
+        let mut lines = text.lines().map(|line| {
+            line.split_whitespace()
+                .map(str::parse::<f32>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()
+                .filter(|numbers| numbers.len() == 3)
+                .map(|numbers| [numbers[0], numbers[1], numbers[2]])
+        });
+        let [x, y, z] = lines.next()??;
+        let length = (x * x + y * y + z * z).sqrt();
+        let mut color = || lines.next().flatten().map(|rgb| rgb.map(|c| c / 255.0));
+        (length > 0.0).then_some(Light {
+            sun: [x / length, y / length, -z / length],
+            ambient: color()?,
+            sunlight: color()?,
+        })
+    }
 }
 
 /// Xorshift: repeatable, and it needs no dependency.
@@ -492,694 +204,354 @@ pub fn next_random(state: &mut u32) -> f32 {
     (xorshift(state) & 0xFFFF) as f32 / 65535.0
 }
 
-/// The remains of one square building: what is left of its four walls, in broken stretches
-/// of uneven height, and some rubble inside.
-fn add_ruin(pieces: &mut Vec<RuinPiece>, terrain: &Terrain, x: f32, z: f32, random: &mut u32) {
-    const THICKNESS: f32 = 4.073;
-    const STRETCHES: usize = 3;
-    let half = 45.25 + next_random(random) * 45.25;
-    let y = terrain.height_at(x, z);
-    for side in 0..4 {
-        for stretch in 0..STRETCHES {
-            // About a third of the wall has fallen altogether.
-            if next_random(random) < 0.35 {
-                continue;
-            }
-            let along = ((stretch as f32 + 0.5) / STRETCHES as f32 * 2.0 - 1.0) * half;
-            let half_length = half / STRETCHES as f32;
-            let (dx, dz, half_x, half_z) = match side {
-                0 => (along, -half, half_length, THICKNESS),
-                1 => (along, half, half_length, THICKNESS),
-                2 => (-half, along, THICKNESS, half_length),
-                _ => (half, along, THICKNESS, half_length),
-            };
-            pieces.push(RuinPiece {
-                x: x + dx,
-                y,
-                z: z + dz,
-                half_x,
-                half_z,
-                height: 9.051 + next_random(random) * 49.78,
-                shade: 0.7 + next_random(random) * 0.3,
-            });
-        }
-    }
-    for _ in 0..4 {
-        let size = 4.525 + next_random(random) * 8.146;
-        pieces.push(RuinPiece {
-            x: x + (next_random(random) * 2.0 - 1.0) * half * 0.8,
-            y,
-            z: z + (next_random(random) * 2.0 - 1.0) * half * 0.8,
-            half_x: size,
-            half_z: size,
-            height: size * 1.2,
-            shade: 0.5 + next_random(random) * 0.3,
-        });
-    }
-}
-
-/// Which grid points are on a cliff: those with too much height to the next one along.
-fn find_cliffs(rise: &[f32], size: MapSize) -> Vec<bool> {
-    let cells = size.cells();
-    let mut cliffs = vec![false; GRID_POINTS];
-    for v in 0..=cells {
-        for u in 0..=cells {
-            let here = rise[grid_index(u, v)];
-            let steep_to = |u: usize, v: usize| {
-                (rise[grid_index(u, v)] - here).abs() * GROUND_HEIGHT > CLIFF_STEP
-            };
-            cliffs[grid_index(u, v)] = steep_to((u + 1).min(cells), v)
-                || steep_to(u.saturating_sub(1), v)
-                || steep_to(u, (v + 1).min(cells))
-                || steep_to(u, v.saturating_sub(1));
-        }
-    }
-    cliffs
-}
-
-/// Whether the grid point nearest a world point is marked in a grid of them.
-fn is_on(marks: &[bool], x: f32, z: f32) -> bool {
-    let (u, v) = world_to_grid(x, z);
-    let (u, v) = (u.round().max(0.0) as usize, v.round().max(0.0) as usize);
-    marks[grid_index(u.min(MOST_CELLS), v.min(MOST_CELLS))]
-}
-
 pub fn grid_index(u: usize, v: usize) -> usize {
     v * (MOST_CELLS + 1) + u
 }
 
+fn u32_at(data: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?))
+}
+
+fn f64_at(data: &[u8], at: usize) -> Option<f64> {
+    Some(f64::from_le_bytes(data.get(at..at + 8)?.try_into().ok()?))
+}
+
+/// The parts of a map's file, by their tags.
+fn parts(file: &[u8]) -> Option<Vec<(u32, &[u8])>> {
+    let length = u32_at(file, 4)? as usize;
+    let end = 8 + length;
+    let mut at = 8;
+    let mut parts = Vec::new();
+    while at + 8 <= end {
+        let (tag, size) = (u32_at(file, at)?, u32_at(file, at + 4)? as usize);
+        parts.push((tag, file.get(at + 8..at + 8 + size)?));
+        at += 8 + size;
+    }
+    Some(parts)
+}
+
+/// The points of the lists in the area of this name, one list after another. The areas are a
+/// count of them, then each: its name, a count of its lists, and each list: its name, a count
+/// of its points, and the points.
+fn area_points(areas: &[u8], wanted: &[u8]) -> Option<Vec<(f32, f32)>> {
+    let mut at = 4;
+    for _ in 0..u32_at(areas, 0)? {
+        let name = areas.get(at..at + AREA_NAME)?;
+        let is_wanted = name.split(|&byte| byte == 0).next() == Some(wanted);
+        let lists = u32_at(areas, at + AREA_NAME)?;
+        at += AREA_NAME + 4;
+        let mut points = Vec::new();
+        for _ in 0..lists {
+            let count = u32_at(areas, at + AREA_NAME)? as usize;
+            at += AREA_NAME + 4;
+            for point in 0..count {
+                let start = at + point * AREA_POINT + 4;
+                points.push((
+                    f64_at(areas, start)? as f32,
+                    f64_at(areas, start + 8)? as f32,
+                ));
+            }
+            at += count * AREA_POINT;
+        }
+        if is_wanted {
+            return Some(points);
+        }
+    }
+    None
+}
+
+/// How many places to start from a map's `test.xbf` has.
+pub fn starts_in(file: &[u8]) -> usize {
+    parts(file)
+        .and_then(|parts| parts.into_iter().find(|&(tag, _)| tag == AREAS))
+        .and_then(|(_, areas)| area_points(areas, BASES))
+        .map_or(0, |points| points.len())
+}
+
 impl Terrain {
-    fn generate(map: usize) -> Self {
-        let size = MapSize::L;
-        let seed = 101 + map as u32 * 13;
-        let planet = MAP_PLANETS[map];
-        let mut random = (seed + 1).wrapping_mul(0x9E37_79B1) | 1;
-        let islands = islands_of(map, size, &mut random);
-        let ways = open_ways(size);
-        let mut is_ground = vec![false; GRID_POINTS];
-        let mut rise = vec![0.0; GRID_POINTS];
-        let mut is_liquid = vec![false; GRID_POINTS];
-        let mut on_way = vec![false; GRID_POINTS];
-        let mut colors = vec![[0.0; 3]; GRID_POINTS];
-        let mut deep = vec![0.0; GRID_POINTS];
-        for v in 0..=size.cells() {
-            for u in 0..=size.cells() {
-                let (fu, fv) = (u as f32 / MAP_CELLS as f32, v as f32 / MAP_CELLS as f32);
-                let point = (u as f32, v as f32);
-                let wobble = (fractal_noise([fu * 6.0, fv * 6.0, 1.5], seed + 200) - 0.5) * 16.0;
-                let (up, shore, is_base_top) = islands
-                    .iter()
-                    .map(|island| {
-                        let (up, edge) = island.rise_at(point, wobble);
-                        let is_base_top = edge >= 0.0 && !island.sloped_all_round;
-                        (up, edge + island.shore_gap(), is_base_top)
-                    })
-                    .fold((0.0_f32, f32::MIN, false), |(a, b, c), (up, shore, top)| {
-                        (a.max(up), b.max(shore), c || top)
-                    });
-                let way = ways
-                    .iter()
-                    .map(|&(from, to)| distance_to_segment(point, from, to))
-                    .fold(f32::MAX, f32::min);
-                let height = fractal_noise([fu * 2.5, fv * 2.5, 0.5], seed);
-                let room = (-shore).min(way - ROAD_HALF_WIDTH);
-                let grain = fractal_noise([fu * 30.0, fv * 30.0, 2.5], seed + 500) - 0.5;
-                let base = mix(planet.lowland_color(), planet.upper_color(), up);
-                let index = grid_index(u, v);
-                // Only the bases' islands can be built on: see docs/decisions.md.
-                is_ground[index] = is_base_top;
-                rise[index] = up;
-                is_liquid[index] = !planet.lower_is_solid() && height < LIQUID_BELOW && room > 0.0;
-                on_way[index] = way < RELIEF_OFF_WAYS;
-                deep[index] = (LIQUID_BELOW - height).min(room * 0.01).max(0.0);
-                colors[index] = base.map(|c| c * (1.0 + grain * 2.0 * GRAIN));
+    /// One of the original's maps: its `test.xbf`, and its radar picture if it has one.
+    pub fn read(file: &[u8], radar: Option<&[u8]>) -> Option<Self> {
+        let parts = parts(file)?;
+        let part = |tag: u32| parts.iter().find(|&&(t, _)| t == tag).map(|&(_, d)| d);
+        let size = part(SIZE)?;
+        let (width, height) = (u32_at(size, 0)? as usize, u32_at(size, 4)? as usize);
+        if width == 0 || height == 0 || width > MOST_CELLS || height > MOST_CELLS {
+            return None;
+        }
+        let cells = width * height;
+        let corners = part(HEIGHTS)?;
+        let mut heights = vec![0.0; GRID_POINTS];
+        for v in 0..=height {
+            for u in 0..=width {
+                let at = (v * (width + 1) + u) * 4;
+                heights[grid_index(u, v)] =
+                    f32::from_le_bytes(corners.get(at..at + 4)?.try_into().ok()?);
             }
         }
-        let mut terrain = Terrain {
-            planet,
-            size,
-            is_ground,
-            is_cliff: find_cliffs(&rise, size),
-            rise,
-            is_liquid,
-            relief: vec![0.0; GRID_POINTS],
-            deep,
-            colors,
-            ruins: Vec::new(),
-            normals: Vec::new(),
-            vents: Vec::new(),
-            fields: Vec::new(),
-            substance: vec![false; GRID_POINTS],
-            walkable: OnceLock::new(),
-        };
-        terrain.paint_sides(seed);
-        terrain.raise_relief(seed, &mut random, &on_way);
-        let mut pieces = Vec::new();
-        // Inset from the map's edges, so that no ruin hangs over them.
-        let (inset, span) = (8.0, size.cells() as f32 - 16.0);
-        // Land is scarcer where the lower terrain cannot hold anything, so look harder there.
-        let ruin_count = size.spread(RUIN_COUNT);
-        let tries = if planet.lower_is_solid() {
-            ruin_count
-        } else {
-            ruin_count * 8
-        };
-        let mut placed = 0;
-        for _ in 0..tries {
-            let u = inset + next_random(&mut random) * span;
-            let v = inset + next_random(&mut random) * span;
-            let (x, z) = grid_to_world(u, v);
-            if placed < ruin_count
-                && terrain.keeps_middle_clear(x, z, 45.25)
-                && !is_on(&on_way, x, z)
-                && terrain.can_hold_ruin(x, z)
-            {
-                add_ruin(&mut pieces, &terrain, x, z, &mut random);
-                placed += 1;
-            }
-        }
-        terrain.ruins = pieces;
-        terrain.lay_fields(seed, &mut random);
-        terrain.normals = terrain.find_normals();
-        terrain.vents = terrain.find_vents(&mut random);
-        terrain
-    }
-
-    /// Lays out the fields of substance: one near each place for a base, out towards the map's
-    /// middle, so that every side has one to harvest, and more about the map. Each is a blob
-    /// on the flat low land, its sand pinkish orange and dotted with paler grains.
-    fn lay_fields(&mut self, seed: u32, random: &mut u32) {
-        /// How far out from a place for a base its field is looked for, ring by ring, and how
-        /// far either way of straight towards the middle.
-        const NEAR_BASE: [f32; 12] = [
-            724.1, 859.8, 995.6, 1131.0, 1267.0, 1403.0, 1539.0, 1674.0, 1810.0, 1991.0, 2172.0,
-            2353.0,
-        ];
-        const TURNS: [f32; 9] = [0.0, 0.25, -0.25, 0.5, -0.5, 0.75, -0.75, 1.0, -1.0];
-        let middle = (0.0, self.size.middle_z());
-        let mut fields = Vec::new();
-        for spot in start_spots(self.size) {
-            let toward = (middle.1 - spot.1).atan2(middle.0 - spot.0);
-            let found = NEAR_BASE
-                .iter()
-                .flat_map(|&reach| TURNS.map(|turn| (reach, toward + turn)))
-                .map(|(reach, angle)| (spot.0 + reach * angle.cos(), spot.1 + reach * angle.sin()))
-                .find(|&at| self.can_hold_field(at, &fields));
-            fields.extend(found);
-        }
-        let wanted = fields.len() + self.size.spread(MORE_FIELDS);
-        for _ in 0..wanted * 100 {
-            let at = self.random_point(random);
-            if fields.len() < wanted && self.can_hold_field(at, &fields) {
-                fields.push(at);
-            }
-        }
-        for (n, &(fx, fz)) in fields.iter().enumerate() {
-            let mut substance = Vec::new();
-            self.for_points_near(fx, fz, FIELD_RADIUS * 1.3, |index, x, z| {
-                let (dx, dz) = (x - fx, z - fz);
-                let wobble = fractal_noise([dx * 0.005524, dz * 0.005524, n as f32], seed + 700);
-                let reach = FIELD_RADIUS * (0.7 + 0.6 * wobble);
-                let away = dx.hypot(dz) / reach;
-                if away < 1.0 {
-                    substance.push((index, away));
-                }
-            });
-            for (index, away) in substance {
-                if self.is_ground[index] || self.is_liquid[index] || self.relief[index] != 0.0 {
-                    continue;
-                }
-                self.substance[index] = true;
-                let grain = (index as u32).wrapping_mul(0x9E37_79B1) ^ seed;
-                let color = if xorshift(&mut (grain | 1)) % 100 < 18 {
-                    SUBSTANCE_GRAINS
-                } else {
-                    SUBSTANCE
-                };
-                // Thinning out to the sand around it at its edge.
-                let share = (1.0 - away * away).min(0.75) / 0.75;
-                self.colors[index] = mix(self.colors[index], color, share * 0.8);
-            }
-        }
-        self.fields = fields;
-    }
-
-    /// Whether a field of substance could lie with its middle here: on flat low land, clear of
-    /// the ruins and well apart from the other fields.
-    fn can_hold_field(&self, (x, z): (f32, f32), fields: &[(f32, f32)]) -> bool {
-        let apart = fields
+        let grounds = part(GROUNDS)?
+            .get(..cells)?
             .iter()
-            .all(|&(fx, fz)| (fx - x).hypot(fz - z) >= FIELD_RADIUS * 3.0);
-        let clear_of_ruins = self.ruins.iter().all(|ruin| {
-            (ruin.x - x).hypot(ruin.z - z) > FIELD_RADIUS + ruin.half_x.max(ruin.half_z) + 45.25
-        });
-        let reach = FIELD_RADIUS * 0.7;
-        let flat = (0..9).all(|n| {
-            let (sin, cos) = (n as f32 * std::f32::consts::TAU / 8.0).sin_cos();
-            let out = if n == 8 { 0.0 } else { reach };
-            let (x, z) = (x + cos * out, z + sin * out);
-            self.can_walk(x, z)
-                && !self.on_upper_ground(x, z)
-                && self.relief_at(x, z) == 0.0
-                && self.rise_at(x, z) == 0.0
-        });
-        apart && clear_of_ruins && flat
-    }
-
-    /// Spots well out in the lava, apart from each other, if this map has any.
-    fn find_vents(&self, random: &mut u32) -> Vec<(f32, f32)> {
-        const VENTS: usize = 10;
-        const APART: f32 = 407.3;
-        /// How far under the noise's threshold it must be, to be well away from the shore.
-        const OUT_IN_IT: f32 = 0.02;
-        let mut vents: Vec<(f32, f32)> = Vec::new();
-        if self.material() != Material::Lava {
-            return vents;
-        }
-        let count = self.size.spread(VENTS);
-        for _ in 0..count * 100 {
-            let (u, v) = (
-                (next_random(random) * self.last()) as usize,
-                (next_random(random) * self.last()) as usize,
-            );
-            let (x, z) = grid_to_world(u as f32, v as f32);
-            let is_free = vents.iter().all(|o| (o.0 - x).hypot(o.1 - z) >= APART);
-            let index = grid_index(u, v);
-            let is_out_in_it = self.is_liquid[index] && self.deep[index] > OUT_IN_IT;
-            if vents.len() < count && is_free && is_out_in_it {
-                vents.push((x, z));
-            }
-        }
-        vents
-    }
-
-    /// Which way the land faces at each grid point.
-    fn find_normals(&self) -> Vec<[f32; 3]> {
-        const CLIFF_SHARPEN: f32 = 2.5;
-        let step = CELL * std::f32::consts::SQRT_2;
-        let cells = self.size.cells();
-        let height = |u: usize, v: usize| self.vertex_height(u.min(cells), v.min(cells));
-        let across = std::f32::consts::FRAC_1_SQRT_2;
-        let mut normals = vec![[0.0, 1.0, 0.0]; GRID_POINTS];
-        for v in 0..=cells {
-            for u in 0..=cells {
-                let along_u = (height(u + 1, v) - height(u.saturating_sub(1), v)) / (2.0 * step);
-                let along_v = (height(u, v + 1) - height(u, v.saturating_sub(1))) / (2.0 * step);
-                // A cliff is sharper than the grid can show: bare and hard-lit all the way up.
-                let sharpen = if self.is_cliff[grid_index(u, v)] {
-                    CLIFF_SHARPEN
-                } else {
-                    1.0
-                };
-                let slope_x = (along_u - along_v) * across * sharpen;
-                let slope_z = (along_u + along_v) * across * sharpen;
-                let length = (slope_x * slope_x + slope_z * slope_z + 1.0).sqrt();
-                normals[grid_index(u, v)] = [-slope_x / length, 1.0 / length, -slope_z / length];
-            }
-        }
-        normals
-    }
-
-    fn vertex_height(&self, u: usize, v: usize) -> f32 {
-        let index = grid_index(u, v);
-        let base = if self.is_liquid[index] {
-            0.0
-        } else {
-            self.floor() + self.rise[index] * GROUND_HEIGHT
-        };
-        base + self.relief[index]
-    }
-
-    /// Puts up the mountains and digs the pits, well away from wherever a group can start.
-    fn raise_relief(&mut self, seed: u32, random: &mut u32, on_way: &[bool]) {
-        // Where a planet has little land, it takes longer to find room for them.
-        let tries = if self.planet.lower_is_solid() {
-            120
-        } else {
-            240
-        };
-        for (count, is_mountain) in [
-            (self.size.spread(MOUNTAIN_COUNT), true),
-            (self.size.spread(PIT_COUNT), false),
-        ] {
-            let mut placed = 0;
-            for _ in 0..tries * count / 8 {
-                if placed == count {
-                    break;
-                }
-                let (u, v) = (
-                    8.0 + next_random(random) * (self.last() - 16.0),
-                    8.0 + next_random(random) * (self.last() - 16.0),
-                );
-                let (x, z) = grid_to_world(u, v);
-                let radius = if is_mountain {
-                    117.7 + next_random(random) * 153.9
-                } else {
-                    81.46 + next_random(random) * 108.6
-                };
-                if self.has_room_for_relief(x, z, radius, on_way) {
-                    let size = 0.7 + next_random(random) * 0.6;
-                    self.add_relief(
-                        (x, z),
-                        radius,
-                        size,
-                        is_mountain,
-                        seed + 900 + placed as u32,
-                    );
-                    placed += 1;
-                }
-            }
-        }
-    }
-
-    /// Whether a mountain or pit could go here: out on the low land clear of the islands and
-    /// of the ways between the bases and of other relief, with a way around it.
-    fn has_room_for_relief(&self, x: f32, z: f32, radius: f32, on_way: &[bool]) -> bool {
-        const AROUND: f32 = 90.51;
-        (0..16).all(|i| {
-            let (sin, cos) = (i as f32 / 16.0 * std::f32::consts::TAU).sin_cos();
-            [radius, radius + AROUND].iter().all(|reach| {
-                let (px, pz) = (x + cos * reach, z + sin * reach);
-                self.keeps_middle_clear(px, pz, 0.0)
-                    && !is_on(on_way, px, pz)
-                    && self.rise_at(px, pz) == 0.0
-                    && self.can_walk(px, pz)
-                    && self.can_walk(x + cos * reach * 0.5, z + sin * reach * 0.5)
+            .map(|&n| Ground::of(n))
+            .collect();
+        let spice = part(SPICE)?.get(..cells)?.to_vec();
+        let starts = part(AREAS)
+            .and_then(|areas| area_points(areas, BASES))
+            .unwrap_or_default();
+        let radar = (0..cells)
+            .map(|cell| {
+                let (u, v) = (cell % width, cell / width);
+                let at = (v * RADAR_SIDE + u) * 2;
+                radar
+                    .and_then(|picture| picture.get(at..at + 2))
+                    .map_or(SAND, |pixel| {
+                        rgb565(u16::from_le_bytes([pixel[0], pixel[1]]))
+                    })
             })
-        }) && self.can_walk(x, z)
-    }
-
-    /// A mountain with ridges down its sides, or a pit with steep walls and a dark floor.
-    fn add_relief(
-        &mut self,
-        (x, z): (f32, f32),
-        radius: f32,
-        size: f32,
-        is_mountain: bool,
-        seed: u32,
-    ) {
-        const PEAK: f32 = 226.3;
-        const PIT_DEPTH: f32 = 72.41;
-        const ROCK: [f32; 3] = [0.56, 0.50, 0.45];
-        const SNOW: [f32; 3] = [0.86, 0.87, 0.90];
-        const DARK_ROCK: [f32; 3] = [0.38, 0.33, 0.30];
-        const FLOOR: [f32; 3] = [0.05, 0.04, 0.04];
-        let reach = radius + 45.25;
-        for v in 0..=self.size.cells() {
-            for u in 0..=self.size.cells() {
-                let (px, pz) = grid_to_world(u as f32, v as f32);
-                if (px - x).abs() > reach || (pz - z).abs() > reach {
-                    continue;
-                }
-                let (fu, fv) = (u as f32 / MAP_CELLS as f32, v as f32 / MAP_CELLS as f32);
-                let warp = fractal_noise([fu * 14.0, fv * 14.0, 4.5], seed) - 0.5;
-                let distance = (px - x).hypot(pz - z) / radius + warp * 0.5;
-                let inside = (1.0 - distance).clamp(0.0, 1.0);
-                let index = grid_index(u, v);
-                if inside <= 0.0 || self.rise[index] > 0.0 || self.is_liquid[index] {
-                    continue;
-                }
-                if is_mountain {
-                    let noise = fractal_noise([fu * 26.0, fv * 26.0, 6.5], seed + 1);
-                    let ridge = 1.0 - (noise * 2.0 - 1.0).abs();
-                    let fine = fractal_noise([fu * 70.0, fv * 70.0, 8.5], seed + 2);
-                    let rise = inside * inside.sqrt();
-                    let share = (rise * (0.25 + 1.1 * ridge * ridge + 0.3 * fine)).min(1.0);
-                    self.relief[index] = self.relief[index].max(share * PEAK * size);
-                    let grain = self.colors[index][0] / self.base_of(index)[0].max(0.01);
-                    // Bands of rock as it climbs, all of it rock past the very foot.
-                    let band = fractal_noise([share * 9.0, fine * 2.0, 3.5], seed + 3);
-                    let stone = mix(DARK_ROCK, ROCK, band * 1.5);
-                    let rock = mix(self.base_of(index), stone, (share * 30.0).min(1.0));
-                    let snowy = ((share - 0.78 + (fine - 0.5) * 0.25) * 9.0).clamp(0.0, 1.0);
-                    let color = mix(rock, SNOW, snowy);
-                    self.colors[index] = color.map(|c| c * grain);
-                } else {
-                    // Steep walls down to a floor that is flat, and dark for how little sun
-                    // gets down there.
-                    let wall = (inside * 3.0).min(1.0);
-                    let fall = wall * wall * (3.0 - 2.0 * wall);
-                    self.relief[index] = self.relief[index].min(-fall * PIT_DEPTH * size);
-                    self.colors[index] = mix(self.colors[index], FLOOR, fall * 0.9);
-                }
-            }
-        }
-    }
-
-    fn base_of(&self, index: usize) -> [f32; 3] {
-        mix(
-            self.planet.lowland_color(),
-            self.planet.upper_color(),
-            self.rise[index],
-        )
-    }
-
-    /// Bares the rock of the cliffs in bands, and lays the slopes in contours of packed scree,
-    /// so the two read apart even where only the colors of the land are drawn.
-    fn paint_sides(&mut self, seed: u32) {
-        const DARK: [f32; 3] = [0.24, 0.21, 0.19];
-        const PALE: [f32; 3] = [0.52, 0.47, 0.42];
-        const CONTOURS: f32 = 9.0;
-        for v in 0..=self.size.cells() {
-            for u in 0..=self.size.cells() {
-                let index = grid_index(u, v);
-                let up = self.rise[index];
-                let (fu, fv) = (u as f32 / MAP_CELLS as f32, v as f32 / MAP_CELLS as f32);
-                let grain = fractal_noise([fu * 40.0, fv * 40.0, 7.5], seed + 700);
-                if self.is_cliff[index] {
-                    let stone = mix(DARK, PALE, (grain - 0.25) * 2.0);
-                    let tint = mix(stone, self.planet.upper_color(), 0.25);
-                    self.colors[index] = tint.map(|c| c * (0.72 + 0.4 * up));
-                } else if up > 0.0 && up < 1.0 {
-                    let contour = (up * CONTOURS * std::f32::consts::PI).sin().abs();
-                    let shade = 0.82 + 0.22 * contour + (grain - 0.5) * 0.3;
-                    self.colors[index] = self.colors[index].map(|c| c * shade);
-                }
-            }
-        }
-    }
-
-    /// Ruins stand out on flat low land, well clear of the water or lava.
-    fn can_hold_ruin(&self, x: f32, z: f32) -> bool {
-        const SITE: f32 = 162.9;
-        [
-            (-SITE, -SITE),
-            (SITE, -SITE),
-            (SITE, SITE),
-            (-SITE, SITE),
-            (0.0, -SITE),
-            (SITE, 0.0),
-            (0.0, SITE),
-            (-SITE, 0.0),
-            (0.0, 0.0),
-        ]
-        .iter()
-        .all(|(dx, dz)| {
-            let (x, z) = (x + dx, z + dz);
-            self.relief_at(x, z) == 0.0
-                && self.rise_at(x, z) == 0.0
-                && self.height_at(x, z) >= self.floor() - 0.04525
+            .collect();
+        Some(Terrain {
+            width,
+            height,
+            heights,
+            grounds,
+            spice,
+            starts,
+            radar,
+            light: DAYLIGHT,
+            walkable: Default::default(),
         })
     }
 
-    pub fn lower_color(&self) -> [f32; 3] {
-        self.planet.lower_color()
+    /// The same, lit this way.
+    pub fn lit(self, light: Light) -> Self {
+        Terrain { light, ..self }
     }
 
-    pub fn upper_color(&self) -> [f32; 3] {
-        self.planet.upper_color()
+    /// Flat sand full of spice, this many cells each way, with a side starting on rock in each
+    /// corner, for when a map cannot be read and for tests.
+    pub fn blank(width: usize, height: usize) -> Self {
+        /// How many cells each way the rock under a start reaches.
+        const BASE: usize = 32;
+        let (right, bottom) = (width as f32 * CELL_SIDE, height as f32 * CELL_SIDE);
+        let inset = BASE as f32 / 2.0 * CELL_SIDE;
+        let sand = Terrain {
+            width,
+            height,
+            heights: vec![0.0; GRID_POINTS],
+            grounds: vec![Ground::Sand; width * height],
+            spice: vec![FULL_SPICE; width * height],
+            starts: vec![
+                (inset, inset),
+                (right - inset, bottom - inset),
+                (right - inset, inset),
+                (inset, bottom - inset),
+            ],
+            radar: vec![SAND; width * height],
+            light: DAYLIGHT,
+            walkable: Default::default(),
+        };
+        let (far_u, far_v) = (width.saturating_sub(BASE), height.saturating_sub(BASE));
+        [(0, 0), (far_u, far_v), (far_u, 0), (0, far_v)]
+            .into_iter()
+            .fold(sand, |terrain, corner| {
+                terrain.with_ground(Ground::Rock, corner, (BASE, BASE))
+            })
     }
 
-    /// The color of the low land anyone can walk on.
-    pub fn lowland_color(&self) -> [f32; 3] {
-        self.planet.lowland_color()
-    }
-
-    /// Whether a unit may stand here: on the map, and not in water or lava.
-    pub fn can_walk(&self, x: f32, z: f32) -> bool {
-        self.on_map(x, z)
-            && self.relief_at(x, z).abs() < STEEPEST_WALK
-            && !self.is_steep_at(x, z)
-            && (self.planet.lower_is_solid() || self.height_at(x, z) >= LOWLAND_HEIGHT * 0.5)
-    }
-
-    fn is_steep_at(&self, x: f32, z: f32) -> bool {
-        self.blend_at(x, z, |terrain, u, v| {
-            f32::from(u8::from(terrain.is_cliff[grid_index(u, v)]))
-        }) >= 0.5
-    }
-
-    /// Whether a place is out of the open ground around the map's middle, by this much more.
-    fn keeps_middle_clear(&self, x: f32, z: f32, more: f32) -> bool {
-        x.hypot(z - self.size.middle_z()) > MIDDLE_CLEAR + more
-    }
-
-    fn rise_at(&self, x: f32, z: f32) -> f32 {
-        self.blend_at(x, z, |terrain, u, v| terrain.rise[grid_index(u, v)])
-    }
-
-    pub fn on_map(&self, x: f32, z: f32) -> bool {
-        let (u, v) = world_to_grid(x, z);
-        (0.0..=self.last()).contains(&u) && (0.0..=self.last()).contains(&v)
-    }
-
-    /// Flat sand holding only the given ruins, for testing how units meet them.
+    /// Flat sand as big as the biggest map, for tests.
     #[cfg(test)]
-    pub fn open_with_ruins(ruins: Vec<RuinPiece>) -> Self {
-        Terrain {
-            planet: Planet::Arrakis,
-            size: MapSize::L,
-            is_ground: vec![false; GRID_POINTS],
-            rise: vec![0.0; GRID_POINTS],
-            is_liquid: vec![false; GRID_POINTS],
-            is_cliff: vec![false; GRID_POINTS],
-            relief: vec![0.0; GRID_POINTS],
-            deep: vec![0.0; GRID_POINTS],
-            colors: vec![SAND; GRID_POINTS],
-            ruins,
-            normals: vec![[0.0, 1.0, 0.0]; GRID_POINTS],
-            vents: Vec::new(),
-            // All of it has substance, though no field is laid out on it to splash.
-            fields: Vec::new(),
-            substance: vec![true; GRID_POINTS],
-            walkable: OnceLock::new(),
+    pub fn open() -> Self {
+        Self::blank(MOST_CELLS, MOST_CELLS)
+    }
+
+    /// Flat rock as big as the biggest map, where buildings may go up, for tests.
+    #[cfg(test)]
+    pub fn open_rock() -> Self {
+        Self::open().with_ground(Ground::Rock, (0, 0), (MOST_CELLS, MOST_CELLS))
+    }
+
+    /// Flat sand with a round cliff of this radius in the way, for tests of how units get
+    /// around it.
+    #[cfg(test)]
+    pub fn open_with_cliff(x: f32, z: f32, radius: f32) -> Self {
+        let mut terrain = Self::open();
+        for cell in 0..terrain.grounds.len() {
+            let (u, v) = (cell % terrain.width, cell / terrain.width);
+            let (cx, cz) = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+            if (cx - x).hypot(cz - z) < radius {
+                terrain.grounds[cell] = Ground::Cliff;
+            }
         }
-    }
-
-    /// Flat upper ground with nothing on it, where buildings may go up.
-    #[cfg(test)]
-    pub fn open_upland() -> Self {
-        Terrain {
-            is_ground: vec![true; GRID_POINTS],
-            rise: vec![1.0; GRID_POINTS],
-            fields: Vec::new(),
-            substance: vec![false; GRID_POINTS],
-            ..Terrain::open_with_ruins(Vec::new())
-        }
-    }
-
-    /// Flat sand with a mountain in the way, for testing how units get around it.
-    #[cfg(test)]
-    pub fn open_with_mountain(x: f32, z: f32, radius: f32) -> Self {
-        let mut terrain = Self::open_with_ruins(Vec::new());
-        terrain.add_relief((x, z), radius, 1.0, true, 7);
         terrain
     }
 
-    /// The destroyed buildings on this map.
-    /// A point anywhere on the map.
-    pub fn random_point(&self, random: &mut u32) -> (f32, f32) {
-        let (u, v) = (next_random(random), next_random(random));
-        grid_to_world(u * self.last(), v * self.last())
-    }
-
-    pub fn size(&self) -> MapSize {
-        self.size
-    }
-
-    /// How far along each grid axis the map goes.
-    fn last(&self) -> f32 {
-        self.size.cells() as f32
-    }
-
-    pub fn ruins(&self) -> &[RuinPiece] {
-        &self.ruins
-    }
-
-    pub fn is_ground(&self, u: usize, v: usize) -> bool {
-        self.is_ground[grid_index(u, v)]
-    }
-
-    /// What the ground shader makes of this map.
-    pub fn material(&self) -> Material {
-        match self.planet {
-            Planet::Arrakis => Material::Sand,
-            Planet::Caladan => Material::Water,
-            Planet::GeidiPrime => Material::Lava,
-            Planet::Draconis => Material::Ice,
-            Planet::SelusaSecundus => Material::Stone,
-            Planet::Tleilax => Material::Moss,
+    /// The same with the ground of the cells in a rectangle of them, from (u, v) on, changed,
+    /// and spice left only on sand.
+    pub fn with_ground(
+        mut self,
+        ground: Ground,
+        (u, v): (usize, usize),
+        (across, down): (usize, usize),
+    ) -> Self {
+        for row in v..(v + down).min(self.height) {
+            for column in u..(u + across).min(self.width) {
+                self.grounds[row * self.width + column] = ground;
+                if ground != Ground::Sand {
+                    self.spice[row * self.width + column] = 0;
+                }
+            }
         }
+        self.walkable = Default::default();
+        self
     }
 
-    /// Where lava erupts now and then, if this map has any.
-    pub fn vents(&self) -> &[(f32, f32)] {
-        &self.vents
+    /// The same with spice in the cells of a rectangle of them.
+    #[cfg(test)]
+    pub fn with_spice(mut self, (u, v): (usize, usize), (across, down): (usize, usize)) -> Self {
+        for row in v..(v + down).min(self.height) {
+            for column in u..(u + across).min(self.width) {
+                self.spice[row * self.width + column] = FULL_SPICE;
+            }
+        }
+        self
     }
 
-    /// The middles of the fields of substance.
-    pub fn fields(&self) -> &[(f32, f32)] {
-        &self.fields
+    /// How many cells along x and along z.
+    pub fn cells(&self) -> (usize, usize) {
+        (self.width, self.height)
     }
 
-    /// The middle of the field of substance nearest to a place, if there is any.
-    pub fn nearest_field(&self, (x, z): (f32, f32)) -> Option<(f32, f32)> {
-        let away = |&(fx, fz): &(f32, f32)| (fx - x).hypot(fz - z);
-        self.fields
-            .iter()
-            .min_by(|a, b| away(a).total_cmp(&away(b)))
-            .copied()
+    /// How far the map reaches along x and along z, in world units.
+    pub fn extent(&self) -> (f32, f32) {
+        (
+            self.width as f32 * CELL_SIDE,
+            self.height as f32 * CELL_SIDE,
+        )
     }
 
-    /// Whether a place is in a field of substance.
-    pub fn has_substance(&self, x: f32, z: f32) -> bool {
-        self.nearest_point(x, z)
-            .is_some_and(|index| self.substance[index])
+    /// Where the sides may start, as world points.
+    pub fn starts(&self) -> &[(f32, f32)] {
+        &self.starts
     }
 
-    /// The index of the grid point nearest to a place on the map.
-    fn nearest_point(&self, x: f32, z: f32) -> Option<usize> {
+    /// What the ground shader makes of this map: only its pictures.
+    pub fn material(&self) -> Material {
+        Material::Pictured
+    }
+
+    /// The cell a world point is in, if it is on the map.
+    fn cell_at(&self, x: f32, z: f32) -> Option<usize> {
         if !self.on_map(x, z) {
             return None;
         }
-        let (u, v) = world_to_grid(x, z);
-        let last = self.size.cells();
-        let (u, v) = (u.round() as usize, v.round() as usize);
-        Some(grid_index(u.min(last), v.min(last)))
+        let column = ((x / CELL_SIDE) as usize).min(self.width - 1);
+        let row = ((z / CELL_SIDE) as usize).min(self.height - 1);
+        Some(row * self.width + column)
     }
 
-    /// Whether this grid point is on a mountain or in a pit that nothing can walk on.
-    pub fn is_relief(&self, u: usize, v: usize) -> bool {
-        self.relief[grid_index(u, v)].abs() >= STEEPEST_WALK
+    /// The ground under a world point; off the map, its edge.
+    pub fn ground_at(&self, x: f32, z: f32) -> Ground {
+        self.cell_at(x, z)
+            .map_or(Ground::MapEdge, |cell| self.grounds[cell])
     }
 
-    /// Whether this grid point is on the side of an island: its cliffs or its slopes.
-    pub fn is_side(&self, u: usize, v: usize) -> bool {
-        let index = grid_index(u, v);
-        self.is_cliff[index] || (self.rise[index] > 0.0 && self.rise[index] < 1.0)
+    /// Whether a machine may stand here: on the map, on ground that can be driven over.
+    pub fn can_walk(&self, x: f32, z: f32) -> bool {
+        self.can_go(Going::Driving, x, z)
     }
 
-    pub fn is_liquid(&self, u: usize, v: usize) -> bool {
-        self.is_liquid[grid_index(u, v)]
+    /// Whether someone going this way may be here. Aircraft only have to stay on the map.
+    pub fn can_go(&self, going: Going, x: f32, z: f32) -> bool {
+        match going {
+            Going::Flying => self.on_map(x, z),
+            _ => self.ground_at(x, z).lets(going),
+        }
     }
 
-    /// The color of a grid point, with its slope lit.
-    pub fn color_at(&self, u: usize, v: usize) -> [f32; 3] {
-        self.colors[grid_index(u, v)]
+    /// Whether a place is on rock, where buildings may go up.
+    pub fn is_rock(&self, x: f32, z: f32) -> bool {
+        self.ground_at(x, z) == Ground::Rock
     }
 
-    /// Which grid points a route may go through: what can be walked on, and clear of ruins by
-    /// enough to get past them.
-    fn route_grid(&self) -> &[bool] {
-        self.walkable.get_or_init(|| {
-            /// How far from a ruin a route keeps.
-            const CLEAR_OF_RUINS: f32 = 31.68;
-            let mut grid: Vec<bool> = (0..GRID_POINTS)
-                .map(|index| {
-                    let (u, v) = (index % (MOST_CELLS + 1), index / (MOST_CELLS + 1));
-                    let (x, z) = grid_to_world(u as f32, v as f32);
-                    self.can_walk(x, z)
-                })
-                .collect();
-            for piece in &self.ruins {
-                let reach = piece.half_x.max(piece.half_z) + CLEAR_OF_RUINS;
-                self.for_points_near(piece.x, piece.z, reach, |index, x, z| {
-                    let dx = (x - piece.x).abs() - piece.half_x;
-                    let dz = (z - piece.z).abs() - piece.half_z;
-                    if dx.max(0.0).hypot(dz.max(0.0)) < CLEAR_OF_RUINS {
-                        grid[index] = false;
-                    }
-                });
+    pub fn on_map(&self, x: f32, z: f32) -> bool {
+        let (right, bottom) = self.extent();
+        (0.0..=right).contains(&x) && (0.0..=bottom).contains(&z)
+    }
+
+    /// A point anywhere on the map.
+    pub fn random_point(&self, random: &mut u32) -> (f32, f32) {
+        let (right, bottom) = self.extent();
+        (next_random(random) * right, next_random(random) * bottom)
+    }
+
+    /// Whether a place has spice.
+    pub fn has_substance(&self, x: f32, z: f32) -> bool {
+        self.cell_at(x, z).is_some_and(|cell| self.spice[cell] > 0)
+    }
+
+    /// How much spice the cell at column `u` and row `v` has, from 0 to `FULL_SPICE`.
+    pub fn spice_in(&self, u: usize, v: usize) -> u8 {
+        if u < self.width && v < self.height {
+            self.spice[v * self.width + u]
+        } else {
+            0
+        }
+    }
+
+    /// The middle of the cell of spice nearest to a place, if the map has any.
+    pub fn nearest_field(&self, (x, z): (f32, f32)) -> Option<(f32, f32)> {
+        let middle = |cell: usize| {
+            let (u, v) = (cell % self.width, cell / self.width);
+            ((u as f32 + 0.5) * CELL_SIDE, (v as f32 + 0.5) * CELL_SIDE)
+        };
+        let away = |&(cx, cz): &(f32, f32)| (cx - x).hypot(cz - z);
+        (0..self.spice.len())
+            .filter(|&cell| self.spice[cell] > 0)
+            .map(middle)
+            .min_by(|a, b| away(a).total_cmp(&away(b)))
+    }
+
+    /// The middles of the cells with spice within a square of this reach about a point.
+    pub fn fields_within(&self, (x, z): (f32, f32), reach: f32) -> Vec<(f32, f32)> {
+        let span = |at: f32, cells: usize| {
+            let first = ((at - reach) / CELL_SIDE).floor().max(0.0) as usize;
+            let last = ((at + reach) / CELL_SIDE).ceil().max(0.0) as usize;
+            first..last.min(cells)
+        };
+        span(z, self.height)
+            .flat_map(|v| span(x, self.width).map(move |u| (u, v)))
+            .filter(|&(u, v)| self.spice[v * self.width + u] > 0)
+            .map(|(u, v)| ((u as f32 + 0.5) * CELL_SIDE, (v as f32 + 0.5) * CELL_SIDE))
+            .collect()
+    }
+
+    /// How the map is lit.
+    pub fn light(&self) -> Light {
+        self.light
+    }
+
+    /// The color of a cell on the radar.
+    pub fn radar_at(&self, u: usize, v: usize) -> [f32; 3] {
+        self.radar[v * self.width + u]
+    }
+
+    /// Which grid points a route may go through: those all of whose cells can be gone over.
+    fn route_grid(&self, going: Going) -> &[bool] {
+        self.walkable[going as usize].get_or_init(|| {
+            let mut grid = vec![false; GRID_POINTS];
+            for v in 0..=self.height {
+                for u in 0..=self.width {
+                    let column = |u: usize| u.min(self.width - 1);
+                    let row = |v: usize| v.min(self.height - 1);
+                    let cells = [
+                        (column(u.saturating_sub(1)), row(v.saturating_sub(1))),
+                        (column(u), row(v.saturating_sub(1))),
+                        (column(u.saturating_sub(1)), row(v)),
+                        (column(u), row(v)),
+                    ];
+                    grid[grid_index(u, v)] = cells
+                        .iter()
+                        .all(|&(c, r)| self.grounds[r * self.width + c].lets(going));
+                }
             }
             grid
         })
@@ -1188,30 +560,35 @@ impl Terrain {
     /// Calls back with each grid point on the map within a square around a place.
     fn for_points_near(&self, x: f32, z: f32, reach: f32, mut visit: impl FnMut(usize, f32, f32)) {
         let (u, v) = world_to_grid(x, z);
-        // A step along one grid axis covers 0.7 of a world unit, so this reaches far enough.
-        let span = reach * 0.03315 + 1.0;
-        let last = self.size.cells() as i32;
-        let range = |center: f32| {
-            ((center - span).floor() as i32).max(0)..=((center + span).ceil() as i32).min(last)
+        let span = reach / CELL_SIDE + 1.0;
+        let range = |center: f32, last: usize| {
+            ((center - span).floor().max(0.0) as usize)
+                ..=((center + span).ceil().max(0.0) as usize).min(last)
         };
-        for point_v in range(v) {
-            for point_u in range(u) {
+        for point_v in range(v, self.height) {
+            for point_u in range(u, self.width) {
                 let (px, pz) = grid_to_world(point_u as f32, point_v as f32);
-                visit(grid_index(point_u as usize, point_v as usize), px, pz);
+                visit(grid_index(point_u, point_v), px, pz);
             }
         }
     }
 
-    /// Whether someone could walk straight from one point to the other, past ruins too. What
-    /// lies right at either end is no matter: it may well stand beside a wall.
-    pub fn line_is_clear(&self, from: (f32, f32), to: (f32, f32)) -> bool {
-        self.line_is_clear_on(self.route_grid(), from, to)
+    /// Whether someone could walk straight from one point to the other. What lies right at
+    /// either end is no matter: it may well stand beside a cliff.
+    pub fn line_is_clear(&self, going: Going, from: (f32, f32), to: (f32, f32)) -> bool {
+        self.line_is_clear_on(going, self.route_grid(going), from, to)
     }
 
     /// Whether the grid's points along a line are all open, and the ground itself can be walked
     /// along it with room for a vehicle each side: a line between two open points can still cut
     /// across the corner of a cliff between them.
-    fn line_is_clear_on(&self, grid: &[bool], from: (f32, f32), to: (f32, f32)) -> bool {
+    fn line_is_clear_on(
+        &self,
+        going: Going,
+        grid: &[bool],
+        from: (f32, f32),
+        to: (f32, f32),
+    ) -> bool {
         const STEP: f32 = 9.051;
         const ENDS: f32 = 33.94;
         /// How far each side of the line the ground has to be open too.
@@ -1233,28 +610,28 @@ impl Terrain {
             let (u, v) = (u.round(), v.round());
             u >= 0.0
                 && v >= 0.0
-                && u <= MOST_CELLS as f32
-                && v <= MOST_CELLS as f32
+                && u <= self.width as f32
+                && v <= self.height as f32
                 && grid[grid_index(u as usize, v as usize)]
                 && [-1.0, 0.0, 1.0]
                     .iter()
-                    .all(|&k| self.can_walk(x + side_x * k, z + side_z * k))
+                    .all(|&k| self.can_go(going, x + side_x * k, z + side_z * k))
         })
     }
 
     /// The nearest point to this one that can be walked on, if any is near enough to matter.
-    pub fn nearest_walkable(&self, (x, z): (f32, f32)) -> Option<(f32, f32)> {
+    pub fn nearest_walkable(&self, going: Going, (x, z): (f32, f32)) -> Option<(f32, f32)> {
         const RINGS: usize = 40;
         const PER_RING: usize = 24;
-        if self.can_walk(x, z) {
+        if self.can_go(going, x, z) {
             return Some((x, z));
         }
         (1..=RINGS).find_map(|ring| {
-            let reach = ring as f32 * CELL;
+            let reach = ring as f32 * CELL_SIDE * FRAC_1_SQRT_2;
             (0..PER_RING).find_map(|i| {
                 let (sin, cos) = (i as f32 / PER_RING as f32 * std::f32::consts::TAU).sin_cos();
                 let spot = (x + cos * reach, z + sin * reach);
-                self.can_walk(spot.0, spot.1).then_some(spot)
+                self.can_go(going, spot.0, spot.1).then_some(spot)
             })
         })
     }
@@ -1262,18 +639,24 @@ impl Terrain {
     /// The first place to head for on the way around whatever lies between two points: as far
     /// along the shortest route as can be reached in a straight line. `None` if there is no
     /// way there at all.
-    pub fn next_on_route(&self, from: (f32, f32), to: (f32, f32)) -> Option<(f32, f32)> {
-        self.next_on_grid(self.route_grid(), from, to)
+    pub fn next_on_route(
+        &self,
+        going: Going,
+        from: (f32, f32),
+        to: (f32, f32),
+    ) -> Option<(f32, f32)> {
+        self.next_on_grid(going, self.route_grid(going), from, to)
     }
 
     /// As `next_on_route`, keeping clear of these as well, each given as (x, z, how far).
     pub fn next_on_route_around(
         &self,
+        going: Going,
         from: (f32, f32),
         to: (f32, f32),
         obstacles: &[(f32, f32, f32)],
     ) -> Option<(f32, f32)> {
-        let mut grid = self.route_grid().to_vec();
+        let mut grid = self.route_grid(going).to_vec();
         for &(x, z, reach) in obstacles {
             self.for_points_near(x, z, reach, |index, px, pz| {
                 if (px - x).hypot(pz - z) < reach {
@@ -1281,11 +664,12 @@ impl Terrain {
                 }
             });
         }
-        self.next_on_grid(&grid, from, to)
+        self.next_on_grid(going, &grid, from, to)
     }
 
     fn next_on_grid(
         &self,
+        going: Going,
         grid_walkable: &[bool],
         from: (f32, f32),
         to: (f32, f32),
@@ -1293,37 +677,35 @@ impl Terrain {
         const STRAIGHT: u32 = 10;
         const DIAGONAL: u32 = 14;
         const NOWHERE: usize = usize::MAX;
+        let (last_u, last_v) = (self.width as i32, self.height as i32);
         let walkable = |index: usize| grid_walkable[index];
-        // The walkable grid point nearest a world point, truly nearest: by a square ring at
-        // a time, one across a cliff's corner could come before one just beside it.
-        let snap = |(x, z): (f32, f32)| -> Option<usize> {
-            const REACH: i32 = 4;
-            let (u, v) = world_to_grid(x, z);
-            let (u, v) = (u.round() as i32, v.round() as i32);
-            let last = self.size.cells() as i32;
-            (-REACH..=REACH)
-                .flat_map(|du| (-REACH..=REACH).map(move |dv| (u + du, v + dv)))
-                .filter(|&(u, v)| u >= 0 && v >= 0 && u <= last && v <= last)
-                .map(|(u, v)| grid_index(u as usize, v as usize))
-                .filter(|&index| walkable(index))
-                .min_by(|&a, &b| {
-                    let away = |index: usize| {
-                        let (px, pz) = grid_to_world(
-                            (index % (MOST_CELLS + 1)) as f32,
-                            (index / (MOST_CELLS + 1)) as f32,
-                        );
-                        (px - x).hypot(pz - z)
-                    };
-                    away(a).total_cmp(&away(b))
-                })
-        };
-        let (start, goal) = (snap(from)?, snap(to)?);
         let grid = |index: usize| {
             (
                 (index % (MOST_CELLS + 1)) as i32,
                 (index / (MOST_CELLS + 1)) as i32,
             )
         };
+        // The walkable grid point nearest a world point, truly nearest: by a square ring at
+        // a time, one across a cliff's corner could come before one just beside it.
+        let snap = |(x, z): (f32, f32)| -> Option<usize> {
+            const REACH: i32 = 4;
+            let (u, v) = world_to_grid(x, z);
+            let (u, v) = (u.round() as i32, v.round() as i32);
+            (-REACH..=REACH)
+                .flat_map(|du| (-REACH..=REACH).map(move |dv| (u + du, v + dv)))
+                .filter(|&(u, v)| u >= 0 && v >= 0 && u <= last_u && v <= last_v)
+                .map(|(u, v)| grid_index(u as usize, v as usize))
+                .filter(|&index| walkable(index))
+                .min_by(|&a, &b| {
+                    let away = |index: usize| {
+                        let (u, v) = grid(index);
+                        let (px, pz) = grid_to_world(u as f32, v as f32);
+                        (px - x).hypot(pz - z)
+                    };
+                    away(a).total_cmp(&away(b))
+                })
+        };
+        let (start, goal) = (snap(from)?, snap(to)?);
         let (goal_u, goal_v) = grid(goal);
         let estimate = |index: usize| {
             let (u, v) = grid(index);
@@ -1351,8 +733,7 @@ impl Terrain {
                 (-1, -1),
             ] {
                 let (nu, nv) = (u + du, v + dv);
-                let last = self.size.cells() as i32;
-                if nu < 0 || nv < 0 || nu > last || nv > last {
+                if nu < 0 || nv < 0 || nu > last_u || nv > last_v {
                     continue;
                 }
                 let next = grid_index(nu as usize, nv as usize);
@@ -1392,71 +773,92 @@ impl Terrain {
         route
             .iter()
             .map(|&index| point(index))
-            .find(|&spot| self.line_is_clear_on(grid_walkable, from, spot))
+            .find(|&spot| self.line_is_clear_on(going, grid_walkable, from, spot))
             .or_else(|| route.iter().rev().nth(1).map(|&index| point(index)))
     }
 
-    /// How far relief lifts or sinks a point, following its slopes.
-    fn relief_at(&self, x: f32, z: f32) -> f32 {
-        self.blend_at(x, z, |terrain, u, v| terrain.relief[grid_index(u, v)])
+    /// The lowest ground anyone stands on: the original's sand lies at height 0.
+    pub fn floor(&self) -> f32 {
+        0.0
     }
 
-    fn blend_at(&self, x: f32, z: f32, value: impl Fn(&Self, usize, usize) -> f32) -> f32 {
+    /// The terrain's height under a world point, between the heights at the corners of its cell.
+    pub fn height_at(&self, x: f32, z: f32) -> f32 {
         let (u, v) = world_to_grid(x, z);
-        let last = self.last();
-        let (u, v) = (u.clamp(0.0, last), v.clamp(0.0, last));
-        let (u0, v0) = (u.floor().min(last - 1.0), v.floor().min(last - 1.0));
+        let (last_u, last_v) = (self.width as f32, self.height as f32);
+        let (u, v) = (u.clamp(0.0, last_u), v.clamp(0.0, last_v));
+        let (u0, v0) = (u.floor().min(last_u - 1.0), v.floor().min(last_v - 1.0));
         let (tu, tv) = (u - u0, v - v0);
-        let at = |du: usize, dv: usize| value(self, u0 as usize + du, v0 as usize + dv);
+        let at =
+            |du: usize, dv: usize| self.heights[grid_index(u0 as usize + du, v0 as usize + dv)];
         let near = at(0, 0) * (1.0 - tu) + at(1, 0) * tu;
         let far = at(0, 1) * (1.0 - tu) + at(1, 1) * tu;
         near * (1.0 - tv) + far * tv
     }
-
-    /// The terrain's height under a world point, following its slopes.
-    /// Whether a point is on the upper terrain: not on the sand, nor the lower ground that stands
-    /// for it on other planets, nor in water or lava.
-    pub fn on_upper_ground(&self, x: f32, z: f32) -> bool {
-        self.nearest_point(x, z)
-            .is_some_and(|index| self.is_ground[index])
-    }
-
-    /// The lowest ground anyone can stand on: the sand, or the land above water and lava.
-    pub fn floor(&self) -> f32 {
-        if self.planet.lower_is_solid() {
-            0.0
-        } else {
-            LOWLAND_HEIGHT
-        }
-    }
-
-    pub fn height_at(&self, x: f32, z: f32) -> f32 {
-        self.blend_at(x, z, Self::vertex_height)
-    }
 }
 
-fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
+/// A color as the radar picture keeps it, in five bits of red, six of green and five of blue.
+fn rgb565(pixel: u16) -> [f32; 3] {
+    [
+        f32::from(pixel >> 11) / 31.0,
+        f32::from((pixel >> 5) & 63) / 63.0,
+        f32::from(pixel & 31) / 31.0,
+    ]
 }
 
-/// The terrain of one map, generated the first time it is needed.
+/// The original's map of this number in the list the disc gives, read the first time it is
+/// needed. One that cannot be read is blank sand.
 pub fn terrain(map: usize) -> &'static Terrain {
-    static TERRAINS: [OnceLock<Terrain>; crate::game::MAPS.len()] =
-        [const { OnceLock::new() }; crate::game::MAPS.len()];
-    TERRAINS[map].get_or_init(|| Terrain::generate(map))
+    static TERRAINS: OnceLock<Vec<OnceLock<Terrain>>> = OnceLock::new();
+    static BLANK: OnceLock<Terrain> = OnceLock::new();
+    let terrains = TERRAINS.get_or_init(|| {
+        (0..crate::maps::list().len())
+            .map(|_| OnceLock::new())
+            .collect()
+    });
+    let blank = || BLANK.get_or_init(|| Terrain::blank(MOST_CELLS, MOST_CELLS));
+    terrains.get(map).map_or_else(blank, |terrain| {
+        terrain.get_or_init(|| {
+            let light = crate::maps::file(map, "test.lit")
+                .and_then(|text| Light::read(&String::from_utf8_lossy(&text)))
+                .unwrap_or(DAYLIGHT);
+            crate::maps::file(map, "test.xbf")
+                .and_then(|file| {
+                    Terrain::read(&file, crate::maps::file(map, "test.CPF").as_deref())
+                })
+                .unwrap_or_else(|| Terrain::blank(MOST_CELLS, MOST_CELLS))
+                .lit(light)
+        })
+    })
 }
 
-/// What turns a distance `d` from the camera into a depth from 0 to 1, as a + b / d.
+/// What the backend makes of a distance `d` from the camera as a depth from 0 to 1: a + b / d.
 fn depth_terms() -> (f32, f32) {
     (FAR / (FAR - NEAR), -NEAR * FAR / (FAR - NEAR))
 }
 
+/// A point on the ground as how far across the screen and down it, the camera's turn taken off.
+pub fn across_and_down(x: f32, z: f32) -> (f32, f32) {
+    (
+        x * SCREEN_RIGHT.0 + z * SCREEN_RIGHT.1,
+        x * SCREEN_DOWN.0 + z * SCREEN_DOWN.1,
+    )
+}
+
+/// The world point that is this far across the screen and down it.
+pub fn from_across_and_down(across: f32, down: f32) -> (f32, f32) {
+    (
+        across * SCREEN_RIGHT.0 + down * SCREEN_DOWN.0,
+        across * SCREEN_RIGHT.1 + down * SCREEN_DOWN.1,
+    )
+}
+
 pub fn grid_to_world(u: f32, v: f32) -> (f32, f32) {
-    ((u - v) * CELL, (u + v) * CELL)
+    (u * CELL_SIDE, v * CELL_SIDE)
 }
 
 pub fn world_to_grid(x: f32, z: f32) -> (f32, f32) {
-    ((z + x) / (2.0 * CELL), (z - x) / (2.0 * CELL))
+    (x / CELL_SIDE, z / CELL_SIDE)
 }
 
 /// The ground point the camera looks at, and how far it has zoomed: 0 is the top position
@@ -1467,26 +869,25 @@ pub struct Camera {
     pub z: f32,
     pub zoom: f32,
     zoom_target: f32,
-    /// How far along each grid axis the map it is kept on goes.
-    last: f32,
+    /// How far the map it is kept on reaches along x and along z.
+    extent: (f32, f32),
 }
 
 impl Camera {
-    /// Looking at the middle of a map of size S from the top position.
+    /// Looking at the middle of the biggest map from the top position.
     pub fn centered() -> Self {
-        Self::centered_on(MapSize::L)
+        let side = MOST_CELLS as f32 * CELL_SIDE;
+        Self::centered_on((side, side))
     }
 
-    /// Looking at the middle of a map of this size from the top position.
-    pub fn centered_on(size: MapSize) -> Self {
-        let last = size.cells() as f32;
-        let (x, z) = grid_to_world(last / 2.0, last / 2.0);
+    /// Looking at the middle of a map reaching this far along x and z, from the top position.
+    pub fn centered_on(extent: (f32, f32)) -> Self {
         Camera {
-            x,
-            z,
+            x: extent.0 / 2.0,
+            z: extent.1 / 2.0,
             zoom: 0.0,
             zoom_target: 0.0,
-            last,
+            extent,
         }
     }
 
@@ -1509,72 +910,22 @@ impl Camera {
         self.move_by(0.0, 0.0);
     }
 
-    /// Moves the target, sliding along the map's edges rather than leaving the diamond.
+    /// Moves the target, sliding along the map's edges rather than leaving it.
     fn move_by(&mut self, dx: f32, dz: f32) {
-        let (x, z) = (self.x + dx, self.z + dz);
-        let (u, v) = world_to_grid(x, z);
-        let on_map = |t: f32| (0.0..=self.last).contains(&t);
-        // Grid steps do not come back from world units exactly: only what is off the map is
-        // brought back onto it through them.
-        (self.x, self.z) = if on_map(u) && on_map(v) {
-            (x, z)
-        } else {
-            grid_to_world(u.clamp(0.0, self.last), v.clamp(0.0, self.last))
-        };
+        self.x = (self.x + dx).clamp(0.0, self.extent.0);
+        self.z = (self.z + dz).clamp(0.0, self.extent.1);
     }
 
-    /// One frame of edge scrolling. Slower when low, so the ground crosses the screen at
-    /// about the same pace from either position.
+    /// One frame of edge scrolling, `direction` given on the screen. Slower when low, so the
+    /// ground crosses the screen at about the same pace from either position.
     pub fn scroll(&mut self, direction: (f32, f32), scroll_rate: i32, dt: f32) {
         let pace = self.altitude() / TOP_HEIGHT / self.lens();
         let distance = SCROLL_PER_RATE * scroll_rate as f32 * pace * dt;
-        let (dx, dz) = (direction.0 * distance, direction.1 * distance);
-        if dx != 0.0 && dz != 0.0 {
-            self.move_diagonally(dx, dz);
-        } else {
-            self.move_by(dx, dz);
-        }
-    }
-
-    /// A push towards a screen corner runs along one grid axis, straight at a diamond edge.
-    /// Once there it carries on along that edge to a real map corner, where it finally
-    /// stops: the nearer corner, or the east or west one from the exact middle of the edge.
-    fn move_diagonally(&mut self, dx: f32, dz: f32) {
-        let (u, v) = world_to_grid(self.x, self.z);
-        let (du, dv) = world_to_grid(dx, dz);
-        let last = self.last;
-        // Grid steps do not come back from world units exactly, so an edge or the middle of one
-        // counts as reached within a hair of it.
-        const EDGE: f32 = 1e-3;
-        let blocked = |position: f32, step: f32| {
-            (position >= last - EDGE && step > 0.0) || (position <= EDGE && step < 0.0)
-        };
-        let slide = |other: f32, step: f32| {
-            let middle = last / 2.0;
-            let end = if other < middle - EDGE {
-                0.0
-            } else if other > middle + EDGE {
-                last
-            } else if step > 0.0 {
-                0.0
-            } else {
-                last
-            };
-            let distance = step.abs();
-            if end > other {
-                (other + distance).min(end)
-            } else {
-                (other - distance).max(end)
-            }
-        };
-        let (u, v) = if du.abs() >= dv.abs() && blocked(u, du) {
-            (u, slide(v, du))
-        } else if dv.abs() > du.abs() && blocked(v, dv) {
-            (slide(u, dv), v)
-        } else {
-            (u + du, v + dv)
-        };
-        (self.x, self.z) = grid_to_world(u.clamp(0.0, self.last), v.clamp(0.0, self.last));
+        let (right, down) = (direction.0 * distance, direction.1 * distance);
+        self.move_by(
+            right * SCREEN_RIGHT.0 + down * SCREEN_DOWN.0,
+            right * SCREEN_RIGHT.1 + down * SCREEN_DOWN.1,
+        );
     }
 
     /// How far between the two positions: 0 at the top, 1 at the bottom.
@@ -1595,7 +946,8 @@ impl Camera {
 /// A camera pose ready for projecting, for one frame on one screen.
 pub struct View {
     position: [f32; 3],
-    /// Unit vectors, with no x part: the camera never turns sideways.
+    /// Unit vectors in the plane of up and the screen's bottom on the ground: the camera never
+    /// rolls.
     forward: [f32; 2],
     up: [f32; 2],
     focal: f32,
@@ -1608,8 +960,13 @@ impl View {
             TOP_PITCH_DEGREES + (BOTTOM_PITCH_DEGREES - TOP_PITCH_DEGREES) * camera.descent();
         let (sin, cos) = degrees.to_radians().sin_cos();
         let altitude = camera.altitude();
+        let back = altitude * cos / sin;
         View {
-            position: [camera.x, altitude, camera.z + altitude * cos / sin],
+            position: [
+                camera.x + SCREEN_DOWN.0 * back,
+                altitude,
+                camera.z + SCREEN_DOWN.1 * back,
+            ],
             forward: [-sin, -cos],
             up: [cos, -sin],
             focal: height / (2.0 * HALF_FOV_TAN) * camera.lens(),
@@ -1625,22 +982,26 @@ impl View {
         let (a, b) = depth_terms();
         let [f0, f1] = self.forward;
         let [u0, u1] = self.up;
-        let along = f0 * py + f1 * pz;
+        let (r0, r1) = SCREEN_RIGHT;
+        let (d0, d1) = SCREEN_DOWN;
+        let side = r0 * px + r1 * pz;
+        let back = d0 * px + d1 * pz;
+        let along = f0 * py + f1 * back;
         [
-            sx,
-            0.0,
-            0.0,
-            0.0,
+            sx * r0,
+            sy * u1 * d0,
+            a * f1 * d0,
+            f1 * d0,
             0.0,
             sy * u0,
             a * f0,
             f0,
-            0.0,
-            sy * u1,
-            a * f1,
-            f1,
-            -sx * px,
-            -sy * (u0 * py + u1 * pz),
+            sx * r1,
+            sy * u1 * d1,
+            a * f1 * d1,
+            f1 * d1,
+            -sx * side,
+            -sy * (u0 * py + u1 * back),
             -a * along + b,
             -along,
         ]
@@ -1679,7 +1040,13 @@ impl View {
 
     /// The world as the sun sees it, by columns: over what the camera sees, in steps of the
     /// shadow map's pixels so that shadows do not crawl as the camera moves.
-    pub fn sun_matrix(&self, focus: (f32, f32), width: f32, height: f32) -> [f32; 16] {
+    pub fn sun_matrix(
+        &self,
+        focus: (f32, f32),
+        sun: [f32; 3],
+        width: f32,
+        height: f32,
+    ) -> [f32; 16] {
         /// The pixels across the backend's shadow map.
         const SHADOW_MAP: f32 = 4096.0;
         const MOST_REACH: f32 = 4073.0;
@@ -1705,7 +1072,7 @@ impl View {
             let length = dot(a, a).sqrt();
             a.map(|c| c / length)
         };
-        let sun = unit(SUN);
+        let sun = unit(sun);
         let right = unit(cross([0.0, 0.0, 1.0], sun));
         let up = cross(sun, right);
         let texel = reach * 2.0 / SHADOW_MAP;
@@ -1741,9 +1108,11 @@ impl View {
     /// A world point seen from the camera: how far to the side, how far up, and how deep.
     fn relative(&self, x: f32, y: f32, z: f32) -> (f32, f32, f32) {
         let [px, py, pz] = self.position;
-        let (side, rel_y, rel_z) = (x - px, y - py, z - pz);
-        let up = rel_y * self.up[0] + rel_z * self.up[1];
-        (side, up, rel_y * self.forward[0] + rel_z * self.forward[1])
+        let (dx, rel_y, dz) = (x - px, y - py, z - pz);
+        let side = dx * SCREEN_RIGHT.0 + dz * SCREEN_RIGHT.1;
+        let back = dx * SCREEN_DOWN.0 + dz * SCREEN_DOWN.1;
+        let up = rel_y * self.up[0] + back * self.up[1];
+        (side, up, rel_y * self.forward[0] + back * self.forward[1])
     }
 
     fn to_screen(&self, side: f32, up: f32, depth: f32) -> (f32, f32) {
@@ -1840,13 +1209,17 @@ impl View {
         let side = (screen_x - self.center.0) / self.focal;
         let lift = (self.center.1 - screen_y) / self.focal;
         let ray_y = self.forward[0] + lift * self.up[0];
-        let ray_z = self.forward[1] + lift * self.up[1];
+        let ray_back = self.forward[1] + lift * self.up[1];
         if ray_y >= 0.0 {
             return None;
         }
         let [px, py, pz] = self.position;
         let t = (height - py) / ray_y;
-        Some((px + side * t, pz + ray_z * t))
+        let (side, back) = (side * t, ray_back * t);
+        Some((
+            px + SCREEN_RIGHT.0 * side + SCREEN_DOWN.0 * back,
+            pz + SCREEN_RIGHT.1 * side + SCREEN_DOWN.1 * back,
+        ))
     }
 
     /// Where the screen's corners fall on the ground, clockwise from the top left. The far
@@ -1862,32 +1235,42 @@ impl View {
     }
 }
 
-/// A world point's place on a minimap square whose inscribed diamond is the whole map.
+/// How far across the map shows on the minimap, turned as the camera turns it: the square a
+/// map reaching this far along x and z fits in, as a diamond.
+pub fn minimap_span((width, height): (f32, f32)) -> f32 {
+    (width + height) * FRAC_1_SQRT_2
+}
+
+/// A world point's place on a minimap square showing a map reaching this far, turned as the
+/// camera turns it: the map's first corner at the top.
 pub fn world_to_minimap(
     (x, y, size): (f32, f32, f32),
-    middle_z: f32,
+    extent: (f32, f32),
     world_x: f32,
     world_z: f32,
 ) -> (f32, f32) {
-    (
-        x + size / 2.0 + world_x / middle_z * size / 2.0,
-        y + world_z / middle_z * size / 2.0,
-    )
+    let scale = size / minimap_span(extent);
+    let across = (world_x - world_z) * FRAC_1_SQRT_2 + extent.1 * FRAC_1_SQRT_2;
+    let down = (world_x + world_z) * FRAC_1_SQRT_2;
+    (x + across * scale, y + down * scale)
 }
 
 /// The world point under a minimap position, or `None` outside the minimap's square.
 pub fn minimap_to_world(
     (x, y, size): (f32, f32, f32),
-    middle_z: f32,
+    extent: (f32, f32),
     px: f32,
     py: f32,
 ) -> Option<(f32, f32)> {
     if px < x || px >= x + size || py < y || py >= y + size {
         return None;
     }
+    let scale = minimap_span(extent) / size;
+    let across = (px - x) * scale - extent.1 * FRAC_1_SQRT_2;
+    let down = (py - y) * scale;
     Some((
-        (px - (x + size / 2.0)) / (size / 2.0) * middle_z,
-        (py - y) / (size / 2.0) * middle_z,
+        (across + down) * FRAC_1_SQRT_2,
+        (down - across) * FRAC_1_SQRT_2,
     ))
 }
 
@@ -1930,9 +1313,8 @@ pub fn clip_to_rect(
     ))
 }
 
-/// Whether all these screen points lie beyond one side of a screen, so that nothing between
-/// them can show.
-/// Which way the cursor pushes the camera, with length 1 or 0. Corners push diagonally.
+/// Which way the cursor pushes the camera on the screen, with length 1 or 0. Corners push
+/// diagonally.
 pub fn edge_direction(mouse: (f32, f32), width: f32, height: f32) -> (f32, f32) {
     let margin = EDGE_MARGIN * crate::game::ui_scale(height);
     let push = |position: f32, size: f32| {
@@ -1953,109 +1335,9 @@ pub fn edge_direction(mouse: (f32, f32), width: f32, height: f32) -> (f32, f32) 
     }
 }
 
-/// Appends the terrain near what the camera sees, with room around it for what casts a shadow
-/// into view.
-pub fn draw(
-    out: &mut Vec<WorldVertex>,
-    terrain: &Terrain,
-    fog: Option<&Fog>,
-    camera: Camera,
-    width: f32,
-    height: f32,
-) {
-    /// Under a liquid's surface along the shore, however shallow the bottom is there.
-    const SHORE: f32 = 5.431;
-    /// How far down a liquid looks for how far under the threshold its noise is.
-    const DEPTH: f32 = 271.5;
-    /// How far down its bed really lies for the same, under the surface drawn over it.
-    const BED_DEPTH: f32 = 90.51;
-    /// What the bed under the water is made of, so the shore runs down into it as sand.
-    const BEACH: [f32; 3] = [0.74, 0.68, 0.48];
-    /// The same under the lava, burnt black.
-    const BASALT: [f32; 3] = [0.10, 0.08, 0.07];
-    const ROOM: f32 = 362.0;
-    let shore = match terrain.material() {
-        Material::Water => Some(BEACH),
-        Material::Lava => Some(BASALT),
-        Material::Sand | Material::Ice | Material::Stone | Material::Moss => None,
-    };
-    let view = View::new(camera, width, height);
-    let seen = |u: usize, v: usize| fog.map_or(1.0, |fog| fog.at_grid(u, v).shade());
-    let point = |u: usize, v: usize| {
-        let (x, z) = grid_to_world(u as f32, v as f32);
-        let index = grid_index(u, v);
-        // The shader picks low land, upper ground and bare rock by this, not by the true height.
-        let land = terrain.rise[index] * UPPER_LEVEL + terrain.relief[index];
-        let (y, [r, g, b], level) = match shore {
-            // The bed, dry land to the shader, with the liquid's own surface drawn over it.
-            Some(color) if terrain.is_liquid[index] => {
-                let bed = -(SHORE + terrain.deep[index] * BED_DEPTH);
-                (bed + terrain.relief[index], color, 0.04525)
-            }
-            // A pit in the land stays dry, however far down it goes.
-            Some(_) => (
-                terrain.vertex_height(u, v),
-                terrain.colors[index],
-                land.max(0.04525),
-            ),
-            None => (terrain.vertex_height(u, v), terrain.colors[index], land),
-        };
-        WorldVertex {
-            x,
-            y,
-            z,
-            normal: terrain.normals[index],
-            r,
-            g,
-            b,
-            seen: seen(u, v),
-            level,
-            stain: [0.0; 3],
-            picture: NO_PICTURE,
-            team: [0.0; 3],
-        }
-    };
-    // The liquid's surface: flat, over every cell it reaches, its depth told by its level.
-    let surface = |[r, g, b]: [f32; 3], u: usize, v: usize| {
-        let (x, z) = grid_to_world(u as f32, v as f32);
-        let index = grid_index(u, v);
-        WorldVertex {
-            x,
-            y: 0.0,
-            z,
-            normal: [0.0, 1.0, 0.0],
-            r,
-            g,
-            b,
-            seen: seen(u, v),
-            level: -(SHORE + terrain.deep[index] * DEPTH),
-            stain: [0.0; 3],
-            picture: NO_PICTURE,
-            team: [0.0; 3],
-        }
-    };
-    let area = view.ground_seen(width, height);
-    let is_near = |u: usize, v: usize| {
-        let (x, z) = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
-        area.is_none_or(|(min_x, min_z, max_x, max_z)| {
-            x >= min_x - ROOM && x <= max_x + ROOM && z >= min_z - ROOM && z <= max_z + ROOM
-        })
-    };
-    let cells = terrain.size.cells();
-    for u in 0..cells {
-        for v in (0..cells).filter(|&v| is_near(u, v)) {
-            let (a, b) = (point(u, v), point(u + 1, v));
-            let (c, d) = (point(u + 1, v + 1), point(u, v + 1));
-            out.extend([a, b, c, a, c, d]);
-            let corners = [(u, v), (u + 1, v), (u + 1, v + 1), (u, v + 1)];
-            if let Some(color) = shore
-                && corners.iter().any(|&(u, v)| terrain.is_liquid(u, v))
-            {
-                let [a, b, c, d] = corners.map(|(u, v)| surface(color, u, v));
-                out.extend([a, b, c, a, c, d]);
-            }
-        }
-    }
+/// How bright the land is at a world point, as the player knows it.
+pub fn seen_at(fog: Option<&Fog>, x: f32, z: f32) -> f32 {
+    fog.map_or(1.0, |fog| fog.at(x, z).shade())
 }
 
 #[cfg(test)]
@@ -2064,12 +1346,6 @@ mod tests {
 
     const W: f32 = 2880.0;
     const H: f32 = 1800.0;
-    const LAST: f32 = MOST_CELLS as f32;
-
-    fn screen(camera: Camera, u: f32, v: f32, y: f32) -> (f32, f32) {
-        let (x, z) = grid_to_world(u, v);
-        View::new(camera, W, H).project(x, y, z).unwrap()
-    }
 
     fn at_zoom(zoom: f32) -> Camera {
         let mut camera = Camera::centered();
@@ -2082,6 +1358,161 @@ mod tests {
     fn pitch(camera: Camera) -> f32 {
         let view = View::new(camera, W, H);
         (-view.forward[0]).atan2(-view.forward[1]).to_degrees()
+    }
+
+    fn through(matrix: [f32; 16], (x, y, z): (f32, f32, f32)) -> (f32, f32, f32) {
+        let row = |i: usize| matrix[i] * x + matrix[4 + i] * y + matrix[8 + i] * z + matrix[12 + i];
+        let w = row(3);
+        (
+            (row(0) / w + 1.0) / 2.0 * W,
+            (1.0 - row(1) / w) / 2.0 * H,
+            row(2) / w,
+        )
+    }
+
+    fn near(a: f32, b: f32, by: f32) -> bool {
+        (a - b).abs() < by
+    }
+
+    /// A map's file as the original writes one: its version, the length of its parts, and
+    /// the parts, with nothing of its shape after them.
+    fn map_file(
+        width: u32,
+        height: u32,
+        grounds: &[u8],
+        spice: &[u8],
+        bases: &[(f64, f64)],
+    ) -> Vec<u8> {
+        let mut parts = Vec::new();
+        let mut part = |tag: u32, data: &[u8]| {
+            parts.extend(tag.to_le_bytes());
+            parts.extend((data.len() as u32).to_le_bytes());
+            parts.extend(data);
+        };
+        let size: Vec<u8> = [width, height]
+            .iter()
+            .flat_map(|n| n.to_le_bytes())
+            .collect();
+        part(SIZE, &size);
+        let heights: Vec<u8> = (0..(width + 1) * (height + 1))
+            .flat_map(|n| (n as f32).to_le_bytes())
+            .collect();
+        part(HEIGHTS, &heights);
+        part(GROUNDS, grounds);
+        part(SPICE, spice);
+        let name = |name: &[u8]| {
+            let mut field = name.to_vec();
+            field.resize(AREA_NAME, 0);
+            field
+        };
+        let mut areas = 2u32.to_le_bytes().to_vec();
+        areas.extend(name(b"Mission"));
+        areas.extend(0u32.to_le_bytes());
+        areas.extend(name(BASES));
+        areas.extend(2u32.to_le_bytes());
+        for (list, points) in [
+            (&b"Primary"[..], &bases[1..]),
+            (&b"Default"[..], &bases[..1]),
+        ] {
+            areas.extend(name(list));
+            areas.extend((points.len() as u32).to_le_bytes());
+            for &(x, z) in points {
+                areas.extend((-1i32).to_le_bytes());
+                areas.extend(x.to_le_bytes());
+                areas.extend(z.to_le_bytes());
+            }
+        }
+        part(AREAS, &areas);
+        let mut file = 1u32.to_le_bytes().to_vec();
+        file.extend((parts.len() as u32).to_le_bytes());
+        file.extend(parts);
+        file
+    }
+
+    #[test]
+    fn a_map_is_read_as_the_original_keeps_it() {
+        // Three columns and two rows: rock, cliff, sand, then ramp, spice-laden sand, map edge.
+        let file = map_file(
+            3,
+            2,
+            &[1, 2, 0, 7, 0, 6],
+            &[0, 0, 0, 0, 255, 0],
+            &[(16.0, 48.0), (80.0, 16.0)],
+        );
+        let terrain = Terrain::read(&file, None).unwrap();
+        assert_eq!(terrain.cells(), (3, 2));
+        assert_eq!(terrain.extent(), (96.0, 64.0));
+        assert_eq!(terrain.ground_at(16.0, 16.0), Ground::Rock);
+        assert_eq!(terrain.ground_at(48.0, 16.0), Ground::Cliff);
+        assert_eq!(terrain.ground_at(16.0, 48.0), Ground::Ramp);
+        assert_eq!(terrain.ground_at(80.0, 48.0), Ground::MapEdge);
+        assert!(terrain.is_rock(16.0, 16.0) && !terrain.is_rock(80.0, 16.0));
+        assert!(!terrain.can_walk(48.0, 16.0) && terrain.can_walk(80.0, 16.0));
+        assert!(terrain.has_substance(48.0, 48.0) && !terrain.has_substance(16.0, 48.0));
+        assert_eq!(
+            terrain.starts(),
+            [(80.0, 16.0), (16.0, 48.0)],
+            "its primary bases, then its default"
+        );
+        assert_eq!(terrain.height_at(32.0, 0.0), 1.0, "heights go row by row");
+        assert_eq!(terrain.height_at(0.0, 32.0), 4.0);
+        assert_eq!(terrain.height_at(16.0, 0.0), 0.5, "and between them");
+    }
+
+    #[test]
+    fn a_route_goes_around_cliff_and_there_is_none_through_it() {
+        let terrain = Terrain::blank(40, 40).with_ground(Ground::Cliff, (20, 0), (1, 30));
+        let (from, to) = (
+            (10.0 * CELL_SIDE, 10.0 * CELL_SIDE),
+            (30.0 * CELL_SIDE, 10.0 * CELL_SIDE),
+        );
+        assert!(!terrain.line_is_clear(Going::OnFoot, from, to));
+        let next = terrain.next_on_route(Going::OnFoot, from, to).unwrap();
+        assert!(
+            next.1 > 29.0 * CELL_SIDE,
+            "down past the end of the cliff: {next:?}"
+        );
+        let walled = terrain.with_ground(Ground::Cliff, (20, 30), (1, 10));
+        assert_eq!(walled.next_on_route(Going::OnFoot, from, to), None);
+    }
+
+    #[test]
+    fn infantry_climb_the_stairs_of_their_rock_that_machines_drive_around() {
+        let terrain = Terrain::blank(40, 40).with_ground(Ground::InfRock, (20, 0), (1, 30));
+        let (from, to) = (
+            (10.0 * CELL_SIDE, 10.0 * CELL_SIDE),
+            (30.0 * CELL_SIDE, 10.0 * CELL_SIDE),
+        );
+        assert!(terrain.line_is_clear(Going::OnFoot, from, to));
+        assert!(!terrain.line_is_clear(Going::Driving, from, to));
+        let next = terrain.next_on_route(Going::Driving, from, to).unwrap();
+        assert!(next.1 > 29.0 * CELL_SIDE, "around the end: {next:?}");
+        let (x, z) = (20.5 * CELL_SIDE, 10.0 * CELL_SIDE);
+        assert!(terrain.can_go(Going::OnFoot, x, z) && !terrain.can_walk(x, z));
+    }
+
+    #[test]
+    fn a_map_is_lit_as_its_light_file_says_with_its_z_turned_to_ours() {
+        let light = Light::read("1 1.8 1\r\n74 67 56\r\n242 178 127\r\n55 45 33\r\n").unwrap();
+        let length = (1.0f32 + 1.8 * 1.8 + 1.0).sqrt();
+        assert_eq!(light.sun, [1.0 / length, 1.8 / length, -1.0 / length]);
+        assert_eq!(light.ambient, [74.0 / 255.0, 67.0 / 255.0, 56.0 / 255.0]);
+        assert_eq!(
+            light.sunlight,
+            [242.0 / 255.0, 178.0 / 255.0, 127.0 / 255.0]
+        );
+        assert_eq!(Light::read("1 1\n2 2 2\n3 3 3"), None);
+    }
+
+    #[test]
+    fn spice_is_found_nearest_first() {
+        let rock = Terrain::blank(40, 40).with_ground(Ground::Rock, (0, 0), (40, 40));
+        let terrain = rock.with_spice((30, 30), (2, 2)).with_spice((5, 5), (1, 1));
+        assert_eq!(
+            terrain.nearest_field((0.0, 0.0)),
+            Some((5.5 * CELL_SIDE, 5.5 * CELL_SIDE))
+        );
+        assert_eq!(Terrain::blank(4, 4).nearest_field((0.0, 0.0)), None);
     }
 
     #[test]
@@ -2100,23 +1531,6 @@ mod tests {
     }
 
     #[test]
-    fn one_movement_lowers_the_camera_and_narrows_the_field_of_view_up_to_2x() {
-        let views = [0.0, 0.25, 0.5, 0.75, 1.0].map(|zoom| View::new(at_zoom(zoom), W, H));
-        for pair in views.windows(2) {
-            assert!(
-                pair[1].position[1] < pair[0].position[1],
-                "lower all the way"
-            );
-            assert!(pair[1].focal > pair[0].focal, "and narrower all the way");
-        }
-        assert!(
-            (views[4].focal / views[0].focal - 2.0).abs() < 1e-4,
-            "2x at the end"
-        );
-        assert!(pitch(at_zoom(0.25)) > pitch(at_zoom(0.5)), "still turning");
-    }
-
-    #[test]
     fn zooming_keeps_the_same_ground_point_at_screen_center() {
         for zoom in [0.0, 0.3, 0.5, 0.7, 1.0] {
             let camera = at_zoom(zoom);
@@ -2124,974 +1538,49 @@ mod tests {
                 .project(camera.x, 0.0, camera.z)
                 .unwrap();
             assert!(
-                (x - W / 2.0).abs() < 0.01 && (y - H / 2.0).abs() < 0.01,
+                near(x, W / 2.0, 0.01) && near(y, H / 2.0, 0.01),
                 "at {zoom}"
             );
         }
     }
 
     #[test]
-    fn narrowing_the_field_of_view_shrinks_the_view_outline() {
-        let width = |zoom| {
-            let [left, right, ..] = View::new(at_zoom(zoom), W, H).ground_corners().unwrap();
-            right.0 - left.0
-        };
-        assert!(width(1.0) < width(0.0) * 0.6);
-    }
-
-    #[test]
-    fn scrolling_slows_further_as_the_view_narrows() {
-        let moved = |zoom| {
-            let mut camera = at_zoom(zoom);
-            camera.scroll((1.0, 0.0), 5, 0.1);
-            camera.x - at_zoom(zoom).x
-        };
-        assert!(moved(0.0) > moved(0.5) && moved(0.5) > moved(1.0));
-        let (low, high) = (at_zoom(1.0), at_zoom(0.0));
-        let expected = (high.altitude() / high.lens()) / (low.altitude() / low.lens());
-        assert!((moved(0.0) / moved(1.0) - expected).abs() < 0.01);
-    }
-
-    #[test]
-    fn the_wheel_moves_gradually_and_stops_at_both_positions() {
-        let mut camera = Camera::centered();
-        camera.zoom_by(1.0);
-        assert_eq!(camera.zoom, 0.0, "nothing moves until time passes");
-        camera.ease_zoom(0.016);
+    fn the_map_shows_as_a_diamond_with_its_first_corner_at_the_top() {
+        let camera = Camera::centered();
+        let view = View::new(camera, W, H);
+        let at = |dx: f32, dz: f32| view.project(camera.x + dx, 0.0, camera.z + dz).unwrap();
+        let (top, bottom) = (at(-200.0, -200.0), at(200.0, 200.0));
+        let (right, left) = (at(200.0, -200.0), at(-200.0, 200.0));
         assert!(
-            camera.zoom > 0.0 && camera.zoom < ZOOM_PER_NOTCH,
-            "glides: {}",
-            camera.zoom
+            top.1 < right.1 && right.1 < bottom.1,
+            "first corner up, last down"
         );
-        for _ in 0..200 {
-            camera.ease_zoom(0.016);
-        }
-        assert_eq!(camera.zoom, ZOOM_PER_NOTCH, "arrives exactly");
-
-        camera.zoom_by(100.0);
-        for _ in 0..200 {
-            camera.ease_zoom(0.016);
-        }
-        assert_eq!(camera.zoom, 1.0, "stops at the bottom");
-
-        camera.zoom_by(-100.0);
-        for _ in 0..200 {
-            camera.ease_zoom(0.016);
-        }
-        assert_eq!(camera.zoom, 0.0, "stops at the top");
-    }
-
-    fn at_grid(u: f32, v: f32) -> Camera {
-        let mut camera = Camera::centered();
-        (camera.x, camera.z) = grid_to_world(u, v);
-        camera
-    }
-
-    fn push_until_stopped(mut camera: Camera, direction: (f32, f32)) -> (f32, f32) {
-        for _ in 0..4000 {
-            camera.scroll(direction, 10, 0.05);
-        }
-        world_to_grid(camera.x, camera.z)
-    }
-
-    #[test]
-    fn corner_pushes_slide_along_the_edge_to_a_true_corner() {
-        let d = std::f32::consts::FRAC_1_SQRT_2;
-        let (north, east, south, west) = ((0.0, 0.0), (LAST, 0.0), (LAST, LAST), (0.0, LAST));
-        let middle = LAST / 2.0;
-        let cases = [
-            // From the center each push hits the middle of an edge and goes east or west.
-            (
-                "bottom right from center",
-                at_grid(middle, middle),
-                (d, d),
-                east,
-            ),
-            (
-                "top right from center",
-                at_grid(middle, middle),
-                (d, -d),
-                east,
-            ),
-            (
-                "bottom left from center",
-                at_grid(middle, middle),
-                (-d, d),
-                west,
-            ),
-            (
-                "top left from center",
-                at_grid(middle, middle),
-                (-d, -d),
-                west,
-            ),
-            // Off the middle of an edge, the nearer corner wins.
-            (
-                "bottom right near south",
-                at_grid(middle, LAST - 10.0),
-                (d, d),
-                south,
-            ),
-            (
-                "bottom right near east",
-                at_grid(middle, 10.0),
-                (d, d),
-                east,
-            ),
-            (
-                "top right near north",
-                at_grid(10.0, middle),
-                (d, -d),
-                north,
-            ),
-            (
-                "top right near east",
-                at_grid(LAST - 10.0, middle),
-                (d, -d),
-                east,
-            ),
-            (
-                "bottom left near south",
-                at_grid(LAST - 10.0, middle),
-                (-d, d),
-                south,
-            ),
-            (
-                "bottom left near west",
-                at_grid(10.0, middle),
-                (-d, d),
-                west,
-            ),
-            (
-                "top left near north",
-                at_grid(middle, 10.0),
-                (-d, -d),
-                north,
-            ),
-            (
-                "top left near west",
-                at_grid(middle, LAST - 10.0),
-                (-d, -d),
-                west,
-            ),
-        ];
-        for (name, camera, direction, corner) in cases {
-            let (u, v) = push_until_stopped(camera, direction);
-            assert!(
-                (u - corner.0).abs() < 0.01 && (v - corner.1).abs() < 0.01,
-                "{name}: ended at {u}, {v}"
-            );
-        }
-    }
-
-    #[test]
-    fn sliding_keeps_moving_at_full_speed_along_the_edge() {
-        let d = std::f32::consts::FRAC_1_SQRT_2;
-        let mut on_edge = at_grid(LAST, 40.0);
-        let before = on_edge;
-        on_edge.scroll((d, d), 5, 0.1);
-        let slid = (on_edge.x - before.x).hypot(on_edge.z - before.z);
-
-        let mut open = Camera::centered();
-        let start = open;
-        open.scroll((d, d), 5, 0.1);
-        let free = (open.x - start.x).hypot(open.z - start.z);
-        assert!(slid > 0.0, "does not stop at the edge");
-        assert!((slid - free).abs() < 0.4525, "{slid} vs {free}");
-    }
-
-    #[test]
-    fn a_true_corner_stops_the_push_that_points_into_it() {
-        let d = std::f32::consts::FRAC_1_SQRT_2;
-        for (corner, direction) in [
-            ((LAST, 0.0), (d, d)),
-            ((LAST, 0.0), (d, -d)),
-            ((0.0, LAST), (-d, d)),
-            ((0.0, LAST), (-d, -d)),
-            ((0.0, 0.0), (d, -d)),
-            ((0.0, 0.0), (-d, -d)),
-            ((LAST, LAST), (d, d)),
-            ((LAST, LAST), (-d, d)),
-        ] {
-            let start = at_grid(corner.0, corner.1);
-            let mut camera = start;
-            camera.scroll(direction, 10, 0.1);
-            assert_eq!(camera, start, "{corner:?} pushed by {direction:?}");
-        }
-    }
-
-    #[test]
-    fn scrolling_is_gentler_from_the_bottom_position() {
-        let moved = |zoom| {
-            let mut camera = at_zoom(zoom);
-            camera.scroll((1.0, 0.0), 5, 0.1);
-            camera.x - at_zoom(zoom).x
-        };
-        assert!(moved(1.0) < moved(0.0));
-    }
-
-    #[test]
-    fn ground_corners_are_a_trapezium_wider_at_the_far_edge() {
-        for zoom in [0.0, 0.5, 1.0] {
-            let camera = at_zoom(zoom);
-            let [top_left, top_right, bottom_right, bottom_left] = View::new(camera, W, H)
-                .ground_corners()
-                .expect("the view always hits the ground");
-            let far_width = top_right.0 - top_left.0;
-            let near_width = bottom_right.0 - bottom_left.0;
-            assert!(
-                far_width > near_width * 1.01,
-                "at {zoom}: {far_width} vs {near_width}"
-            );
-            assert!(
-                top_left.1 < bottom_left.1,
-                "far edge is north of the near edge"
-            );
-            assert!(
-                (top_left.1 - top_right.1).abs() < 0.04525,
-                "edges stay level"
-            );
-            assert!(
-                top_left.1 < camera.z && camera.z < bottom_left.1,
-                "contains the target"
-            );
-        }
+        assert!(near(top.0, W / 2.0, 0.5) && near(bottom.0, W / 2.0, 0.5));
+        assert!(
+            left.0 < W / 2.0 && W / 2.0 < right.0,
+            "columns run down to the right"
+        );
+        assert!(near(right.1, left.1, 0.5));
     }
 
     #[test]
     fn ground_at_reverses_projection() {
         for zoom in [0.0, 0.5, 1.0] {
-            let view = View::new(at_zoom(zoom), W, H);
-            let (x, z) = (226.3, at_zoom(zoom).z - 135.8);
+            let camera = at_zoom(zoom);
+            let view = View::new(camera, W, H);
+            let (x, z) = (camera.x + 226.3, camera.z - 135.8);
             let (sx, sy) = view.project(x, 0.0, z).unwrap();
             let (gx, gz) = view.ground_at(sx, sy).unwrap();
-            assert!(
-                (gx - x).abs() < 0.4525 && (gz - z).abs() < 0.4525,
-                "at {zoom}"
-            );
+            assert!(near(gx, x, 0.4525) && near(gz, z, 0.4525), "at {zoom}");
         }
-    }
-
-    #[test]
-    fn minimap_positions_match_the_map_corners_and_round_trip() {
-        let rect = (1000.0, 100.0, 400.0);
-        let corner = |u, v| {
-            let (x, z) = grid_to_world(u, v);
-            world_to_minimap(rect, MAP_MIDDLE_Z, x, z)
-        };
-        assert_eq!(corner(0.0, 0.0), (1200.0, 100.0), "north is top middle");
-        assert_eq!(
-            corner(LAST, LAST),
-            (1200.0, 500.0),
-            "south is bottom middle"
-        );
-        assert_eq!(corner(LAST, 0.0), (1400.0, 300.0), "east is right middle");
-        assert_eq!(corner(0.0, LAST), (1000.0, 300.0), "west is left middle");
-
-        let (x, z) = minimap_to_world(rect, MAP_MIDDLE_Z, 1250.0, 260.0).unwrap();
-        let back = world_to_minimap(rect, MAP_MIDDLE_Z, x, z);
-        assert!((back.0 - 1250.0).abs() < 0.01 && (back.1 - 260.0).abs() < 0.01);
-        assert_eq!(minimap_to_world(rect, MAP_MIDDLE_Z, 999.0, 300.0), None);
-        assert_eq!(
-            minimap_to_world(rect, MAP_MIDDLE_Z, 1200.0, 500.0),
-            None,
-            "past the bottom edge"
-        );
-    }
-
-    #[test]
-    fn ground_lines_project_and_are_cut_behind_the_camera() {
-        let mut camera = at_zoom(0.5);
-        camera.z = 1358.0;
-        let view = View::new(camera, W, H);
-        let (ahead, behind) = ((90.51, 1131.0), (90.51, 3620.0));
-        assert!(
-            view.project(behind.0, 0.0, behind.1).is_none(),
-            "really behind"
-        );
-
-        let (a, b) = view
-            .project_ground_line(ahead, behind)
-            .expect("part of it is visible");
-        assert_eq!(
-            a,
-            view.project(ahead.0, 0.0, ahead.1).unwrap(),
-            "the visible end stays put"
-        );
-        assert!(b.1 > a.1, "it runs towards the viewer");
-        assert!(
-            view.project_ground_line((0.0, 3620.0), (226.3, 4073.0))
-                .is_none(),
-            "all behind"
-        );
-
-        let whole = view
-            .project_ground_line((0.0, 905.1), (226.3, 995.6))
-            .unwrap();
-        assert_eq!(whole.0, view.project(0.0, 0.0, 905.1).unwrap());
-    }
-
-    #[test]
-    fn segments_clip_to_a_rectangle() {
-        let area = (0.0, 0.0, 20.0, 10.0);
-        assert_eq!(
-            clip_to_rect((-5.0, 5.0), (25.0, 5.0), area),
-            Some(((0.0, 5.0), (20.0, 5.0)))
-        );
-        assert_eq!(clip_to_rect((5.0, 12.0), (15.0, 12.0), area), None);
-    }
-
-    #[test]
-    fn segments_clip_to_the_square() {
-        let square = (0.0, 0.0, 10.0);
-        let inside = ((1.0, 1.0), (9.0, 2.0));
-        assert_eq!(clip_to_square(inside.0, inside.1, square), Some(inside));
-        assert_eq!(
-            clip_to_square((-5.0, 5.0), (15.0, 5.0), square),
-            Some(((0.0, 5.0), (10.0, 5.0)))
-        );
-        assert_eq!(clip_to_square((-5.0, 20.0), (15.0, 20.0), square), None);
-        assert_eq!(
-            clip_to_square((5.0, -5.0), (5.0, 5.0), square),
-            Some(((5.0, 0.0), (5.0, 5.0)))
-        );
-    }
-
-    #[test]
-    fn the_bottom_position_draws_without_gaps_at_the_screen_edges() {
-        for zoom in [0.5, 1.0] {
-            let mut out = Vec::new();
-            draw(&mut out, terrain(0), None, at_zoom(zoom), W, H);
-            assert!(!out.is_empty());
-            let view = View::new(at_zoom(zoom), W, H);
-            for x in [0.0, W / 2.0, W] {
-                let (ground_x, ground_z) = view.ground_at(x, H).unwrap();
-                assert!(
-                    out.iter()
-                        .any(|v| (v.x - ground_x).abs() < 45.25 && (v.z - ground_z).abs() < 45.25),
-                    "terrain reaches the bottom of the screen at {zoom}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn map_corners_are_north_south_east_west_on_screen() {
-        // A small diamond around the target: the real south corner is behind this camera.
-        let camera = Camera::centered();
-        let (middle, reach) = (LAST / 2.0, 20.0);
-        let north = screen(camera, middle - reach, middle - reach, 0.0);
-        let south = screen(camera, middle + reach, middle + reach, 0.0);
-        let east = screen(camera, middle + reach, middle - reach, 0.0);
-        let west = screen(camera, middle - reach, middle + reach, 0.0);
-        assert!(
-            north.1 < east.1 && east.1 < south.1,
-            "north above, south below"
-        );
-        assert!((north.0 - W / 2.0).abs() < 0.5 && (south.0 - W / 2.0).abs() < 0.5);
-        assert!(
-            west.0 < W / 2.0 && W / 2.0 < east.0,
-            "west left, east right"
-        );
-        assert!((east.1 - west.1).abs() < 0.5, "east and west are level");
-    }
-
-    #[test]
-    fn the_camera_target_lands_at_screen_center() {
-        let camera = Camera::centered();
-        let (x, y) = View::new(camera, W, H)
-            .project(camera.x, 0.0, camera.z)
-            .unwrap();
-        assert!((x - W / 2.0).abs() < 0.01 && (y - H / 2.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn perspective_makes_nearer_ground_look_bigger() {
-        let camera = Camera::centered();
-        let middle = LAST / 2.0;
-        let span = |offset: f32| {
-            let a = screen(camera, middle + offset, middle + offset, 0.0);
-            let b = screen(camera, middle + offset + 1.0, middle + offset - 1.0, 0.0);
-            (b.0 - a.0).abs()
-        };
-        assert!(span(10.0) > span(-10.0), "south of the target is nearer");
-    }
-
-    #[test]
-    fn ground_stands_above_sand_and_is_darker() {
-        let camera = Camera::centered();
-        let middle = LAST / 2.0;
-        assert!(
-            screen(camera, middle, middle, GROUND_HEIGHT).1 < screen(camera, middle, middle, 0.0).1
-        );
-        assert!(GROUND.iter().sum::<f32>() < SAND.iter().sum::<f32>());
-    }
-
-    #[test]
-    fn every_map_has_sand_and_ground_and_each_map_differs() {
-        let counts: Vec<Vec<bool>> = (0..crate::game::MAPS.len())
-            .map(|map| {
-                let terrain = terrain(map);
-                let ground = terrain.is_ground.iter().filter(|g| **g).count();
-                let side = terrain.size().cells() + 1;
-                let total = side * side;
-                assert!(
-                    ground > total / 8 && ground < total * 3 / 4,
-                    "map {map}: {ground} of {total}"
-                );
-                terrain.is_ground.clone()
-            })
-            .collect();
-        for (i, a) in counts.iter().enumerate() {
-            for b in &counts[i + 1..] {
-                assert_ne!(a, b);
-            }
-        }
-    }
-
-    fn map_on(planet: Planet) -> usize {
-        MAP_PLANETS.iter().position(|p| *p == planet).unwrap()
-    }
-
-    #[test]
-    fn map_names_start_with_their_planets_letter() {
-        for (name, planet) in crate::game::MAPS.iter().zip(MAP_PLANETS) {
-            assert!(
-                name.starts_with(&format!("{planet:?} ")),
-                "{name} on {planet:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_planet_has_a_map_and_looks_different() {
-        let planets = [
-            Planet::Arrakis,
-            Planet::Caladan,
-            Planet::Draconis,
-            Planet::GeidiPrime,
-            Planet::SelusaSecundus,
-            Planet::Tleilax,
-        ];
-        for (i, a) in planets.iter().enumerate() {
-            assert!(MAP_PLANETS.contains(a));
-            assert_ne!(
-                a.lower_color(),
-                a.upper_color(),
-                "{a:?} needs two visible heights"
-            );
-            for b in &planets[i + 1..] {
-                assert_ne!(a.lower_color(), b.lower_color(), "{a:?} and {b:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn planets_have_the_requested_colors() {
-        let blue_ish = |c: [f32; 3]| c[2] > c[0] && c[2] > c[1];
-        let green_ish = |c: [f32; 3]| c[1] > c[0] && c[1] > c[2];
-        let red_ish = |c: [f32; 3]| c[0] > c[1] && c[0] > c[2];
-        let bright = |c: [f32; 3]| c.iter().sum::<f32>() > 2.0;
-        assert_eq!(Planet::Arrakis.lower_color(), SAND);
-        assert!(blue_ish(Planet::Caladan.lower_color()), "water");
-        assert!(green_ish(Planet::Caladan.upper_color()), "grass");
-        assert!(
-            blue_ish(Planet::Draconis.lower_color()) && bright(Planet::Draconis.lower_color()),
-            "ice"
-        );
-        assert!(bright(Planet::Draconis.upper_color()), "snow");
-        assert!(red_ish(Planet::GeidiPrime.lower_color()), "lava");
-        assert_eq!(
-            Planet::GeidiPrime.upper_color(),
-            Planet::Arrakis.upper_color(),
-            "the same upper terrain"
-        );
-    }
-
-    #[test]
-    fn terrain_colors_follow_the_planet() {
-        let water = terrain(map_on(Planet::Caladan));
-        assert_eq!(water.lower_color(), Planet::Caladan.lower_color());
-        assert_eq!(water.upper_color(), Planet::Caladan.upper_color());
-    }
-
-    #[test]
-    fn on_water_and_lava_there_is_low_land_to_cross_that_cannot_be_built_on() {
-        for planet in [Planet::Caladan, Planet::GeidiPrime] {
-            let terrain = terrain(map_on(planet));
-            let (mut low, mut liquid) = (0, 0);
-            for v in 0..=terrain.size().cells() {
-                for u in 0..=terrain.size().cells() {
-                    let (x, z) = grid_to_world(u as f32, v as f32);
-                    if terrain.is_liquid(u, v) {
-                        liquid += 1;
-                        assert!(!terrain.can_walk(x, z), "{planet:?} at {u},{v}");
-                    } else if terrain.rise[grid_index(u, v)] == 0.0
-                        && terrain.relief[grid_index(u, v)] == 0.0
-                        && terrain.can_walk(x, z)
-                    {
-                        low += 1;
-                        assert!(!terrain.on_upper_ground(x, z), "{planet:?} at {u},{v}");
-                        assert!((terrain.height_at(x, z) - LOWLAND_HEIGHT).abs() < 0.04525);
-                    }
-                }
-            }
-            assert!(low > GRID_POINTS / 8, "{planet:?}: {low}");
-            assert!(liquid > GRID_POINTS / 40, "{planet:?}: {liquid}");
-            for piece in terrain.ruins() {
-                assert!(terrain.height_at(piece.x, piece.z) >= LOWLAND_HEIGHT - 0.04525);
-            }
-        }
-    }
-
-    #[test]
-    fn upper_ground_is_twice_as_high_as_it_was() {
-        let top = Terrain::open_upland();
-        assert_eq!(top.height_at(0.0, 2263.0), 63.36);
-    }
-
-    #[test]
-    fn every_map_has_eight_places_for_bases_on_upper_ground_at_corners_and_edges() {
-        let size = MapSize::L;
-        let last = size.cells() as f32;
-        let cells = start_cells(size);
-        assert_eq!(cells.len(), 8);
-        for (i, &(u, v)) in cells.iter().enumerate() {
-            let at_edge = |c: f32| c < last / 4.0 || c > last * 3.0 / 4.0;
-            let middling = |c: f32| (c - last / 2.0).abs() < 0.01;
-            if i % 2 == 0 {
-                assert!(at_edge(u) && at_edge(v), "a corner: {u},{v}");
-            } else {
-                assert!(middling(u) != middling(v), "an edge: {u},{v}");
-            }
-        }
-        for map in 0..crate::game::MAPS.len() {
-            let terrain = terrain(map);
-            for (x, z) in start_spots(size) {
-                for (dx, dz) in [
-                    (0.0, 0.0),
-                    (407.3, 0.0),
-                    (-407.3, 0.0),
-                    (0.0, 407.3),
-                    (0.0, -407.3),
-                ] {
-                    let (x, z) = (x + dx, z + dz);
-                    assert!(terrain.on_upper_ground(x, z), "map {map} at {x},{z}");
-                    assert!(terrain.can_walk(x, z), "map {map} at {x},{z}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn nobody_stands_on_upper_ground_in_the_middle_of_a_map() {
-        for map in 0..crate::game::MAPS.len() {
-            let terrain = terrain(map);
-            assert!(!terrain.on_upper_ground(0.0, terrain.size().middle_z()));
-        }
-    }
-
-    #[test]
-    fn a_bases_island_has_two_or_three_slopes_through_cliffs_all_round_it() {
-        let size = MapSize::L;
-        let (mut with_two, mut with_three) = (0, 0);
-        for map in 0..crate::game::MAPS.len() {
-            let mut random = (102 + map as u32 * 13).wrapping_mul(0x9E37_79B1) | 1;
-            let islands = islands_of(map, size, &mut random);
-            let terrain = terrain(map);
-            for island in &islands[..START_SPOTS] {
-                match island.slopes.len() {
-                    2 => with_two += 1,
-                    3 => with_three += 1,
-                    n => panic!("map {map}: {n} slopes"),
-                }
-                // Past the wobble of its edge: all of the way round is cliff, or one of its slopes.
-                let (mut cliff, mut open) = (0, 0);
-                for i in 0..360 {
-                    let angle = i as f32 / 360.0 * std::f32::consts::TAU;
-                    let walled = (10..52).any(|out| {
-                        let reach = island.radius - 12.0 + out as f32 * 0.5;
-                        let (u, v) = (
-                            island.at.0 + angle.cos() * reach,
-                            island.at.1 + angle.sin() * reach,
-                        );
-                        (0.0..=256.0).contains(&u)
-                            && (0.0..=256.0).contains(&v)
-                            && terrain.is_cliff[grid_index(u as usize, v as usize)]
-                    });
-                    if walled {
-                        cliff += 1;
-                    } else {
-                        open += 1;
-                    }
-                }
-                assert!(
-                    cliff > open * 2,
-                    "map {map} {:?}: {cliff}/{open}",
-                    island.at
-                );
-            }
-        }
-        assert!(with_two > 0 && with_three > 0, "{with_two} {with_three}");
-    }
-
-    /// Which grid points a route can get to from this one.
-    fn reached_from(terrain: &Terrain, (u, v): (usize, usize)) -> Vec<bool> {
-        let cells = terrain.size().cells();
-        let grid = terrain.route_grid();
-        let mut reached = vec![false; GRID_POINTS];
-        reached[grid_index(u, v)] = true;
-        let mut open = vec![(u, v)];
-        while let Some((u, v)) = open.pop() {
-            for (nu, nv) in [
-                (u + 1, v),
-                (u, v + 1),
-                (u.wrapping_sub(1), v),
-                (u, v.wrapping_sub(1)),
-            ] {
-                if nu <= cells && nv <= cells {
-                    let index = grid_index(nu, nv);
-                    if grid[index] && !reached[index] {
-                        reached[index] = true;
-                        open.push((nu, nv));
-                    }
-                }
-            }
-        }
-        reached
-    }
-
-    #[test]
-    fn every_base_has_a_field_of_substance_of_its_own_and_can_get_to_every_field() {
-        for map in 0..crate::game::MAPS.len() {
-            let terrain = terrain(map);
-            let fields = terrain.fields();
-            assert!(fields.len() > START_SPOTS, "map {map}: {}", fields.len());
-            let spot = start_cells(terrain.size())[0];
-            let reached = reached_from(terrain, (spot.0 as usize, spot.1 as usize));
-            for &(x, z) in fields {
-                assert!(terrain.has_substance(x, z), "map {map}: its middle");
-                let (u, v) = world_to_grid(x, z);
-                let index = grid_index(u.round() as usize, v.round() as usize);
-                assert!(reached[index], "map {map}: {x},{z}");
-            }
-            for (x, z) in start_spots(terrain.size()) {
-                let near = terrain.nearest_field((x, z)).unwrap();
-                let away = (near.0 - x).hypot(near.1 - z);
-                assert!(away < 2715.0, "map {map}: {away} from the base at {x},{z}");
-            }
-        }
-    }
-
-    #[test]
-    fn only_the_fields_have_substance_and_it_shows_pinker_than_the_sand() {
-        let terrain = terrain(0);
-        let cells = terrain.size().cells();
-        let mut with = 0;
-        for v in 0..=cells {
-            for u in 0..=cells {
-                let index = grid_index(u, v);
-                if !terrain.substance[index] {
-                    continue;
-                }
-                with += 1;
-                assert!(!terrain.is_ground[index] && !terrain.is_liquid[index]);
-                let (x, z) = grid_to_world(u as f32, v as f32);
-                let near = terrain.nearest_field((x, z)).unwrap();
-                assert!((near.0 - x).hypot(near.1 - z) < FIELD_RADIUS * 1.3);
-            }
-        }
-        let lower = (0..=cells * cells)
-            .filter(|&i| i < GRID_POINTS && !terrain.is_ground[i] && terrain.rise[i] == 0.0)
-            .count();
-        assert!(with > 0 && with < lower / 4, "{with} of {lower}");
-        let (x, z) = terrain.fields()[0];
-        let (u, v) = world_to_grid(x, z);
-        let [r, g, _] = terrain.color_at(u.round() as usize, v.round() as usize);
-        let [sand_r, sand_g, _] = SAND;
-        assert!(r - g > sand_r - sand_g, "pinker");
-    }
-
-    #[test]
-    fn every_base_can_get_to_every_other_only_down_its_slopes() {
-        for map in 0..crate::game::MAPS.len() {
-            let terrain = terrain(map);
-            let spots = start_cells(terrain.size());
-            let reached = reached_from(terrain, (spots[0].0 as usize, spots[0].1 as usize));
-            for &(u, v) in &spots {
-                assert!(
-                    reached[grid_index(u as usize, v as usize)],
-                    "map {map}: {u},{v}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn only_some_maps_have_peninsulas_and_every_map_has_more_islands_sloped_all_round() {
-        let mut maps_with = 0;
-        for map in 0..crate::game::MAPS.len() {
-            let mut random = (102 + map as u32 * 13).wrapping_mul(0x9E37_79B1) | 1;
-            let islands = islands_of(map, MapSize::L, &mut random);
-            maps_with += usize::from(islands.iter().any(|i| i.peninsula.is_some()));
-            let extras = islands.iter().filter(|i| i.sloped_all_round).count();
-            assert!(extras >= 4, "map {map}: {extras}");
-            assert_eq!(islands.len() - extras, START_SPOTS, "map {map}");
-        }
-        assert!(
-            (1..crate::game::MAPS.len()).contains(&maps_with),
-            "{maps_with}"
-        );
-    }
-
-    #[test]
-    fn only_the_islands_for_bases_can_be_built_on_and_not_the_smaller_sloped_ones() {
-        for map in 0..crate::game::MAPS.len() {
-            let mut random = (102 + map as u32 * 13).wrapping_mul(0x9E37_79B1) | 1;
-            let islands = islands_of(map, MapSize::L, &mut random);
-            let terrain = terrain(map);
-            for island in islands.iter().filter(|i| i.sloped_all_round) {
-                let (x, z) = grid_to_world(island.at.0, island.at.1);
-                assert!((terrain.height_at(x, z) - terrain.floor() - GROUND_HEIGHT).abs() < 0.4525);
-                assert!(terrain.can_walk(x, z), "map {map}");
-                assert!(!terrain.on_upper_ground(x, z), "map {map}: {:?}", island.at);
-            }
-        }
-    }
-
-    #[test]
-    fn cliffs_are_steep_rock_that_cannot_be_walked_and_slopes_are_gentle_and_can() {
-        let terrain = terrain(0);
-        let (mut cliffs, mut slopes) = (0, 0);
-        let (mut cliff_up, mut slope_up) = (0.0, 0.0);
-        for v in 0..=terrain.size().cells() {
-            for u in 0..=terrain.size().cells() {
-                let index = grid_index(u, v);
-                let (x, z) = grid_to_world(u as f32, v as f32);
-                if terrain.is_cliff[index] {
-                    cliffs += 1;
-                    cliff_up += terrain.normals[index][1];
-                    assert!(!terrain.can_walk(x, z), "{u},{v}");
-                } else if terrain.rise[index] > 0.2 && terrain.rise[index] < 0.8 {
-                    slopes += 1;
-                    slope_up += terrain.normals[index][1];
-                    assert!(
-                        terrain.can_walk(x, z) || terrain.relief[index] != 0.0,
-                        "{u},{v}"
-                    );
-                }
-            }
-        }
-        assert!(cliffs > 500 && slopes > 500, "{cliffs} {slopes}");
-        assert!(
-            cliff_up / (cliffs as f32) < 0.7,
-            "{}",
-            cliff_up / cliffs as f32
-        );
-        assert!(
-            slope_up / (slopes as f32) > 0.93,
-            "{}",
-            slope_up / slopes as f32
-        );
-    }
-
-    #[test]
-    fn the_cursor_finds_the_land_up_on_high_ground_where_it_is_seen() {
-        let terrain = Terrain::open_upland();
-        let view = View::new(Camera::centered(), W, H);
-        let spot = (135.8, MAP_MIDDLE_Z + 90.51);
-        let (x, y) = view.project(spot.0, 63.36, spot.1).unwrap();
-        let (found_x, found_z) = view.land_at(&terrain, x, y).unwrap();
-        assert!((found_x - spot.0).abs() < 0.9051 && (found_z - spot.1).abs() < 0.9051);
-    }
-
-    #[test]
-    fn every_map_has_destroyed_buildings_and_each_map_has_its_own() {
-        let all: Vec<&[RuinPiece]> = (0..crate::game::MAPS.len())
-            .map(|map| terrain(map).ruins())
-            .collect();
-        for (map, ruins) in all.iter().enumerate() {
-            assert!(
-                ruins.len() >= 15,
-                "map {map} has only {} pieces",
-                ruins.len()
-            );
-        }
-        for (i, a) in all.iter().enumerate() {
-            for b in &all[i + 1..] {
-                assert_ne!(a, b);
-            }
-        }
-    }
-
-    #[test]
-    fn ruins_stay_on_the_map_and_stand_on_its_terrain() {
-        for map in 0..crate::game::MAPS.len() {
-            let terrain = terrain(map);
-            let last = terrain.size().cells() as f32;
-            for piece in terrain.ruins() {
-                let (u, v) = world_to_grid(piece.x, piece.z);
-                assert!(
-                    (0.0..=last).contains(&u) && (0.0..=last).contains(&v),
-                    "{piece:?}"
-                );
-                assert!(piece.y == 0.0 || piece.y <= GROUND_HEIGHT, "{piece:?}");
-                assert!(piece.height > 0.0 && piece.half_x > 0.0 && piece.half_z > 0.0);
-            }
-        }
-    }
-
-    #[test]
-    fn ruins_are_repeatable_because_a_map_must_look_the_same_every_time() {
-        let a = Terrain::generate(2);
-        let b = Terrain::generate(2);
-        assert_eq!(a.ruins(), b.ruins());
-    }
-
-    #[test]
-    fn every_map_has_mountains_and_pits_that_cannot_be_walked_on_and_rise_and_sink_as_they_should()
-    {
-        for map in 0..crate::game::MAPS.len() {
-            let terrain = terrain(map);
-            let highest = terrain.relief.iter().copied().fold(0.0, f32::max);
-            let deepest = terrain.relief.iter().copied().fold(0.0, f32::min);
-            assert!(highest > 67.88, "map {map} has mountains: {highest}");
-            assert!(deepest < -31.68, "map {map} has pits: {deepest}");
-            let mut blocked = 0;
-            for v in 0..=terrain.size().cells() {
-                for u in 0..=terrain.size().cells() {
-                    let (x, z) = grid_to_world(u as f32, v as f32);
-                    if terrain.is_relief(u, v) {
-                        assert!(!terrain.can_walk(x, z), "map {map} at {u},{v}");
-                        blocked += 1;
-                    }
-                    if terrain.relief[grid_index(u, v)].abs() > 0.0 {
-                        assert!(
-                            terrain.rise[grid_index(u, v)] == 0.0,
-                            "map {map} on an island"
-                        );
-                    }
-                }
-            }
-            assert!(blocked > 0);
-            assert!(
-                blocked < GRID_POINTS / 5,
-                "map {map} is not all rock: {blocked}"
-            );
-        }
-    }
-
-    #[test]
-    fn only_lava_has_vents_and_they_lie_out_in_it_apart_from_each_other() {
-        let lava = terrain(map_on(Planet::GeidiPrime));
-        assert!(lava.vents().len() >= 3, "{}", lava.vents().len());
-        for (i, &(x, z)) in lava.vents().iter().enumerate() {
-            assert!(lava.on_map(x, z) && !lava.can_walk(x, z), "{x},{z}");
-            for &(ox, oz) in &lava.vents()[i + 1..] {
-                assert!((x - ox).hypot(z - oz) >= 407.3);
-            }
-        }
-        for planet in [
-            Planet::Arrakis,
-            Planet::Caladan,
-            Planet::Draconis,
-            Planet::SelusaSecundus,
-            Planet::Tleilax,
-        ] {
-            assert!(terrain(map_on(planet)).vents().is_empty(), "{planet:?}");
-        }
-    }
-
-    #[test]
-    fn the_camera_is_kept_on_a_map_of_its_size_and_starts_in_its_middle() {
-        let mut camera = Camera::centered_on(MapSize::L);
-        assert_eq!(camera.z, MapSize::L.middle_z());
-        assert_eq!(MapSize::L.middle_z(), MAP_MIDDLE_Z);
-        camera.look_at(0.0, 45250.0);
-        let (u, v) = world_to_grid(camera.x, camera.z);
-        assert!((u - 256.0).abs() < 0.01 && (v - 256.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn the_minimap_shows_all_of_a_map_of_any_size() {
-        let rect = (0.0, 0.0, 200.0);
-        for size in [MapSize::L] {
-            let (x, z) = grid_to_world(size.cells() as f32, size.cells() as f32);
-            let (px, py) = world_to_minimap(rect, size.middle_z(), x, z);
-            assert!(
-                (px - 100.0).abs() < 0.01 && (py - 200.0).abs() < 0.01,
-                "{size:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_route_can_be_found_right_across_a_big_map() {
-        let terrain = terrain(0);
-        let from = terrain.nearest_walkable(grid_to_world(20.0, 20.0)).unwrap();
-        let to = terrain
-            .nearest_walkable(grid_to_world(236.0, 236.0))
-            .unwrap();
-        assert!(terrain.next_on_route(from, to).is_some());
-    }
-
-    #[test]
-    fn each_map_gets_the_material_of_its_planet() {
-        assert_eq!(terrain(map_on(Planet::Arrakis)).material(), Material::Sand);
-        assert_eq!(terrain(map_on(Planet::Caladan)).material(), Material::Water);
-        assert_eq!(
-            terrain(map_on(Planet::GeidiPrime)).material(),
-            Material::Lava
-        );
-        assert_eq!(terrain(map_on(Planet::Draconis)).material(), Material::Ice);
-        assert_eq!(
-            terrain(map_on(Planet::SelusaSecundus)).material(),
-            Material::Stone
-        );
-        assert_eq!(terrain(map_on(Planet::Tleilax)).material(), Material::Moss);
-    }
-
-    #[test]
-    fn water_lies_below_its_surface_and_the_land_above_it_for_the_ground_shader() {
-        let map = map_on(Planet::Caladan);
-        let terrain = terrain(map);
-        let mut out = Vec::new();
-        for (x, z) in [(0.0, 2896.0), (-905.1, 1810.0), (905.1, 4073.0)] {
-            let mut camera = Camera::centered();
-            camera.x = x;
-            camera.z = z;
-            draw(&mut out, terrain, None, camera, W, H);
-        }
-        assert!(!out.is_empty());
-        let (water, land): (Vec<WorldVertex>, Vec<WorldVertex>) =
-            out.iter().partition(|v| v.level < 0.0);
-        assert!(!water.is_empty() && !land.is_empty());
-        for vertex in water {
-            let (u, v) = world_to_grid(vertex.x, vertex.z);
-            assert!(!terrain.is_ground(u.round() as usize, v.round() as usize));
-        }
-    }
-
-    /// Where a matrix puts a world point: on the screen, in pixels, and its depth.
-    fn through(matrix: [f32; 16], (x, y, z): (f32, f32, f32)) -> (f32, f32, f32) {
-        let row = |i: usize| matrix[i] * x + matrix[4 + i] * y + matrix[8 + i] * z + matrix[12 + i];
-        let w = row(3);
-        (
-            (row(0) / w + 1.0) / 2.0 * W,
-            (1.0 - row(1) / w) / 2.0 * H,
-            row(2) / w,
-        )
-    }
-
-    fn near(a: f32, b: f32, by: f32) -> bool {
-        (a - b).abs() < by
     }
 
     #[test]
     fn the_matrix_the_backend_gets_lands_on_the_same_pixels_and_depth_as_the_game_works_with() {
         for zoom in [0.0, 0.5, 1.0] {
-            let view = View::new(at_zoom(zoom), W, H);
-            let (x, z) = grid_to_world(64.0, 64.0);
+            let camera = at_zoom(zoom);
+            let view = View::new(camera, W, H);
+            let (x, z) = (camera.x, camera.z);
             for point in [
                 (x, 0.0, z),
                 (x + 135.8, 90.51, z - 181.0),
@@ -3110,23 +1599,14 @@ mod tests {
     }
 
     #[test]
-    fn what_is_nearer_the_camera_has_less_depth_in_the_matrix() {
-        let view = View::new(at_zoom(0.5), W, H);
-        let (x, z) = grid_to_world(64.0, 64.0);
-        let (_, _, far) = through(view.matrix(), (x, 0.0, z - 226.3));
-        let (_, _, near_it) = through(view.matrix(), (x, 0.0, z + 226.3));
-        assert!(near_it < far);
-    }
-
-    #[test]
     fn a_mirror_shows_what_is_above_it_lower_on_the_screen_and_what_is_at_it_in_place() {
-        let view = View::new(Camera::centered(), W, H);
-        let (x, z) = grid_to_world(64.0, 64.0);
-        let above = through(view.matrix(), (x, 90.51, z));
-        let reflected = through(view.mirror_matrix(), (x, 90.51, z));
+        let camera = Camera::centered();
+        let view = View::new(camera, W, H);
+        let above = through(view.matrix(), (camera.x, 90.51, camera.z));
+        let reflected = through(view.mirror_matrix(), (camera.x, 90.51, camera.z));
         assert!(reflected.1 > above.1);
-        let at_it = through(view.matrix(), (x, 0.0, z));
-        let at_it_reflected = through(view.mirror_matrix(), (x, 0.0, z));
+        let at_it = through(view.matrix(), (camera.x, 0.0, camera.z));
+        let at_it_reflected = through(view.mirror_matrix(), (camera.x, 0.0, camera.z));
         assert!(near(at_it.1, at_it_reflected.1, 0.01));
     }
 
@@ -3134,7 +1614,7 @@ mod tests {
     fn the_sun_sees_the_camera_area_with_what_is_nearer_it_at_less_depth() {
         let camera = at_zoom(0.0);
         let view = View::new(camera, W, H);
-        let sun_view = view.sun_matrix((camera.x, camera.z), W, H);
+        let sun_view = view.sun_matrix((camera.x, camera.z), SUN, W, H);
         let at = |y: f32| {
             let (x, z) = (camera.x, camera.z);
             let row = |i: usize| {
@@ -3153,192 +1633,110 @@ mod tests {
     }
 
     #[test]
-    fn normals_are_unit_length_and_lean_away_from_rising_land() {
-        let terrain = Terrain::open_with_mountain(0.0, 1810.0, 226.3);
-        let normals = terrain.find_normals();
-        for normal in &normals {
-            let length = normal.iter().map(|c| c * c).sum::<f32>().sqrt();
-            assert!((length - 1.0).abs() < 1e-3);
-        }
-        let flat = Terrain::open_with_ruins(Vec::new()).find_normals();
-        assert_eq!(flat[grid_index(5, 5)], [0.0, 1.0, 0.0]);
+    fn scrolling_moves_the_way_the_screen_is_pushed_and_slows_as_the_view_narrows() {
+        let moved = |zoom: f32, direction: (f32, f32)| {
+            let mut camera = at_zoom(zoom);
+            camera.scroll(direction, 5, 0.1);
+            let view = View::new(at_zoom(zoom), W, H);
+            let (sx, sy) = view.project(camera.x, 0.0, camera.z).unwrap();
+            (sx - W / 2.0, sy - H / 2.0)
+        };
+        let right = moved(0.0, (1.0, 0.0));
+        assert!(right.0 > 0.0 && near(right.1, 0.0, 0.5), "{right:?}");
+        let down = moved(0.0, (0.0, 1.0));
+        assert!(down.1 > 0.0 && near(down.0, 0.0, 0.5), "{down:?}");
+        assert!(moved(1.0, (1.0, 0.0)).0 < right.0 * 2.0);
     }
 
     #[test]
-    fn a_route_goes_around_a_ruin_and_around_what_it_is_told_to_keep_clear_of() {
-        let wall = RuinPiece {
-            x: 0.0,
-            y: 0.0,
-            z: 1810.0,
-            half_x: 271.5,
-            half_z: 4.525,
-            height: 45.25,
-            shade: 1.0,
-        };
-        let terrain = Terrain::open_with_ruins(vec![wall]);
-        let (from, to) = ((0.0, 1584.0), (0.0, 2036.0));
-        assert!(!terrain.line_is_clear(from, to), "the wall is in the way");
-        let next = terrain.next_on_route(from, to).unwrap();
-        assert!(next.0.abs() > 135.8, "off to one end of it: {next:?}");
-
-        let open = Terrain::open_with_ruins(Vec::new());
-        assert!(open.line_is_clear(from, to));
-        let around = open
-            .next_on_route_around(from, to, &[(0.0, 1810.0, 90.51)])
-            .unwrap();
-        assert!(open.line_is_clear(from, around));
-        assert!(around != to && around.0.abs() > 22.63, "{around:?}");
+    fn the_camera_stays_on_the_map_and_slides_along_its_edges() {
+        let mut camera = Camera::centered_on((3200.0, 1600.0));
         assert_eq!(
-            open.next_on_route_around(from, to, &[]).map(|_| ()),
-            Some(())
+            (camera.x, camera.z),
+            (1600.0, 800.0),
+            "starts in its middle"
         );
-    }
-
-    #[test]
-    fn a_wall_right_at_either_end_of_a_line_does_not_count_as_in_the_way() {
-        let wall = RuinPiece {
-            x: 0.0,
-            y: 0.0,
-            z: 1810.0,
-            half_x: 271.5,
-            half_z: 4.525,
-            height: 45.25,
-            shade: 1.0,
-        };
-        let terrain = Terrain::open_with_ruins(vec![wall]);
-        // Beside the wall, going away from it.
-        assert!(terrain.line_is_clear((0.0, 1788.0), (0.0, 1358.0)));
-        assert!(terrain.line_is_clear((0.0, 1358.0), (0.0, 1788.0)));
-    }
-
-    #[test]
-    fn a_route_goes_around_a_mountain_and_there_is_none_into_a_walled_off_place() {
-        let (x, z) = (0.0, 1810.0);
-        let terrain = Terrain::open_with_mountain(x, z, 226.3);
-        let (from, to) = ((x, z - 407.3), (x, z + 407.3));
-        assert!(!terrain.line_is_clear(from, to));
-        let next = terrain.next_on_route(from, to).expect("a way around");
-        assert!(terrain.line_is_clear(from, next));
-        assert!(
-            next != to && next.0.abs() > 45.25,
-            "off to one side: {next:?}"
-        );
-
-        let clear = terrain.nearest_walkable((x, z)).expect("land nearby");
-        assert!(terrain.can_walk(clear.0, clear.1));
-        assert_eq!(terrain.nearest_walkable(from), Some(from));
-        let open = Terrain::open_with_ruins(Vec::new());
-        assert_eq!(open.next_on_route(from, to).map(|_| ()), Some(()));
-    }
-
-    #[test]
-    fn height_follows_the_terrain() {
-        let terrain = terrain(0);
-        for (u, v) in [(10, 10), (64, 64), (100, 30)] {
-            let (x, z) = grid_to_world(u as f32, v as f32);
-            let expected = terrain.vertex_height(u, v);
-            assert!((terrain.height_at(x, z) - expected).abs() < 1e-4);
+        for _ in 0..400 {
+            camera.scroll((0.0, -1.0), 10, 0.1);
         }
+        assert_eq!((camera.x, camera.z), (0.0, 0.0), "up into its first corner");
+        for _ in 0..400 {
+            camera.scroll((1.0, 0.0), 10, 0.1);
+        }
+        assert_eq!(
+            (camera.x, camera.z),
+            (3200.0, 0.0),
+            "then right along its edge"
+        );
+        camera.look_at(-50.0, 99999.0);
+        assert_eq!((camera.x, camera.z), (0.0, 1600.0));
+    }
+
+    #[test]
+    fn minimap_positions_put_the_map_in_a_diamond_and_round_trip() {
+        let rect = (1000.0, 100.0, 400.0);
+        let extent = (3200.0, 3200.0);
+        let corner = |x, z| world_to_minimap(rect, extent, x, z);
+        let near_by = |(a, b): (f32, f32), (c, d): (f32, f32)| near(a, c, 0.01) && near(b, d, 0.01);
+        assert!(
+            near_by(corner(0.0, 0.0), (1200.0, 100.0)),
+            "first corner top middle"
+        );
+        assert!(
+            near_by(corner(3200.0, 3200.0), (1200.0, 500.0)),
+            "last bottom middle"
+        );
+        assert!(
+            near_by(corner(3200.0, 0.0), (1400.0, 300.0)),
+            "first row to the right"
+        );
+        assert!(
+            near_by(corner(0.0, 3200.0), (1000.0, 300.0)),
+            "first column to the left"
+        );
+        let (x, z) = minimap_to_world(rect, extent, 1250.0, 260.0).unwrap();
+        assert!(near_by(
+            world_to_minimap(rect, extent, x, z),
+            (1250.0, 260.0)
+        ));
+        assert_eq!(minimap_to_world(rect, extent, 999.0, 300.0), None);
+        let wide = (6400.0, 3200.0);
+        let (x, z) = minimap_to_world(rect, wide, 1100.0, 380.0).unwrap();
+        assert!(near_by(world_to_minimap(rect, wide, x, z), (1100.0, 380.0)));
+    }
+
+    #[test]
+    fn segments_clip_to_a_rectangle_and_a_square() {
+        let area = (0.0, 0.0, 20.0, 10.0);
+        assert_eq!(
+            clip_to_rect((-5.0, 5.0), (25.0, 5.0), area),
+            Some(((0.0, 5.0), (20.0, 5.0)))
+        );
+        assert_eq!(clip_to_rect((5.0, 12.0), (15.0, 12.0), area), None);
+        assert_eq!(
+            clip_to_square((5.0, -5.0), (5.0, 5.0), (0.0, 0.0, 10.0)),
+            Some(((5.0, 0.0), (5.0, 5.0)))
+        );
     }
 
     #[test]
     fn edges_push_their_way_and_corners_push_diagonally() {
-        let d = std::f32::consts::FRAC_1_SQRT_2;
+        let d = FRAC_1_SQRT_2;
         let (r, b) = (W - 1.0, H - 1.0);
-        let cases = [
+        for (mouse, expected) in [
             ((W / 2.0, H / 2.0), (0.0, 0.0)),
             ((0.0, H / 2.0), (-1.0, 0.0)),
             ((r, H / 2.0), (1.0, 0.0)),
             ((W / 2.0, 0.0), (0.0, -1.0)),
             ((W / 2.0, b), (0.0, 1.0)),
             ((0.0, 0.0), (-d, -d)),
-            ((r, 0.0), (d, -d)),
-            ((0.0, b), (-d, d)),
             ((r, b), (d, d)),
-        ];
-        for (mouse, expected) in cases {
+        ] {
             let got = edge_direction(mouse, W, H);
             assert!(
-                (got.0 - expected.0).abs() < 1e-5 && (got.1 - expected.1).abs() < 1e-5,
+                near(got.0, expected.0, 1e-5) && near(got.1, expected.1, 1e-5),
                 "{mouse:?} gave {got:?}"
             );
         }
-        assert_eq!(
-            edge_direction((30.0, 30.0), W, H),
-            (0.0, 0.0),
-            "near is not at the edge"
-        );
-    }
-
-    #[test]
-    fn diagonal_scrolling_is_no_faster_than_straight() {
-        let d = std::f32::consts::FRAC_1_SQRT_2;
-        let (mut straight, mut diagonal) = (Camera::centered(), Camera::centered());
-        straight.scroll((1.0, 0.0), 5, 0.1);
-        diagonal.scroll((d, d), 5, 0.1);
-        let moved = |c: Camera| (c.x - Camera::centered().x).hypot(c.z - Camera::centered().z);
-        assert!((moved(straight) - moved(diagonal)).abs() < 1e-3);
-    }
-
-    #[test]
-    fn the_camera_stays_on_the_diamond_and_slides_along_its_edges() {
-        let d = std::f32::consts::FRAC_1_SQRT_2;
-        for direction in [
-            (1.0, 0.0),
-            (-1.0, 0.0),
-            (0.0, 1.0),
-            (0.0, -1.0),
-            (d, d),
-            (-d, -d),
-            (d, -d),
-            (-d, d),
-        ] {
-            let mut camera = Camera::centered();
-            for _ in 0..2000 {
-                camera.scroll(direction, 10, 0.05);
-                let (u, v) = world_to_grid(camera.x, camera.z);
-                assert!((-0.01..=LAST + 0.01).contains(&u) && (-0.01..=LAST + 0.01).contains(&v));
-            }
-        }
-        // Pushing straight east ends at the east corner, not stuck on the first edge touched.
-        let mut camera = Camera::centered();
-        for _ in 0..2000 {
-            camera.scroll((1.0, 0.0), 10, 0.05);
-        }
-        let (u, v) = world_to_grid(camera.x, camera.z);
-        assert!(
-            (u - LAST).abs() < 0.01 && v.abs() < 0.01,
-            "ended at {u}, {v}"
-        );
-    }
-
-    #[test]
-    fn draw_only_emits_what_is_on_screen_and_follows_the_camera() {
-        let terrain = terrain(0);
-        let mut centered = Vec::new();
-        draw(&mut centered, terrain, None, Camera::centered(), W, H);
-        assert!(!centered.is_empty());
-        assert_eq!(centered.len() % 6, 0);
-        let all_quads = MAP_CELLS * MAP_CELLS * 6;
-        assert!(
-            centered.len() < all_quads,
-            "culling keeps it below the whole map"
-        );
-
-        let mut moved = Vec::new();
-        let mut camera = Camera::centered();
-        camera.scroll((1.0, 0.0), 5, 0.5);
-        draw(&mut moved, terrain, None, camera, W, H);
-        assert_ne!(centered, moved);
-    }
-
-    #[test]
-    fn draw_order_is_far_to_near() {
-        let terrain = terrain(0);
-        let mut out = Vec::new();
-        draw(&mut out, terrain, None, Camera::centered(), W, H);
-        // A backend with no depth buffer has only this order to go by.
-        let (first, last) = (out[0], out[out.len() - 1]);
-        assert!(first.z < last.z);
     }
 }

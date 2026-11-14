@@ -133,24 +133,9 @@ const ENTRY_HEAD: usize = 24;
 
 impl Archive {
     pub fn open(index: &[u8], data: &Path) -> Option<Self> {
-        let mut entries = HashMap::new();
-        let mut at = 0;
-        while at + ENTRY_HEAD <= index.len() {
-            let field = |n: usize| u32_at(index, at + n * 4);
-            let length = field(0)? as usize;
-            let entry = Entry {
-                packed: field(2)? & ZLIB != 0,
-                size: field(3)?,
-                offset: field(5)?,
-            };
-            let name = index.get(at + ENTRY_HEAD..at + ENTRY_HEAD + length)?;
-            let name = name.split(|&byte| byte == 0).next().unwrap_or(name);
-            entries.insert(String::from_utf8_lossy(name).to_lowercase(), entry);
-            at += ENTRY_HEAD + length;
-        }
         Some(Archive {
             data: File::open(data).ok()?,
-            entries,
+            entries: entries(index)?,
         })
     }
 
@@ -161,7 +146,45 @@ impl Archive {
         data.seek(SeekFrom::Start(u64::from(entry.offset))).ok()?;
         let mut bytes = vec![0; entry.size as usize];
         data.read_exact(&mut bytes).ok()?;
-        if entry.packed {
+        entry.unpack(bytes)
+    }
+
+    /// The names of its entries, in lower case.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(String::as_str)
+    }
+}
+
+/// The entry of this name, any case, out of a data file already read, with its index.
+pub fn read_in(index: &[u8], data: &[u8], name: &str) -> Option<Vec<u8>> {
+    let entry = *entries(index)?.get(&name.to_lowercase())?;
+    let start = entry.offset as usize;
+    entry.unpack(data.get(start..start + entry.size as usize)?.to_vec())
+}
+
+/// What an index names, each by its name in lower case.
+fn entries(index: &[u8]) -> Option<HashMap<String, Entry>> {
+    let mut entries = HashMap::new();
+    let mut at = 0;
+    while at + ENTRY_HEAD <= index.len() {
+        let field = |n: usize| u32_at(index, at + n * 4);
+        let length = field(0)? as usize;
+        let entry = Entry {
+            packed: field(2)? & ZLIB != 0,
+            size: field(3)?,
+            offset: field(5)?,
+        };
+        let name = index.get(at + ENTRY_HEAD..at + ENTRY_HEAD + length)?;
+        let name = name.split(|&byte| byte == 0).next().unwrap_or(name);
+        entries.insert(String::from_utf8_lossy(name).to_lowercase(), entry);
+        at += ENTRY_HEAD + length;
+    }
+    Some(entries)
+}
+
+impl Entry {
+    fn unpack(self, bytes: Vec<u8>) -> Option<Vec<u8>> {
+        if self.packed {
             inflate::unzlib(bytes.get(4..)?)
         } else {
             Some(bytes)

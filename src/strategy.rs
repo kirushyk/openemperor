@@ -30,8 +30,8 @@ fn build_order(house: Faction) -> [Role; 12] {
         Role::Factory,
         lesser,
         greater,
-        Role::Hangar,
-        Role::LandingPad,
+        Role::Hanger,
+        Role::Helipad,
         lesser,
         greater,
         Role::Refinery,
@@ -48,8 +48,8 @@ const BUILD_TRIES: usize = 12;
 const LANE: i32 = 3;
 /// The chance, each look at the battle, that a Kobra with an enemy in its deployed reach
 /// deploys, and that a deployed one with nobody left in reach packs up.
-const SIEGE_DEPLOY_CHANCE: f32 = 0.2;
-const SIEGE_PACK_UP_CHANCE: f32 = 0.25;
+const OR_KOBRA_DEPLOY_CHANCE: f32 = 0.2;
+const OR_KOBRA_PACK_UP_CHANCE: f32 = 0.25;
 
 /// One opponent's plan.
 #[derive(Clone, Debug, PartialEq)]
@@ -220,7 +220,7 @@ impl Strategy {
         let (Some(base), Some(rally)) = (self.base(units), self.rally(units, teams)) else {
             return;
         };
-        self.work_siege_tanks(units, teams);
+        self.work_or_kobras(units, teams);
         let owner = self.owner;
         // What is deployed stays where it is, out of the army's orders until it packs up.
         let soldier = |u: &Unit| {
@@ -283,10 +283,10 @@ impl Strategy {
 
     /// Now and then deploys a Kobra that has an enemy in its deployed reach, and packs up
     /// one that has nobody left in it, so that it can move on.
-    fn work_siege_tanks(&mut self, units: &mut [Unit], teams: &[usize]) {
+    fn work_or_kobras(&mut self, units: &mut [Unit], teams: &[usize]) {
         for i in 0..units.len() {
             let unit = units[i];
-            if !unit.alive || unit.owner != self.owner || unit.role != Role::Kobra {
+            if !unit.alive || unit.owner != self.owner || unit.role != Role::OrKobra {
                 continue;
             }
             let mut set_up = unit;
@@ -296,8 +296,8 @@ impl Strategy {
                     && (u.x - unit.x).hypot(u.z - unit.z) <= WeaponKind::Siege.range()
             });
             let chance = match (unit.deployed, in_reach) {
-                (false, true) => SIEGE_DEPLOY_CHANCE,
-                (true, false) => SIEGE_PACK_UP_CHANCE,
+                (false, true) => OR_KOBRA_DEPLOY_CHANCE,
+                (true, false) => OR_KOBRA_PACK_UP_CHANCE,
                 _ => continue,
             };
             if next_random(&mut self.random) < chance {
@@ -391,14 +391,14 @@ mod tests {
     const TEAMS: [usize; 2] = [0, 1];
 
     /// An opponent's base and Kobra in the open, and an enemy this far from the tank.
-    fn siege_at(enemy_away: f32) -> [Unit; 3] {
+    fn or_kobra_at(enemy_away: f32) -> [Unit; 3] {
         let mut base = Unit::for_test(1358.0, 2715.0, UnitKind::Building);
         base.id = 1;
         base.owner = 1;
         let mut tank = Unit::for_test(1358.0, 2715.0, UnitKind::Vehicle);
         tank.id = 2;
         tank.owner = 1;
-        tank.role = Role::Kobra;
+        tank.role = Role::OrKobra;
         tank.weapon = WeaponKind::Cannon;
         let mut enemy = Unit::for_test(1358.0 + enemy_away, 2715.0, UnitKind::Infantry);
         enemy.id = 3;
@@ -413,8 +413,8 @@ mod tests {
     }
 
     #[test]
-    fn a_siege_tank_deploys_sometimes_with_an_enemy_in_reach_and_packs_up_when_there_is_none() {
-        let mut units = siege_at(WeaponKind::Siege.range() - 45.25);
+    fn a_kobra_deploys_sometimes_with_an_enemy_in_reach_and_packs_up_when_there_is_none() {
+        let mut units = or_kobra_at(WeaponKind::Siege.range() - 45.25);
         let mut strategy = Strategy::new(1, OpponentKind::Competent);
         think_for(&mut strategy, &mut units, 60);
         assert!(units[1].deployed, "it sets up");
@@ -426,9 +426,9 @@ mod tests {
 
     #[test]
     fn those_at_home_go_after_an_intruder_they_can_catch_and_let_a_faster_one_go() {
-        for (intruder, chased) in [(Role::Devastator, true), (Role::SandBike, false)] {
-            let mut units = siege_at(452.5);
-            units[1].role = Role::Mongoose;
+        for (intruder, chased) in [(Role::HkDevastator, true), (Role::AtTrike, false)] {
+            let mut units = or_kobra_at(452.5);
+            units[1].role = Role::AtMongoose;
             units[2].kind = UnitKind::Vehicle;
             units[2].role = intruder;
             let mut strategy = Strategy::new(1, OpponentKind::Competent);
@@ -442,16 +442,16 @@ mod tests {
     }
 
     #[test]
-    fn a_siege_tank_with_nobody_in_reach_stays_on_its_tracks() {
-        let mut units = siege_at(WeaponKind::Siege.range() + 45.25);
+    fn a_kobra_with_nobody_in_reach_stays_on_its_tracks() {
+        let mut units = or_kobra_at(WeaponKind::Siege.range() + 45.25);
         let mut strategy = Strategy::new(1, OpponentKind::Competent);
         think_for(&mut strategy, &mut units, 60);
         assert!(!units[1].deployed);
     }
 
     #[test]
-    fn a_deployed_siege_tank_takes_no_marching_orders() {
-        let mut units = siege_at(WeaponKind::Siege.range() - 45.25);
+    fn a_deployed_kobra_takes_no_marching_orders() {
+        let mut units = or_kobra_at(WeaponKind::Siege.range() - 45.25);
         units::switch_deployed(&mut units[1]);
         let stays = units[1].destination;
         let mut strategy = Strategy::new(1, OpponentKind::Competent);

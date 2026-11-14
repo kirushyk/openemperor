@@ -1,18 +1,18 @@
 //! Turns game state into a triangle list. Backends only ever see colored triangles.
 
-use crate::battlefield::{self, SUN};
+use crate::battlefield;
 use crate::fog::{Fog, Sight};
 use crate::font;
 use crate::game::{
-    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Faction, Game, MAPS,
-    OPPONENT_SLOTS, Outcome, PlaceSquare, STATS_ROW_STEP, STATS_ROW_TOP, SUPERWEAPON_CELL, Screen,
-    TeamColor, buttons, checkbox_size, color_slots, map_items, minimap_rect, modal_rect,
-    opponent_row, opponent_widgets, options_panel, setup_checkboxes, setup_widgets, small_text_px,
-    stats_rect, ui_scale,
+    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Faction, Game, OPPONENT_SLOTS,
+    Outcome, PlaceSquare, STATS_ROW_STEP, STATS_ROW_TOP, SUPERWEAPON_CELL, Screen, TeamColor,
+    buttons, checkbox_size, color_slots, map_items, minimap_rect, modal_rect, opponent_row,
+    opponent_widgets, options_panel, setup_checkboxes, setup_widgets, small_text_px, stats_rect,
+    ui_scale,
 };
 use crate::hud;
 use crate::planet;
-use crate::platform::{EffectVertex, Frame, MAX_LIGHTS, Material, PointLight, Vertex, WorldVertex};
+use crate::platform::{EffectVertex, Frame, MAX_LIGHTS, PointLight, Vertex, WorldVertex};
 use crate::units::{self, Role, Target, Unit, UnitKind};
 use crate::weapons::STRIKE_RADIUS;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
@@ -23,7 +23,10 @@ mod backdrop;
 mod models;
 mod original;
 
-pub use original::{PICTURE_SIDE, load as load_original_models, pictures as original_pictures};
+pub use original::{
+    PICTURE_SIDE, load as load_original_models, muzzles as original_muzzles,
+    pictures as original_pictures, wash as original_wash,
+};
 
 type Color = [f32; 4];
 
@@ -104,8 +107,6 @@ const SHELL_BODY: Color = [0.12, 0.12, 0.12, 1.0];
 const HEALTH_GOOD: Color = [0.3, 0.9, 0.3, 1.0];
 const HEALTH_BAD: Color = [0.9, 0.2, 0.15, 1.0];
 const DEFEAT_RED: Color = [0.92, 0.22, 0.18, 1.0];
-const RUIN_CONCRETE: [f32; 3] = [0.56, 0.54, 0.50];
-const RUIN_ON_MINIMAP: Color = [0.16, 0.15, 0.14, 1.0];
 const BOLT_GLOW: Color = [0.35, 0.55, 1.0, 0.25];
 const BOLT_HALO: Color = [0.55, 0.75, 1.0, 0.65];
 const BOLT_CORE: Color = [0.95, 0.98, 1.0, 1.0];
@@ -139,6 +140,8 @@ struct Canvas {
     /// What goes on the screen over the whole world.
     vertices: Vec<Vertex>,
     ground: Vec<WorldVertex>,
+    /// What lies on the ground, see-through.
+    decals: Vec<WorldVertex>,
     /// All that stands on the map, solid.
     objects: Vec<WorldVertex>,
     /// What casts a shadow without being drawn as solid.
@@ -701,9 +704,15 @@ pub fn build(game: &Game) -> Vec<Vertex> {
     effects.chain(frame.over.iter().copied()).collect()
 }
 
+/// The way to the sun of the map being fought on.
+fn sun_of(game: &Game) -> [f32; 3] {
+    battlefield::terrain(game.battle_map).light().sun
+}
+
 /// The whole frame: the battlefield, if it shows, and what goes over it.
 pub fn build_frame(game: &Game) -> Frame {
     let terrain = battlefield::terrain(game.battle_map);
+    let light = terrain.light();
     let canvas = canvas_of(game);
     let view = battlefield::View::new(game.camera, game.width, game.height);
     let focus = (game.camera.x, game.camera.z);
@@ -714,6 +723,7 @@ pub fn build_frame(game: &Game) -> Frame {
             lights_of(game)
         },
         ground: canvas.ground,
+        decals: canvas.decals,
         material: terrain.material(),
         objects: canvas.objects,
         casters: canvas.casters,
@@ -722,10 +732,12 @@ pub fn build_frame(game: &Game) -> Frame {
         time: game.battle_time(),
         view: view.matrix(),
         mirror: view.mirror_matrix(),
-        sun_view: view.sun_matrix(focus, game.width, game.height),
+        sun_view: view.sun_matrix(focus, light.sun, game.width, game.height),
         camera: view.position(),
-        sun: SUN,
-        flat_liquid: terrain.lower_color(),
+        sun: light.sun,
+        ambient: light.ambient,
+        sunlight: light.sunlight,
+        wash: original::wash_reach(game.battle_map),
         size: (game.width, game.height),
     }
 }
@@ -933,10 +945,13 @@ fn canvas_of(game: &Game) -> Canvas {
             }
             if game.dropdown_open {
                 // Last, so the list covers the controls below the dropdown.
-                let current = map_items(game.width, game.height)[game.skirmish.map];
-                for item in map_items(game.width, game.height) {
+                for item in map_items(game.map_folder, game.map_scroll, game.width, game.height) {
                     draw_field(&mut canvas, game, item);
-                    let color = if item.action == current.action {
+                    let chosen = [
+                        Action::SelectMap(game.skirmish.map),
+                        Action::MapFolder(game.map_folder),
+                    ];
+                    let color = if chosen.contains(&item.action) {
                         GOLD
                     } else {
                         TEXT
@@ -1173,16 +1188,31 @@ fn button_circle(b: Button) -> (f32, f32, f32) {
 /// The terrain, the faction name in a campaign, and the minimap.
 fn draw_battle(canvas: &mut Canvas, game: &Game) {
     let s = ui_scale(game.height);
-    battlefield::draw(
+    let view = battlefield::View::new(game.camera, game.width, game.height);
+    let fog = game.fog.as_ref();
+    if !original::draw_land(
         &mut canvas.ground,
+        game.battle_map,
+        fog,
+        &view,
+        game.width,
+        game.height,
+    ) {
+        draw_plain_land(
+            &mut canvas.ground,
+            battlefield::terrain(game.battle_map),
+            fog,
+        );
+    }
+    original::draw_spice(
+        &mut canvas.decals,
         battlefield::terrain(game.battle_map),
-        game.fog.as_ref(),
-        game.camera,
+        fog,
+        &view,
         game.width,
         game.height,
     );
     draw_map_objects(canvas, game);
-    let view = battlefield::View::new(game.camera, game.width, game.height);
     draw_combat(canvas, game, &view);
     draw_tower_ranges(canvas, game, &view);
     draw_strike_aim(canvas, game, &view);
@@ -1204,25 +1234,51 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
     draw_chat(canvas, game);
 }
 
-/// Units and ruins as simple boxes, farthest first, for a backend with no depth to go by.
-/// Whatever flies goes last, with its ring down on the ground below.
-fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
-    enum Object<'a> {
-        Unit(&'a Unit),
-        Ruin(&'a battlefield::RuinPiece),
+/// A map's ground when the disc's shape of it cannot be drawn: its cells, each in its color on
+/// the radar, at their heights.
+fn draw_plain_land(
+    ground: &mut Vec<WorldVertex>,
+    terrain: &battlefield::Terrain,
+    fog: Option<&Fog>,
+) {
+    /// How many cells across each square drawn is.
+    const STEP: usize = 4;
+    let (width, height) = terrain.cells();
+    for v in (0..height).step_by(STEP) {
+        for u in (0..width).step_by(STEP) {
+            let color = terrain.radar_at(u, v);
+            let corner = |du: usize, dv: usize| {
+                let (x, z) = battlefield::grid_to_world(
+                    (u + du).min(width) as f32,
+                    (v + dv).min(height) as f32,
+                );
+                let mut corner =
+                    WorldVertex::solid((x, terrain.height_at(x, z), z), [0.0, 1.0, 0.0], color);
+                corner.seen = battlefield::seen_at(fog, x, z);
+                corner
+            };
+            let (a, b, c, d) = (
+                corner(0, 0),
+                corner(STEP, 0),
+                corner(STEP, STEP),
+                corner(0, STEP),
+            );
+            ground.extend([a, b, c, a, c, d]);
+        }
     }
-    let z_of = |object: &Object| match object {
-        Object::Unit(unit) => unit.z,
-        Object::Ruin(piece) => piece.z,
-    };
+}
+
+/// Units as simple boxes, farthest first, for a backend with no depth to go by. Whatever
+/// flies goes last, with its ring down on the ground below.
+fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     let view = battlefield::View::new(game.camera, game.width, game.height);
     draw_poison(canvas, game, &view);
     draw_order_lines(canvas, game, &view);
-    let terrain = battlefield::terrain(game.battle_map);
     canvas.watchers = Some(models::Watchers {
         eye: view.position(),
+        sun: sun_of(game),
         camera: true,
-        mirrored: terrain.material() == Material::Water,
+        mirrored: false,
     });
     let is_marked = |unit: &Unit| unit.selected || game.in_selection_drag(unit);
     let mut flying: Vec<&Unit> = game
@@ -1230,51 +1286,28 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         .iter()
         .filter(|u| u.altitude > 0.0 && game.shows(u))
         .collect();
-    flying.sort_by(|a, b| a.z.total_cmp(&b.z));
+    flying.sort_by(|a, b| (a.x + a.z).total_cmp(&(b.x + b.z)));
     for unit in &flying {
         if is_marked(unit) {
             draw_selected_ring(canvas, game, &view, unit);
         }
     }
-    let mut order: Vec<Object> = game
+    // Farthest first: the screen's bottom lies where x and z both grow.
+    let mut order: Vec<&Unit> = game
         .units
         .iter()
         .filter(|u| u.altitude <= 0.0 && game.shows(u))
-        .map(Object::Unit)
         .collect();
-    order.extend(
-        battlefield::terrain(game.battle_map)
-            .ruins()
-            .iter()
-            .filter(|piece| game.sight_at(piece.x, piece.z) != Sight::Unexplored)
-            .map(Object::Ruin),
-    );
-    order.sort_by(|a, b| z_of(a).total_cmp(&z_of(b)));
-    draw_on_threads(canvas, &order, |canvas, object| {
-        match *object {
-            Object::Unit(unit) => {
-                if is_marked(unit) {
-                    draw_selected_ring(canvas, game, &view, unit);
-                }
-                draw_unit(canvas, game, &view, unit);
-                draw_health_bar(canvas, game, &view, unit);
-                draw_pips(canvas, game, &view, unit);
-                draw_medals(canvas, game, &view, unit);
-                draw_group_number(canvas, game, &view, unit);
-            }
-            Object::Ruin(piece) => {
-                let middle = (piece.x, piece.y + piece.height / 2.0, piece.z);
-                let radius = piece.half_x.hypot(piece.half_z).hypot(piece.height / 2.0);
-                // Ruins are low: what of them is off the screen hardly throws a shadow onto it.
-                if view.ball_on_screen(middle, radius + piece.height).is_none() {
-                    return;
-                }
-                let shade = piece.shade * game.sight_at(piece.x, piece.z).shade();
-                let color = RUIN_CONCRETE.map(|c| c * shade);
-                let footprint = (piece.x, piece.z, piece.half_x, piece.half_z, 0.0);
-                draw_turned_box(canvas, footprint, (piece.y, piece.y + piece.height), color);
-            }
+    order.sort_by(|a, b| (a.x + a.z).total_cmp(&(b.x + b.z)));
+    draw_on_threads(canvas, &order, |canvas, &unit| {
+        if is_marked(unit) {
+            draw_selected_ring(canvas, game, &view, unit);
         }
+        draw_unit(canvas, game, &view, unit);
+        draw_health_bar(canvas, game, &view, unit);
+        draw_pips(canvas, game, &view, unit);
+        draw_medals(canvas, game, &view, unit);
+        draw_group_number(canvas, game, &view, unit);
     });
     for wreck in game
         .combat
@@ -1282,7 +1315,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         .iter()
         .filter(|w| game.sight_at(w.unit.x, w.unit.z) == Sight::Visible)
     {
-        let seen = seen_by(&view, &wreck.unit);
+        let seen = seen_by(game, &view, &wreck.unit);
         draw_seen_model(canvas, game, &wreck.unit, seen);
         if matches!(seen, Seen::Near | Seen::Far) {
             draw_flames(canvas, game, &view, &wreck.unit);
@@ -2013,8 +2046,7 @@ fn draw_tornado(
     const HEIGHT: f32 = 271.5;
     const FOOT: f32 = 6.788;
     const MOUTH: f32 = 81.46;
-    let terrain = battlefield::terrain(game.battle_map);
-    let dust = crate::weapons::dust_color(terrain);
+    let dust = crate::weapons::dust_color();
     let time = game.battle_time() + tornado.phase;
     let (x, y, z) = tornado.at;
     // It spins up out of nothing, and dies away again.
@@ -2165,7 +2197,7 @@ fn draw_spray(canvas: &mut Canvas, view: &battlefield::View, spray: &crate::weap
     }
 }
 
-/// A flame tower's tongue of fire: yellow down the middle of the blast, then orange, and red
+/// A flame turret's tongue of fire: yellow down the middle of the blast, then orange, and red
 /// out at its edge and as it dies away.
 fn draw_flamelet(
     canvas: &mut Canvas,
@@ -2199,9 +2231,7 @@ fn draw_tower_ranges(canvas: &mut Canvas, game: &Game, view: &battlefield::View)
     const WALL_GREEN: [f32; 3] = [0.3, 1.0, 0.4];
     let terrain = battlefield::terrain(game.battle_map);
     for tower in game.units.iter().filter(|u| {
-        u.selected
-            && (u.kind == UnitKind::Tower || u.role == Role::AirDefensePlatform)
-            && u.weapon.is_armed()
+        u.selected && (u.kind == UnitKind::Tower || u.role == Role::HkAdp) && u.weapon.is_armed()
     }) {
         let radius = tower.range();
         let foot = |i: usize| {
@@ -2368,7 +2398,7 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
         let from = (unit.x, unit.z);
         match after {
             Some(to)
-                if matches!(unit.role, Role::RepairVehicle | Role::AdvancedCarryall)
+                if matches!(unit.role, Role::AtRepairUnit | Role::AdvCarryall)
                     && !matches!(unit.target, Some(Target::RunOver(_))) =>
             {
                 draw_dashed_line(canvas, game, view, from, to, HEAL_LINE)
@@ -2470,7 +2500,7 @@ fn draw_carried(canvas: &mut Canvas, game: &Game, view: &battlefield::View, carr
     }
     if let Some(load) = game.carried.iter().find(|load| load.carrier == carrier.id) {
         cables(canvas, load.vehicle.y);
-        draw_seen_model(canvas, game, &load.vehicle, seen_by(view, carrier));
+        draw_seen_model(canvas, game, &load.vehicle, seen_by(game, view, carrier));
     }
 }
 
@@ -2517,16 +2547,16 @@ const FAR_PIXELS: f32 = 40.0;
 fn bounds(unit: &Unit) -> (Point, f32) {
     let height = match (unit.kind, unit.role) {
         (UnitKind::Infantry, _) => 31.68,
-        (_, Role::Minotaurus) => 61.09,
-        (_, Role::Mongoose) => 42.99,
-        (_, Role::Devastator) => 144.8,
+        (_, Role::AtMinotaurus) => 61.09,
+        (_, Role::AtMongoose) => 42.99,
+        (_, Role::HkDevastator) => 144.8,
         // Its pipe stands high once it is deployed.
         // Its drill sticks out a long way in front.
         (_, Role::Mcv) => 135.8,
         // Its cannon stands high once it is deployed.
-        (_, Role::Kobra) => 104.1,
+        (_, Role::OrKobra) => 104.1,
         // It may have a vehicle hanging under it.
-        (_, Role::AdvancedCarryall | Role::Carryall) => 99.56,
+        (_, Role::AdvCarryall | Role::Carryall) => 99.56,
         (_, Role::Harvester) => 63.36,
         (UnitKind::Vehicle | UnitKind::Aircraft, _) => 22.63,
         (UnitKind::Tower, _) => (units::TUBE_HEIGHT + 0.4) * unit.stretch()[1],
@@ -2537,7 +2567,7 @@ fn bounds(unit: &Unit) -> (Point, f32) {
 }
 
 /// How much of a unit the camera can see: of it, or of its shadow on the ground.
-fn seen_by(view: &battlefield::View, unit: &Unit) -> Seen {
+fn seen_by(game: &Game, view: &battlefield::View, unit: &Unit) -> Seen {
     let (middle, radius) = bounds(unit);
     if let Some(pixels) = view.ball_on_screen(middle, radius) {
         return if pixels < FAR_PIXELS {
@@ -2548,7 +2578,8 @@ fn seen_by(view: &battlefield::View, unit: &Unit) -> Seen {
     }
     // The shadow lies between its foot and where the sun throws its top, on the ground.
     let top = middle.1 + radius - unit.y;
-    let thrown = (-SUN[0] / SUN[1] * top, -SUN[2] / SUN[1] * top);
+    let [sx, sy, sz] = sun_of(game);
+    let thrown = (-sx / sy * top, -sz / sy * top);
     let shadow = (unit.x + thrown.0 / 2.0, unit.y, unit.z + thrown.1 / 2.0);
     let reach = radius + thrown.0.hypot(thrown.1) / 2.0;
     if view.ball_on_screen(shadow, reach).is_some() {
@@ -2559,7 +2590,7 @@ fn seen_by(view: &battlefield::View, unit: &Unit) -> Seen {
 }
 
 fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
-    let seen = seen_by(view, unit);
+    let seen = seen_by(game, view, unit);
     if let Some(theft) = unit.theft {
         // A vehicle's model stands on its y, however high it has been lifted.
         let mut lifted = *unit;
@@ -2573,34 +2604,36 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
         draw_seen_model(canvas, game, &shown, seen);
         return;
     }
-    let is_fighting = unit.role == Role::AdvancedCarryall
+    let is_fighting = unit.role == Role::AdvCarryall
         && stolen_by(game, unit)
             .is_some_and(|stolen| stolen.theft.is_some_and(|theft| theft.struggle > 0.0));
     let shaken_unit = is_fighting.then(|| shaken(game, unit, 2.0));
     let unit = shaken_unit.as_ref().unwrap_or(unit);
+    // The original's models have their own lights, just where it has them; ours have these.
+    let lit = !original::has_model(unit) && !unit.is_under_construction();
     // Beams reach far past what they come from, so they show even when it does not.
-    if !unit.is_under_construction() {
+    if lit {
         draw_beams(canvas, game, view, unit);
     }
-    if unit.role == Role::LandingPad && !unit.is_under_construction() {
+    if unit.role == Role::Helipad && lit {
         draw_searchlight(canvas, game, view, unit);
     }
     if unit.role == Role::Mcv {
         draw_mcv_lights(canvas, game, view, unit);
     }
-    if unit.role == Role::Palace(Faction::Harkonnen) && !unit.is_under_construction() {
+    if unit.role == Role::Palace(Faction::Harkonnen) && lit {
         draw_palace_lights(canvas, game, view, unit);
     }
-    if unit.role == Role::Refinery && !unit.is_under_construction() {
+    if unit.role == Role::Refinery && lit {
         draw_red_glares(canvas, view, &stack_lamps(unit), game.battle_time());
     }
-    if unit.role == Role::AirDefensePlatform {
+    if unit.role == Role::HkAdp && lit {
         let glares = models::air_defense_glares(unit);
         draw_red_glares(canvas, view, &glares, game.battle_time());
     }
     draw_seen_model(canvas, game, unit, seen);
     if matches!(seen, Seen::Near | Seen::Far) {
-        if unit.role == Role::AirDrone {
+        if unit.role == Role::AtAdp {
             draw_jet_flame(canvas, game, view, unit, models::DRONE_NOZZLE);
         }
         if unit.role == Role::Carryall {
@@ -2651,7 +2684,7 @@ fn draw_shatter(
     view: &battlefield::View,
     shatter: &crate::weapons::Shatter,
 ) {
-    let seen = seen_by(view, &shatter.unit);
+    let seen = seen_by(game, view, &shatter.unit);
     if !matches!(seen, Seen::Near | Seen::Far) {
         return;
     }
@@ -2792,18 +2825,22 @@ fn draw_beams(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: 
 }
 
 /// What lights an MCV: its sweeping searchlight, and once deployed the smoke from its pipe and
-/// the red glares that blink in turn either side of it.
+/// the red glares that blink in turn either side of it. One drawn with the original's model has
+/// that model's lights instead, and only the smoke.
 fn draw_mcv_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
     const PUFFS: usize = 7;
     let faction = unit.house;
     let time = game.battle_time();
-    draw_beam(
-        canvas,
-        game,
-        view,
-        &models::mcv_searchlight(unit, faction, time),
-        unit,
-    );
+    let lit = !original::has_model(unit);
+    if lit {
+        draw_beam(
+            canvas,
+            game,
+            view,
+            &models::mcv_searchlight(unit, faction, time),
+            unit,
+        );
+    }
     if !unit.deployed {
         return;
     }
@@ -2821,7 +2858,9 @@ fn draw_mcv_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View, u
             Some(SMOKE),
         );
     }
-    draw_red_glares(canvas, view, &models::mcv_glares(unit, faction), time);
+    if lit {
+        draw_red_glares(canvas, view, &models::mcv_glares(unit, faction), time);
+    }
 }
 
 /// Red glares that blink in turn.
@@ -2838,7 +2877,7 @@ fn draw_red_glares(canvas: &mut Canvas, view: &battlefield::View, glares: &[Poin
     }
 }
 
-/// Bright white floodlights on the steps of a house H palace, and red warning lights high up.
+/// Bright white floodlights on the steps of a House Harkonnen palace, and red warning lights high up.
 fn draw_palace_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
     const WHITE: [[f32; 3]; 8] = [
         [1.95, 1.08, 1.95],
@@ -3072,7 +3111,7 @@ fn draw_searchlight(canvas: &mut Canvas, game: &Game, view: &battlefield::View, 
 
 /// A low deck with a landing mark, just big enough for one machine, and a mast with a
 /// searchlight at one corner.
-fn draw_landing_pad(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
+fn draw_helipad(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     const DECK: [f32; 3] = [0.24, 0.24, 0.26];
     const MARK: [f32; 3] = [0.92, 0.92, 0.88];
     const RING: [f32; 3] = [0.9, 0.72, 0.16];
@@ -3256,8 +3295,8 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
         }
         UnitKind::Building => {
             let drawn = canvas.objects.len();
-            if unit.role == Role::LandingPad {
-                draw_landing_pad(canvas, unit, color);
+            if unit.role == Role::Helipad {
+                draw_helipad(canvas, unit, color);
             } else if unit.role == Role::Refinery {
                 draw_refinery(canvas, unit, color);
             } else {
@@ -3267,7 +3306,7 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
             lay_on_grid(canvas, drawn, unit);
         }
         UnitKind::Tower if unit.role.pops_up() => {
-            models::draw_popup_turret(canvas, unit, color, house_paint(unit.house).0)
+            models::draw_or_pop_up_turret(canvas, unit, color, house_paint(unit.house).0)
         }
         UnitKind::Tower => {
             let drawn = canvas.objects.len();
@@ -3282,7 +3321,7 @@ fn draw_tower(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     let (forward_x, forward_z) = (unit.heading.cos(), unit.heading.sin());
     let ahead = |by: f32| (unit.x + forward_x * by, unit.z + forward_z * by);
     let mut part = |footprint, heights, color| draw_turned_box(canvas, footprint, heights, color);
-    let wall_of = |half: f32| (unit.x, unit.z, half, half, std::f32::consts::FRAC_PI_4);
+    let wall_of = |half: f32| (unit.x, unit.z, half, half, 0.0);
     let wall = wall_of(0.5);
     let head_base = units::TUBE_HEIGHT - 0.2;
     let (wall_color, head_color) = house_paint(unit.house);
@@ -3297,13 +3336,13 @@ fn draw_tower(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
         unit.y + units::TUBE_HEIGHT - 0.06,
         unit.y + units::TUBE_HEIGHT + 0.06,
     );
-    if unit.role == Role::FlameTower {
+    if unit.role == Role::HkFlameTurret {
         // One fat nozzle, with the color of fire on its way out.
         let nozzle = (ahead_x, ahead_z, 0.3, 0.1, unit.heading);
         part(nozzle, height, FIRE_COLOR);
         return;
     }
-    if unit.role == Role::GunPost {
+    if unit.role == Role::AtPillbox {
         // One machine gun on a low parapet of sandbags.
         part(wall_of(0.62), (unit.y, unit.y + 0.3), SANDBAGS);
         let gun = (ahead_x, ahead_z, 0.32, 0.035, unit.heading);
@@ -3324,7 +3363,7 @@ fn draw_tower(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
         (roof + 0.015, roof + 0.105),
         SEARCHLIGHT_LENS,
     );
-    if unit.role == Role::GunTower {
+    if unit.role == Role::HkGunTurret {
         // Two machine guns side by side on a breech block.
         let right = (-forward_z, forward_x);
         let (breech_x, breech_z) = ahead(0.14);
@@ -3355,7 +3394,7 @@ fn draw_tower(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
     }
 }
 
-/// A square tube of a missile tower, hinged at its back end and raised to its pitch.
+/// A square tube of a rocket turret, hinged at its back end and raised to its pitch.
 fn draw_tube(canvas: &mut Canvas, unit: &Unit, side: f32, color: [f32; 3]) {
     const HALF: f32 = 0.11;
     /// How far behind its hinge a launcher tube reaches.
@@ -3869,45 +3908,46 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
 /// A name short enough for a build menu cell.
 fn short_name(role: Role) -> &'static str {
     match role {
-        Role::LightInfantry => "Light",
+        Role::AtInfantry => "Inf",
         Role::Engineer => "Engin",
-        Role::KInfantry => "K Inf",
-        Role::RepairVehicle => "Repair",
-        Role::Catapult => "Catap",
-        Role::RocketLauncher => "RktLnch",
-        Role::Mongoose => "Mongse",
-        Role::Minotaurus => "Minotr",
-        Role::AdvancedCarryall => "AdvCarry",
+        Role::AtKindjal => "Kindjal",
+        Role::AtRepairUnit => "Repair",
+        Role::HkInkVine => "Inkvine",
+        Role::HkMissile => "MslTank",
+        Role::AtMongoose => "Mongse",
+        Role::AtMinotaurus => "Minotr",
+        Role::AdvCarryall => "AdvCarry",
         Role::Carryall => "Carry",
-        Role::AirDefensePlatform => "AirDef",
-        Role::AirDrone => "Drone",
-        Role::Ornithopter => "Ornith",
-        Role::Destroyer => "Destroy",
-        Role::LandingPad => "Pad",
+        Role::HkAdp => "AirDef",
+        Role::AtAdp => "Drone",
+        Role::AtOrni => "Ornith",
+        Role::HkGunship => "Gunship",
+        Role::Helipad => "Pad",
         Role::Refinery => "Refnry",
         Role::Harvester => "Harvest",
         Role::Palace(_) => "Palace",
-        Role::Tower => "R Tower",
-        Role::GunTower => "MG Twr",
-        Role::GunPost => "MG Post",
+        Role::AtRocketTurret => "R Turret",
+        Role::HkGunTurret => "Gun Trt",
+        Role::AtPillbox => "MG Post",
         Role::Outpost => "Outpost",
-        Role::GasTower => "Gas Twr",
-        Role::LaserTower => "Lsr Twr",
-        Role::FlameInfantry => "Flame",
-        Role::GasInfantry => "Gas",
-        Role::RegularInfantry => "Regular",
-        Role::RocketInfantry => "Rocket",
-        Role::SuicideInfantry => "Suicide",
-        Role::MortarInfantry => "Mortar",
-        Role::SandBike => "Bike",
-        Role::DiskSaw => "Saw",
-        Role::FlameTank => "FlmTank",
-        Role::Devastator => "Devastator",
-        Role::LaserTank => "Laser",
-        Role::Kobra => "Siege",
-        Role::RocketApc | Role::StealthApc => "APC",
-        Role::AirMine => "A Mine",
-        Role::EyeInTheSky => "Eye",
+        Role::OrGasTurret => "Gas Trt",
+        Role::OrPopUpTurret => "Pop-up",
+        Role::HkFlamer => "Flame",
+        Role::OrChemical => "Chem",
+        Role::HkLightInf => "Light",
+        Role::HkTrooper => "Trooper",
+        Role::OrSaboteur => "Sabotr",
+        Role::OrMortar => "Mortar",
+        Role::AtTrike => "Bike",
+        Role::HkBuzzsaw => "Buzzsaw",
+        Role::HkFlame => "FlmTank",
+        Role::HkDevastator => "Devastator",
+        Role::OrLaserTank => "Laser",
+        Role::OrKobra => "Kobra",
+        Role::OrApc | Role::AtApc => "APC",
+        Role::OrAdp => "AA Mine",
+        Role::OrEits => "Eye",
+        Role::HkAssault => "Assault",
         _ => role.name(),
     }
 }
@@ -4205,7 +4245,9 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
             }
             Action::MapDropdown => {
                 draw_field(canvas, game, b);
-                canvas.text_left(MAPS[setup.map], b.x + 16.0 * s, cy, px, TEXT);
+                if let Some(map) = crate::maps::list().get(setup.map) {
+                    canvas.text_left(&map.name, b.x + 16.0 * s, cy, px, TEXT);
+                }
                 let (ax, half) = (b.x + b.w - 28.0 * s, 10.0 * s);
                 let tip = if game.dropdown_open {
                     cy - half * 0.6
@@ -4309,8 +4351,8 @@ fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
         .iter()
         .filter(|z| game.sight_at(z.x, z.z) == Sight::Visible)
     {
-        let (x, y) = battlefield::world_to_minimap(rect, game.middle_z(), zone.x, zone.z);
-        let radius = STRIKE_RADIUS / game.middle_z() * rect.2 / 2.0;
+        let (x, y) = battlefield::world_to_minimap(rect, game.map_extent(), zone.x, zone.z);
+        let radius = STRIKE_RADIUS / battlefield::minimap_span(game.map_extent()) * rect.2;
         canvas.circle(x, y, radius, with_alpha(POISON_FILL, 0.45));
     }
     let dot = (3.0 * ui_scale(game.height)).round().max(2.0);
@@ -4322,7 +4364,7 @@ fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
             && terrain.on_map(u.x, u.z)
             && (enemies_on_radar || !game.is_enemy_of_player(u))
     }) {
-        let (x, y) = battlefield::world_to_minimap(rect, game.middle_z(), unit.x, unit.z);
+        let (x, y) = battlefield::world_to_minimap(rect, game.map_extent(), unit.x, unit.z);
         let color = if unit.selected {
             VIEW_OUTLINE
         } else {
@@ -4341,7 +4383,7 @@ fn draw_battle_minimap(canvas: &mut Canvas, game: &Game) {
     let Some(corners) = view.ground_corners() else {
         return;
     };
-    let on_map = corners.map(|(x, z)| battlefield::world_to_minimap(rect, game.middle_z(), x, z));
+    let on_map = corners.map(|(x, z)| battlefield::world_to_minimap(rect, game.map_extent(), x, z));
     let thickness = (2.0 * ui_scale(game.height)).max(1.0);
     for i in 0..on_map.len() {
         let (a, b) = (on_map[i], on_map[(i + 1) % on_map.len()]);
@@ -4399,9 +4441,8 @@ fn draw_map_diamond(
     fog: Option<&Fog>,
     (x, y, size): (f32, f32, f32),
 ) {
-    /// Grid steps per minimap cell on a map of size S. A bigger map takes bigger ones, for as
-    /// many cells on the minimap.
-    const STEP_ON_SMALL: usize = 4;
+    /// The most blocks of cells the minimap shows along a side of the map.
+    const MOST_BLOCKS: usize = 96;
     let border = border_px(game.height);
     canvas.rect(
         x - border,
@@ -4413,48 +4454,27 @@ fn draw_map_diamond(
     canvas.rect(x, y, size, size, CLEAR_RGBA);
 
     let terrain = battlefield::terrain(map);
-    let grid_cells = terrain.size().cells();
-    let cells = grid_cells as f32;
-    let step = (STEP_ON_SMALL as f32 * terrain.size().scale()) as usize;
+    let (width, height) = terrain.cells();
+    let extent = terrain.extent();
+    let step = width.max(height).div_ceil(MOST_BLOCKS);
     let to_screen = |u: usize, v: usize| {
-        let (u, v) = (u as f32 / cells, v as f32 / cells);
-        (
-            x + size / 2.0 + (u - v) * size / 2.0,
-            y + (u + v) * size / 2.0,
-        )
+        let (wx, wz) = battlefield::grid_to_world(u.min(width) as f32, v.min(height) as f32);
+        battlefield::world_to_minimap((x, y, size), extent, wx, wz)
     };
-    for v in (0..grid_cells).step_by(step) {
-        for u in (0..grid_cells).step_by(step) {
-            let (mid_u, mid_v) = (u + step / 2, v + step / 2);
-            let base = if terrain.is_relief(mid_u, mid_v) || terrain.is_side(mid_u, mid_v) {
-                terrain.color_at(mid_u, mid_v)
-            } else if terrain.is_ground(mid_u, mid_v) {
-                terrain.upper_color()
-            } else if terrain.is_liquid(mid_u, mid_v) {
-                terrain.lower_color()
-            } else {
-                terrain.lowland_color()
-            };
-            let shade = fog.map_or(1.0, |fog| fog.at_grid(u + step / 2, v + step / 2).shade());
+    for v in (0..height).step_by(step) {
+        for u in (0..width).step_by(step) {
+            let (mid_u, mid_v) = (
+                (u + step / 2).min(width - 1),
+                (v + step / 2).min(height - 1),
+            );
+            let shade = fog.map_or(1.0, |fog| fog.at_grid(mid_u, mid_v).shade());
+            let base = terrain.radar_at(mid_u, mid_v);
             let color = with_alpha(base.map(|channel| channel * shade), 1.0);
             let (a, b) = (to_screen(u, v), to_screen(u + step, v));
             let (c, d) = (to_screen(u + step, v + step), to_screen(u, v + step));
             canvas.triangle([a, b, c], color);
             canvas.triangle([a, c, d], color);
         }
-    }
-    let dot = border_px(game.height);
-    let known = |piece: &&battlefield::RuinPiece| {
-        fog.is_none_or(|fog| fog.at(piece.x, piece.z) != Sight::Unexplored)
-    };
-    for piece in terrain.ruins().iter().filter(known) {
-        let (px, py) = battlefield::world_to_minimap(
-            (x, y, size),
-            terrain.size().middle_z(),
-            piece.x,
-            piece.z,
-        );
-        canvas.rect(px - dot / 2.0, py - dot / 2.0, dot, dot, RUIN_ON_MINIMAP);
     }
 }
 
@@ -4607,31 +4627,31 @@ mod size_tests {
     #[test]
     fn machines_come_out_as_big_as_the_originals() {
         let roles = [
-            Role::Tank,
-            Role::RepairVehicle,
+            Role::HkAssault,
+            Role::AtRepairUnit,
             Role::Mcv,
             Role::Harvester,
-            Role::SandBike,
-            Role::DiskSaw,
-            Role::FlameTank,
-            Role::Devastator,
-            Role::Recon,
-            Role::LaserTank,
-            Role::Kobra,
-            Role::RocketApc,
-            Role::StealthApc,
-            Role::Catapult,
-            Role::RocketLauncher,
-            Role::Mongoose,
-            Role::Minotaurus,
-            Role::AdvancedCarryall,
+            Role::AtTrike,
+            Role::HkBuzzsaw,
+            Role::HkFlame,
+            Role::HkDevastator,
+            Role::OrDustScout,
+            Role::OrLaserTank,
+            Role::OrKobra,
+            Role::OrApc,
+            Role::AtApc,
+            Role::HkInkVine,
+            Role::HkMissile,
+            Role::AtMongoose,
+            Role::AtMinotaurus,
+            Role::AdvCarryall,
             Role::Carryall,
-            Role::AirDefensePlatform,
-            Role::AirDrone,
-            Role::Ornithopter,
-            Role::Destroyer,
-            Role::AirMine,
-            Role::EyeInTheSky,
+            Role::HkAdp,
+            Role::AtAdp,
+            Role::AtOrni,
+            Role::HkGunship,
+            Role::OrAdp,
+            Role::OrEits,
         ];
         for role in roles {
             let mut unit = Unit::for_test(0.0, 0.0, role.kind());
@@ -4649,24 +4669,24 @@ mod size_tests {
     #[test]
     fn towers_the_pad_and_a_deployed_mcv_come_out_as_big_as_the_originals() {
         for role in [
-            Role::Tower,
-            Role::FlameTower,
-            Role::GunTower,
-            Role::GunPost,
-            Role::GasTower,
-            Role::LaserTower,
+            Role::AtRocketTurret,
+            Role::HkFlameTurret,
+            Role::HkGunTurret,
+            Role::AtPillbox,
+            Role::OrGasTurret,
+            Role::OrPopUpTurret,
         ] {
             let mut unit = Unit::for_test(0.0, 0.0, role.kind());
             (unit.role, unit.kind, unit.heading, unit.popped) = (role, role.kind(), 0.0, 1.0);
             let mut canvas = Canvas::default();
             if role.pops_up() {
-                models::draw_popup_turret(&mut canvas, &unit, [1.0; 3], [1.0; 3]);
+                models::draw_or_pop_up_turret(&mut canvas, &unit, [1.0; 3], [1.0; 3]);
             } else {
                 draw_tower(&mut canvas, &unit, [1.0; 3]);
                 stretch_drawn(&mut canvas, 0, &unit, 0.0);
             }
-            // Square on the grid, which lies at an eighth of a turn to the world.
-            let turn = if role.pops_up() { 0.0 } else { FRAC_PI_4 };
+            // Square on the grid, which lies along the world's axes.
+            let turn = 0.0;
             let [_, up, _] = drawn_size(&canvas, &unit, turn);
             // Its squares are what it stands on: its guns may reach out past them.
             canvas.objects.retain(|v| v.y < 1.0);
@@ -4674,12 +4694,12 @@ mod size_tests {
             assert_original_size(role, unit.house, [across, up, ahead]);
         }
         let mut pad = Unit::for_test(0.0, 0.0, UnitKind::Building);
-        pad.role = Role::LandingPad;
+        pad.role = Role::Helipad;
         let mut canvas = Canvas::default();
-        draw_landing_pad(&mut canvas, &pad, [1.0; 3]);
+        draw_helipad(&mut canvas, &pad, [1.0; 3]);
         lay_on_grid(&mut canvas, 0, &pad);
         let drawn = drawn_size(&canvas, &pad, pad.facing.turn());
-        assert_original_size(Role::LandingPad, pad.house, drawn);
+        assert_original_size(Role::Helipad, pad.house, drawn);
         for house in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
             let mut mcv = Unit::for_test(0.0, 0.0, UnitKind::Building);
             (mcv.role, mcv.house, mcv.deployed, mcv.heading) = (Role::Mcv, house, true, 0.0);
@@ -4707,7 +4727,7 @@ mod size_tests {
             for role in [
                 Role::Barracks,
                 Role::Factory,
-                Role::Hangar,
+                Role::Hanger,
                 Role::Refinery,
                 Role::Outpost,
                 Role::Palace(house),

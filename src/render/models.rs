@@ -3,7 +3,7 @@
 //! can see are left out as they are made.
 
 use super::{Canvas, Point, cross, knee_of, offset, unit_vector};
-use crate::battlefield::{CELL_SIDE, SUN};
+use crate::battlefield::CELL_SIDE;
 use crate::game::Faction;
 use crate::platform::{NO_PICTURE, WorldVertex};
 use crate::units::{self, Role, Unit};
@@ -113,6 +113,8 @@ pub enum Detail {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Watchers {
     pub eye: [f32; 3],
+    /// The way to the sun.
+    pub sun: [f32; 3],
     pub camera: bool,
     pub mirrored: bool,
 }
@@ -121,18 +123,33 @@ impl Watchers {
     /// Whether any of them sees the face of a triangle with these corners and normals. A little
     /// past edge-on still counts, for faces whose corner normals bend around a round part.
     fn see(&self, points: &[[f32; 3]; 3], normals: &[[f32; 3]; 3]) -> bool {
-        const SLACK: f32 = -0.05;
-        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let [n0, n1, n2] = *normals;
-        let normal = unit_vector(offset(offset(n0, n1, 1.0), n2, 1.0));
-        if dot(normal, SUN) > SLACK {
-            return true;
-        }
-        let [p0, p1, p2] = *points;
-        let middle = offset(offset(p0, p1, 1.0), p2, 1.0).map(|c| c / 3.0);
-        let faces = |eye: [f32; 3]| dot(normal, unit_vector(offset(eye, middle, -1.0))) > SLACK;
         let [x, y, z] = self.eye;
-        self.camera && (faces(self.eye) || self.mirrored && faces([x, -y, z]))
+        facing(points, normals, self.sun, false)
+            || self.camera
+                && (facing(points, normals, self.eye, true)
+                    || self.mirrored && facing(points, normals, [x, -y, z], true))
+    }
+}
+
+/// Whether a triangle with these corners and normals faces toward a point, or toward a way
+/// if `point` is false, a little past edge-on still counting.
+fn facing(points: &[[f32; 3]; 3], normals: &[[f32; 3]; 3], to: [f32; 3], point: bool) -> bool {
+    const SLACK: f32 = -0.05;
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let [n0, n1, n2] = *normals;
+    let normal = unit_vector(offset(offset(n0, n1, 1.0), n2, 1.0));
+    if !point {
+        return dot(normal, to) > SLACK;
+    }
+    let [p0, p1, p2] = *points;
+    let middle = offset(offset(p0, p1, 1.0), p2, 1.0).map(|c| c / 3.0);
+    dot(normal, unit_vector(offset(to, middle, -1.0))) > SLACK
+}
+
+impl Watchers {
+    /// Whether the camera looks at the back of a triangle with these corners and normals.
+    fn sees_back(&self, points: &[[f32; 3]; 3], normals: &[[f32; 3]; 3]) -> bool {
+        self.camera && !facing(points, normals, self.eye, true)
     }
 }
 
@@ -347,11 +364,12 @@ impl<'a> Model<'a> {
     }
 
     pub(super) fn triangle(&mut self, points: [[f32; 3]; 3], normals: [[f32; 3]; 3], paint: Paint) {
-        self.pictured(points, normals, paint, [NO_PICTURE; 3], [0.0; 3]);
+        self.pictured(points, normals, paint, [NO_PICTURE; 3], [0.0; 3], false);
     }
 
     /// A triangle painted with a picture, where each corner is on it, with the house color for
-    /// its house parts; `paint` for a backend that does not paint with pictures.
+    /// its house parts; `paint` for a backend that does not paint with pictures. One that is
+    /// `two_sided`, as what can be seen through is, shows its back too, lit as its front.
     pub(super) fn pictured(
         &mut self,
         points: [[f32; 3]; 3],
@@ -359,9 +377,17 @@ impl<'a> Model<'a> {
         paint: Paint,
         picture: [[f32; 3]; 3],
         team: [f32; 3],
+        two_sided: bool,
     ) {
         let points = points.map(|p| self.place.point(p));
-        let normals = normals.map(|n| self.place.normal(n));
+        let mut normals = normals.map(|n| self.place.normal(n));
+        if two_sided
+            && self
+                .watchers
+                .is_some_and(|w| w.sees_back(&points, &normals))
+        {
+            normals = normals.map(|n| n.map(|c| -c));
+        }
         if self.watchers.is_some_and(|w| !w.see(&points, &normals)) {
             return;
         }
@@ -800,34 +826,34 @@ pub fn team(color: [f32; 3]) -> Paint {
 /// Where a machine's lamps are, as [along, up, across] from where it is placed.
 pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
     match role {
-        Role::Tank => &[[0.45, 0.2, -0.2], [0.45, 0.2, 0.2]],
-        Role::RepairVehicle => &[[0.43, 0.24, 0.0]],
-        Role::Catapult => &[[0.43, 0.17, 0.0]],
-        Role::RocketLauncher => &[[0.46, 0.2, -0.15], [0.46, 0.2, 0.15]],
-        Role::Mongoose => &[[0.39, 0.58, 0.0]],
-        Role::Minotaurus => &[[0.41, 1.15, -0.06], [0.41, 1.15, 0.06]],
-        Role::AdvancedCarryall => &[[0.55, 0.03, -0.08], [0.55, 0.03, 0.08]],
+        Role::HkAssault => &[[0.45, 0.2, -0.2], [0.45, 0.2, 0.2]],
+        Role::AtRepairUnit => &[[0.43, 0.24, 0.0]],
+        Role::HkInkVine => &[[0.43, 0.17, 0.0]],
+        Role::HkMissile => &[[0.46, 0.2, -0.15], [0.46, 0.2, 0.15]],
+        Role::AtMongoose => &[[0.39, 0.58, 0.0]],
+        Role::AtMinotaurus => &[[0.41, 1.15, -0.06], [0.41, 1.15, 0.06]],
+        Role::AdvCarryall => &[[0.55, 0.03, -0.08], [0.55, 0.03, 0.08]],
         // One big lamp in the tip of its nose.
         Role::Carryall => &[[0.5, 0.07, 0.0]],
-        Role::AirDefensePlatform => &[[0.41, 0.05, -0.27], [0.41, 0.05, 0.27]],
-        Role::Ornithopter => &[[0.23, 0.08, 0.0]],
-        Role::Destroyer => &[[0.45, 0.09, -0.06], [0.45, 0.09, 0.06]],
+        Role::HkAdp => &[[0.41, 0.05, -0.27], [0.41, 0.05, 0.27]],
+        Role::AtOrni => &[[0.23, 0.08, 0.0]],
+        Role::HkGunship => &[[0.45, 0.09, -0.06], [0.45, 0.09, 0.06]],
         // The searchlight on a tower's roof.
-        Role::Tower | Role::GunTower => &[[0.14, 1.5, 0.0]],
+        Role::AtRocketTurret | Role::HkGunTurret => &[[0.14, 1.5, 0.0]],
         // A big headlamp on the front of each front track pod.
         Role::Mcv => &[[1.02, 0.34, -0.66], [1.02, 0.34, 0.66]],
         // Under the cockpit, at the end of the beam it sits on.
         Role::Harvester => &[[0.84, 0.6, 0.0]],
-        Role::SandBike => &[[0.45, 0.2, 0.0]],
-        Role::DiskSaw => &[[0.3, 0.27, -0.3], [0.3, 0.27, 0.3]],
-        Role::FlameTank => &[[0.43, 0.2, 0.0]],
-        Role::Devastator => &[[0.82, 1.9, -0.3], [0.82, 1.9, 0.3]],
-        Role::Recon => &[[0.38, 0.42, 0.0]],
-        Role::LaserTank => &[[0.48, 0.17, 0.0]],
+        Role::AtTrike => &[[0.45, 0.2, 0.0]],
+        Role::HkBuzzsaw => &[[0.3, 0.27, -0.3], [0.3, 0.27, 0.3]],
+        Role::HkFlame => &[[0.43, 0.2, 0.0]],
+        Role::HkDevastator => &[[0.82, 1.9, -0.3], [0.82, 1.9, 0.3]],
+        Role::OrDustScout => &[[0.38, 0.42, 0.0]],
+        Role::OrLaserTank => &[[0.48, 0.17, 0.0]],
         // On top of its right track.
-        Role::Kobra => &[[0.36, 0.25, 0.33]],
-        Role::RocketApc => &[[0.53, 0.2, 0.0]],
-        Role::StealthApc => &[[0.56, 0.24, -0.19], [0.56, 0.24, 0.19]],
+        Role::OrKobra => &[[0.36, 0.25, 0.33]],
+        Role::OrApc => &[[0.53, 0.2, 0.0]],
+        Role::AtApc => &[[0.56, 0.24, -0.19], [0.56, 0.24, 0.19]],
         _ => &[],
     }
 }
@@ -835,11 +861,11 @@ pub fn lamp_spots(role: Role) -> &'static [[f32; 3]] {
 /// How big a machine's lamp lenses are.
 fn lamp_radius(role: Role) -> f32 {
     match role {
-        Role::AdvancedCarryall => 0.045,
+        Role::AdvCarryall => 0.045,
         Role::Carryall => 0.055,
-        Role::Minotaurus => 0.035,
-        Role::Devastator => 0.06,
-        Role::Tower | Role::GunTower => 0.045,
+        Role::AtMinotaurus => 0.035,
+        Role::HkDevastator => 0.06,
+        Role::AtRocketTurret | Role::HkGunTurret => 0.045,
         Role::Mcv => 0.075,
         Role::Harvester => 0.045,
         _ => 0.026,
@@ -892,7 +918,7 @@ pub fn draw_crate(canvas: &mut Canvas, (x, y, z): Point) {
 
 /// A pop-up turret: a low round collar in the ground with a bulge in its middle, which rises
 /// with the turret's gun when it has something to fire at.
-pub fn draw_popup_turret(canvas: &mut Canvas, unit: &Unit, color: [f32; 3], walls: [f32; 3]) {
+pub fn draw_or_pop_up_turret(canvas: &mut Canvas, unit: &Unit, color: [f32; 3], walls: [f32; 3]) {
     let (trim, collar) = (team(color), team(walls));
     let model = &mut Model::new(canvas, Place::on_ground(unit));
     let round = model.sides(20);
@@ -915,7 +941,7 @@ pub fn draw_popup_turret(canvas: &mut Canvas, unit: &Unit, color: [f32; 3], wall
     }
     let middle = [0.0, 0.14 + rise, 0.0];
     model.ball(middle, [0.32, 0.17, 0.32], true, STEEL);
-    let (reach, half, paint) = if unit.role == Role::GasTower {
+    let (reach, half, paint) = if unit.role == Role::OrGasTurret {
         (0.28, 0.1, self::team([0.35, 0.9, 0.25]))
     } else {
         (0.45, 0.035, GLARE)
@@ -936,7 +962,7 @@ pub fn draw_popup_turret(canvas: &mut Canvas, unit: &Unit, color: [f32; 3], wall
 /// The beams a machine casts now: none from one sitting on the ground that only flies.
 pub fn beams(unit: &Unit) -> Vec<Beam> {
     let spots = lamp_spots(unit.role);
-    let flies_only = matches!(unit.role, Role::Ornithopter | Role::Destroyer);
+    let flies_only = matches!(unit.role, Role::AtOrni | Role::HkGunship);
     // A deployed MCV puts out its headlamps.
     if spots.is_empty() || flies_only && unit.is_grounded() || unit.deployed {
         return Vec::new();
@@ -947,13 +973,13 @@ pub fn beams(unit: &Unit) -> Vec<Beam> {
         Place::on_ground(unit)
     };
     let (reach, spread) = match unit.role {
-        Role::AdvancedCarryall | Role::Carryall => (362.0, 117.7),
-        Role::AirDefensePlatform => (203.6, 36.2),
-        Role::Ornithopter | Role::Destroyer => (226.3, 54.31),
-        Role::Minotaurus => (158.4, 45.25),
+        Role::AdvCarryall | Role::Carryall => (362.0, 117.7),
+        Role::HkAdp => (203.6, 36.2),
+        Role::AtOrni | Role::HkGunship => (226.3, 54.31),
+        Role::AtMinotaurus => (158.4, 45.25),
         Role::Mcv => (203.6, 67.88),
         // A searchlight throws a long, narrow beam far over the ground as the tower looks out.
-        Role::Tower | Role::GunTower => (362.0, 40.73),
+        Role::AtRocketTurret | Role::HkGunTurret => (362.0, 40.73),
         _ if spots.len() == 1 => (117.7, 45.25),
         _ => (117.7, 33.94),
     };
@@ -984,30 +1010,30 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
     };
     let model = &mut Model::new(canvas, place);
     match unit.role {
-        Role::Tank => tank(model, unit, team),
-        Role::RepairVehicle => repair_vehicle(model, unit, team),
+        Role::HkAssault => hk_assault(model, unit, team),
+        Role::AtRepairUnit => at_repair_unit(model, unit, team),
         Role::Harvester => harvester(model, unit, team),
-        Role::Catapult => catapult(model, unit, team),
-        Role::RocketLauncher => rocket_launcher(model, unit, team),
-        Role::Mongoose => strider(model, unit, team),
-        Role::Minotaurus => heavy_strider(model, unit, team),
-        Role::AdvancedCarryall => advanced_carryall(model, team),
+        Role::HkInkVine => hk_ink_vine(model, unit, team),
+        Role::HkMissile => hk_missile(model, unit, team),
+        Role::AtMongoose => at_mongoose(model, unit, team),
+        Role::AtMinotaurus => at_minotaurus(model, unit, team),
+        Role::AdvCarryall => adv_carryall(model, team),
         Role::Carryall => carryall(model, team),
-        Role::AirDefensePlatform => air_defense_platform(model, team),
-        Role::AirDrone => air_drone(model, team),
-        Role::Ornithopter => ornithopter(model, unit, time, team),
-        Role::Destroyer => destroyer(model, unit, time, team),
-        Role::SandBike => sand_bike(model, team),
-        Role::DiskSaw => disk_saw(model, unit, time, team),
-        Role::FlameTank => flame_tank(model, unit, team),
-        Role::Devastator => huge_walker(model, unit, team),
-        Role::Recon => recon(model, unit, team),
-        Role::LaserTank => laser_tank(model, time, team),
-        Role::Kobra => siege_tank(model, unit, team),
-        Role::RocketApc => rocket_apc(model, time, team),
-        Role::AirMine => air_mine(model, time, team),
-        Role::EyeInTheSky => eye_in_the_sky(model, time, team),
-        Role::StealthApc => stealth_apc(model, team),
+        Role::HkAdp => hk_adp(model, team),
+        Role::AtAdp => at_adp(model, team),
+        Role::AtOrni => at_orni(model, unit, time, team),
+        Role::HkGunship => hk_gunship(model, unit, time, team),
+        Role::AtTrike => at_trike(model, team),
+        Role::HkBuzzsaw => hk_buzzsaw(model, unit, time, team),
+        Role::HkFlame => hk_flame(model, unit, team),
+        Role::HkDevastator => hk_devastator(model, unit, team),
+        Role::OrDustScout => or_dust_scout(model, unit, team),
+        Role::OrLaserTank => or_laser_tank(model, time, team),
+        Role::OrKobra => or_kobra(model, unit, team),
+        Role::OrApc => or_apc(model, time, team),
+        Role::OrAdp => or_adp(model, time, team),
+        Role::OrEits => or_eits(model, time, team),
+        Role::AtApc => at_apc(model, team),
         _ => return,
     }
     let radius = lamp_radius(unit.role);
@@ -1172,13 +1198,12 @@ pub fn draw_construction(canvas: &mut Canvas, unit: &Unit) {
     let done = unit.construction_done();
     let (up, down) = (units::CONSTRUCTION_UP, units::CONSTRUCTION_DOWN);
     let work = ((done - up) / (down - up)).clamp(0.0, 1.0);
-    let (sin, cos) = std::f32::consts::FRAC_PI_4.sin_cos();
     // Along the grid, as its squares are.
     let place = Place {
         origin: [unit.x, unit.y, unit.z],
-        along: [cos, 0.0, sin],
+        along: [1.0, 0.0, 0.0],
         up: [0.0, 1.0, 0.0],
-        across: [-sin, 0.0, cos],
+        across: [0.0, 0.0, 1.0],
     };
     let model = &mut Model::new(canvas, place);
     let (cols, rows) = unit.plot().map_or(unit.role.plot_size(unit.house), |plot| {
@@ -1244,7 +1269,7 @@ fn rifle_stock(model: &mut Model, up: f32) {
 /// Draws what a soldier carries, from a place that bobs with it, and says where its hands go.
 fn soldier_gear(model: &mut Model, unit: &Unit, team: Paint, swing: f32) -> Grip {
     match (unit.role, unit.deployed) {
-        (Role::Sniper, _) => {
+        (Role::AtSniper, _) => {
             model.tube(
                 tube([0.05, 0.42, 0.02], [0.56, 0.42, 0.02], 0.009).sides(6),
                 GUNMETAL,
@@ -1268,7 +1293,7 @@ fn soldier_gear(model: &mut Model, unit: &Unit, team: Paint, swing: f32) -> Grip
                 left: [0.27, 0.4, 0.015],
             }
         }
-        (Role::RegularInfantry, _) => {
+        (Role::HkLightInf, _) => {
             model.bevel([0.17, 0.4, 0.02], [0.11, 0.028, 0.018], 0.006, GUNMETAL);
             model.tube(
                 tube([0.28, 0.405, 0.02], [0.33, 0.405, 0.02], 0.014).sides(6),
@@ -1281,7 +1306,7 @@ fn soldier_gear(model: &mut Model, unit: &Unit, team: Paint, swing: f32) -> Grip
                 left: [0.25, 0.385, 0.01],
             }
         }
-        (Role::KInfantry, true) => {
+        (Role::AtKindjal, true) => {
             model.bevel([0.05, 0.1, 0.0], [0.3, 0.08, 0.2], 0.02, INFANTRY_GEAR);
             model.tube(
                 tube([0.05, 0.2, 0.0], [0.75, 0.18, 0.0], 0.04).sides(8),
@@ -1297,7 +1322,7 @@ fn soldier_gear(model: &mut Model, unit: &Unit, team: Paint, swing: f32) -> Grip
                 left: [0.14, 0.27, -0.09],
             }
         }
-        (Role::MortarInfantry, true) => {
+        (Role::OrMortar, true) => {
             model.bevel([0.3, 0.02, 0.0], [0.14, 0.02, 0.14], 0.005, INFANTRY_GEAR);
             model.tube(
                 tube([0.26, 0.04, 0.0], [0.38, 0.52, 0.0], 0.04).sides(8),
@@ -1310,8 +1335,8 @@ fn soldier_gear(model: &mut Model, unit: &Unit, team: Paint, swing: f32) -> Grip
                 left: [0.33, 0.38, -0.045],
             }
         }
-        (Role::KInfantry | Role::MortarInfantry, false) => {
-            if unit.role == Role::MortarInfantry {
+        (Role::AtKindjal | Role::OrMortar, false) => {
+            if unit.role == Role::OrMortar {
                 model.tube(
                     tube([-0.13, 0.22, 0.0], [-0.18, 0.66, 0.0], 0.04).sides(8),
                     GUNMETAL,
@@ -1324,7 +1349,7 @@ fn soldier_gear(model: &mut Model, unit: &Unit, team: Paint, swing: f32) -> Grip
                 left: hanging_hand(-0.13, -swing),
             }
         }
-        (Role::RocketInfantry, _) => {
+        (Role::HkTrooper, _) => {
             let tip = [0.34, 0.56, 0.1];
             model.tube(
                 tube([-0.26, 0.55, 0.1], tip, 0.05)
@@ -1339,8 +1364,8 @@ fn soldier_gear(model: &mut Model, unit: &Unit, team: Paint, swing: f32) -> Grip
                 left: [0.2, 0.5, 0.09],
             }
         }
-        (Role::FlameInfantry | Role::GasInfantry, _) => {
-            let [r, g, b] = if unit.role == Role::GasInfantry {
+        (Role::HkFlamer | Role::OrChemical, _) => {
+            let [r, g, b] = if unit.role == Role::OrChemical {
                 super::GAS_COLOR
             } else {
                 super::FIRE_COLOR
@@ -1369,7 +1394,7 @@ fn soldier_gear(model: &mut Model, unit: &Unit, team: Paint, swing: f32) -> Grip
                 left: [0.24, 0.375, 0.01],
             }
         }
-        (Role::SuicideInfantry, _) => {
+        (Role::OrSaboteur, _) => {
             for n in 0..6 {
                 let (sin, cos) = (n as f32 / 6.0 * TAU).sin_cos();
                 let at = [cos * 0.09, 0.33, sin * 0.09];
@@ -1436,7 +1461,7 @@ fn headgear(model: &mut Model, role: Role, up: f32, team: Paint) {
         Role::Engineer => {
             model.ball([0.0, up + 0.02, 0.0], [0.082, 0.055, 0.082], true, HARD_HAT);
         }
-        Role::RegularInfantry | Role::KInfantry | Role::RocketInfantry => {
+        Role::HkLightInf | Role::AtKindjal | Role::HkTrooper => {
             model.ball(
                 [0.0, up + 0.015, 0.0],
                 [0.066, 0.056, 0.066],
@@ -1444,11 +1469,11 @@ fn headgear(model: &mut Model, role: Role, up: f32, team: Paint) {
                 GUNMETAL,
             );
         }
-        Role::FlameInfantry | Role::GasInfantry => {
+        Role::HkFlamer | Role::OrChemical => {
             model.ball([0.0, up, 0.0], [0.066, 0.066, 0.066], false, INFANTRY_GEAR);
             model.block([0.055, up + 0.005, 0.0], [0.018, 0.02, 0.04], GLASS);
         }
-        Role::Sniper | Role::Scout => {
+        Role::AtSniper | Role::Scout => {
             model.ball([0.0, up + 0.012, 0.0], [0.06, 0.04, 0.06], true, team);
             model.block([0.06, up + 0.02, 0.0], [0.03, 0.005, 0.04], team);
         }
@@ -1474,7 +1499,7 @@ pub fn draw_infantry(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3
     if unit.is_parachuting() {
         parachute(model, team);
     }
-    let kneeling = unit.deployed && matches!(unit.role, Role::KInfantry | Role::MortarInfantry);
+    let kneeling = unit.deployed && matches!(unit.role, Role::AtKindjal | Role::OrMortar);
     let phase = unit.stride * PACE;
     let walking = unit.is_moving() && !kneeling;
     let (bob, swing, breath) = if walking {
@@ -1610,7 +1635,7 @@ fn tracks(model: &mut Model, unit: &Unit, track: &Track, apart: f32) {
 
 /// A squat battle tank: a hull with a sloped glacis on linked tracks, a turret of eight sides
 /// with the owner's color on its roof, and a long gun with a muzzle brake.
-fn tank(model: &mut Model, unit: &Unit, team: Paint) {
+fn hk_assault(model: &mut Model, unit: &Unit, team: Paint) {
     let track = Track {
         rear: -0.35,
         front: 0.35,
@@ -1683,7 +1708,7 @@ fn tank(model: &mut Model, unit: &Unit, team: Paint) {
 
 /// A tracked workshop: a cab with a windscreen and a beacon, a taller workshop behind it with
 /// a folded crane and a white cross on the roof.
-fn repair_vehicle(model: &mut Model, unit: &Unit, team: Paint) {
+fn at_repair_unit(model: &mut Model, unit: &Unit, team: Paint) {
     let track = Track {
         rear: -0.32,
         front: 0.32,
@@ -1844,7 +1869,7 @@ fn harvester(model: &mut Model, unit: &Unit, team: Paint) {
 
 /// A tracked carrier with an open hull, painted sides, and a long throwing arm on a pivot
 /// with a bucket behind and a painted counterweight in front.
-fn catapult(model: &mut Model, unit: &Unit, team: Paint) {
+fn hk_ink_vine(model: &mut Model, unit: &Unit, team: Paint) {
     let track = Track {
         rear: -0.32,
         front: 0.32,
@@ -1909,7 +1934,7 @@ fn catapult(model: &mut Model, unit: &Unit, team: Paint) {
 
 /// A six-wheeled truck with an armored cab and two open racks of rockets that empty as the
 /// salvo goes.
-fn rocket_launcher(model: &mut Model, unit: &Unit, team: Paint) {
+fn hk_missile(model: &mut Model, unit: &Unit, team: Paint) {
     for along in [-0.28, 0.0, 0.28] {
         for side in [-1.0, 1.0] {
             model.wheel([along, 0.085, side * 0.215], 0.085, 0.07, 12, RUBBER);
@@ -2079,7 +2104,7 @@ fn legs(model: &mut Model, unit: &Unit, legs: &Legs) {
 
 /// A small walking missile carrier: a long rectangular body up on two bird legs, with a lamp
 /// in front and a separate launcher of four missile tubes on its back.
-fn strider(model: &mut Model, unit: &Unit, team: Paint) {
+fn at_mongoose(model: &mut Model, unit: &Unit, team: Paint) {
     legs(
         model,
         unit,
@@ -2125,7 +2150,7 @@ fn strider(model: &mut Model, unit: &Unit, team: Paint) {
 
 /// A walking gun platform: a broad body on two big legs with armored knees, a raised painted
 /// top, a sensor head with two lamps, four cannons that slide back as they fire, and exhausts.
-fn heavy_strider(model: &mut Model, unit: &Unit, team: Paint) {
+fn at_minotaurus(model: &mut Model, unit: &Unit, team: Paint) {
     /// How far a cannon runs back into its sleeve when it fires.
     const RECOIL_TRAVEL: f32 = 0.55;
     /// Longer all told than the body it is mounted on.
@@ -2214,7 +2239,7 @@ fn heavy_strider(model: &mut Model, unit: &Unit, team: Paint) {
 
 /// A long lifting frame: a lattice spine with a painted band, an engine nacelle on a pylon at
 /// each side, a clamp frame underneath and two floodlights under its nose.
-fn advanced_carryall(model: &mut Model, team: Paint) {
+fn adv_carryall(model: &mut Model, team: Paint) {
     let ribs = [-0.45, -0.27, -0.09, 0.09, 0.27, 0.45];
     let (low, high, apart) = (0.08, 0.17, 0.1);
     for c in [-apart, apart] {
@@ -2408,7 +2433,7 @@ fn carryall(model: &mut Model, team: Paint) {
 
 /// A gun platform hovering on two capsule floats, painted on top, with a girder bridge between
 /// them, a painted turret on a ring mount and a twin automatic gun.
-fn air_defense_platform(model: &mut Model, team: Paint) {
+fn hk_adp(model: &mut Model, team: Paint) {
     for side in [-0.27, 0.27] {
         let place = model.place.moved([0.0, 0.0, side]);
         model.at(place).loft(Loft {
@@ -2472,7 +2497,7 @@ pub fn air_defense_glares(unit: &Unit) -> [Point; 2] {
 
 /// A small fast delta-wing drone: a slim fuselage with a sensor dome, a delta wing with
 /// painted tips, a painted fin, and a round engine nozzle at its tail.
-fn air_drone(model: &mut Model, team: Paint) {
+fn at_adp(model: &mut Model, team: Paint) {
     model.loft(Loft {
         rings: &[
             [-0.28, 0.065, 0.035, 0.035],
@@ -2535,7 +2560,7 @@ fn air_drone(model: &mut Model, team: Paint) {
     );
 }
 
-/// How an ornithopter's or a destroyer's wings are built: for each pair, how far along it is
+/// How an ornithopter's or a gunship's wings are built: for each pair, how far along it is
 /// and how far its tips reach; how far out their roots are and how high; their half chord at
 /// root and tip, their thickness, how fast they beat and how far.
 struct Wings {
@@ -2624,7 +2649,7 @@ fn wings(model: &mut Model, unit: &Unit, time: f32, wings: &Wings, team: Paint) 
 
 /// A slim attack machine: a tapering fuselage with a painted stripe down its spine, a glass
 /// canopy, a tail boom with a painted fin, rocket rails and two pairs of wings.
-fn ornithopter(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
+fn at_orni(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
     wings(
         model,
         unit,
@@ -2678,7 +2703,7 @@ fn ornithopter(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
 /// A heavy armored ornithopter: a broad fuselage with a painted band around its armored nose,
 /// a slit canopy, a thick tail boom with twin painted fins, two big rocket pods and four heavy
 /// wings beating slower.
-fn destroyer(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
+fn hk_gunship(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
     wings(
         model,
         unit,
@@ -3051,7 +3076,7 @@ const MCV_TRACKS_APART: f32 = 0.66;
 
 /// A fast sand bike: a flat teardrop, round at the nose and drawn out to a point behind, on a
 /// wheel at each end, with a rifle on its nose.
-fn sand_bike(model: &mut Model, team: Paint) {
+fn at_trike(model: &mut Model, team: Paint) {
     let rings = [
         [-0.42, 0.2, 0.0, 0.0],
         [-0.34, 0.2, 0.065, 0.15],
@@ -3076,9 +3101,9 @@ fn sand_bike(model: &mut Model, team: Paint) {
     );
 }
 
-/// A disk saw: a huge blade spinning upright in the middle, with nothing behind it but a small
+/// A buzzsaw: a huge blade spinning upright in the middle, with nothing behind it but a small
 /// pod on each side, each on its own track with a rifle and a lamp.
-fn disk_saw(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
+fn hk_buzzsaw(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
     const POD_SIDE: f32 = 0.3;
     const RADIUS: f32 = 0.46;
     let track = Track {
@@ -3133,7 +3158,7 @@ fn disk_saw(model: &mut Model, unit: &Unit, time: f32, team: Paint) {
 
 /// A flame tank: a tracked hull with two fuel tanks on its back and a flamethrower at each
 /// front corner, one aimed at ten and one at two o'clock.
-fn flame_tank(model: &mut Model, unit: &Unit, team: Paint) {
+fn hk_flame(model: &mut Model, unit: &Unit, team: Paint) {
     let track = Track {
         rear: -0.34,
         front: 0.34,
@@ -3166,7 +3191,7 @@ fn flame_tank(model: &mut Model, unit: &Unit, team: Paint) {
 
 /// A huge tank: long tracks with six road wheels, a broad hull and a big turret with twin
 /// cannons.
-fn huge_walker(model: &mut Model, unit: &Unit, team: Paint) {
+fn hk_devastator(model: &mut Model, unit: &Unit, team: Paint) {
     const HIP_UP: f32 = 2.0;
     let plasma = self::team([0.35, 0.55, 1.0]);
     let moving = unit.is_moving();
@@ -3224,9 +3249,9 @@ fn huge_walker(model: &mut Model, unit: &Unit, team: Paint) {
     }
 }
 
-/// A recon machine on four long insect legs, two reaching forward and two back, that step as
+/// A dust scout on four long insect legs, two reaching forward and two back, that step as
 /// it runs and as it turns.
-fn recon(model: &mut Model, unit: &Unit, team: Paint) {
+fn or_dust_scout(model: &mut Model, unit: &Unit, team: Paint) {
     const THIGH: f32 = 0.32;
     const SHIN: f32 = 0.42;
     let body_height = 0.42;
@@ -3291,7 +3316,7 @@ fn recon(model: &mut Model, unit: &Unit, team: Paint) {
 
 /// A laser tank gliding just above the ground: a flat hover skirt under a smooth wedge with
 /// the owner's color on top, and a laser on a dome in the middle.
-fn laser_tank(model: &mut Model, time: f32, team: Paint) {
+fn or_laser_tank(model: &mut Model, time: f32, team: Paint) {
     let float = 0.02 * (time * 3.0).sin();
     model.bevel([0.0, 0.1 + float, 0.0], [0.44, 0.05, 0.3], 0.04, GUNMETAL);
     let rings = [
@@ -3360,9 +3385,9 @@ fn apc_hull(model: &mut Model, foot: f32, team: Paint) -> f32 {
     top
 }
 
-/// House O's rocket APC: an armored box hovering on a skirt, with a rocket pod on each side
+/// The Ordos APC: an armored box hovering on a skirt, with a rocket pod on each side
 /// of its roof.
-fn rocket_apc(model: &mut Model, time: f32, team: Paint) {
+fn or_apc(model: &mut Model, time: f32, team: Paint) {
     let float = 0.02 * (time * 3.0).sin();
     model.bevel([0.0, 0.11 + float, 0.0], [0.5, 0.05, 0.31], 0.04, GUNMETAL);
     let top = apc_hull(model, 0.16 + float, team);
@@ -3381,8 +3406,8 @@ fn rocket_apc(model: &mut Model, time: f32, team: Paint) {
     }
 }
 
-/// House A's stealth APC: an armored box on six wheels, with twin guns in a small turret.
-fn stealth_apc(model: &mut Model, team: Paint) {
+/// The Atreides APC: an armored box on six wheels, with twin guns in a small turret.
+fn at_apc(model: &mut Model, team: Paint) {
     for along in [-0.32, 0.0, 0.32] {
         for side in [-1.0, 1.0] {
             model.wheel([along, 0.1, side * 0.25], 0.1, 0.08, 12, RUBBER);
@@ -3401,9 +3426,9 @@ fn stealth_apc(model: &mut Model, team: Paint) {
     }
 }
 
-/// An air mine: a round pod bobbing in the air with a painted band, and six rockets around
+/// An anti-aircraft mine: a round pod bobbing in the air with a painted band, and six rockets around
 /// it pointing out, slowly turning, their noses painted.
-fn air_mine(model: &mut Model, time: f32, team: Paint) {
+fn or_adp(model: &mut Model, time: f32, team: Paint) {
     const ROCKETS: usize = 6;
     let bob = 0.03 * (time * 2.0).sin();
     model.ball([0.0, bob, 0.0], [0.15; 3], false, GUNMETAL);
@@ -3420,7 +3445,7 @@ fn air_mine(model: &mut Model, time: f32, team: Paint) {
 
 /// An Eye in the Sky: a broad dome hanging in the air on four rotors, with a red eye at its
 /// front and six heavy bombs in a ring under it.
-fn eye_in_the_sky(model: &mut Model, time: f32, team: Paint) {
+fn or_eits(model: &mut Model, time: f32, team: Paint) {
     const BOMBS: usize = 6;
     const RADIUS: f32 = 0.42;
     model.ball([0.0, 0.0, 0.0], [RADIUS, 0.17, RADIUS], true, STEEL);
@@ -3474,7 +3499,7 @@ const LASER_CRYSTAL: Paint = Paint {
 /// A Kobra: a hull on two tracks with a cannon longer than itself resting on top. Deployed,
 /// a leg of three segments unfolds from the deck and raises the cannon high, pointing up at a
 /// slant, and folds back down as it packs up.
-fn siege_tank(model: &mut Model, unit: &Unit, team: Paint) {
+fn or_kobra(model: &mut Model, unit: &Unit, team: Paint) {
     let track = Track {
         rear: -0.42,
         front: 0.42,
@@ -3491,7 +3516,7 @@ fn siege_tank(model: &mut Model, unit: &Unit, team: Paint) {
         // Resting on a cradle at each end.
         model.bevel([-0.35, 0.42, 0.0], [0.05, 0.05, 0.08], 0.01, GUNMETAL);
         model.bevel([0.38, 0.42, 0.0], [0.05, 0.05, 0.08], 0.01, GUNMETAL);
-        let [tip, height] = units::SIEGE_TIP;
+        let [tip, height] = units::OR_KOBRA_TIP;
         model.tube(
             tube([-0.72, height, 0.0], [tip - 0.1, height, 0.0], 0.065),
             GUNMETAL,
@@ -3524,7 +3549,7 @@ fn siege_tank(model: &mut Model, unit: &Unit, team: Paint) {
         model.ball(pair[1], [0.07; 3], false, BRONZE);
     }
     let pivot = joints[3];
-    let [tip, height] = units::siege_tip(unit.popped);
+    let [tip, height] = units::or_kobra_tip(unit.popped);
     let way = [tip - pivot[0], height - pivot[1], 0.0];
     let back = [pivot[0] - way[0] * 0.7, pivot[1] - way[1] * 0.7, 0.0];
     let brake = [pivot[0] + way[0] * 0.9, pivot[1] + way[1] * 0.9, 0.0];

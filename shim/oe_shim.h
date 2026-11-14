@@ -87,6 +87,9 @@ enum { OE_MAX_LIGHTS = 16 };
 typedef struct {
     const OeWorldVertex *ground;
     uint32_t ground_count;
+    const OeWorldVertex *decals; /* unlit, showing their pictures' alpha times their level; a
+                                    level below 0 adds the picture as a light's glow */
+    uint32_t decals_count;
     const OeWorldVertex *objects;
     uint32_t objects_count;
     const OeWorldVertex *casters;
@@ -104,11 +107,14 @@ typedef struct {
     float sun_view[16];
     float camera[3];
     float sun[3];
+    float ambient[3];  /* the light everything gets */
+    float sunlight[3]; /* and what a face turned to the sun gets on top */
+    float wash[2];     /* how far along x and z the wash reaches over the ground; 0 for none */
 } OeWorld;
 
 /* Draws a frame and presents: the sun's shadow map, the reflection if there is water, then the
- * ground and objects lit per pixel with a depth buffer, the effects tested against it, and what
- * goes over it all. Blocks for vsync. macOS only so far. */
+ * ground lit per pixel with a depth buffer, the objects, the decals and glows hidden by what is in
+ * front of them, the effects tested against it, and what goes over it all. Blocks for vsync. macOS only so far. */
 void oe_draw_world(const OeWorld *world, float r, float g, float b);
 
 /* A picture shown under all that each frame draws, as large as fits the screen without
@@ -118,9 +124,15 @@ void oe_set_backdrop(const uint8_t *rgba, int32_t width, int32_t height);
 
 /* The pictures objects are painted with, `count` squares `side` pixels wide, one after
  * another, each of rows of RGBA bytes, top row first. Alpha 0 is a hole; from 128 up, it says
- * how much of the house color shows there: none at 255, all at 128, over the color given.
+ * how much of the house color shows there: none at 255, all at 128, over the color given. On
+ * a decal, alpha is how much of it shows.
  * They stay until replaced. Only the macOS backend paints with them so far. */
 void oe_set_pictures(const uint8_t *rgba, int32_t side, int32_t count);
+
+/* The wash laid over the ground's pictures, `width` by `height` pixels of rows of RGBA bytes,
+ * top row first: each pixel's color, and in its alpha how much of it shows over the lit ground.
+ * It stays until replaced; NULL takes it away. Only the macOS backend shows it so far. */
+void oe_set_wash(const uint8_t *rgba, int32_t width, int32_t height);
 
 /* Plays interleaved float samples, once or over and over if `loop` is 1, replacing anything
  * playing. Only the macOS backend makes a sound so far. */

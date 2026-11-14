@@ -3,6 +3,7 @@
 use crate::battlefield::{self, Camera};
 use crate::fog::{Fog, Sight};
 use crate::hud::{self, DEPLOY_BUTTON, SELL_BUTTON};
+use crate::maps;
 use crate::platform::{Event, Key, Modifier};
 use crate::strategy::Strategy;
 use crate::units::{self, Role, Unit, UnitKind};
@@ -30,30 +31,30 @@ const INFANTRY_BUILDS: [(Faction, [Role; 5]); 3] = [
         Faction::Atreides,
         [
             Role::Scout,
-            Role::LightInfantry,
-            Role::Sniper,
+            Role::AtInfantry,
+            Role::AtSniper,
             Role::Engineer,
-            Role::KInfantry,
+            Role::AtKindjal,
         ],
     ),
     (
         Faction::Harkonnen,
         [
             Role::Scout,
-            Role::RegularInfantry,
-            Role::RocketInfantry,
+            Role::HkLightInf,
+            Role::HkTrooper,
             Role::Engineer,
-            Role::FlameInfantry,
+            Role::HkFlamer,
         ],
     ),
     (
         Faction::Ordos,
         [
             Role::Scout,
-            Role::GasInfantry,
-            Role::MortarInfantry,
+            Role::OrChemical,
+            Role::OrMortar,
             Role::Engineer,
-            Role::SuicideInfantry,
+            Role::OrSaboteur,
         ],
     ),
 ];
@@ -61,28 +62,32 @@ const INFANTRY_BUILDS: [(Faction, [Role; 5]); 3] = [
 fn vehicle_builds(house: Faction) -> &'static [Role] {
     match house {
         Faction::Atreides => &[
-            Role::SandBike,
-            Role::RepairVehicle,
-            Role::Mongoose,
-            Role::Minotaurus,
-            Role::StealthApc,
+            Role::AtTrike,
+            Role::AtRepairUnit,
+            Role::AtMongoose,
+            Role::AtMinotaurus,
+            Role::AtApc,
         ],
         Faction::Harkonnen => &[
-            Role::Tank,
-            Role::Catapult,
-            Role::RocketLauncher,
-            Role::DiskSaw,
-            Role::FlameTank,
-            Role::Devastator,
+            Role::HkAssault,
+            Role::HkInkVine,
+            Role::HkMissile,
+            Role::HkBuzzsaw,
+            Role::HkFlame,
+            Role::HkDevastator,
         ],
-        Faction::Ordos => &[Role::Recon, Role::LaserTank, Role::Kobra, Role::RocketApc],
+        Faction::Ordos => &[
+            Role::OrDustScout,
+            Role::OrLaserTank,
+            Role::OrKobra,
+            Role::OrApc,
+        ],
     }
 }
 /// The Vehicles menu's cells free for ground vehicles, in order.
 const VEHICLE_CELLS: [usize; 6] = [0, 1, 2, 3, 4, 5];
 /// What the Vehicles menu's bottom row makes, from its left end.
-const BOTTOM_VEHICLE_BUILDS: [Role; 3] =
-    [Role::AirDefensePlatform, Role::AirDrone, Role::Ornithopter];
+const BOTTOM_VEHICLE_BUILDS: [Role; 3] = [Role::HkAdp, Role::AtAdp, Role::AtOrni];
 const BOTTOM_ROW_START: usize = (hud::GRID_ROWS - 1) * hud::GRID_COLUMNS;
 /// The Vehicles menu's cell for the Advanced Carryall, just above the bottom row.
 const ADVANCED_CARRYALL_CELL: usize = BOTTOM_ROW_START - hud::GRID_COLUMNS;
@@ -92,16 +97,16 @@ const CARRYALL_CELL: usize = ADVANCED_CARRYALL_CELL + 1;
 const MCV_CELL: usize = SUPERWEAPON_CELL + 1;
 /// The Vehicles menu's cell for the Harvester, every house's, beside the spare MCV.
 const HARVESTER_CELL: usize = MCV_CELL + 1;
-/// The Vehicles menu's cell for the Destroyer, just above the Ornithopter.
-const DESTROYER_CELL: usize = BOTTOM_ROW_START - 1;
+/// The Vehicles menu's cell for the Gunship, just above the Ornithopter.
+const HK_GUNSHIP_CELL: usize = BOTTOM_ROW_START - 1;
 /// The Vehicles menu's cell for the Air Drone, in the middle of the bottom row.
 const AIR_DRONE_CELL: usize = BOTTOM_ROW_START + 1;
 
 /// The aircraft a house has of its own, in the cells that are another house's for others.
 fn own_aircraft(house: Faction, cell: usize) -> Option<Role> {
     match (house, cell) {
-        (Faction::Ordos, DESTROYER_CELL) => Some(Role::EyeInTheSky),
-        (Faction::Ordos, AIR_DRONE_CELL) => Some(Role::AirMine),
+        (Faction::Ordos, HK_GUNSHIP_CELL) => Some(Role::OrEits),
+        (Faction::Ordos, AIR_DRONE_CELL) => Some(Role::OrAdp),
         _ => None,
     }
 }
@@ -123,42 +128,37 @@ const OPPONENT_ECONOMY: [(Role, usize); 2] = [(Role::Harvester, 2), (Role::Carry
 /// What opponents build, one at random whenever they get to. They leave out what only helps
 /// others, since they have no plan for it yet.
 const OPPONENT_BUILDS: [Role; 28] = [
-    Role::LightInfantry,
-    Role::Sniper,
-    Role::KInfantry,
-    Role::RegularInfantry,
-    Role::RocketInfantry,
-    Role::FlameInfantry,
-    Role::GasInfantry,
-    Role::MortarInfantry,
-    Role::SuicideInfantry,
-    Role::SandBike,
-    Role::Mongoose,
-    Role::Minotaurus,
-    Role::Tank,
-    Role::Catapult,
-    Role::DiskSaw,
-    Role::FlameTank,
-    Role::Devastator,
-    Role::Recon,
-    Role::LaserTank,
-    Role::Kobra,
-    Role::RocketApc,
-    Role::StealthApc,
-    Role::RocketLauncher,
-    Role::AirDefensePlatform,
-    Role::AirDrone,
-    Role::Ornithopter,
-    Role::Destroyer,
-    Role::AirMine,
+    Role::AtInfantry,
+    Role::AtSniper,
+    Role::AtKindjal,
+    Role::HkLightInf,
+    Role::HkTrooper,
+    Role::HkFlamer,
+    Role::OrChemical,
+    Role::OrMortar,
+    Role::OrSaboteur,
+    Role::AtTrike,
+    Role::AtMongoose,
+    Role::AtMinotaurus,
+    Role::HkAssault,
+    Role::HkInkVine,
+    Role::HkBuzzsaw,
+    Role::HkFlame,
+    Role::HkDevastator,
+    Role::OrDustScout,
+    Role::OrLaserTank,
+    Role::OrKobra,
+    Role::OrApc,
+    Role::AtApc,
+    Role::HkMissile,
+    Role::HkAdp,
+    Role::AtAdp,
+    Role::AtOrni,
+    Role::HkGunship,
+    Role::OrAdp,
 ];
 /// What the Buildings menu makes, in order.
-const BUILDING_BUILDS: [Role; 4] = [
-    Role::Barracks,
-    Role::Factory,
-    Role::Hangar,
-    Role::LandingPad,
-];
+const BUILDING_BUILDS: [Role; 4] = [Role::Barracks, Role::Factory, Role::Hanger, Role::Helipad];
 /// The Buildings menu's cell for the player's house's palace, after the rest and the house's
 /// two armed towers.
 const PALACE_CELL: usize = BUILDING_BUILDS.len() + 2;
@@ -216,7 +216,7 @@ pub enum CursorLook {
     Deploy,
     /// The selected unit under the cursor would stop being dug in.
     Undeploy,
-    /// A selected ornithopter or destroyer would land on the landing pad under the cursor, or a
+    /// A selected ornithopter or gunship would land on the landing pad under the cursor, or a
     /// selected harvester empty its load at the refinery there.
     Land,
     /// The selected harvesters would go and harvest the sand here.
@@ -462,15 +462,6 @@ pub struct Opponent {
 }
 
 pub const OPPONENT_SLOTS: usize = 7;
-/// Named after the planet each is on; `battlefield::MAP_PLANETS` lists those.
-pub const MAPS: [&str; 6] = [
-    "A Map 1 (L)",
-    "C Map 1 (L)",
-    "D Map 1 (L)",
-    "G Map 1 (L)",
-    "S Map 1 (L)",
-    "T Map 1 (L)",
-];
 pub const COMMANDER_NAME_MAX: usize = 16;
 
 /// Choices on the skirmish setup screen. Kept while the game runs, not saved between runs.
@@ -483,7 +474,7 @@ pub struct SkirmishConfig {
     pub allies: [Ally; 2],
     /// The first `ai_players` slots are in use.
     pub opponents: [Opponent; OPPONENT_SLOTS],
-    /// Index into `MAPS`.
+    /// Index into `maps::list()`.
     pub map: usize,
     pub difficulty: Difficulty,
     pub ai_players: i32,
@@ -686,6 +677,8 @@ pub enum Action {
     NameField,
     MapDropdown,
     SelectMap(usize),
+    /// Shows the maps of this folder in the open dropdown.
+    MapFolder(MapFolder),
     SetDifficulty(Difficulty),
     CycleFaction,
     /// 0 is the left ally, 1 the right.
@@ -1146,23 +1139,144 @@ pub fn setup_widgets(width: f32, height: f32) -> Vec<Button> {
     ]
 }
 
-/// How many maps the open dropdown lists in each of its columns.
-const MAP_LIST_ROWS: usize = 11;
+/// The maps of one kind, which the open dropdown shows together.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MapFolder {
+    #[default]
+    Skirmish,
+    Campaign,
+}
 
-/// The open dropdown's entries, directly below it.
-pub fn map_items(width: f32, height: f32) -> Vec<Button> {
-    let s = ui_scale(height);
-    let (x, w) = setup_column(false, width, height);
-    let w = w / 2.0;
-    MAPS.iter()
+impl MapFolder {
+    const ALL: [(MapFolder, &'static str); 2] = [
+        (MapFolder::Skirmish, "Skirmish"),
+        (MapFolder::Campaign, "Campaign"),
+    ];
+
+    fn of(map: &maps::Map) -> Self {
+        if map.campaign {
+            MapFolder::Campaign
+        } else {
+            MapFolder::Skirmish
+        }
+    }
+}
+
+/// The open dropdown's entries, directly below it: a tab for each folder if there is more
+/// than one, then the maps of the folder shown, scrolled on by `scroll` columns.
+pub fn map_items(folder: MapFolder, scroll: usize, width: f32, height: f32) -> Vec<Button> {
+    let folders = maps::list().iter().any(|map| map.campaign);
+    let entries = folder_entries(folder);
+    let mut items = Vec::new();
+    if folders {
+        let s = ui_scale(height);
+        let (x, w) = setup_column(false, width, height);
+        let wide = w / MapFolder::ALL.len() as f32;
+        items.extend(
+            MapFolder::ALL
+                .iter()
+                .enumerate()
+                .map(|(n, &(folder, label))| Button {
+                    action: Action::MapFolder(folder),
+                    label,
+                    x: x + n as f32 * wide,
+                    y: LIST_TOP * s,
+                    w: wide,
+                    h: LIST_ROW * s,
+                }),
+        );
+    }
+    items.extend(list_items(entries, folders, scroll, width, height));
+    items
+}
+
+/// The maps of a folder, each by its number and its name.
+fn folder_entries(folder: MapFolder) -> impl Iterator<Item = (usize, &'static str)> + Clone {
+    maps::list()
+        .iter()
         .enumerate()
-        .map(|(i, &label)| Button {
-            action: Action::SelectMap(i),
+        .filter(move |(_, map)| MapFolder::of(map) == folder)
+        .map(|(i, map)| (i, map.name.as_str()))
+}
+
+/// How far down the dropdown's list starts, and how tall each of its rows is, unscaled.
+const LIST_TOP: f32 = 404.0;
+const LIST_ROW: f32 = 52.0;
+
+/// How the dropdown lays out this many entries: where its first column is and how wide each
+/// is, how many rows it has from where, how many columns all of them take, and how many
+/// show at once.
+struct ListLayout {
+    left: f32,
+    wide: f32,
+    top: f32,
+    rows: usize,
+    columns: usize,
+    shown: usize,
+}
+
+impl ListLayout {
+    /// Columns as tall as the screen leaves room for under the dropdown, and under its
+    /// folders' tabs if it has them, each as wide as the widest label needs: from under the
+    /// dropdown on, or as far to its left as keeps them on the screen. More columns than fit
+    /// are scrolled to.
+    fn new(
+        labels: impl Iterator<Item = &'static str>,
+        tabs: bool,
+        width: f32,
+        height: f32,
+    ) -> Self {
+        let s = ui_scale(height);
+        let (x, w) = setup_column(false, width, height);
+        let (tall, margin) = (LIST_ROW * s, 8.0 * s);
+        let top = (LIST_TOP + if tabs { LIST_ROW } else { 0.0 }) * s;
+        let rows = (((height - margin - top) / tall) as usize).max(1);
+        let (count, widest) = labels.fold((0_usize, 0.0_f32), |(count, widest), label| {
+            let width = crate::font::text_width(label) * small_text_px(height);
+            (count + 1, widest.max(width))
+        });
+        let columns = count.div_ceil(rows).max(1);
+        let wide = (widest + 32.0 * s).max(w / 2.0).min(width - 2.0 * margin);
+        let shown = columns.min((((width - 2.0 * margin) / wide) as usize).max(1));
+        let left = x.min(width - margin - shown as f32 * wide).max(margin);
+        ListLayout {
+            left,
+            wide,
+            top,
+            rows,
+            columns,
+            shown,
+        }
+    }
+
+    /// How many columns the list can be scrolled on by.
+    fn most_scroll(&self) -> usize {
+        self.columns - self.shown
+    }
+}
+
+/// Entries for these maps, each by its number and label, laid out as `ListLayout` says, those
+/// of the columns scrolled to.
+fn list_items(
+    entries: impl Iterator<Item = (usize, &'static str)> + Clone,
+    tabs: bool,
+    scroll: usize,
+    width: f32,
+    height: f32,
+) -> Vec<Button> {
+    let layout = ListLayout::new(entries.clone().map(|(_, label)| label), tabs, width, height);
+    let scroll = scroll.min(layout.most_scroll());
+    let tall = LIST_ROW * ui_scale(height);
+    entries
+        .enumerate()
+        .filter(|(n, _)| (scroll..scroll + layout.shown).contains(&(n / layout.rows)))
+        .map(|(n, (map, label))| Button {
+            action: Action::SelectMap(map),
             label,
-            x: x + (i / MAP_LIST_ROWS) as f32 * w,
-            y: (404.0 + (i % MAP_LIST_ROWS) as f32 * 52.0) * s,
-            w,
-            h: 52.0 * s,
+            x: layout.left + (n / layout.rows - scroll) as f32 * layout.wide,
+            y: layout.top + (n % layout.rows) as f32 * tall,
+            w: layout.wide,
+            h: tall,
         })
         .collect()
 }
@@ -1362,8 +1476,11 @@ pub struct Game {
     pub skirmish: SkirmishConfig,
     pub name_focused: bool,
     pub dropdown_open: bool,
+    /// The folder of maps the open dropdown shows, and how many columns on it is scrolled.
+    pub map_folder: MapFolder,
+    pub map_scroll: usize,
     pub color_open: bool,
-    /// Index into `MAPS` of the current battle.
+    /// Index into `maps::list()` of the current battle.
     pub battle_map: usize,
     pub camera: Camera,
     /// False while another app is in front; the cursor then says nothing about the game.
@@ -1479,6 +1596,8 @@ impl Game {
             skirmish: SkirmishConfig::default(),
             name_focused: false,
             dropdown_open: false,
+            map_folder: MapFolder::Skirmish,
+            map_scroll: 0,
             color_open: false,
             battle_map: 0,
             camera: Camera::centered(),
@@ -1503,7 +1622,7 @@ impl Game {
             start_random: 1,
             placing_facing: units::Facing::default(),
             placing_press: None,
-            home: (0.0, battlefield::MapSize::L.middle_z()),
+            home: (0.0, 0.0),
             strategies: Vec::new(),
             combat: Combat::default(),
             aiming_strike: false,
@@ -1608,8 +1727,9 @@ impl Game {
         battlefield::View::new(self.camera, self.width, self.height)
     }
 
-    /// The selection while dragging one: a rectangle on the ground as (west, north, east,
-    /// south), between where the drag started on the map and the ground under the cursor.
+    /// The selection while dragging one: a rectangle on the ground lined up with the screen,
+    /// as (left, top, right, bottom) in `battlefield::across_and_down`, between where the drag
+    /// started on the map and the ground under the cursor.
     /// There is none while a press is placing a building: a drag then only turns it.
     pub fn selection_ground(&self) -> Option<(f32, f32, f32, f32)> {
         if self.placing_press.is_some() {
@@ -1617,6 +1737,8 @@ impl Game {
         }
         let (x, z) = self.selection_anchor?;
         let (cursor_x, cursor_z) = self.view().ground_at(self.mouse.0, self.mouse.1)?;
+        let (x, z) = battlefield::across_and_down(x, z);
+        let (cursor_x, cursor_z) = battlefield::across_and_down(cursor_x, cursor_z);
         Some((
             x.min(cursor_x),
             z.min(cursor_z),
@@ -1633,7 +1755,8 @@ impl Game {
         };
         let view = self.view();
         let screen = (0.0, 0.0, self.width, self.height);
-        let corners = [(west, north), (east, north), (east, south), (west, south)];
+        let corners = [(west, north), (east, north), (east, south), (west, south)]
+            .map(|(across, down)| battlefield::from_across_and_down(across, down));
         (0..corners.len())
             .filter_map(|i| {
                 let (a, b) =
@@ -1742,11 +1865,11 @@ impl Game {
                 .and_then(|(_, builds)| builds.get(cell))
                 .copied(),
             BuildTab::Vehicles if own_aircraft(house, cell).is_some() => own_aircraft(house, cell),
-            BuildTab::Vehicles if cell == ADVANCED_CARRYALL_CELL => Some(Role::AdvancedCarryall),
+            BuildTab::Vehicles if cell == ADVANCED_CARRYALL_CELL => Some(Role::AdvCarryall),
             BuildTab::Vehicles if cell == CARRYALL_CELL => Some(Role::Carryall),
             BuildTab::Vehicles if cell == MCV_CELL => Some(Role::Mcv),
             BuildTab::Vehicles if cell == HARVESTER_CELL => Some(Role::Harvester),
-            BuildTab::Vehicles if cell == DESTROYER_CELL => Some(Role::Destroyer),
+            BuildTab::Vehicles if cell == HK_GUNSHIP_CELL => Some(Role::HkGunship),
             BuildTab::Vehicles => VEHICLE_CELLS
                 .iter()
                 .position(|&free| free == cell)
@@ -2365,7 +2488,7 @@ impl Game {
             return None;
         }
         self.unit_under_cursor()
-            .filter(|&unit| self.units[unit].role == Role::LandingPad)
+            .filter(|&unit| self.units[unit].role == Role::Helipad)
     }
 
     /// The player's refinery under the cursor, if a click would send a selected harvester to
@@ -2406,7 +2529,7 @@ impl Game {
                 && match u.kind {
                     UnitKind::Tower => false,
                     UnitKind::Building => {
-                        !matches!(u.role, Role::LandingPad | Role::Refinery | Role::Palace(_))
+                        !matches!(u.role, Role::Helipad | Role::Refinery | Role::Palace(_))
                     }
                     _ => u.role.goes_where_told(),
                 }
@@ -2542,30 +2665,51 @@ impl Game {
         self.unit_near_cursor(Unit::is_selectable).map(|(i, _)| i)
     }
 
-    /// The nearest wanted unit to the cursor within reach of a click, and how far it is.
+    /// The wanted unit the cursor picks, and how far its middle is. What has its middle within reach comes first, then a machine or a
+    /// soldier the cursor is on, then a building; of those the one with its middle nearest.
     fn unit_near_cursor(&self, wanted: impl Fn(&Unit) -> bool) -> Option<(usize, f32)> {
         let view = self.view();
         let reach = PICK_RADIUS * ui_scale(self.height);
-        let mut best = None;
-        let mut best_distance = reach;
-        let mut on_building: Option<(usize, f32)> = None;
         let wanted = |unit: &Unit| self.shows(unit) && wanted(unit);
-        for (i, unit) in self.units.iter().enumerate().filter(|(_, u)| wanted(u)) {
-            let Some((x, y)) = view.project(unit.x, unit.pick_height(), unit.z) else {
-                continue;
-            };
-            let distance = (x - self.mouse.0).hypot(y - self.mouse.1);
-            if distance <= best_distance {
-                best = Some((i, distance));
-                best_distance = distance;
-            } else if unit.kind.is_building()
-                && on_building.is_none_or(|(_, nearest)| distance < nearest)
-                && self.cursor_is_on_building(&view, unit)
-            {
-                on_building = Some((i, distance));
-            }
-        }
-        best.or(on_building)
+        self.units
+            .iter()
+            .enumerate()
+            .filter(|(_, unit)| wanted(unit))
+            .filter_map(|(i, unit)| {
+                let (x, y) = view.project(unit.x, unit.pick_height(), unit.z)?;
+                let distance = (x - self.mouse.0).hypot(y - self.mouse.1);
+                let on = if unit.kind.is_building() {
+                    self.cursor_is_on_building(&view, unit)
+                } else {
+                    self.cursor_is_on_box(&view, unit)
+                };
+                let rank = match (distance <= reach, on) {
+                    (true, _) => 0,
+                    (false, true) if !unit.kind.is_building() => 1,
+                    (false, true) => 2,
+                    (false, false) => return None,
+                };
+                Some((rank, i, distance))
+            })
+            .min_by(|a, b| a.0.cmp(&b.0).then(a.2.total_cmp(&b.2)))
+            .map(|(_, i, distance)| (i, distance))
+    }
+
+    /// Whether the cursor is anywhere on a machine or a soldier as it shows: in the box the
+    /// original selects it by.
+    fn cursor_is_on_box(&self, view: &battlefield::View, unit: &Unit) -> bool {
+        let corners: Option<Vec<(f32, f32)>> = unit
+            .selection_box()
+            .iter()
+            .map(|&(x, y, z)| view.project(x, y, z))
+            .collect();
+        corners.is_some_and(|corners| {
+            is_on_box(
+                std::array::from_fn(|i| corners[i]),
+                std::array::from_fn(|i| corners[i + 4]),
+                self.mouse,
+            )
+        })
     }
 
     /// Whether the cursor is anywhere on a building as it shows: on its base, its roof or the
@@ -2591,16 +2735,11 @@ impl Game {
         let (Some(base), Some(roof)) = (corners_at(unit.y), corners_at(top)) else {
             return false;
         };
-        (0..4)
-            .map(|i| {
-                let j = (i + 1) % 4;
-                [base[i], base[j], roof[j], roof[i]]
-            })
-            .chain([
-                [base[0], base[1], base[2], base[3]],
-                [roof[0], roof[1], roof[2], roof[3]],
-            ])
-            .any(|face| is_in_convex(face, self.mouse))
+        is_on_box(
+            std::array::from_fn(|i| base[i]),
+            std::array::from_fn(|i| roof[i]),
+            self.mouse,
+        )
     }
 
     pub fn player_money(&self) -> i32 {
@@ -2775,7 +2914,7 @@ impl Game {
                     self.campaign_mission += 1;
                 }
                 self.start_battle(
-                    self.campaign_mission % MAPS.len(),
+                    self.campaign_mission % maps::list().len().max(1),
                     self.faction,
                     BattleKind::Campaign,
                 );
@@ -2796,7 +2935,7 @@ impl Game {
         }
         let rect = hud::minimap_rect(self.width, self.height);
         if let Some((x, z)) =
-            battlefield::minimap_to_world(rect, self.middle_z(), self.mouse.0, self.mouse.1)
+            battlefield::minimap_to_world(rect, self.map_extent(), self.mouse.0, self.mouse.1)
         {
             self.minimap_dragging = true;
             self.camera.look_at(x, z);
@@ -2815,7 +2954,7 @@ impl Game {
         let px = self.mouse.0.clamp(x, x + size - 0.01);
         let py = self.mouse.1.clamp(y, y + size - 0.01);
         if let Some((world_x, world_z)) =
-            battlefield::minimap_to_world(rect, self.middle_z(), px, py)
+            battlefield::minimap_to_world(rect, self.map_extent(), px, py)
         {
             self.camera.look_at(world_x, world_z);
         }
@@ -2826,9 +2965,9 @@ impl Game {
         self.home
     }
 
-    /// How far south of the north corner the middle of the battle's map is.
-    pub fn middle_z(&self) -> f32 {
-        battlefield::terrain(self.battle_map).size().middle_z()
+    /// How far the battle's map reaches along x and along z.
+    pub fn map_extent(&self) -> (f32, f32) {
+        battlefield::terrain(self.battle_map).extent()
     }
 
     fn start_battle(&mut self, map: usize, faction: Option<Faction>, kind: BattleKind) {
@@ -2840,7 +2979,7 @@ impl Game {
         self.outcome_elapsed = 0.0;
         self.killed = Casualties::default();
         self.lost = Casualties::default();
-        self.camera = Camera::centered_on(battlefield::terrain(map).size());
+        self.camera = Camera::centered_on(battlefield::terrain(map).extent());
         self.in_battle = true;
         self.pausable = true;
         self.key_paused = false;
@@ -2952,8 +3091,21 @@ impl Game {
         }
     }
 
+    /// As many opponents as the chosen map has places for besides the player's.
+    fn most_ai_players(&self) -> i32 {
+        maps::list()
+            .get(self.skirmish.map)
+            .map_or(OPPONENT_SLOTS, |map| map.players.saturating_sub(1))
+            .clamp(1, OPPONENT_SLOTS) as i32
+    }
+
     fn set_slider(&mut self, id: SliderId, value: i32) {
         let old_ai_players = self.skirmish.ai_players as usize;
+        let value = if id == SliderId::AiPlayers {
+            value.min(self.most_ai_players())
+        } else {
+            value
+        };
         let field = match id {
             SliderId::GameSpeed => &mut self.settings.game_speed,
             SliderId::ScrollRate => &mut self.settings.scroll_rate,
@@ -3021,7 +3173,7 @@ impl Game {
         if self.confirming.is_some() {
             modal_buttons(self.width, self.height)
         } else if self.dropdown_open {
-            map_items(self.width, self.height)
+            map_items(self.map_folder, self.map_scroll, self.width, self.height)
         } else if self.color_open {
             color_slots(&self.skirmish.available_colors(), self.width, self.height)
         } else {
@@ -3302,7 +3454,9 @@ impl Game {
                 }
             }
             Event::Wheel(notches) => {
-                if self.screen == Screen::InGame && !self.key_paused {
+                if self.dropdown_open {
+                    self.scroll_maps(notches);
+                } else if self.screen == Screen::InGame && !self.key_paused {
                     self.camera.zoom_by(notches);
                 }
             }
@@ -3380,9 +3534,22 @@ impl Game {
                     self.select_among(|u| !u.kind.is_building() && u.weapon.is_armed());
                 }
                 (Screen::InGame, Key::Char('t' | 'T')) if !self.key_paused => {
-                    let roles: Vec<Role> = self.selected_units().iter().map(|u| u.role).collect();
-                    if !roles.is_empty() {
-                        self.select_among(|u| u.is_selected_in_groups() && roles.contains(&u.role));
+                    let kept: Vec<(u32, Role)> = self
+                        .selected_units()
+                        .iter()
+                        .filter(|u| u.is_selected_in_groups())
+                        .map(|u| (u.id, u.role))
+                        .collect();
+                    if !kept.is_empty() {
+                        self.select_among(|u| {
+                            u.is_selected_in_groups()
+                                && kept.iter().any(|&(_, role)| role == u.role)
+                        });
+                        // Those it went by stay, off screen too, so the next press finds all
+                        // their types.
+                        for unit in &mut self.units {
+                            unit.selected |= kept.iter().any(|&(id, _)| id == unit.id);
+                        }
                     }
                 }
                 (Screen::InGame, Key::Char('f' | 'F')) if !self.key_paused => {
@@ -3430,9 +3597,23 @@ impl Game {
             Action::SkirmishBattle => self.set_screen(Screen::SkirmishSetup),
             Action::StartBattle => self.start_battle(self.skirmish.map, None, BattleKind::Skirmish),
             Action::NameField => self.name_focused = true,
-            Action::MapDropdown => self.dropdown_open = true,
+            Action::MapDropdown => {
+                self.dropdown_open = true;
+                self.map_folder = maps::list()
+                    .get(self.skirmish.map)
+                    .map_or_else(MapFolder::default, MapFolder::of);
+                self.map_scroll = 0;
+            }
+            Action::MapFolder(folder) => {
+                self.map_folder = folder;
+                self.map_scroll = 0;
+            }
             Action::SelectMap(map) => {
                 self.skirmish.map = map;
+                let most = self.most_ai_players();
+                if self.skirmish.ai_players > most {
+                    self.set_slider(SliderId::AiPlayers, most);
+                }
                 self.dropdown_open = false;
             }
             Action::SetDifficulty(difficulty) => self.skirmish.difficulty = difficulty,
@@ -3493,6 +3674,20 @@ impl Game {
         }
     }
 
+    /// Scrolls the open dropdown's maps a column back for each notch the wheel turns up, on
+    /// for each down, as far as there are columns.
+    fn scroll_maps(&mut self, notches: f32) {
+        let tabs = maps::list().iter().any(|map| map.campaign);
+        let labels = folder_entries(self.map_folder).map(|(_, label)| label);
+        let most = ListLayout::new(labels, tabs, self.width, self.height).most_scroll();
+        let columns = notches.abs().ceil() as usize;
+        self.map_scroll = if notches > 0.0 {
+            self.map_scroll.saturating_sub(columns)
+        } else {
+            (self.map_scroll + columns).min(most)
+        };
+    }
+
     fn close_lists(&mut self) {
         self.dropdown_open = false;
         self.color_open = false;
@@ -3513,6 +3708,18 @@ impl Game {
 }
 
 /// Whether a point is inside a convex shape, whichever way round its corners go.
+/// Whether a point on screen is on a box as it shows, from the corners of its bottom and of
+/// its top, each going round it the same way: on one of its sides, its bottom or its top.
+fn is_on_box(base: [(f32, f32); 4], roof: [(f32, f32); 4], point: (f32, f32)) -> bool {
+    (0..4)
+        .map(|i| {
+            let j = (i + 1) % 4;
+            [base[i], base[j], roof[j], roof[i]]
+        })
+        .chain([base, roof])
+        .any(|face| is_in_convex(face, point))
+}
+
 fn is_in_convex(corners: [(f32, f32); 4], (x, y): (f32, f32)) -> bool {
     let sides = (0..4).map(|i| {
         let (a, b) = (corners[i], corners[(i + 1) % 4]);
@@ -4391,7 +4598,7 @@ mod tests {
     #[test]
     fn campaign_missions_keep_working_past_the_last_map() {
         let mut game = campaign_battle();
-        for _ in 0..MAPS.len() + 2 {
+        for _ in 0..maps::list().len() + 2 {
             win(&mut game);
             game.handle(Event::KeyDown(Key::Escape));
             click(&mut game, Action::LeaveBattleStats);
@@ -4466,7 +4673,7 @@ mod tests {
     fn a_palace_opens_the_vehicles_tab_without_a_factory_or_hangar() {
         let mut game = in_battle();
         game.units
-            .retain(|u| u.owner != 0 || !matches!(u.role, Role::Factory | Role::Hangar));
+            .retain(|u| u.owner != 0 || !matches!(u.role, Role::Factory | Role::Hanger));
         assert!(!game.tab_enabled(BuildTab::Vehicles));
         give_palace(&mut game);
         assert!(game.tab_enabled(BuildTab::Vehicles));
@@ -4541,12 +4748,12 @@ mod tests {
         let mut game = in_battle();
         game.skirmish.crates = false;
         game.money[0] = 0;
-        units::start_making(&mut game.units, Role::SandBike, 0);
-        game.update(Role::SandBike.build_seconds());
-        assert_eq!(game.making_progress(Role::SandBike), Some(0.0));
-        game.money[0] = Role::SandBike.cost();
-        game.update(Role::SandBike.build_seconds() / 2.0);
-        let progress = game.making_progress(Role::SandBike).unwrap();
+        units::start_making(&mut game.units, Role::AtTrike, 0);
+        game.update(Role::AtTrike.build_seconds());
+        assert_eq!(game.making_progress(Role::AtTrike), Some(0.0));
+        game.money[0] = Role::AtTrike.cost();
+        game.update(Role::AtTrike.build_seconds() / 2.0);
+        let progress = game.making_progress(Role::AtTrike).unwrap();
         assert!((progress - 0.5).abs() < 0.01, "{progress}");
     }
 
@@ -4572,8 +4779,19 @@ mod tests {
                 .iter()
                 .any(|line| line.text == "Harvester on its way")
         );
+        let brought = game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.role == Role::Harvester && u.theft.is_some())
+            .map(|u| u.id);
+        // Put down, it may well be full and lifted home again by the end.
+        let mut down = false;
         for _ in 0..90 * 10 {
             game.update(0.1);
+            down |= game
+                .units
+                .iter()
+                .any(|u| Some(u.id) == brought && u.theft.is_none() && u.load > 0.0);
         }
         assert_eq!(mine(&game, Role::Harvester), harvesters + 1, "only the one");
         assert_eq!(
@@ -4581,13 +4799,7 @@ mod tests {
             1,
             "and the carryall is the player's"
         );
-        assert!(
-            game.units
-                .iter()
-                .filter(|u| u.role == Role::Harvester)
-                .all(|u| u.theft.is_none()),
-            "it is down"
-        );
+        assert!(down, "it is put down and harvests");
     }
 
     #[test]
@@ -4634,7 +4846,7 @@ mod tests {
         let pad = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::LandingPad)
+            .position(|u| u.owner == 0 && u.role == Role::Helipad)
             .unwrap();
         let at = game.units[pad];
         game.camera.look_at(at.x, at.z);
@@ -4645,7 +4857,7 @@ mod tests {
         let before = game.player_money();
         click_at(&mut game, x, y);
         assert!(game.units.iter().all(|u| u.id != at.id), "sold");
-        assert_eq!(game.player_money(), before + Role::LandingPad.cost() / 2);
+        assert_eq!(game.player_money(), before + Role::Helipad.cost() / 2);
         assert_eq!(game.click_mode, Some(ClickMode::Sell), "still selling");
         game.handle(Event::RightDown);
         assert_eq!(game.click_mode, None);
@@ -4661,7 +4873,7 @@ mod tests {
             .units
             .iter()
             .find(|u| u.id == first)
-            .map(|u| (u.x + 905.1, u.z))
+            .map(|u| beside((u.x, u.z), 905.1))
             .unwrap();
         units::order_move(&mut game.units, far, terrain, &game.teams);
         game.update(0.5);
@@ -4852,7 +5064,7 @@ mod tests {
     fn nothing_can_be_placed_far_from_every_building() {
         let mut game = in_battle();
         game.units.retain(|u| !u.kind.is_building() || u.owner != 0);
-        game.site = Site::Placing(Role::Tower);
+        game.site = Site::Placing(Role::AtRocketTurret);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         assert!(!game.placing_squares().is_empty());
         assert!(
@@ -4887,17 +5099,17 @@ mod tests {
             .position(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
             .unwrap();
         for role in [
-            Role::LightInfantry,
+            Role::AtInfantry,
             Role::Scout,
-            Role::Sniper,
+            Role::AtSniper,
             Role::Engineer,
-            Role::KInfantry,
-            Role::RegularInfantry,
-            Role::RocketInfantry,
-            Role::FlameInfantry,
-            Role::GasInfantry,
-            Role::SuicideInfantry,
-            Role::MortarInfantry,
+            Role::AtKindjal,
+            Role::HkLightInf,
+            Role::HkTrooper,
+            Role::HkFlamer,
+            Role::OrChemical,
+            Role::OrSaboteur,
+            Role::OrMortar,
         ] {
             for deployed in [false, true] {
                 game.units[soldier].role = role;
@@ -5056,9 +5268,8 @@ mod tests {
         game.update(LOADING_SECONDS);
         with_bases(&mut game);
         // Nobody fires on these without an order, and the drone circles out of reach.
-        game.units.retain(|u| {
-            u.owner != 1 || !(u.kind == UnitKind::Building || u.role == Role::AirDrone)
-        });
+        game.units
+            .retain(|u| u.owner != 1 || !(u.kind == UnitKind::Building || u.role == Role::AtAdp));
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         let enemies = game
             .units
@@ -5316,7 +5527,7 @@ mod tests {
         let tower = tower_of(&game, 0);
         game.units[tower].alive = false;
         game.update(0.01);
-        assert_eq!(chat_texts(&game), ["Rocket Tower lost"]);
+        assert_eq!(chat_texts(&game), ["Rocket Turret lost"]);
 
         let mut game = in_battle();
         let enemy = game.units.iter().position(|u| u.owner == 1).unwrap();
@@ -5548,22 +5759,19 @@ mod tests {
     #[test]
     fn a_landing_pad_is_built_from_the_buildings_menu_and_every_side_starts_with_one() {
         let mut game = in_battle();
-        assert_eq!(
-            game.build_role(BuildTab::Buildings, 3),
-            Some(Role::LandingPad)
-        );
+        assert_eq!(game.build_role(BuildTab::Buildings, 3), Some(Role::Helipad));
         for owner in 0..game.teams.len() {
             assert!(
                 game.units
                     .iter()
-                    .any(|u| u.owner == owner && u.role == Role::LandingPad),
+                    .any(|u| u.owner == owner && u.role == Role::Helipad),
                 "owner {owner}"
             );
         }
         let pad = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::LandingPad)
+            .position(|u| u.owner == 0 && u.role == Role::Helipad)
             .unwrap();
         game.units[pad].selected = true;
         units::set_gathering(&mut game.units, (0.0, 1810.0));
@@ -5609,13 +5817,8 @@ mod tests {
         let id = game.next_unit_id;
         let terrain = battlefield::terrain(game.battle_map);
         let side = (0, game.stats_rows()[0].color);
-        let mut machine = units::new_building(
-            terrain,
-            (0.0, battlefield::MAP_MIDDLE_Z),
-            Role::Ornithopter,
-            side,
-            id,
-        );
+        let mut machine =
+            units::new_building(terrain, battlefield::MAP_MIDDLE, Role::AtOrni, side, id);
         machine.selected = true;
         game.units.push(machine);
         let full = crate::render::build(&game).len();
@@ -5629,9 +5832,12 @@ mod tests {
         game.next_unit_id += 1;
         let terrain = battlefield::terrain(game.battle_map);
         let at = terrain
-            .nearest_walkable((181.0, battlefield::MAP_MIDDLE_Z))
+            .nearest_walkable(
+                battlefield::Going::Driving,
+                (battlefield::MAP_MIDDLE.0 + 181.0, battlefield::MAP_MIDDLE.1),
+            )
             .unwrap();
-        let tank = units::new_building(terrain, at, Role::Tank, (1, TeamColor::Red), id);
+        let tank = units::new_building(terrain, at, Role::HkAssault, (1, TeamColor::Red), id);
         game.units.push(tank);
         game.units.len() - 1
     }
@@ -5643,7 +5849,7 @@ mod tests {
         let carryall = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::AdvancedCarryall)
+            .position(|u| u.owner == 0 && u.role == Role::AdvCarryall)
             .unwrap();
         let enemy = enemy_tank_in(&mut game);
         game.camera.x = game.units[enemy].x;
@@ -5669,7 +5875,7 @@ mod tests {
         let carryall = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::AdvancedCarryall)
+            .position(|u| u.owner == 0 && u.role == Role::AdvCarryall)
             .unwrap();
         let carrier = game.units[carryall].id;
         let enemy = enemy_tank_in(&mut game);
@@ -5729,35 +5935,19 @@ mod tests {
     }
 
     #[test]
-    fn a_skirmish_on_a_big_map_has_everything_scaled_to_it() {
-        use battlefield::MapSize;
-        let l = (0..MAPS.len())
-            .find(|&map| battlefield::terrain(map).size() == MapSize::L)
-            .unwrap();
+    fn a_skirmish_starts_with_the_camera_on_the_players_base_away_from_the_middle() {
         let mut game = in_setup();
-        click_widget(&mut game, Action::MapDropdown);
-        click(&mut game, Action::SelectMap(l));
-        assert_eq!(game.skirmish.map, l);
-        assert!(!crate::render::build(&game).is_empty());
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
-        assert_eq!(game.battle_map, l);
         assert!(!crate::render::build(&game).is_empty());
         let player = *game.units.iter().find(|u| u.owner == 0).unwrap();
         assert_eq!(game.home(), (player.x, player.z));
         assert_eq!((game.camera.x, game.camera.z), (player.x, player.z));
+        let (middle_x, middle_z) = battlefield::MAP_MIDDLE;
         assert!(
-            player.x.hypot(player.z - MapSize::L.middle_z()) > 1810.0,
+            (player.x - middle_x).hypot(player.z - middle_z) > 1810.0,
             "not in the middle: {player:?}"
         );
-    }
-
-    #[test]
-    fn every_map_is_named_with_its_size() {
-        for (map, name) in MAPS.iter().enumerate() {
-            let size = battlefield::terrain(map).size();
-            assert!(name.ends_with(&format!("({size:?})")), "{name}");
-        }
     }
 
     /// A battle with the cursor over open ground, and nothing selected.
@@ -5806,7 +5996,7 @@ mod tests {
             game.cursor_look()
         };
         assert_eq!(selecting(|u| u.kind == UnitKind::Tower), CursorLook::Arrow);
-        assert_eq!(selecting(|u| u.role == Role::LandingPad), CursorLook::Arrow);
+        assert_eq!(selecting(|u| u.role == Role::Helipad), CursorLook::Arrow);
         assert_eq!(selecting(|u| u.role == Role::Factory), CursorLook::Move);
         assert_eq!(selecting(|u| u.kind == UnitKind::Vehicle), CursorLook::Move);
     }
@@ -5843,8 +6033,8 @@ mod tests {
         assert!(game.combat.blasts.len() > 1, "it blows apart");
     }
 
-    /// A K Infantry of the player's on open ground, as yet unselected, and the cursor over it.
-    fn k_infantry_under_cursor() -> (Game, usize) {
+    /// A Kindjal infantry of the player's on open ground, as yet unselected, and the cursor over it.
+    fn at_kindjal_under_cursor() -> (Game, usize) {
         let mut game = in_battle();
         game.units.iter_mut().for_each(|u| u.selected = false);
         game.units
@@ -5855,7 +6045,7 @@ mod tests {
         let side = (0, game.stats_rows()[0].color);
         let id = game.next_unit_id;
         game.next_unit_id += 1;
-        let soldier = units::new_building(terrain, spot, Role::KInfantry, side, id);
+        let soldier = units::new_building(terrain, spot, Role::AtKindjal, side, id);
         game.units.push(soldier);
         let index = game.units.len() - 1;
         let (px, py) = game
@@ -5867,33 +6057,34 @@ mod tests {
     }
 
     #[test]
-    fn ordos_make_the_air_mine_and_the_eye_in_the_sky_where_others_have_their_own_aircraft() {
-        for (house, drone, destroyer) in [
-            (Faction::Ordos, Some(Role::AirMine), Some(Role::EyeInTheSky)),
-            (Faction::Atreides, Some(Role::AirDrone), None),
-            (Faction::Harkonnen, None, Some(Role::Destroyer)),
+    fn ordos_make_the_anti_aircraft_mine_and_the_eye_in_the_sky_where_others_have_their_own_aircraft()
+     {
+        for (house, drone, gunship) in [
+            (Faction::Ordos, Some(Role::OrAdp), Some(Role::OrEits)),
+            (Faction::Atreides, Some(Role::AtAdp), None),
+            (Faction::Harkonnen, None, Some(Role::HkGunship)),
         ] {
             let game = in_battle_as(house);
             assert_eq!(game.build_role(BuildTab::Vehicles, AIR_DRONE_CELL), drone);
             assert_eq!(
-                game.build_role(BuildTab::Vehicles, DESTROYER_CELL),
-                destroyer
+                game.build_role(BuildTab::Vehicles, HK_GUNSHIP_CELL),
+                gunship
             );
         }
     }
 
     #[test]
     fn soldiers_board_an_apc_with_their_own_cursor_get_out_on_deploy_and_die_with_it() {
-        let (mut game, apc) = k_infantry_under_cursor();
-        game.units[apc].role = Role::StealthApc;
+        let (mut game, apc) = at_kindjal_under_cursor();
+        game.units[apc].role = Role::AtApc;
         game.units[apc].kind = UnitKind::Vehicle;
         let (x, y) = game.mouse;
         let terrain = battlefield::terrain(game.battle_map);
         let side = (0, game.stats_rows()[0].color);
-        let near = (game.units[apc].x + 90.51, game.units[apc].z);
+        let near = beside((game.units[apc].x, game.units[apc].z), 90.51);
         let id = game.next_unit_id;
         game.next_unit_id += 1;
-        let mut soldier = units::new_building(terrain, near, Role::LightInfantry, side, id);
+        let mut soldier = units::new_building(terrain, near, Role::AtInfantry, side, id);
         soldier.selected = true;
         game.units.push(soldier);
         assert_eq!(game.cursor_look(), CursorLook::Board);
@@ -5912,7 +6103,7 @@ mod tests {
         let apc = game
             .units
             .iter()
-            .position(|u| u.role == Role::StealthApc)
+            .position(|u| u.role == Role::AtApc)
             .unwrap();
         game.units[apc].selected = true;
         assert_eq!(game.cursor_look(), CursorLook::Deploy);
@@ -5920,7 +6111,7 @@ mod tests {
         assert!(game.units.iter().any(|u| u.id == id), "out again");
 
         game.units.retain(|u| u.id != id);
-        game.units[apc].passengers[0] = Some(units::Passenger::for_test(Role::LightInfantry));
+        game.units[apc].passengers[0] = Some(units::Passenger::for_test(Role::AtInfantry));
         let lost = game.lost.infantry;
         game.units[apc].alive = false;
         game.update(0.01);
@@ -5929,7 +6120,7 @@ mod tests {
 
     #[test]
     fn hovering_a_selected_deployable_unit_shows_what_a_click_would_do_and_a_click_does_it() {
-        let (mut game, soldier) = k_infantry_under_cursor();
+        let (mut game, soldier) = at_kindjal_under_cursor();
         assert_eq!(game.cursor_look(), CursorLook::Arrow, "not selected yet");
         game.units[soldier].selected = true;
         assert_eq!(game.cursor_look(), CursorLook::Deploy);
@@ -5952,7 +6143,7 @@ mod tests {
 
     #[test]
     fn two_clicks_on_a_deployable_unit_not_yet_selected_deploy_it_and_two_more_bring_it_back() {
-        let (mut game, soldier) = k_infantry_under_cursor();
+        let (mut game, soldier) = at_kindjal_under_cursor();
         let (x, y) = game.mouse;
         click_at(&mut game, x, y);
         assert!(game.units[soldier].selected);
@@ -6075,9 +6266,16 @@ mod tests {
     }
 
     /// Puts an enemy on screen beside the first group and says where to point at it.
+    /// The point this far to the right of another one on the screen, or to its left if it is
+    /// less than nothing.
+    fn beside((x, z): (f32, f32), right: f32) -> (f32, f32) {
+        let (dx, dz) = battlefield::from_across_and_down(right, 0.0);
+        (x + dx, z + dz)
+    }
+
     fn enemy_beside_first_group(game: &mut Game) -> (usize, (f32, f32)) {
         let index = game.units.iter().position(|u| u.owner == 1).unwrap();
-        let (x, z) = (game.camera.x + 271.5, game.camera.z);
+        let (x, z) = beside((game.camera.x, game.camera.z), 271.5);
         let unit = &mut game.units[index];
         (unit.x, unit.z, unit.destination) = (x, z, (x, z));
         let unit = game.units[index];
@@ -6282,7 +6480,7 @@ mod tests {
     fn tower_of(game: &Game, owner: usize) -> usize {
         game.units
             .iter()
-            .position(|u| u.owner == owner && u.role == Role::Tower)
+            .position(|u| u.owner == owner && u.role == Role::AtRocketTurret)
             .unwrap()
     }
 
@@ -6306,7 +6504,7 @@ mod tests {
         assert_eq!(selected_count(&game), 1, "even with Shift, on its own");
         assert!(game.units[tower].selected);
 
-        let other = tower_of_role(&game, 0, Role::FlameTower);
+        let other = tower_of_role(&game, 0, Role::HkFlameTurret);
         let unit = game.units[other];
         let (x, y) = game
             .view()
@@ -6341,7 +6539,7 @@ mod tests {
         let friend = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .position(|u| u.owner == 0 && u.role == Role::HkAssault)
             .unwrap();
         let unit = game.units[friend];
         let (x, y) = game
@@ -6424,7 +6622,7 @@ mod tests {
     fn an_enemy_tower_can_be_clicked_and_destroyed_and_counts_as_a_building() {
         let mut game = in_battle();
         let tower = tower_of(&game, 1);
-        let (x, z) = (game.camera.x + 271.5, game.camera.z);
+        let (x, z) = beside((game.camera.x, game.camera.z), 271.5);
         (
             game.units[tower].x,
             game.units[tower].z,
@@ -6487,10 +6685,10 @@ mod tests {
     fn each_infantry_button_makes_its_unit_at_once_beside_the_tower_in_the_players_color() {
         let names = [
             "Scout",
-            "Light Infantry",
+            "Infantry",
             "Sniper",
             "Engineer",
-            "K Infantry",
+            "Kindjal Infantry",
         ];
         let mut game = in_battle();
         for (cell, name) in names.into_iter().enumerate() {
@@ -6520,23 +6718,23 @@ mod tests {
                     "Repair Vehicle",
                     "Mongoose",
                     "Minotaurus",
-                    "Stealth APC",
+                    "APC",
                 ][..],
             ),
             (
                 Faction::Harkonnen,
                 &[
-                    "Tank",
-                    "Catapult",
-                    "Rocket Launcher",
-                    "Disk Saw",
+                    "Assault Tank",
+                    "Inkvine Catapult",
+                    "Missile Tank",
+                    "Buzzsaw",
                     "Flame Tank",
                     "Devastator",
                 ][..],
             ),
             (
                 Faction::Ordos,
-                &["Recon", "Laser Tank", "Kobra", "Rocket APC"][..],
+                &["Dust Scout", "Laser Tank", "Kobra", "APC"][..],
             ),
         ] {
             let mut game = in_battle_as(house);
@@ -6578,9 +6776,11 @@ mod tests {
         };
         let mut game = in_battle();
         // Rocket engines are lit too, in orange, and landing pads and MCVs have searchlights,
-        // and a deployed MCV red glares.
-        game.units
-            .retain(|u| !u.kind.flies() && !matches!(u.role, Role::LandingPad | Role::Mcv));
+        // and a deployed MCV red glares. The player's own stand where nothing is in the way of
+        // their beams.
+        game.units.retain(|u| {
+            u.owner == 0 && !u.kind.flies() && !matches!(u.role, Role::Helipad | Role::Mcv)
+        });
         let lamps = |game: &Game| {
             let has_lamps =
                 |u: &&Unit| u.alive && matches!(u.kind, UnitKind::Vehicle | UnitKind::Tower);
@@ -6595,9 +6795,9 @@ mod tests {
             lamps(&game) * 3,
             "three bright corners of two triangles from each lens"
         );
-        // A flame tower has no searchlight.
+        // A flame turret has no searchlight.
         game.units
-            .retain(|u| !matches!(u.kind, UnitKind::Vehicle) && u.role != Role::Tower);
+            .retain(|u| !matches!(u.kind, UnitKind::Vehicle) && u.role != Role::AtRocketTurret);
         assert_eq!(lights(&game), 0);
     }
 
@@ -6613,7 +6813,7 @@ mod tests {
         game.units
             .retain(|u| matches!(u.kind, UnitKind::Infantry | UnitKind::Building));
         game.units
-            .retain(|u| !matches!(u.role, Role::LandingPad | Role::Mcv));
+            .retain(|u| !matches!(u.role, Role::Helipad | Role::Mcv));
         assert_eq!(lit(&game), 0);
         click_hud(&mut game, Action::BuildTab(BuildTab::Vehicles));
         click_hud(&mut game, Action::BuildCell(BOTTOM_ROW_START));
@@ -6648,7 +6848,7 @@ mod tests {
         game.units
             .retain(|u| matches!(u.kind, UnitKind::Infantry | UnitKind::Building));
         game.units
-            .retain(|u| !matches!(u.role, Role::LandingPad | Role::Mcv));
+            .retain(|u| !matches!(u.role, Role::Helipad | Role::Mcv));
         let objects = |game: &Game| crate::render::build_frame(game).objects.len();
         let (dark, bare) = (lit(&game), objects(&game));
         assert_eq!(dark, 0);
@@ -6674,14 +6874,14 @@ mod tests {
         let pad = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::LandingPad)
+            .position(|u| u.owner == 0 && u.role == Role::Helipad)
             .unwrap();
         let machine = game
             .units
             .iter()
             .position(|u| u.owner == 0 && u.kind == UnitKind::Aircraft)
             .unwrap();
-        game.units[machine].role = Role::Ornithopter;
+        game.units[machine].role = Role::AtOrni;
         let at = game.units[pad];
         game.camera.look_at(at.x, at.z);
         let (x, y) = game.view().project(at.x, at.pick_height(), at.z).unwrap();
@@ -6707,12 +6907,12 @@ mod tests {
         let carryall = game
             .units
             .iter()
-            .position(|u| u.role == Role::AdvancedCarryall && u.owner == 0);
+            .position(|u| u.role == Role::AdvCarryall && u.owner == 0);
         let carryall = carryall.expect("the player starts with some");
         let tank = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .position(|u| u.owner == 0 && u.role == Role::HkAssault)
             .unwrap();
         let unit = game.units[tank];
         let (x, y) = game
@@ -6744,13 +6944,13 @@ mod tests {
         let tank = game
             .units
             .iter()
-            .find(|u| u.owner == 0 && u.role == Role::Tank)
+            .find(|u| u.owner == 0 && u.role == Role::HkAssault)
             .unwrap();
         let (tank_id, at) = (tank.id, (tank.x, tank.z));
         let carryall = game
             .units
             .iter()
-            .position(|u| u.role == Role::AdvancedCarryall && u.owner == 0);
+            .position(|u| u.role == Role::AdvCarryall && u.owner == 0);
         let carryall = carryall.unwrap();
         game.units[carryall].x = at.0;
         game.units[carryall].z = at.1;
@@ -6798,14 +6998,14 @@ mod tests {
         let mut game = in_battle();
         game.units
             .retain(|u| u.role != Role::Factory || u.owner != 0);
-        assert!(!game.can_produce(Role::Tank));
+        assert!(!game.can_produce(Role::HkAssault));
         let theirs = game
             .units
             .iter_mut()
             .find(|u| u.role == Role::Factory)
             .unwrap();
         theirs.owner = 0;
-        assert!(game.can_produce(Role::Tank));
+        assert!(game.can_produce(Role::HkAssault));
     }
 
     #[test]
@@ -6819,7 +7019,7 @@ mod tests {
             .unwrap();
         let side = (0, game.stats_rows()[0].color);
         let tank_at = |x: f32, z: f32| {
-            let mut tank = crate::units::new_building(terrain, (x, z), Role::Tank, side, 9999);
+            let mut tank = crate::units::new_building(terrain, (x, z), Role::HkAssault, side, 9999);
             tank.y = 0.0;
             tank
         };
@@ -6840,7 +7040,10 @@ mod tests {
         assert_eq!(drawn(&mut game, tank_at(cx + 22630.0, cz)), (0, 0));
         // Just past the screen's west edge, the sun throws its shadow east, back onto it.
         let (objects, casters) = (0..400)
-            .map(|step| drawn(&mut game, tank_at(cx - step as f32 * 2.263, cz)))
+            .map(|step| {
+                let (x, z) = beside((cx, cz), -(step as f32) * 2.263);
+                drawn(&mut game, tank_at(x, z))
+            })
             .find(|&(objects, _)| objects == 0)
             .unwrap();
         assert_eq!(objects, 0);
@@ -6855,7 +7058,7 @@ mod tests {
         click_hud(&mut game, Action::BuildCell(3));
         assert!(!crate::render::build(&game).is_empty());
         let strider = game.units.last_mut().unwrap();
-        assert_eq!(strider.role, Role::Minotaurus);
+        assert_eq!(strider.role, Role::AtMinotaurus);
         strider.recoil = [1.0, 0.5, 0.0, 0.0];
         strider.stride = 58.83;
         strider.destination.0 += 226.3;
@@ -7015,7 +7218,7 @@ mod tests {
         let standing = game.units.iter().filter(|u| u.owner == 1).count();
         for i in standing..OPPONENT_UNITS_AT_MOST {
             let at = (9051.0 + i as f32, 1810.0);
-            let extra = units::new_building(terrain, at, Role::Tank, side, 5000 + i as u32);
+            let extra = units::new_building(terrain, at, Role::HkAssault, side, 5000 + i as u32);
             game.units.push(extra);
         }
         game.units
@@ -7051,7 +7254,7 @@ mod tests {
 
         let mut game = in_battle();
         game.units
-            .retain(|u| u.owner == 0 || u.role != Role::Factory && u.role != Role::Hangar);
+            .retain(|u| u.owner == 0 || u.role != Role::Factory && u.role != Role::Hanger);
         let known = game.units.len();
         for _ in 0..4 {
             game.run_opponents();
@@ -7071,25 +7274,25 @@ mod tests {
         game.units.retain(|u| u.owner == 0 || !u.role.makes_units());
         let cell = hud::grid_cells(W, H)[1];
         let known = game.units.len();
-        assert_eq!(game.making_progress(Role::LightInfantry), None);
+        assert_eq!(game.making_progress(Role::AtInfantry), None);
         click_at(&mut game, cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
         assert_eq!(game.units.len(), known, "not at once");
-        assert_eq!(game.making_progress(Role::LightInfantry), Some(0.0));
+        assert_eq!(game.making_progress(Role::AtInfantry), Some(0.0));
         let dim = crate::render::MAKING_DIM;
         assert!(line_vertices(&game, dim) > 0, "the button goes dim");
 
-        let seconds = Role::LightInfantry.build_seconds();
+        let seconds = Role::AtInfantry.build_seconds();
         game.update(seconds / 2.0);
-        let progress = game.making_progress(Role::LightInfantry).unwrap();
+        let progress = game.making_progress(Role::AtInfantry).unwrap();
         assert!((progress - 0.5).abs() < 0.01, "{progress}");
         assert_eq!(game.units.len(), known);
         let half_dim = line_vertices(&game, dim);
 
         game.update(seconds / 2.0 + 0.01);
-        assert_eq!(game.making_progress(Role::LightInfantry), None);
+        assert_eq!(game.making_progress(Role::AtInfantry), None);
         assert_eq!(game.units.len(), known + 1);
-        assert_eq!(game.units[known].name(), "Light Infantry");
-        assert!(game.chat.iter().any(|l| l.text == "Light Infantry ready"));
+        assert_eq!(game.units[known].name(), "Infantry");
+        assert!(game.chat.iter().any(|l| l.text == "Infantry ready"));
         assert!(half_dim > 0);
         assert_eq!(line_vertices(&game, dim), 0, "the button is back");
     }
@@ -7102,7 +7305,7 @@ mod tests {
             let b = cells[cell];
             click_at(game, b.x + b.w / 2.0, b.y + b.h / 2.0);
         };
-        let (scout, light) = (Role::Scout, Role::LightInfantry);
+        let (scout, light) = (Role::Scout, Role::AtInfantry);
         let known = game.units.len();
 
         press(&mut game, 1);
@@ -7156,7 +7359,7 @@ mod tests {
         }
         let other = hud::grid_cells(W, H)[0];
         click_at(&mut game, other.x + other.w / 2.0, other.y + other.h / 2.0);
-        let role = Role::LightInfantry;
+        let role = Role::AtInfantry;
         assert_eq!(game.queue_badge(role), Some(3));
 
         game.handle(Event::MouseMove(at.0, at.1));
@@ -7208,12 +7411,12 @@ mod tests {
         press(&mut game, 12);
         assert!(game.making_progress(Role::Scout).is_some());
         assert!(
-            game.making_progress(Role::SandBike).is_some(),
+            game.making_progress(Role::AtTrike).is_some(),
             "not behind the scouts"
         );
-        assert!(game.making_progress(Role::AirDefensePlatform).is_some());
+        assert!(game.making_progress(Role::HkAdp).is_some());
         press(&mut game, 1);
-        assert_eq!(game.queue_badge(Role::RepairVehicle), Some(1));
+        assert_eq!(game.queue_badge(Role::AtRepairUnit), Some(1));
         assert_eq!(game.queue_badge(Role::Scout), Some(2));
     }
 
@@ -7287,7 +7490,7 @@ mod tests {
         let unit = game
             .units
             .iter()
-            .find(|u| u.role == Role::Tank)
+            .find(|u| u.role == Role::HkAssault)
             .copied()
             .unwrap();
         let (x, y) = game.view().project(unit.x, unit.y, unit.z).unwrap();
@@ -7420,15 +7623,14 @@ mod tests {
         assert_eq!(has(&game, 1, Role::Barracks), 1);
     }
 
-    /// A spot on the sand with upper ground close enough to drive to.
+    /// A spot on the sand with rock close enough to drive to.
     fn sand_by_upland(terrain: &battlefield::Terrain) -> (f32, f32) {
-        (0..160)
-            .flat_map(|i| {
-                (0..160).map(move |j| (i as f32 * 22.63 - 1810.0, j as f32 * 22.63 + 905.1))
-            })
+        // Clear of the map's edge, which nobody gets right up to.
+        (8..256)
+            .flat_map(|i| (8..256).map(move |j| (i as f32 * 32.0 + 16.0, j as f32 * 32.0 + 16.0)))
             .find(|&(x, z)| {
                 terrain.can_walk(x, z)
-                    && !terrain.on_upper_ground(x, z)
+                    && !terrain.is_rock(x, z)
                     && units::deploy_spot_near(&[], terrain, Faction::Atreides, (x, z)).is_some()
             })
             .unwrap()
@@ -7446,7 +7648,11 @@ mod tests {
             mcv.destination = sand;
         }
         game.units.truncate(2);
-        game.units[1].x += 0.4525;
+        // Theirs by the rock of the opposite corner, where nothing of the player's gets in its way.
+        let (right, bottom) = terrain.extent();
+        let theirs = (right - sand.0, bottom - sand.1);
+        (game.units[1].x, game.units[1].z) = theirs;
+        game.units[1].destination = theirs;
         game.units[0].selected = true;
         let hover = |game: &mut Game| {
             let mcv = game.units[0];
@@ -7490,7 +7696,7 @@ mod tests {
         }
         let theirs = *game.units.iter().find(|u| u.id == their_mcv).unwrap();
         assert!(theirs.deployed, "{theirs:?}");
-        assert!(terrain.on_upper_ground(theirs.x, theirs.z));
+        assert!(terrain.is_rock(theirs.x, theirs.z));
     }
 
     #[test]
@@ -7561,7 +7767,7 @@ mod tests {
             game.tab_enabled(BuildTab::Vehicles),
             "the hangar still makes aircraft"
         );
-        gone(&mut game, &[Role::Hangar]);
+        gone(&mut game, &[Role::Hanger]);
         assert!(!game.tab_enabled(BuildTab::Vehicles));
         assert!(game.tab_enabled(BuildTab::Infantry));
         gone(&mut game, &[Role::Barracks]);
@@ -7626,7 +7832,7 @@ mod tests {
         assert!(game.is_held_up_by_site(second));
         assert!(!game.is_held_up_by_site(first), "it shows its own progress");
         assert!(
-            !game.is_held_up_by_site(Role::LightInfantry),
+            !game.is_held_up_by_site(Role::AtInfantry),
             "a unit waits for no site"
         );
         click_hud(&mut game, Action::BuildCell(1));
@@ -7643,10 +7849,10 @@ mod tests {
     }
 
     #[test]
-    fn rocket_and_machine_gun_towers_are_built_and_placed_like_other_buildings() {
+    fn rocket_and_gun_turrets_are_built_and_placed_like_other_buildings() {
         for (cell, role, name) in [
-            (4, Role::GunPost, "Machine Gun Post"),
-            (5, Role::Tower, "Rocket Tower"),
+            (4, Role::AtPillbox, "Machinegun Post"),
+            (5, Role::AtRocketTurret, "Rocket Turret"),
         ] {
             let mut game = in_battle();
             click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
@@ -7689,12 +7895,12 @@ mod tests {
         let b = hud::grid_cells(W, H)[2];
         let at = (b.x + b.w / 2.0, b.y + b.h / 2.0);
         click_at(&mut game, at.0, at.1);
-        assert!(matches!(game.site, Site::Building(Role::Hangar, _)));
+        assert!(matches!(game.site, Site::Building(Role::Hanger, _)));
         game.handle(Event::MouseMove(at.0, at.1));
         game.handle(Event::RightDown);
         assert_eq!(game.site, Site::Idle);
 
-        game.site = Site::Ready(Role::Hangar);
+        game.site = Site::Ready(Role::Hanger);
         game.handle(Event::RightDown);
         assert_eq!(game.site, Site::Idle);
     }
@@ -7747,7 +7953,7 @@ mod tests {
     }
 
     #[test]
-    fn the_deploy_button_and_the_d_key_switch_selected_k_infantry() {
+    fn the_deploy_button_and_the_d_key_switch_selected_kindjal_infantry() {
         let mut game = in_battle();
         let k = select_new(&mut game, 4);
         click_hud(&mut game, Action::HudWide(DEPLOY_BUTTON));
@@ -7784,12 +7990,12 @@ mod tests {
             unit.alive = false;
         }
         game.units
-            .retain(|u| u.owner != 1 || u.role != Role::FlameTower);
+            .retain(|u| u.owner != 1 || u.role != Role::HkFlameTurret);
         let tower = tower_of(&game, 1);
         // Disarmed, tough enough to outlast the player's own fire, and moved into view.
         game.units[tower].cooldown = 1e9;
         game.units[tower].health = 1e9;
-        let (x, z) = (game.camera.x + 271.5, game.camera.z);
+        let (x, z) = beside((game.camera.x, game.camera.z), 271.5);
         (
             game.units[tower].x,
             game.units[tower].z,
@@ -7801,7 +8007,7 @@ mod tests {
         let engineer_id = game.units[engineer].id;
         let enemy = game.units.iter().position(|u| u.id == id).unwrap();
         // On the far side from the player's group, so that nobody stands in the way.
-        let (x, z) = (game.units[engineer].x - 226.3, game.units[engineer].z);
+        let (x, z) = beside((game.units[engineer].x, game.units[engineer].z), -226.3);
         (
             game.units[enemy].x,
             game.units[enemy].z,
@@ -7840,7 +8046,7 @@ mod tests {
             ),
             (
                 Faction::Harkonnen,
-                &[(14, "Ornithopter"), (11, "Destroyer")][..],
+                &[(14, "Ornithopter"), (11, "Gunship")][..],
             ),
         ] {
             let mut game = in_battle_as(house);
@@ -7883,15 +8089,15 @@ mod tests {
         for (house, names) in [
             (
                 Faction::Atreides,
-                ["Light Infantry", "Sniper", "K Infantry"],
+                ["Infantry", "Sniper", "Kindjal Infantry"],
             ),
             (
                 Faction::Harkonnen,
-                ["Regular Infantry", "Rocket Infantry", "Flame Infantry"],
+                ["Light Infantry", "Trooper", "Flamethrower Infantry"],
             ),
             (
                 Faction::Ordos,
-                ["Gas Infantry", "Mortar Infantry", "Suicide Infantry"],
+                ["Chemical Trooper", "Mortar Infantry", "Saboteur"],
             ),
         ] {
             let mut game = in_battle_as(house);
@@ -7935,10 +8141,10 @@ mod tests {
         };
         for (i, name) in [
             "Scout",
-            "Light Infantry",
+            "Infantry",
             "Sniper",
             "Engineer",
-            "K Infantry",
+            "Kindjal Infantry",
         ]
         .into_iter()
         .enumerate()
@@ -7957,9 +8163,9 @@ mod tests {
             Some("Repair Vehicle"),
             Some("Mongoose"),
             Some("Minotaurus"),
-            Some("Stealth APC"),
+            Some("APC"),
             None,
-            Some("Superweapon A"),
+            Some("Hawk Strike"),
             Some("MCV"),
         ]
         .into_iter()
@@ -7976,10 +8182,10 @@ mod tests {
             .project(tower.x, tower.pick_height(), tower.z)
             .unwrap();
         game.handle(Event::MouseMove(x, y));
-        assert_eq!(game.tip(), Some("Rocket Tower"), "one's own");
+        assert_eq!(game.tip(), Some("Rocket Turret"), "one's own");
         let (_, (x, y)) = enemy_beside_first_group(&mut game);
         game.handle(Event::MouseMove(x, y));
-        assert_eq!(game.tip(), Some("Light Infantry"), "and enemies");
+        assert_eq!(game.tip(), Some("Infantry"), "and enemies");
         assert!(!crate::render::build(&game).is_empty());
 
         game.handle(Event::MouseMove(W / 2.0 - 800.0, H / 2.0 + 300.0));
@@ -8074,14 +8280,14 @@ mod tests {
         let tank = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .position(|u| u.owner == 0 && u.role == Role::HkAssault)
             .unwrap();
         let other = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::LightInfantry)
+            .position(|u| u.owner == 0 && u.role == Role::AtInfantry)
             .unwrap();
-        let away = (game.units[tank].x + 905.1, game.units[tank].z);
+        let away = beside((game.units[tank].x, game.units[tank].z), 905.1);
         game.units[tank].x = away.0;
         game.units[tank].destination = away;
         let stays = game.units[other].destination;
@@ -8111,7 +8317,7 @@ mod tests {
     fn tank_of(game: &Game) -> usize {
         game.units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .position(|u| u.owner == 0 && u.role == Role::HkAssault)
             .unwrap()
     }
 
@@ -8142,7 +8348,7 @@ mod tests {
 
         let tank = tank_of(&game);
         game.units[tank].selected = true;
-        game.units[tank].destination = (game.units[tank].x + 271.5, game.units[tank].z);
+        game.units[tank].destination = beside((game.units[tank].x, game.units[tank].z), 271.5);
         game.handle(Event::KeyDown(Key::Char('F')));
         let id = game.units[tank].id;
         assert_eq!(game.following, Some(id));
@@ -8200,7 +8406,7 @@ mod tests {
         let tanks = |game: &Game| {
             game.units
                 .iter()
-                .filter(|u| u.owner == 0 && u.role == Role::Tank)
+                .filter(|u| u.owner == 0 && u.role == Role::HkAssault)
                 .count()
         };
         game.handle(Event::KeyDown(Key::Char('t')));
@@ -8211,7 +8417,7 @@ mod tests {
         game.handle(Event::KeyDown(Key::Char('T')));
         let on_screen = selected_count(&game);
         assert!(on_screen > 1 && on_screen < tanks(&game), "{on_screen}");
-        assert_eq!(roles_of(&game), [Role::Tank]);
+        assert_eq!(roles_of(&game), [Role::HkAssault]);
 
         game.handle(Event::KeyDown(Key::Char('t')));
         assert_eq!(
@@ -8219,18 +8425,38 @@ mod tests {
             tanks(&game),
             "the second press: everywhere"
         );
-        assert_eq!(roles_of(&game), [Role::Tank]);
+        assert_eq!(roles_of(&game), [Role::HkAssault]);
         assert!(
             game.selected_units().iter().all(|u| u.owner == 0),
             "not the enemy's"
         );
 
-        // Two types selected: both of them.
+        // Two types selected, one of them off screen: both, then both everywhere.
+        game.handle(Event::RightDown);
+        let away = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::AdvCarryall)
+            .unwrap();
+        game.units[tank].selected = true;
+        game.units[away].selected = true;
+        (game.units[away].x, game.units[away].z) = (0.0, 0.0);
+        game.handle(Event::KeyDown(Key::Char('t')));
+        assert!(game.units[away].selected, "kept off screen");
+        game.handle(Event::KeyDown(Key::Char('t')));
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0 && [Role::HkAssault, Role::AdvCarryall].contains(&u.role))
+                .all(|u| u.selected),
+            "the second press: both types everywhere"
+        );
+
         game.handle(Event::RightDown);
         let carryall = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::AdvancedCarryall)
+            .position(|u| u.owner == 0 && u.role == Role::AdvCarryall)
             .unwrap();
         game.units[tank].selected = true;
         game.units[carryall].selected = true;
@@ -8238,9 +8464,13 @@ mod tests {
         assert!(
             game.selected_units()
                 .iter()
-                .any(|u| u.role == Role::AdvancedCarryall)
+                .any(|u| u.role == Role::AdvCarryall)
         );
-        assert!(game.selected_units().iter().any(|u| u.role == Role::Tank));
+        assert!(
+            game.selected_units()
+                .iter()
+                .any(|u| u.role == Role::HkAssault)
+        );
         assert!(selected_count(&game) > 2);
     }
 
@@ -8260,7 +8490,7 @@ mod tests {
             !game
                 .selected_units()
                 .iter()
-                .any(|u| u.role == Role::AdvancedCarryall),
+                .any(|u| u.role == Role::AdvCarryall),
             "carryalls carry no weapon"
         );
         game.handle(Event::KeyDown(Key::Char('P')));
@@ -8420,11 +8650,11 @@ mod tests {
         (W / 2.0 - 800.0, H / 2.0 + 300.0)
     }
 
-    /// A point on the screen over upper ground clear enough for a building, away from the HUD.
+    /// A point on the screen over rock clear enough for a building, away from the HUD.
     fn buildable_spot_on_screen(game: &mut Game) -> (f32, f32) {
         let terrain = battlefield::terrain(game.battle_map);
-        // The base standing by the map's middle is on the sand: put up a tower on upper ground.
-        let at = battlefield::start_spots(terrain.size())[5];
+        // The base standing by the map's middle is on the sand: put up a tower on rock.
+        let at = terrain.starts()[2];
         let (x, z) = at;
         if !game.units.iter().any(|u| u.owner == 0 && (u.x, u.z) == at) {
             let tower = game
@@ -8561,7 +8791,7 @@ mod tests {
         let tank = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .position(|u| u.owner == 0 && u.role == Role::HkAssault)
             .unwrap();
         let fixer = select_new(&mut game, 1);
         game.units[tank].health = 50.0;
@@ -8628,7 +8858,7 @@ mod tests {
         let tank = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .position(|u| u.owner == 0 && u.role == Role::HkAssault)
             .unwrap();
         let fixer = select_new(&mut game, 1);
         let gunner = game
@@ -8763,7 +8993,7 @@ mod tests {
         game.units.insert(enemy, unit);
 
         select_first_group(&mut game);
-        let (x, z) = (game.camera.x + 271.5, game.camera.z);
+        let (x, z) = beside((game.camera.x, game.camera.z), 271.5);
         let unit = &mut game.units[enemy];
         (unit.x, unit.z, unit.destination, unit.cooldown) = (x, z, (x, z), 1e9);
         let unit = game.units[enemy];
@@ -8775,7 +9005,7 @@ mod tests {
         game.handle(Event::MouseMove(px, py));
         assert!(game.shows(&unit), "in view, it can be pointed at");
         assert!(game.cursor_means_attack());
-        assert_eq!(game.tip(), Some("Light Infantry"));
+        assert_eq!(game.tip(), Some("Infantry"));
         assert!(
             crate::render::build(&game).len() > drawn_with,
             "and it is drawn"
@@ -8823,7 +9053,7 @@ mod tests {
     #[test]
     fn moving_units_uncover_more_of_the_map() {
         let mut game = in_fog_battle();
-        let (far_x, far_z) = (game.camera.x - 1131.0, game.camera.z);
+        let (far_x, far_z) = beside((game.camera.x, game.camera.z), -1131.0);
         assert_eq!(game.sight_at(far_x, far_z), Sight::Unexplored);
         let scout = game
             .units
@@ -9230,10 +9460,12 @@ mod tests {
         assert_eq!(game.selection_anchor, Some(anchored), "fixed on the map");
         let (west, _, east, _) = game.selection_ground().unwrap();
         assert_eq!(
-            west, anchored.0,
+            west,
+            battlefield::across_and_down(anchored.0, anchored.1).0,
             "the start stays where it was on the ground"
         );
         let under_cursor = game.view().ground_at(W - 1.0, H / 2.0).unwrap();
+        let under_cursor = battlefield::across_and_down(under_cursor.0, under_cursor.1);
         assert!(
             (east - under_cursor.0).abs() < 0.04525,
             "the other corner stays under the cursor"
@@ -9329,15 +9561,17 @@ mod tests {
         game.handle(Event::MouseMove(from.0, from.1));
         game.handle(Event::MouseDown);
         game.handle(Event::MouseMove(W - 1.0, H / 2.0 + 400.0));
-        let far_x = game
+        let across = |u: &&Unit| battlefield::across_and_down(u.x, u.z).0;
+        let far = game
             .units
             .iter()
             .filter(|u| u.owner == 0)
-            .map(|u| u.x)
-            .fold(f32::MIN, f32::max);
+            .max_by(|a, b| across(a).total_cmp(&across(b)))
+            .map(|u| (u.x, u.z))
+            .unwrap();
         for _ in 0..400 {
             game.update(0.05);
-            let (sx, _) = game.view().project(far_x, 0.0, game.camera.z).unwrap();
+            let (sx, _) = game.view().project(far.0, 0.0, far.1).unwrap();
             if sx < W - 100.0 {
                 break;
             }
@@ -9827,8 +10061,8 @@ mod tests {
             (1024.0, 768.0),
             (5120.0, 1440.0),
         ] {
-            let items = map_items(w, h);
-            assert_eq!(items.len(), MAPS.len());
+            let items = map_items(MapFolder::Skirmish, 0, w, h);
+            assert_eq!(items.len(), maps::list().len());
             let last = items.last().unwrap();
             assert!(last.y + last.h <= h, "at {w}x{h}");
             for item in &items {
@@ -9840,7 +10074,7 @@ mod tests {
                 );
             }
         }
-        for map in 0..MAPS.len() {
+        for map in 0..maps::list().len() {
             let mut game = in_setup();
             click_widget(&mut game, Action::MapDropdown);
             click(&mut game, Action::SelectMap(map));
@@ -9853,10 +10087,60 @@ mod tests {
     }
 
     #[test]
+    fn as_many_maps_as_the_disc_has_can_be_scrolled_to_on_the_screen_with_their_names() {
+        const NAMES: [&str; 3] = ["Giedi Prime : Three Bridges", "Fishers Plain", "Sihaya"];
+        for (w, h) in [
+            (1280.0, 720.0),
+            (1920.0, 1080.0),
+            (2880.0, 1800.0),
+            (1024.0, 768.0),
+            (5120.0, 1440.0),
+        ] {
+            for (count, tabs) in [(34, false), (48, true)] {
+                let entries = NAMES.iter().copied().cycle().take(count).enumerate();
+                let most =
+                    ListLayout::new(entries.clone().map(|(_, l)| l), tabs, w, h).most_scroll();
+                let mut seen = Vec::new();
+                for scroll in 0..=most + 1 {
+                    let items = list_items(entries.clone(), tabs, scroll, w, h);
+                    for item in &items {
+                        assert!(item.x >= 0.0 && item.x + item.w <= w, "at {w}x{h}");
+                        assert!(item.y + item.h <= h, "at {w}x{h}");
+                        let width = crate::font::text_width(item.label) * small_text_px(h);
+                        assert!(width + 16.0 * ui_scale(h) < item.w, "at {w}x{h}");
+                        seen.push(item.action);
+                    }
+                }
+                seen.sort_by_key(|action| match action {
+                    Action::SelectMap(map) => *map,
+                    _ => usize::MAX,
+                });
+                seen.dedup();
+                assert_eq!(seen.len(), count, "each in some column at {w}x{h}");
+            }
+            let first = list_items([(0, "Sihaya")].into_iter(), false, 0, w, h)[0];
+            assert_eq!(first.x, setup_column(false, w, h).0, "under the dropdown");
+        }
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_open_map_list_no_further_than_it_goes() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::MapDropdown);
+        let zoom = game.camera.zoom;
+        game.handle(Event::Wheel(-3.0));
+        assert_eq!(game.map_scroll, 0, "the test maps all fit");
+        game.handle(Event::Wheel(1.0));
+        assert_eq!(game.map_scroll, 0);
+        assert_eq!(game.camera.zoom, zoom);
+        assert!(game.dropdown_open);
+    }
+
+    #[test]
     fn open_dropdown_blocks_what_is_under_it_and_closes_on_outside_click() {
         let mut game = in_setup();
         click_widget(&mut game, Action::MapDropdown);
-        let item = map_items(W, H)[0];
+        let item = map_items(MapFolder::Skirmish, 0, W, H)[0];
         game.handle(Event::MouseMove(
             item.x + item.w / 2.0,
             item.y + item.h / 2.0,
@@ -10422,7 +10706,8 @@ mod tests {
             game.camera.zoom_by(1.0);
             game.camera.ease_zoom(0.05);
         }
-        game.units.retain(|u| !u.kind.is_building());
+        // Close up, the machines nearby cover the spot.
+        game.units.retain(|u| u.selected);
         assert_eq!(game.cursor_look(), CursorLook::Move);
         let drawn = crate::render::build(&game);
         // Its ring goes all the way round: as tall as it is wide only if it faces the screen.
@@ -10517,7 +10802,7 @@ mod tests {
             unit.house = houses[unit.owner];
         }
         game.next_unit_id = game.units.len() as u32;
-        game.home = (0.0, game.middle_z());
+        game.home = battlefield::MAP_MIDDLE;
         game.camera = Camera::centered();
         game.update_fog();
     }
@@ -10539,15 +10824,20 @@ mod tests {
         game.update(0.5);
         assert_eq!(game.camera, start, "cursor in the middle");
 
+        let on_screen = |camera: Camera| battlefield::across_and_down(camera.x, camera.z);
         game.handle(Event::MouseMove(W - 1.0, H / 2.0));
         game.update(0.5);
-        assert!(game.camera.x > start.x, "right edge moves east");
-        assert_eq!(game.camera.z, start.z);
+        let (across, down) = on_screen(game.camera);
+        assert!(across > on_screen(start).0, "the right edge moves right");
+        assert!((down - on_screen(start).1).abs() < 0.01);
 
         let before = game.camera;
         game.handle(Event::MouseMove(W / 2.0, 0.0));
         game.update(0.5);
-        assert!(game.camera.z < before.z, "top edge moves north");
+        assert!(
+            on_screen(game.camera).1 < on_screen(before).1,
+            "the top edge moves up"
+        );
 
         let before = game.camera;
         leave_battle(&mut game);
@@ -10633,7 +10923,8 @@ mod tests {
         let at = (rect.0 + rect.2 * 0.6, rect.1 + rect.2 * 0.5);
         (
             at,
-            battlefield::minimap_to_world(rect, battlefield::MAP_MIDDLE_Z, at.0, at.1).unwrap(),
+            battlefield::minimap_to_world(rect, battlefield::terrain(0).extent(), at.0, at.1)
+                .unwrap(),
         )
     }
 
@@ -10650,6 +10941,47 @@ mod tests {
         assert_eq!((game.camera.x, game.camera.z), (expected.x, expected.z));
         assert_eq!(game.units[tank].destination, stays);
         assert!(game.units[tank].selected, "the selection stands");
+    }
+
+    #[test]
+    fn a_click_or_the_cursor_anywhere_on_a_machine_picks_it_not_only_at_its_middle() {
+        let mut game = in_battle();
+        game.fog = None;
+        let i = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.kind == UnitKind::Vehicle)
+            .unwrap();
+        game.units[i].role = Role::Harvester;
+        game.units.iter_mut().for_each(|u| u.selected = false);
+        let unit = game.units[i];
+        game.units.retain(|u| u.id == unit.id);
+        game.camera.look_at(unit.x, unit.z);
+        for _ in 0..100 {
+            game.camera.zoom_by(1.0);
+            game.camera.ease_zoom(0.05);
+        }
+        let view = game.view();
+        let (middle_x, middle_y) = view.project(unit.x, unit.pick_height(), unit.z).unwrap();
+        let [corner, ..] = unit.selection_box();
+        // By its nose, just inside its box.
+        let near = |a: f32, b: f32| b + (a - b) * 0.9;
+        let (nose_x, nose_y) = view
+            .project(
+                near(corner.0, unit.x),
+                unit.pick_height(),
+                near(corner.2, unit.z),
+            )
+            .unwrap();
+        let reach = PICK_RADIUS * ui_scale(game.height);
+        assert!(
+            (nose_x - middle_x).hypot(nose_y - middle_y) > reach,
+            "out of the old reach"
+        );
+        game.handle(Event::MouseMove(nose_x, nose_y));
+        assert_eq!(game.tip(), Some(unit.name()), "its name shows");
+        click_at(&mut game, nose_x, nose_y);
+        assert!(game.units[0].selected);
     }
 
     #[test]
@@ -10757,7 +11089,7 @@ mod tests {
         let harvester = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .position(|u| u.owner == 0 && u.role == Role::HkAssault)
             .unwrap();
         game.units[harvester].role = Role::Harvester;
         game.units[harvester].load = 50.0;
@@ -10800,7 +11132,7 @@ mod tests {
         let tank = game
             .units
             .iter()
-            .position(|u| u.owner == 0 && u.role == Role::Tank)
+            .position(|u| u.owner == 0 && u.role == Role::HkAssault)
             .unwrap();
         game.units[tank].selected = true;
         game.handle(Event::MouseMove(sand.0, sand.1));
@@ -10900,13 +11232,9 @@ mod tests {
 
         // The east corner of the diamond.
         click_at(&mut game, x + size - 1.0, y + size / 2.0);
-        let expected = battlefield::minimap_to_world(
-            rect,
-            battlefield::MAP_MIDDLE_Z,
-            x + size - 1.0,
-            y + size / 2.0,
-        )
-        .unwrap();
+        let expected =
+            battlefield::minimap_to_world(rect, game.map_extent(), x + size - 1.0, y + size / 2.0)
+                .unwrap();
         assert!(
             (game.camera.x - expected.0).abs() < 45.25,
             "went east: {}",
@@ -10928,9 +11256,8 @@ mod tests {
         let rect = hud::minimap_rect(W, H);
         let (x, y, size) = rect;
         let at = |fx: f32, fy: f32| (x + size * fx, y + size * fy);
-        let world = |p: (f32, f32)| {
-            battlefield::minimap_to_world(rect, battlefield::MAP_MIDDLE_Z, p.0, p.1).unwrap()
-        };
+        let extent = game.map_extent();
+        let world = |p: (f32, f32)| battlefield::minimap_to_world(rect, extent, p.0, p.1).unwrap();
 
         let start = at(0.5, 0.3);
         game.handle(Event::MouseMove(start.0, start.1));
@@ -10968,13 +11295,9 @@ mod tests {
 
         // Off the right edge of the screen, past the minimap's edge.
         game.handle(Event::MouseMove(W - 1.0, y + size / 2.0));
-        let (east_x, _) = battlefield::minimap_to_world(
-            rect,
-            battlefield::MAP_MIDDLE_Z,
-            x + size - 0.01,
-            y + size / 2.0,
-        )
-        .unwrap();
+        let (east_x, _) =
+            battlefield::minimap_to_world(rect, game.map_extent(), x + size - 0.01, y + size / 2.0)
+                .unwrap();
         assert!(
             (game.camera.x - east_x).abs() < 0.4525,
             "holds to the minimap's edge"

@@ -1,6 +1,8 @@
 //! What the player knows of the map: nothing, what was once seen, or what is seen right now.
 
-use crate::battlefield::{GRID_POINTS, MapSize, grid_index, grid_to_world, world_to_grid};
+use crate::battlefield::{
+    CELL_SIDE, GRID_POINTS, MOST_CELLS, grid_index, grid_to_world, world_to_grid,
+};
 use crate::units::Unit;
 
 /// How bright explored land is that nobody sees right now.
@@ -54,11 +56,10 @@ impl Fog {
     fn see_around(&mut self, seer: &Unit, floor: f32) {
         let radius = seer.sight_over(floor);
         let (u, v) = world_to_grid(seer.x, seer.z);
-        // A step along one grid axis covers 0.7 of a world unit, so this reaches far enough.
-        let reach = radius * 0.03315;
+        let reach = radius / CELL_SIDE;
         let span = |center: f32| {
             let low = (center - reach).floor().max(0.0) as usize;
-            let high = ((center + reach).ceil().max(0.0) as usize).min(MapSize::L.cells());
+            let high = ((center + reach).ceil().max(0.0) as usize).min(MOST_CELLS);
             low..=high
         };
         for point_v in span(v) {
@@ -84,8 +85,7 @@ impl Fog {
     pub fn at(&self, x: f32, z: f32) -> Sight {
         let (u, v) = world_to_grid(x, z);
         let on_grid = |t: f32| {
-            (t.round() >= 0.0 && t.round() <= MapSize::L.cells() as f32)
-                .then_some(t.round() as usize)
+            (t.round() >= 0.0 && t.round() <= MOST_CELLS as f32).then_some(t.round() as usize)
         };
         match (on_grid(u), on_grid(v)) {
             (Some(u), Some(v)) => self.at_grid(u, v),
@@ -131,23 +131,17 @@ mod tests {
 
     #[test]
     fn a_unit_sees_around_itself_as_far_as_its_sight_and_no_further() {
-        let unit = unit_at(0.0, 2715.0);
+        let (x, z) = crate::battlefield::MAP_MIDDLE;
+        let unit = unit_at(x, z);
         let mut fog = Fog::new();
         fog.update([unit].iter(), 0.0);
-        assert_eq!(fog.at(0.0, 2715.0), Sight::Visible);
+        assert_eq!(fog.at(x, z), Sight::Visible);
         for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
             let near = unit.sight() - 45.25;
             let far = unit.sight() + 45.25;
-            assert_eq!(
-                fog.at(dx * near, 2715.0 + dz * near),
-                Sight::Visible,
-                "{dx},{dz}"
-            );
-            assert_eq!(
-                fog.at(dx * far, 2715.0 + dz * far),
-                Sight::Unexplored,
-                "{dx},{dz}"
-            );
+            let at = |by: f32| fog.at(x + dx * by, z + dz * by);
+            assert_eq!(at(near), Sight::Visible, "{dx},{dz}");
+            assert_eq!(at(far), Sight::Unexplored, "{dx},{dz}");
         }
     }
 

@@ -42,7 +42,8 @@ static NSString *const kShader = @
     "                  float3 picture; float3 team; };\n"
     "struct PointLight { packed_float3 place; float radius; packed_float3 color; float unused; };\n"
     "struct Sky { float4x4 view; float4x4 sun_view; float2 size; float time; int material;\n"
-    "             float3 camera; float3 sun; int mirrored; int light_count; float2 padding; PointLight lights[16]; };\n"
+    "             float3 camera; float3 sun; float3 air; float3 sunlight; int mirrored; int light_count;\n"
+    "             float2 wash; PointLight lights[16]; };\n"
     "vertex WorldOut vs_world(uint id [[vertex_id]], const device WorldIn *v [[buffer(0)]],\n"
     "                         constant Sky &sky [[buffer(1)]]) {\n"
     "  WorldOut o; o.world = float3(v[id].pos); o.pos = sky.view * float4(o.world, 1.0);\n"
@@ -362,10 +363,7 @@ static NSString *const kShader = @
     "  return sum / 9.0;\n"
     "}\n"
     "static float3 light_on(float3 color, float3 world, float3 normal, float in_sun, constant Sky &sky) {\n"
-    "  float3 air = float3(0.42, 0.45, 0.52);\n"
-    "  float3 sunlight = float3(0.62, 0.58, 0.50);\n"
-    "  float wrap = max((dot(normal, sky.sun) + 0.5) / 1.5, 0.0);\n"
-    "  float3 light = air + sunlight * wrap * in_sun;\n"
+    "  float3 light = sky.air + sky.sunlight * max(dot(normal, sky.sun), 0.0) * in_sun;\n"
     "  for (int i = 0; i < sky.light_count; i++) {\n"
     "    float3 to = float3(sky.lights[i].place) - world;\n"
     "    float reach = length(to) / sky.lights[i].radius;\n"
@@ -393,7 +391,8 @@ static NSString *const kShader = @
     "fragment float4 fs_world(WorldOut in [[stage_in]], constant Sky &sky [[buffer(0)]],\n"
     "                         texture2d<float> mirror [[texture(0)]], depth2d<float> map [[texture(1)]],\n"
     "                         sampler smooth [[sampler(0)]], sampler compare [[sampler(1)]],\n"
-    "                         texture2d_array<float> pictures [[texture(2)]], sampler tiled [[sampler(2)]]) {\n"
+    "                         texture2d_array<float> pictures [[texture(2)]], sampler tiled [[sampler(2)]],\n"
+    "                         texture2d<float> wash [[texture(3)]]) {\n"
     "  /* The water's surface and what lies under it show nothing in the mirror. */\n"
     "  if (sky.mirrored != 0 && (in.level < 0.0 || in.world.y < 0.0)) discard_fragment();\n"
     "  float3 normal = normalize(in.normal);\n"
@@ -405,6 +404,13 @@ static NSString *const kShader = @
      * surface where the picture has a hole. */
     "  if (in.picture.z >= 0.0) {\n"
     "    float4 texel = pictures.sample(tiled, in.picture.xy, uint(in.picture.z + 0.5));\n"
+    /* A decal, drawn as material 9, unlit, shows as much of its picture as its level says;
+     * one whose level is below 0, a light's glow, adds its picture to what is behind it. */
+    "    if (sky.material == 9) {\n"
+    "      float cover = texel.a * abs(in.level);\n"
+    "      if (cover <= 0.0) discard_fragment();\n"
+    "      return float4(texel.rgb * in.seen * cover, in.level < 0.0 ? 0.0 : cover);\n"
+    "    }\n"
     "    if (texel.a < 0.25) discard_fragment();\n"
     "    color = texel.rgb + saturate((1.0 - texel.a) * 2.0) * in.team;\n"
     "  }\n"
@@ -436,6 +442,11 @@ static NSString *const kShader = @
     "  /* Land still wet from the sea, darker just above it. */\n"
     "  if (sky.material == 1) color *= mix(0.62, 1.0, smoothstep(0.0, 0.12, level));\n"
     "  float3 lit = light_on(color, in.world, normal, in_sun, sky);\n"
+    /* The ground lit, as much under its wash as the wash's alpha says. */
+    "  if (sky.material == 0 && sky.wash.x > 0.0) {\n"
+    "    float4 over = wash.sample(smooth, in.world.xz / sky.wash);\n"
+    "    lit = mix(lit, over.rgb, over.a);\n"
+    "  }\n"
     /* Objects, drawn as material 8, say how much they shine in their level; soot takes it away. */
     "  if (sky.material == 8 && in.level > 0.0)\n"
     "    lit = shine_on(lit, color, in.world, normal, in_sun, in.level * clean, sky);\n"
@@ -451,6 +462,8 @@ static NSString *const kShader = @
 enum { FRAMES_IN_FLIGHT = 3, SHADOW_MAP = 4096 }; /* The game steps its sun view by this map. */
 /* What the world's fragments are told they are drawing when it is the objects on the map. */
 enum { MATERIAL_OBJECTS = 8 };
+/* And when it is the decals on the ground. */
+enum { MATERIAL_DECALS = 9 };
 
 @interface OeWindow : NSWindow
 @end
@@ -466,9 +479,11 @@ static id<MTLCommandQueue> g_queue;
 static id<MTLRenderPipelineState> g_pipeline;
 static id<MTLRenderPipelineState> g_effect_pipeline;
 static id<MTLRenderPipelineState> g_world_pipeline;
+static id<MTLRenderPipelineState> g_decal_pipeline;
 static id<MTLRenderPipelineState> g_shadow_pipeline;
 static id<MTLRenderPipelineState> g_image_pipeline;
 static id<MTLTexture> g_backdrop;
+static id<MTLTexture> g_wash;
 static id<MTLDepthStencilState> g_depth_write;
 static id<MTLDepthStencilState> g_depth_read;
 static id<MTLDepthStencilState> g_depth_ignored;
@@ -548,11 +563,13 @@ static BOOL make_pipelines(id<MTLLibrary> library) {
     desc.fragmentFunction = [library newFunctionWithName:@"fs_world"];
     desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     if (g_effect_pipeline) g_world_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
+    blend_premultiplied(desc.colorAttachments[0]);
+    if (g_world_pipeline) g_decal_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
 
     desc = [MTLRenderPipelineDescriptor new];
     desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
     desc.vertexFunction = [library newFunctionWithName:@"vs_shadow"];
-    if (g_world_pipeline) g_shadow_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
+    if (g_decal_pipeline) g_shadow_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
 
     desc = [MTLRenderPipelineDescriptor new];
     desc.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
@@ -832,13 +849,15 @@ typedef struct {
     int32_t material;
     float camera[4];
     float sun[4];
+    float air[4];
+    float sunlight[4];
     int32_t mirrored;
     int32_t light_count;
-    float padding[2];
+    float wash[2];
     OePointLight lights[OE_MAX_LIGHTS];
 } OeSky;
 
-enum { LISTS = 5 };
+enum { LISTS = 6 };
 
 /* Fills a slot's buffer with these lists, one after another, and notes their offsets. */
 static id<MTLBuffer> fill_buffer(uint32_t slot, const void *const lists[LISTS],
@@ -892,6 +911,7 @@ static void bind_world(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> mirro
     [encoder setFragmentSamplerState:g_compare_sampler atIndex:1];
     [encoder setFragmentTexture:pictures() atIndex:2];
     [encoder setFragmentSamplerState:g_tiled_sampler atIndex:2];
+    [encoder setFragmentTexture:g_wash ? g_wash : empty_texture() atIndex:3];
 }
 
 /* The depth of all that is solid, as the sun sees it. */
@@ -955,12 +975,13 @@ static void encode_mirror(id<MTLCommandBuffer> commands, id<MTLBuffer> buffer,
 static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, uint32_t slot,
                          const OeWorld *world, float r, float g, float b) {
     const void *const lists[LISTS] = {world->ground, world->objects, world->casters, world->effects,
-                                      world->over};
+                                      world->over,   world->decals};
     const NSUInteger bytes[LISTS] = {world->ground_count * sizeof(OeWorldVertex),
                                      world->objects_count * sizeof(OeWorldVertex),
                                      world->casters_count * sizeof(OeWorldVertex),
                                      world->effects_count * sizeof(OeEffectVertex),
-                                     world->over_count * sizeof(OeVertex)};
+                                     world->over_count * sizeof(OeVertex),
+                                     world->decals_count * sizeof(OeWorldVertex)};
     NSUInteger offsets[LISTS];
     id<MTLBuffer> buffer = fill_buffer(slot, lists, bytes, offsets);
     float size[2] = {(float)target.width, (float)target.height};
@@ -973,6 +994,10 @@ static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, u
     sky.time = world->time;
     memcpy(sky.camera, world->camera, sizeof(world->camera));
     memcpy(sky.sun, world->sun, sizeof(world->sun));
+    memcpy(sky.air, world->ambient, sizeof(world->ambient));
+    memcpy(sky.sunlight, world->sunlight, sizeof(world->sunlight));
+    memcpy(sky.wash, world->wash, sizeof(world->wash));
+    if (!g_wash) sky.wash[0] = sky.wash[1] = 0;
     sky.light_count = (int32_t)MIN(world->lights_count, OE_MAX_LIGHTS);
     if (sky.light_count) {
         memcpy(sky.lights, world->lights, sizeof(OePointLight) * (size_t)sky.light_count);
@@ -1003,6 +1028,13 @@ static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, u
         draw_list(encoder, buffer, offsets[0], world->ground_count);
         bind_world(encoder, empty_texture(), &sky, MATERIAL_OBJECTS);
         draw_list(encoder, buffer, offsets[1], world->objects_count);
+        /* After all that is solid, which hides what lies behind it, and writing no depth. */
+        if (world->decals_count) {
+            [encoder setRenderPipelineState:g_decal_pipeline];
+            [encoder setDepthStencilState:g_depth_read];
+            bind_world(encoder, empty_texture(), &sky, MATERIAL_DECALS);
+            draw_list(encoder, buffer, offsets[5], world->decals_count);
+        }
     }
     if (g_backdrop) {
         /* As large as fits, keeping its shape, in the middle. */
@@ -1104,6 +1136,26 @@ void oe_set_pictures(const uint8_t *rgba, int32_t side, int32_t count) {
     [blit endEncoding];
     [commands commit];
     g_pictures = texture;
+}
+
+void oe_set_wash(const uint8_t *rgba, int32_t width, int32_t height) {
+    if (!rgba || width <= 0 || height <= 0) {
+        g_wash = nil;
+        return;
+    }
+    MTLTextureDescriptor *desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                           width:(NSUInteger)width
+                                                          height:(NSUInteger)height
+                                                       mipmapped:NO];
+    desc.usage = MTLTextureUsageShaderRead;
+    /* A new texture, so that none still being drawn from is written over. */
+    id<MTLTexture> texture = [g_device newTextureWithDescriptor:desc];
+    [texture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)width, (NSUInteger)height)
+               mipmapLevel:0
+                 withBytes:rgba
+               bytesPerRow:(NSUInteger)width * 4];
+    g_wash = texture;
 }
 
 /* The sound playing: its samples, how many, and how far the queue has been given them. */

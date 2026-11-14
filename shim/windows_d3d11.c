@@ -330,6 +330,12 @@ void oe_set_pictures(const uint8_t *rgba, int32_t side, int32_t count) {
     (void)count;
 }
 
+void oe_set_wash(const uint8_t *rgba, int32_t width, int32_t height) {
+    (void)rgba;
+    (void)width;
+    (void)height;
+}
+
 void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
                    int32_t loop) {
     (void)samples;

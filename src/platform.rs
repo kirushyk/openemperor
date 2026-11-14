@@ -56,6 +56,8 @@ pub struct WorldVertex {
     pub seen: f32,
     /// On the ground, its height; where a liquid lies, how far under its surface it is, below 0.
     /// On an object, how much it shines: 0 for not at all, through paint, to 1 for bare metal.
+    /// On a decal, how much of its picture shows; below 0, a light's glow, adding as much of
+    /// its picture to what lies behind it.
     pub level: f32,
     /// Where on its unit it is, for the backend to lay black stains by, and how black they go.
     /// Below 0, the unit is invisible to its enemies and shimmers for its own side.
@@ -144,24 +146,17 @@ pub const MAX_LIGHTS: usize = 16;
 /// What the ground shader makes of the ground.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Material {
-    /// Water low down, grass on the land.
-    Water = 1,
-    /// Sand low down, dried cracked earth on the raised ground.
-    Sand = 2,
-    /// Lava low down, dried cracked earth on the land.
-    Lava = 3,
-    /// Ice low down, snow on the raised ground.
-    Ice = 4,
-    /// Gravel low down, slate on the raised ground.
-    Stone = 5,
-    /// Moss low down, slate on the raised ground.
-    Moss = 6,
+    /// Only what the ground's own pictures show, lit.
+    Pictured = 0,
 }
 
 /// A frame: the world, for the backend to place, light and shade, then what goes on the screen.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
     pub ground: Vec<WorldVertex>,
+    /// What lies on the ground and lets it show through, unlit, and lights' glows: each corner
+    /// as much of its picture as its level says.
+    pub decals: Vec<WorldVertex>,
     pub material: Material,
     /// Everything solid standing on the map.
     pub objects: Vec<WorldVertex>,
@@ -180,17 +175,21 @@ pub struct Frame {
     pub sun_view: [f32; 16],
     pub camera: [f32; 3],
     pub sun: [f32; 3],
-    /// How a liquid looks to a backend with no shader for it.
-    pub flat_liquid: [f32; 3],
+    /// The light everything gets from all around, and what a face turned to the sun gets.
+    pub ambient: [f32; 3],
+    pub sunlight: [f32; 3],
+    /// How far along x and z the picture given to `Platform::set_wash` reaches over the
+    /// ground; 0 for none.
+    pub wash: [f32; 2],
     pub size: (f32, f32),
 }
 
 impl Frame {
     /// The frame as plain colored triangles in the order given, placed and lit here, for a
-    /// backend with no world pipeline. It has no depth and no shadows.
+    /// backend with no world pipeline. It has no depth and no shadows, and no decals, which
+    /// are only their pictures.
     #[cfg(any(test, not(target_os = "macos")))]
     pub fn flattened(&self) -> Vec<Vertex> {
-        let has_liquid = matches!(self.material, Material::Water | Material::Lava);
         let place = |v: &WorldVertex| {
             let m = &self.view;
             let w = m[3] * v.x + m[7] * v.y + m[11] * v.z + m[15];
@@ -201,12 +200,7 @@ impl Frame {
         let shade = |v: &WorldVertex| {
             let facing: f32 = (0..3).map(|i| v.normal[i] * self.sun[i]).sum();
             let light = (0.45 + 0.55 * facing.max(0.0)) * v.seen;
-            let [r, g, b] = if has_liquid && v.level < 0.0 {
-                self.flat_liquid
-            } else {
-                [v.r, v.g, v.b]
-            };
-            [r * light, g * light, b * light, 1.0]
+            [v.r * light, v.g * light, v.b * light, 1.0]
         };
         let mut flat = Vec::new();
         for triangle in self.ground.chunks(3).chain(self.objects.chunks(3)) {
@@ -289,6 +283,8 @@ pub enum Event {
 struct RawWorld {
     ground: *const WorldVertex,
     ground_count: u32,
+    decals: *const WorldVertex,
+    decals_count: u32,
     objects: *const WorldVertex,
     objects_count: u32,
     casters: *const WorldVertex,
@@ -306,6 +302,9 @@ struct RawWorld {
     sun_view: [f32; 16],
     camera: [f32; 3],
     sun: [f32; 3],
+    ambient: [f32; 3],
+    sunlight: [f32; 3],
+    wash: [f32; 2],
 }
 
 unsafe extern "C" {
@@ -317,6 +316,7 @@ unsafe extern "C" {
     fn oe_draw_world(world: *const RawWorld, clear_r: f32, clear_g: f32, clear_b: f32);
     fn oe_set_backdrop(rgba: *const u8, width: i32, height: i32);
     fn oe_set_pictures(rgba: *const u8, side: i32, count: i32);
+    fn oe_set_wash(rgba: *const u8, width: i32, height: i32);
     fn oe_play_sound(samples: *const f32, frames: u32, channels: i32, rate: i32, looped: i32);
     fn oe_stop_sound();
     fn oe_shutdown();
@@ -389,6 +389,8 @@ impl Platform {
         let world = RawWorld {
             ground: frame.ground.as_ptr(),
             ground_count: frame.ground.len() as u32,
+            decals: frame.decals.as_ptr(),
+            decals_count: frame.decals.len() as u32,
             objects: frame.objects.as_ptr(),
             objects_count: frame.objects.len() as u32,
             casters: frame.casters.as_ptr(),
@@ -406,6 +408,9 @@ impl Platform {
             sun_view: frame.sun_view,
             camera: frame.camera,
             sun: frame.sun,
+            ambient: frame.ambient,
+            sunlight: frame.sunlight,
+            wash: frame.wash,
         };
         // SAFETY: the pointers are valid for their counts, and the shim copies them all before
         // returning.
@@ -464,6 +469,20 @@ impl Platform {
         unsafe { oe_set_pictures(rgba.as_ptr(), side as i32, count as i32) }
     }
 
+    /// The picture laid over the ground, rows of RGBA from the top: each pixel's color, and in
+    /// its alpha how much of it shows over the ground lit. An empty one takes it away.
+    pub fn set_wash(&mut self, rgba: &[u8], width: u32, height: u32) {
+        let pixels = (width * height * 4) as usize;
+        let rgba = if pixels > 0 && rgba.len() >= pixels {
+            rgba.as_ptr()
+        } else {
+            std::ptr::null()
+        };
+        // SAFETY: the bytes hold `width` by `height` pixels or none are given, and the shim
+        // copies them.
+        unsafe { oe_set_wash(rgba, width as i32, height as i32) }
+    }
+
     /// Plays interleaved samples, once or over and over, in place of whatever was playing.
     pub fn play_sound(&mut self, samples: &[f32], channels: u32, rate: u32, looped: bool) {
         let frames = samples.len() / channels.max(1) as usize;
@@ -497,19 +516,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_flattened_frame_places_the_world_under_the_rest_with_liquid_in_its_flat_color() {
+    fn a_flattened_frame_places_the_world_under_the_rest() {
         let mut identity = [0.0; 16];
         for i in [0, 5, 10, 15] {
             identity[i] = 1.0;
         }
-        let corner = |level: f32| WorldVertex {
-            level,
-            ..WorldVertex::solid((0.0, 0.0, 0.0), [0.0, 1.0, 0.0], [0.5, 0.5, 0.5])
-        };
+        let corner =
+            |blue: f32| WorldVertex::solid((0.0, 0.0, 0.0), [0.0, 1.0, 0.0], [0.5, 0.5, blue]);
         let over = Vertex::new((3.0, 4.0), [1.0, 1.0, 1.0, 1.0]);
         let frame = Frame {
-            ground: vec![corner(-1.0), corner(-1.0), corner(1.0)],
-            material: Material::Water,
+            ground: vec![corner(1.0), corner(1.0), corner(0.5)],
+            decals: Vec::new(),
+            material: Material::Pictured,
             objects: Vec::new(),
             casters: Vec::new(),
             effects: Vec::new(),
@@ -521,7 +539,9 @@ mod tests {
             sun_view: identity,
             camera: [0.0; 3],
             sun: [0.0, 1.0, 0.0],
-            flat_liquid: [0.0, 0.0, 1.0],
+            ambient: [0.5; 3],
+            sunlight: [0.5; 3],
+            wash: [0.0; 2],
             size: (100.0, 100.0),
         };
         let flat = frame.flattened();
@@ -531,8 +551,8 @@ mod tests {
             (50.0, 50.0),
             "the middle of the screen"
         );
-        assert_eq!([flat[0].r, flat[0].b], [0.0, 1.0]);
-        assert_eq!(flat[2].r, 0.5);
+        assert_eq!([flat[0].r, flat[0].b], [0.5, 1.0]);
+        assert_eq!(flat[2].b, 0.5);
         assert_eq!(flat[3], over);
     }
 

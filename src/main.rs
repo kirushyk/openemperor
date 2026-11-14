@@ -7,6 +7,7 @@ mod font;
 mod game;
 mod hud;
 mod inflate;
+mod maps;
 #[cfg(target_os = "macos")]
 mod music;
 mod planet;
@@ -25,6 +26,9 @@ use std::time::Instant;
 /// the bag of music, and the menus' track in it.
 #[cfg(target_os = "macos")]
 const DISC: &str = "/Volumes/EMPEROR1";
+/// What on the command line lists the campaign's maps after the skirmish ones.
+#[cfg(target_os = "macos")]
+const CAMPAIGN_MAPS: &str = "--campaign-maps";
 #[cfg(target_os = "macos")]
 const INTRO_MOVIE: &str = "INSTALL/DATA/MOVIES/LEGALS.BIK";
 /// The movie on the disc that plays when a faction is picked for the campaign, before the
@@ -55,6 +59,12 @@ fn main() {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(1, |since| since.subsec_nanos());
+    // The disc's maps are listed before anything asks for one, the campaign's too if asked.
+    #[cfg(target_os = "macos")]
+    maps::load(
+        std::path::Path::new(DISC),
+        std::env::args_os().any(|arg| arg == CAMPAIGN_MAPS),
+    );
     let mut game = game::Game::new(width as f32, height as f32).with_start_seed(seed);
     #[cfg(target_os = "macos")]
     let disc = std::path::Path::new(DISC);
@@ -64,12 +74,14 @@ fn main() {
     #[cfg(target_os = "macos")]
     if mounted {
         render::load_original_models(disc);
+        units::fire_from(render::original_muzzles);
     }
     #[cfg(target_os = "macos")]
     let (mut movie, menu_music, battle_music) = {
         // A movie given on the command line plays in place of the disc's.
         let path = std::env::args_os()
-            .nth(1)
+            .skip(1)
+            .find(|arg| arg != CAMPAIGN_MAPS)
             .map(std::path::PathBuf::from)
             .or_else(|| mounted.then(|| disc.join(INTRO_MOVIE)));
         let intro = path.as_deref().and_then(video::Movie::open);
@@ -101,9 +113,10 @@ fn main() {
     // When the battle track playing now is over, if one is.
     #[cfg(target_os = "macos")]
     let mut battle_track_ends: Option<Instant> = None;
-    // Whether the disc's pictures, read with its models, have been given to the backend.
+    // Which map's ground the disc's pictures, read with its models, were given to the backend
+    // with, once they have been.
     #[cfg(target_os = "macos")]
-    let mut pictures_given = false;
+    let mut pictures_given = None;
     let mut last = Instant::now();
     while !game.quit {
         while let Some(event) = platform.poll_event() {
@@ -175,9 +188,13 @@ fn main() {
             }
         }
         #[cfg(target_os = "macos")]
-        if !pictures_given && let Some(pictures) = render::original_pictures() {
-            platform.set_pictures(pictures, render::PICTURE_SIDE as u32);
-            pictures_given = true;
+        if pictures_given != Some(game.battle_map)
+            && let Some(pictures) = render::original_pictures(game.battle_map)
+        {
+            platform.set_pictures(&pictures, render::PICTURE_SIDE as u32);
+            let (wash, width, height) = render::original_wash(game.battle_map).unwrap_or_default();
+            platform.set_wash(wash, width as u32, height as u32);
+            pictures_given = Some(game.battle_map);
         }
         platform.draw(&render::build_frame(&game), render::clear_color(&game));
     }

@@ -186,6 +186,208 @@ const MODELS: &[(Role, Option<Faction>, &str)] = {
 /// The original's model of a tornado.
 const TORNADO: &str = "Units\\IN_Tornado_H0.xbf";
 
+/// The picture on the build button of each role, for every house or for one, and the grey one
+/// it shows while it cannot be made, as the original's `ArtIni.txt` names them. Ordos have no
+/// helipad on the disc.
+const ICONS: &[(Role, Option<Faction>, &str, &str)] = {
+    use Faction::{Atreides, Harkonnen, Ordos};
+    &[
+        (Role::Scout, Some(Atreides), "AT_Scout", "grey_AT_Scout"),
+        (Role::Scout, Some(Harkonnen), "HK_Scout", "grey_HK_Scout"),
+        (Role::Scout, Some(Ordos), "OR_Scout", "grey_OR_Scout"),
+        (
+            Role::Engineer,
+            Some(Atreides),
+            "AT_Engineer",
+            "Grey_AT_Engineer",
+        ),
+        (
+            Role::Engineer,
+            Some(Harkonnen),
+            "HK_Engineer",
+            "Grey_HK_Engineer",
+        ),
+        (
+            Role::Engineer,
+            Some(Ordos),
+            "OR_Engineer",
+            "Grey_OR_Engineer",
+        ),
+        (Role::AtInfantry, None, "AT_Inf", "grey_AT_Inf"),
+        (Role::AtSniper, None, "AT_Sniper", "grey_AT_Sniper"),
+        (Role::AtKindjal, None, "AT_DeployInf", "grey_AT_DeployInf"),
+        (Role::HkLightInf, None, "HK_LightInf", "grey_HK_LightInf"),
+        (Role::HkTrooper, None, "HK_Trooper", "grey_HK_Trooper"),
+        (Role::HkFlamer, None, "HK_Flamer", "grey_HK_Flamer"),
+        (Role::OrChemical, None, "OR_Chemical", "Grey_OR_Chemical"),
+        (Role::OrSaboteur, None, "OR_Saboteur", "Grey_OR_Saboteur"),
+        (Role::OrMortar, None, "OR_mortar", "grey_OR_mortar"),
+        (Role::AtTrike, None, "At_Trike", "grey_AT_Trike"),
+        (Role::AtRepairUnit, None, "AT_Repair", "grey_AT_Repair"),
+        (Role::AtMongoose, None, "At_Mongoose", "grey_AT_Mongoose"),
+        (
+            Role::AtMinotaurus,
+            None,
+            "At_Minotaurus",
+            "grey_AT_Minotaurus",
+        ),
+        (Role::AtApc, None, "AT_APC", "grey_AT_APC"),
+        (Role::AtOrni, None, "AT_Ornithopter", "grey_AT_Ornithopter"),
+        (Role::AtAdp, None, "AT_Drone", "grey_AT_Drone"),
+        (Role::HkAssault, None, "HK_AsTank", "grey_HK_AsTank"),
+        (Role::HkInkVine, None, "HK_InkVine", "grey_HK_InkVine"),
+        (
+            Role::HkMissile,
+            None,
+            "HK_MissileTank",
+            "grey_HK_MissileTank",
+        ),
+        (Role::HkBuzzsaw, None, "HK_BuzzSaw", "grey_HK_BuzzSaw"),
+        (Role::HkFlame, None, "HK_FlameTank", "grey_HK_FlameTank"),
+        (
+            Role::HkDevastator,
+            None,
+            "HK_Devestator",
+            "grey_HK_Devestator",
+        ),
+        (Role::HkGunship, None, "HK_Gunship", "grey_HK_Gunship"),
+        (Role::HkAdp, None, "HK_Airgun", "grey_HK_Airgun"),
+        (Role::OrDustScout, None, "OR_DustScout", "grey_OR_DustScout"),
+        (Role::OrLaserTank, None, "OR_LaserTank", "grey_OR_LaserTank"),
+        (Role::OrApc, None, "OR_APC", "grey_OR_APC"),
+        (Role::OrKobra, None, "OR_Kobra", "grey_OR_Kobra"),
+        (Role::OrEits, None, "OR_EITS", "grey_OR_EITS"),
+        (Role::OrAdp, None, "OR_ADD", "grey_OR_ADD"),
+        (
+            Role::AdvCarryall,
+            Some(Atreides),
+            "AT_ADVCarryall",
+            "grey_AT_ADVCarryall",
+        ),
+        (
+            Role::AdvCarryall,
+            Some(Harkonnen),
+            "HK_ADVCarryall",
+            "grey_HK_ADVCarryall",
+        ),
+        (
+            Role::AdvCarryall,
+            Some(Ordos),
+            "OR_ADVCarryall",
+            "grey_OR_ADVCarryall",
+        ),
+        (Role::Carryall, None, "G_Carryall", "grey_G_Carryall"),
+        (Role::Mcv, None, "G_MCV", "grey_G_MCV"),
+        (Role::Harvester, None, "G_Harvester", "grey_G_Harvester"),
+        (
+            Role::Barracks,
+            Some(Atreides),
+            "AT_Barracks",
+            "grey_AT_Barracks",
+        ),
+        (
+            Role::Barracks,
+            Some(Harkonnen),
+            "HK_Barraks",
+            "grey_HK_Barraks",
+        ),
+        (
+            Role::Barracks,
+            Some(Ordos),
+            "OR_Barracks",
+            "grey_OR_Barracks",
+        ),
+        (
+            Role::Factory,
+            Some(Atreides),
+            "AT_Factory",
+            "grey_AT_Factory",
+        ),
+        (
+            Role::Factory,
+            Some(Harkonnen),
+            "HK_Factory",
+            "grey_HK_Factory",
+        ),
+        (Role::Factory, Some(Ordos), "OR_Factory", "grey_OR_Factory"),
+        (Role::Hanger, Some(Atreides), "AT_Hanger", "grey_AT_Hanger"),
+        (
+            Role::Hanger,
+            Some(Harkonnen),
+            "HK_Hang_ico",
+            "grey_HK_Hang_ico",
+        ),
+        (Role::Hanger, Some(Ordos), "OR_Hanger", "grey_OR_Hanger"),
+        (
+            Role::Helipad,
+            Some(Atreides),
+            "AT_Helipad",
+            "grey_AT_Helipad",
+        ),
+        (
+            Role::Helipad,
+            Some(Harkonnen),
+            "HK_Helipad",
+            "grey_HK_Helipad",
+        ),
+        (
+            Role::Outpost,
+            Some(Atreides),
+            "AT_Outpost",
+            "grey_AT_Outpost",
+        ),
+        (
+            Role::Outpost,
+            Some(Harkonnen),
+            "HK_Outpost",
+            "grey_HK_Outpost",
+        ),
+        (Role::Outpost, Some(Ordos), "OR_Outpost", "grey_OR_Outpost"),
+        (
+            Role::Refinery,
+            Some(Atreides),
+            "AT_Refinery",
+            "grey_AT_Refinery",
+        ),
+        (
+            Role::Refinery,
+            Some(Harkonnen),
+            "HK_Refinery",
+            "grey_HK_Refinery",
+        ),
+        (
+            Role::Refinery,
+            Some(Ordos),
+            "OR_Refinery",
+            "grey_OR_Refinery",
+        ),
+        (Role::Palace(Atreides), None, "AT_Palace", "grey_AT_Palace"),
+        (Role::Palace(Harkonnen), None, "HK_Palace", "grey_HK_Palace"),
+        (Role::Palace(Ordos), None, "OR_Palace", "grey_OR_Palace"),
+        (Role::AtPillbox, None, "AT_Pillbox", "grey_AT_Pillbox"),
+        (
+            Role::AtRocketTurret,
+            None,
+            "AT_RocketTurret",
+            "grey_AT_RocketTurret",
+        ),
+        (
+            Role::HkFlameTurret,
+            None,
+            "HK_FlameTurret",
+            "grey_HK_FlameTurret",
+        ),
+        (Role::HkGunTurret, None, "HK_GunTurret", "grey_HK_GunTurret"),
+        (Role::OrGasTurret, None, "OR_gasturret", "grey_OR_gasturret"),
+        (
+            Role::OrPopUpTurret,
+            None,
+            "OR_popupturret",
+            "grey_OR_popupturret",
+        ),
+    ]
+};
+
 /// The construction yard each house's MCV deploys into.
 const CONSTRUCTION_YARDS: [(Faction, &str); 3] = [
     (Faction::Atreides, "Buildings\\AT_conyard_H0.XbF"),
@@ -246,8 +448,10 @@ struct Original {
     /// side, one after another.
     stealth: Vec<usize>,
     pictures: Vec<u8>,
-    /// How many pictures the models have, after which a map's own come.
+    /// How many pictures the models, spice and build buttons have, after which a map's own come.
     layers: usize,
+    /// Which of the pictures each of `ICONS` is, lit and grey, if the disc has it.
+    icons: Vec<Option<(usize, usize)>>,
     archive: Archive,
     spice: Option<Spice>,
 }
@@ -774,6 +978,19 @@ fn read_shapes(disc: &Path) -> Option<Original> {
             Some(layers - 1)
         })
         .collect();
+    let mut give = |name: &str| {
+        let image = xbf::tga(&archive.read(&format!("{TEXTURES}{name}.tga"))?)?;
+        pictures.extend(square(&image, false));
+        layers += 1;
+        Some(layers - 1)
+    };
+    let icons = ICONS
+        .iter()
+        .map(|&(_, _, lit, grey)| {
+            let lit = give(lit)?;
+            Some((lit, give(grey).unwrap_or(lit)))
+        })
+        .collect();
     (!shapes.is_empty()).then_some(Original {
         shapes,
         damaged,
@@ -781,6 +998,7 @@ fn read_shapes(disc: &Path) -> Option<Original> {
         stealth,
         pictures,
         layers,
+        icons,
         archive,
         spice,
     })
@@ -1150,6 +1368,26 @@ pub fn stealth(time: f32) -> Option<usize> {
             (time * FRAMES_PER_SECOND) as usize,
         ))
         .copied()
+}
+
+/// Which of the pictures given to the backend is the build button of this role for this
+/// house, grey while it cannot be made, once the disc's are read.
+pub fn icon(role: Role, house: Faction, grey: bool) -> Option<usize> {
+    let (lit, dim) = ORIGINAL.get()?.icons[icon_at(role, house)?]?;
+    Some(if grey { dim } else { lit })
+}
+
+/// Which of `ICONS` is the build button of this role for this house.
+fn icon_at(role: Role, house: Faction) -> Option<usize> {
+    ICONS
+        .iter()
+        .position(|&(of, only, ..)| of == role && only.is_none_or(|h| h == house))
+}
+
+/// Whether the disc is known to have a build button for this role of this house.
+#[cfg(test)]
+pub fn names_icon(role: Role, house: Faction) -> bool {
+    icon_at(role, house).is_some()
 }
 
 /// Whether the unit is drawn with one of the original's models.

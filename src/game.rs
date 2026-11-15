@@ -5865,6 +5865,24 @@ mod tests {
     }
 
     #[test]
+    fn every_house_has_the_discs_picture_for_all_it_builds_but_the_ordos_landing_pad() {
+        for house in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
+            let game = in_battle_as(house);
+            for tab in [BuildTab::Infantry, BuildTab::Vehicles, BuildTab::Buildings] {
+                for role in (0..hud::grid_cells(W, H).len()).filter_map(|i| game.build_role(tab, i))
+                {
+                    let missing = house == Faction::Ordos && role == Role::Helipad;
+                    assert_eq!(
+                        crate::render::names_icon(role, house),
+                        !missing,
+                        "{house:?} {role:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_landing_pad_is_built_from_the_buildings_menu_and_every_side_starts_with_one() {
         let mut game = in_battle();
         assert_eq!(game.build_role(BuildTab::Buildings, 3), Some(Role::Helipad));

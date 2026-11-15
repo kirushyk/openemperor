@@ -23,8 +23,10 @@ mod backdrop;
 mod models;
 mod original;
 
+#[cfg(test)]
+pub use original::names_icon;
 pub use original::{
-    PICTURE_SIDE, load as load_original_models, muzzles as original_muzzles,
+    PICTURE_SIDE, icon as original_icon, load as load_original_models, muzzles as original_muzzles,
     pictures as original_pictures, wash as original_wash,
 };
 
@@ -3908,22 +3910,30 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
         let makes = game.build_role(game.build_tab, i);
         let can_make =
             makes.is_some_and(|role| game.can_produce(role) && !game.is_held_up_by_site(role));
-        let symbol = if can_make { GOLD } else { GOLD_DIM };
-        draw_tab_symbol(canvas, game.build_tab, cx, cy, cell.w * 0.5, symbol);
-        let label = makes.map_or(format!("{letter}{}", i + 1), |role| {
-            short_name(role).to_string()
-        });
-        canvas.text_left(
-            &label,
-            cell.x + 6.0 * s,
-            cell.y + 14.0 * s,
-            chat_px(game),
-            if can_make || makes.is_none() {
-                TEXT
-            } else {
-                QUIET
-            },
-        );
+        // The disc's picture of what it makes, grey while it cannot be made, inside a ring of
+        // the button that still lights up; or else a symbol and a short name.
+        let icon = makes.and_then(|role| original_icon(role, game.faction_of(0), !can_make));
+        if let Some(layer) = icon {
+            let half = cell.w / 2.0 - border_px(game.height) * 2.0;
+            canvas.picture((cx, cy), half, layer);
+        } else {
+            let symbol = if can_make { GOLD } else { GOLD_DIM };
+            draw_tab_symbol(canvas, game.build_tab, cx, cy, cell.w * 0.5, symbol);
+            let label = makes.map_or(format!("{letter}{}", i + 1), |role| {
+                short_name(role).to_string()
+            });
+            canvas.text_left(
+                &label,
+                cell.x + 6.0 * s,
+                cell.y + 14.0 * s,
+                chat_px(game),
+                if can_make || makes.is_none() {
+                    TEXT
+                } else {
+                    QUIET
+                },
+            );
+        }
         if let Some(progress) = makes.and_then(|role| game.making_progress(role)) {
             for wedge in making_dim_wedges((cell.x, cell.y, cell.w, cell.h), progress) {
                 canvas.triangle(wedge, MAKING_DIM);

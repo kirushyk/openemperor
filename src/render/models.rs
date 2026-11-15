@@ -170,9 +170,13 @@ impl Place {
         Place::level(unit).stretched(unit.stretch())
     }
 
-    /// Standing on the ground under the unit, turned to its heading.
+    /// Standing on the ground under the unit, turned to its heading and lying as it leans along
+    /// the slope.
     pub(super) fn level(unit: &Unit) -> Self {
+        let [nose_up, right_down] = unit.lean;
         Place::turned([unit.x, unit.y, unit.z], unit.heading)
+            .pitched([0.0; 3], nose_up)
+            .banked(right_down)
     }
 
     /// Standing at a point, level, turned to a heading.
@@ -196,11 +200,18 @@ impl Place {
     pub(super) fn flying(unit: &Unit) -> Self {
         let mut place = Place::level(unit);
         place.origin[1] += unit.altitude;
-        let (sin, cos) = unit.bank.sin_cos();
-        let (right, up) = (place.across, place.up);
-        place.across = [0, 1, 2].map(|i| right[i] * cos - up[i] * sin);
-        place.up = [0, 1, 2].map(|i| right[i] * sin + up[i] * cos);
-        place
+        place.banked(unit.bank)
+    }
+
+    /// The same place rolled about its length by an angle, its right side down.
+    fn banked(self, angle: f32) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        let (right, up) = (self.across, self.up);
+        Place {
+            across: [0, 1, 2].map(|i| right[i] * cos - up[i] * sin),
+            up: [0, 1, 2].map(|i| right[i] * sin + up[i] * cos),
+            ..self
+        }
     }
 
     /// The same place, with what is made in it stretched this many times [along, up, across].
@@ -1013,7 +1024,8 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
         Role::HkAssault => hk_assault(model, unit, team),
         Role::AtRepairUnit => at_repair_unit(model, unit, team),
         Role::Harvester => harvester(model, unit, team),
-        Role::HkInkVine => hk_ink_vine(model, unit, team),
+        // The Guild's maker has no model of ours: the Inkvine stands in for it.
+        Role::HkInkVine | Role::GuMaker => hk_ink_vine(model, unit, team),
         Role::HkMissile => hk_missile(model, unit, team),
         Role::AtMongoose => at_mongoose(model, unit, team),
         Role::AtMinotaurus => at_minotaurus(model, unit, team),
@@ -1033,7 +1045,8 @@ pub fn draw_machine(canvas: &mut Canvas, unit: &Unit, time: f32, color: [f32; 3]
         Role::OrApc => or_apc(model, time, team),
         Role::OrAdp => or_adp(model, time, team),
         Role::OrEits => or_eits(model, time, team),
-        Role::AtApc => at_apc(model, team),
+        // Nor the Ixian infiltrator: the Atreides APC stands in for it.
+        Role::AtApc | Role::IxInfiltrator => at_apc(model, team),
         _ => return,
     }
     let radius = lamp_radius(unit.role);

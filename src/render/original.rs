@@ -10,8 +10,8 @@ use crate::battlefield::{self, CELL_SIDE, Terrain, View};
 use crate::fog::Fog;
 use crate::game::Faction;
 use crate::platform::{NO_PICTURE, WorldVertex};
-use crate::units::{Harvest, Role, Unit, UnitKind};
-use crate::weapons::REVEAL_SECONDS;
+use crate::units::{Harvest, Role, Unit, UnitKind, Wound};
+use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, TAU};
@@ -170,14 +170,42 @@ const MODELS: &[(Role, Option<Faction>, &str)] = {
         (Role::Palace(Atreides), None, "Buildings\\AT_Palace_H0.XbF"),
         (Role::Palace(Harkonnen), None, "Buildings\\hk_palace_h0.XBF"),
         (Role::Palace(Ordos), None, "Buildings\\OR_Palace_H0.XBF"),
+        (Role::TlFleshVat, None, "Buildings\\TL_Fleshvat_H0.xbf"),
+        (Role::IxResCentre, None, "Buildings\\IX_ResCentre_H0.xbf"),
+        (Role::GuPalace, None, "Buildings\\GU_Palace_H0.xbf"),
+        (Role::ImBarracks, None, "Buildings\\IM_Barracks_H0.xbf"),
+        (Role::FrCamp, None, "Buildings\\FR_Camp_H0.xbf"),
+        (Role::FrFremen, None, "Units\\FR_Fremen_H0.xbf"),
+        (Role::ImSardaukar, None, "Units\\IM_Sardaukar_H0.xbf"),
+        (Role::TlContaminator, None, "Units\\TL_Contaminator_H0.xbf"),
+        (Role::IxInfiltrator, None, "Units\\IX_Infiltrator_H0.xbf"),
+        (Role::GuMaker, None, "Units\\GU_Maker_H0.xbf"),
     ]
 };
+
+/// The original's model of a tornado.
+const TORNADO: &str = "Units\\IN_Tornado_H0.xbf";
 
 /// The construction yard each house's MCV deploys into.
 const CONSTRUCTION_YARDS: [(Faction, &str); 3] = [
     (Faction::Atreides, "Buildings\\AT_conyard_H0.XbF"),
     (Faction::Harkonnen, "Buildings\\HK_conyard_H0.XbF"),
     (Faction::Ordos, "Buildings\\OR_conyard_H0.XBF"),
+];
+
+/// The folder of the buildings' and towers' models, which have damaged ones too.
+const BUILDINGS: &str = "buildings\\";
+/// What the name of a whole model ends with, and what those of its damaged ones do instead,
+/// as it is damaged and then badly.
+const WHOLE: &str = "_h0.";
+const DAMAGED: [&str; 2] = ["_h1.", "_h2."];
+/// How much of its health a building has left when it shows each of its damaged models. The
+/// disc does not say; these are the shares Westwood's games turn a health bar yellow and red at.
+const DAMAGED_BELOW: [f32; 2] = [0.5, 0.25];
+
+/// The houses' and mini-houses' logos among the pictures.
+pub const LOGOS: [&str; 8] = [
+    "atlogo", "hklogo", "orlogo", "frlogo", "imlogo", "ixlogo", "tllogo", "gulogo",
 ];
 
 /// How the original's paint shines.
@@ -209,6 +237,14 @@ static ORIGINAL: OnceLock<Original> = OnceLock::new();
 /// The models read off the disc, and the pictures they are painted with, one after another.
 struct Original {
     shapes: HashMap<&'static str, Shape>,
+    /// A building's or a tower's models as it is damaged, then badly, as the disc has them,
+    /// by the name of its whole one.
+    damaged: HashMap<&'static str, [Option<Shape>; 2]>,
+    /// Which of the pictures each house's logo is, by its name.
+    logos: HashMap<&'static str, usize>,
+    /// Which of the pictures are the frames of the shimmer an invisible unit shows its own
+    /// side, one after another.
+    stealth: Vec<usize>,
     pictures: Vec<u8>,
     /// How many pictures the models have, after which a map's own come.
     layers: usize,
@@ -292,6 +328,8 @@ impl Spice {
 /// to be given to the backend after the models'.
 struct Land {
     pieces: Vec<Piece>,
+    /// How high its sea lies, if it has one: the lowest of it.
+    sea: Option<f32>,
     pictures: Vec<u8>,
     /// The picture laid over all of it, `WASH_PER_CELL` pixels to a cell's side, if it has one.
     wash: Option<Image>,
@@ -312,7 +350,16 @@ struct LandFace {
     normals: [[f32; 3]; 3],
     color: [f32; 3],
     picture: [[f32; 3]; 3],
+    /// Whether it is the sea's surface.
+    sea: bool,
 }
+
+/// The pictures the original paints its seas with: Caladan's, and the one between the ice
+/// sheets of Draconis.
+const SEAS: [&str; 2] = ["sea.tga", "icesea.tga"];
+
+/// How deep the sea is drawn under its surface: the disc's maps have no bed under it.
+const SEA_DEPTH: f32 = 45.25;
 
 /// A face ready to draw, given in its part's own room: painted with the picture `picture` if
 /// it has one, each corner at `uv` on it; otherwise, and for a backend that does not paint
@@ -363,16 +410,18 @@ struct Part {
     lift: bool,
     /// Which of the model's weapon ends it is, for a part that marks one.
     muzzle: Option<usize>,
-    /// For one of the model's lights, the faces that glow, each corner at `uv` on its picture.
-    glows: Vec<Glow>,
+    /// The faces drawn over what lies behind them, each corner at `uv` on its picture.
+    veils: Vec<Veil>,
 }
 
-/// A face of a light that adds its picture to what lies behind it.
+/// A face drawn over what lies behind it: a light's glow, adding its picture, or a
+/// see-through one, laid over it as much as its picture shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Glow {
+struct Veil {
     points: [[f32; 3]; 3],
     layer: usize,
     uv: [[f32; 2]; 3],
+    glows: bool,
 }
 
 impl Part {
@@ -401,6 +450,11 @@ enum Picture {
         image: Image,
         layer: usize,
     },
+    /// What is seen through as much as its alpha says, the backend's `layer`th picture.
+    SeeThrough {
+        image: Image,
+        layer: usize,
+    },
     Missing,
 }
 
@@ -408,7 +462,9 @@ impl Picture {
     /// Which of those given to the backend it is, if it is given.
     fn layer(&self) -> Option<usize> {
         match self {
-            Picture::Painted { layer, .. } | Picture::Glow { layer, .. } => Some(*layer),
+            Picture::Painted { layer, .. }
+            | Picture::Glow { layer, .. }
+            | Picture::SeeThrough { layer, .. } => Some(*layer),
             Picture::Missing => None,
         }
     }
@@ -439,6 +495,11 @@ pub fn pictures(map: usize) -> Option<Vec<u8>> {
 pub fn wash(map: usize) -> Option<(&'static [u8], usize, usize)> {
     let wash = land(map)?.wash.as_ref()?;
     Some((wash.pixels.as_flattened(), wash.width, wash.height))
+}
+
+/// How high the sea of the map of this number lies, once its ground is read, if it has one.
+pub(super) fn sea_level(map: usize) -> Option<f32> {
+    land(map)?.sea
 }
 
 /// How far along x and z the wash of the map of this number reaches over its ground; none
@@ -482,14 +543,26 @@ fn read_land(original: &Original, map: usize) -> Option<Land> {
             picture
         })
         .collect();
+    let seas: Vec<bool> = model
+        .textures
+        .iter()
+        .map(|texture| SEAS.iter().any(|sea| texture.eq_ignore_ascii_case(sea)))
+        .collect();
     let mut pieces = Vec::new();
     for object in &model.objects {
-        gather_land(object, &IDENTITY, &used, &mut pieces);
+        gather_land(object, &IDENTITY, &used, &seas, &mut pieces);
     }
+    let sea = pieces
+        .iter()
+        .flat_map(|piece| &piece.faces)
+        .filter(|face| face.sea)
+        .flat_map(|face| face.points.map(|[_, y, _]| y))
+        .min_by(f32::total_cmp);
     let cells = battlefield::terrain(map).cells();
     let wash = crate::maps::file(map, "test.CPT").and_then(|data| xbf::wash(&data, cells));
     Some(Land {
         pieces,
+        sea,
         pictures: images,
         wash,
     })
@@ -501,6 +574,7 @@ fn gather_land(
     object: &Object,
     above: &[[f32; 4]; 4],
     pictures: &[Picture],
+    seas: &[bool],
     pieces: &mut Vec<Piece>,
 ) {
     let world = times(&object.transform, above);
@@ -529,13 +603,47 @@ fn gather_land(
                 Some(Picture::Painted { layer, .. }) => face.uv.map(|[u, v]| [u, v, *layer as f32]),
                 _ => [NO_PICTURE; 3],
             },
+            sea: face.texture.is_some_and(|n| seas.get(n) == Some(&true)),
         });
     }
     if !faces.is_empty() {
         pieces.push(Piece { covers, faces });
     }
     for child in &object.children {
-        gather_land(child, &world, pictures, pieces);
+        gather_land(child, &world, pictures, seas, pieces);
+    }
+}
+
+/// Adds a face of a map's ground to the ground, or if it is the sea's surface to the water,
+/// under which the color of its picture lies deep.
+fn lay(
+    face: &LandFace,
+    fog: Option<&Fog>,
+    ground: &mut Vec<WorldVertex>,
+    water: &mut Vec<WorldVertex>,
+) {
+    let list = if face.sea { water } else { ground };
+    for n in 0..3 {
+        let [x, y, z] = face.points[n];
+        let [r, g, b] = face.color;
+        list.push(WorldVertex {
+            x,
+            y,
+            z,
+            normal: face.normals[n],
+            r,
+            g,
+            b,
+            seen: battlefield::seen_at(fog, x, z),
+            level: if face.sea { -SEA_DEPTH } else { y },
+            stain: [0.0; 3],
+            picture: if face.sea {
+                NO_PICTURE
+            } else {
+                face.picture[n]
+            },
+            team: [0.0; 3],
+        });
     }
 }
 
@@ -543,6 +651,7 @@ fn gather_land(
 /// the view could show, if it can.
 pub(super) fn draw_land(
     ground: &mut Vec<WorldVertex>,
+    water: &mut Vec<WorldVertex>,
     map: usize,
     fog: Option<&Fog>,
     view: &View,
@@ -562,24 +671,7 @@ pub(super) fn draw_land(
     };
     for piece in land.pieces.iter().filter(|piece| shows(&piece.covers)) {
         for face in &piece.faces {
-            for n in 0..3 {
-                let [x, y, z] = face.points[n];
-                let [r, g, b] = face.color;
-                ground.push(WorldVertex {
-                    x,
-                    y,
-                    z,
-                    normal: face.normals[n],
-                    r,
-                    g,
-                    b,
-                    seen: battlefield::seen_at(fog, x, z),
-                    level: y,
-                    stain: [0.0; 3],
-                    picture: face.picture[n],
-                    team: [0.0; 3],
-                });
-            }
+            lay(face, fog, ground, water);
         }
     }
     true
@@ -624,8 +716,22 @@ fn read_shapes(disc: &Path) -> Option<Original> {
     let mut pictures = HashMap::new();
     let names = MODELS.iter().map(|&(_, _, name)| name);
     let names = names.chain(CONSTRUCTION_YARDS.iter().map(|&(_, name)| name));
+    let names = names.chain([TORNADO]);
     let shapes: HashMap<_, _> = names
         .filter_map(|name| Some((name, read_shape(&archive, name, &mut pictures)?)))
+        .collect();
+    let damaged = shapes
+        .keys()
+        .filter(|name| name.to_lowercase().starts_with(BUILDINGS))
+        .map(|&name| {
+            let variant = |of: &str| {
+                let lower = name.to_lowercase();
+                let at = lower.rfind(WHOLE)?;
+                let variant = format!("{}{of}{}", &lower[..at], &lower[at + WHOLE.len()..]);
+                read_shape(&archive, &variant, &mut pictures)
+            };
+            (name, DAMAGED.map(variant))
+        })
         .collect();
     let mut given: Vec<(usize, Vec<u8>)> = pictures
         .values()
@@ -633,7 +739,9 @@ fn read_shapes(disc: &Path) -> Option<Original> {
             Picture::Painted {
                 image, team, layer, ..
             } => Some((*layer, square(image, *team))),
-            Picture::Glow { image, layer } => Some((*layer, see_through(image))),
+            Picture::Glow { image, layer } | Picture::SeeThrough { image, layer } => {
+                Some((*layer, see_through(image)))
+            }
             Picture::Missing => None,
         })
         .collect();
@@ -648,8 +756,29 @@ fn read_shapes(disc: &Path) -> Option<Original> {
             layers += 1;
             Spice::new(layers - 1)
         });
+    let logos = LOGOS
+        .iter()
+        .filter_map(|&name| {
+            let image = xbf::tga(&archive.read(&format!("{TEXTURES}{name}.tga"))?)?;
+            pictures.extend(see_through(&image));
+            layers += 1;
+            Some((name, layers - 1))
+        })
+        .collect();
+    let stealth = (0..STEALTH_FRAMES)
+        .map_while(|frame| {
+            let name = format!("{TEXTURES}hackedstealth{frame}.tga");
+            let image = xbf::tga(&archive.read(&name)?)?;
+            pictures.extend(see_through(&image));
+            layers += 1;
+            Some(layers - 1)
+        })
+        .collect();
     (!shapes.is_empty()).then_some(Original {
         shapes,
+        damaged,
+        logos,
+        stealth,
         pictures,
         layers,
         archive,
@@ -762,6 +891,7 @@ fn read_picture(archive: &Archive, name: &str, layer: usize) -> Picture {
         .and_then(|data| xbf::tga(&data))
     {
         Some(image) if marks.contains('!') => Picture::Glow { image, layer },
+        Some(image) if marks.contains('@') => Picture::SeeThrough { image, layer },
         Some(image) => Picture::Painted {
             holes: image.pixels.iter().any(|&pixel| is_hole(pixel)),
             image,
@@ -844,27 +974,30 @@ fn gather(
             faces.push(face);
         }
     }
-    let glows = if is_light(&object.name) {
-        object
-            .faces
-            .iter()
-            .filter_map(
-                |face| match face.texture.and_then(|n| pictures.get(n).copied()) {
-                    Some(Picture::Glow { layer, .. }) => Some(Glow {
-                        points: face.corners.map(|corner| object.vertices[corner].position),
-                        layer: *layer,
-                        uv: face.uv,
-                    }),
-                    _ => None,
-                },
-            )
-            .collect()
-    } else {
-        Vec::new()
-    };
+    // A light's glows, and what is seen through, unless it only shows when something has
+    // happened to the unit, as the mark of a leech in it does.
+    let lit = is_light(&object.name);
+    let shown = !object.name.contains(CONDITION_MARK);
+    let veils = object
+        .faces
+        .iter()
+        .filter_map(|face| {
+            let (layer, glows) = match face.texture.and_then(|n| pictures.get(n).copied()) {
+                Some(Picture::Glow { layer, .. }) if lit => (*layer, true),
+                Some(Picture::SeeThrough { layer, .. }) if shown => (*layer, false),
+                _ => return None,
+            };
+            Some(Veil {
+                points: face.corners.map(|corner| object.vertices[corner].position),
+                layer,
+                uv: face.uv,
+                glows,
+            })
+        })
+        .collect();
     shape.parts.push(Part {
         faces,
-        glows,
+        veils,
         parent,
         transform: object.transform,
         animation: object.animation.clone(),
@@ -935,7 +1068,7 @@ fn to_place([x, y, z]: [f32; 3]) -> [f32; 3] {
 fn paint(face: &xbf::Face, picture: Option<&Picture>) -> Option<([f32; 3], f32)> {
     let (image, house) = match picture {
         Some(Picture::Painted { image, team, .. }) => (image, *team),
-        Some(Picture::Glow { .. }) => return None,
+        Some(Picture::Glow { .. } | Picture::SeeThrough { .. }) => return None,
         Some(Picture::Missing) | None => return Some((UNPAINTED, 0.0)),
     };
     let (mut color, mut team, mut cover, mut samples) = ([0.0; 3], 0.0, 0.0, 0.0);
@@ -965,7 +1098,8 @@ fn paint(face: &xbf::Face, picture: Option<&Picture>) -> Option<([f32; 3], f32)>
     Some((color.map(|c| c / cover), team / cover))
 }
 
-/// The model the original has for the unit, if it has been read.
+/// The model the original has for the unit, if it has been read: a building's or a tower's
+/// as damaged as it is.
 fn shape_of(unit: &Unit) -> Option<&'static Shape> {
     let name = if unit.role == Role::Mcv && unit.deployed {
         CONSTRUCTION_YARDS
@@ -978,7 +1112,44 @@ fn shape_of(unit: &Unit) -> Option<&'static Shape> {
             .find(|&&(role, house, _)| role == unit.role && house.is_none_or(|h| h == unit.house))?
             .2
     };
-    ORIGINAL.get()?.shapes.get(name)
+    let original = ORIGINAL.get()?;
+    let share = unit.health / unit.max_health();
+    let damaged = original
+        .damaged
+        .get(name)
+        .and_then(|shapes| as_damaged(share, shapes));
+    damaged.or_else(|| original.shapes.get(name))
+}
+
+/// Of a building's damaged models, the one for this share of its health left: the worst it
+/// is down to that there is, or none while it is still whole enough.
+fn as_damaged<T>(share: f32, shapes: &[Option<T>; 2]) -> Option<&T> {
+    DAMAGED_BELOW
+        .iter()
+        .zip(shapes)
+        .rev()
+        .find_map(|(&below, shape)| shape.as_ref().filter(|_| share < below))
+}
+
+/// Which of the pictures given to the backend is the logo of this name, one of `LOGOS`, once
+/// the disc's pictures have been read.
+pub fn logo(name: &str) -> Option<usize> {
+    ORIGINAL.get()?.logos.get(name).copied()
+}
+
+/// How many frames the shimmer of an invisible unit has.
+const STEALTH_FRAMES: usize = 8;
+
+/// Which of the pictures given to the backend the shimmer of an invisible unit is at this time
+/// of the battle, going round its frames one each update, once the disc's pictures are read.
+pub fn stealth(time: f32) -> Option<usize> {
+    let frames = &ORIGINAL.get()?.stealth;
+    frames
+        .get(looped(
+            &[(0, frames.len())],
+            (time * FRAMES_PER_SECOND) as usize,
+        ))
+        .copied()
 }
 
 /// Whether the unit is drawn with one of the original's models.
@@ -1078,6 +1249,9 @@ fn looped(ranges: &[(usize, usize)], played: usize) -> usize {
     once(ranges, played % total.max(1)).unwrap_or(0)
 }
 
+/// What the name of a part holds that shows only when something has happened to the unit.
+const CONDITION_MARK: char = '{';
+
 /// What a part of a model that marks one of its weapon ends starts with, before the number of
 /// the end.
 const MUZZLE_MARK: &str = ">>";
@@ -1112,10 +1286,9 @@ fn places(shape: &Shape, unit: &Unit) -> (Place, Place) {
     }
 }
 
-/// Where each part of the model is within it at a frame, the barrel lifted as far as the unit
-/// aims its tubes.
-fn pose(shape: &Shape, unit: &Unit, frame: usize) -> Vec<[[f32; 4]; 4]> {
-    let (sin, cos) = unit.tube_pitch.sin_cos();
+/// Where each part of the model is within it at a frame, the barrel lifted by `pitch`.
+fn pose(shape: &Shape, pitch: f32, frame: usize) -> Vec<[[f32; 4]; 4]> {
+    let (sin, cos) = pitch.sin_cos();
     // Turned about its own across, so that its front, along -z, comes up.
     let lifted = [
         [1.0, 0.0, 0.0, 0.0],
@@ -1141,7 +1314,7 @@ pub fn muzzles(unit: &Unit) -> Vec<(f32, f32, f32)> {
     };
     let (body, head) = places(shape, unit);
     let pivot = shape.pivot.unwrap_or_default();
-    let worlds = pose(shape, unit, frame(shape, unit, 0.0));
+    let worlds = pose(shape, unit.tube_pitch, frame(shape, unit, 0.0));
     let mut ends: Vec<(usize, (f32, f32, f32))> = shape
         .parts
         .iter()
@@ -1166,19 +1339,161 @@ pub(super) fn draw(canvas: &mut Canvas, unit: &Unit, team: [f32; 3], time: f32) 
     let Some(shape) = shape_of(unit) else {
         return false;
     };
-    let pivot = shape.pivot.unwrap_or_default();
     let (body, head) = places(shape, unit);
     let frame = frame(shape, unit, time);
-    let worlds = pose(shape, unit, frame);
     // Pictures slide all the time, but a machine's tracks only as it goes.
     let slid = if unit.kind == UnitKind::Vehicle && !unit.is_moving() {
         0.0
     } else {
         time * FRAMES_PER_SECOND
     };
-    let mut glows = Vec::new();
+    let posed = Posed {
+        body,
+        head,
+        frame,
+        slid,
+        worlds: pose(shape, unit.tube_pitch, frame),
+    };
+    draw_posed(canvas, shape, &posed, team);
+    true
+}
+
+/// A model as it is drawn at one time: where its body and its head are, the frame of its
+/// animation it is at, how many frames on its pictures have slid, and where its parts are.
+struct Posed {
+    body: Place,
+    head: Place,
+    frame: usize,
+    slid: f32,
+    worlds: Vec<[[f32; 4]; 4]>,
+}
+
+/// Draws a dead soldier with the original's model, as far into its death as it has got, and
+/// once that is over lying as it ends; sinking into the sand as it goes. False if there is no
+/// model to draw it with.
+pub(super) fn draw_body(canvas: &mut Canvas, body: &Body, team: [f32; 3]) -> bool {
+    let Some(shape) = shape_of(&body.unit) else {
+        return false;
+    };
+    let mut unit = body.unit;
+    unit.y -= (body.age - (BODY_SECONDS - BODY_SINK_SECONDS)).max(0.0) * BODY_SINKING;
+    let (body_place, head) = places(shape, &unit);
+    let frame = body_frame(shape, body);
+    let posed = Posed {
+        body: body_place,
+        head,
+        frame,
+        slid: 0.0,
+        worlds: pose(shape, unit.tube_pitch, frame),
+    };
+    draw_posed(canvas, shape, &posed, team);
+    true
+}
+
+/// How fast a body sinks into the sand as it goes.
+const BODY_SINKING: f32 = 18.1;
+
+/// Which frame of its model a dead soldier is at: as far into the run of its death as it has
+/// got, and its last frame once that is over.
+fn body_frame(shape: &Shape, body: &Body) -> usize {
+    let Some(ranges) = death_run(shape, body) else {
+        return 0;
+    };
+    let played = (body.age * FRAMES_PER_SECOND) as usize;
+    once(ranges, played)
+        .or_else(|| ranges.last().map(|&(_, last)| last))
+        .unwrap_or(0)
+}
+
+/// The run of its model a soldier dies with: the one for how it was wounded, or for dying dug
+/// in if it was; the second of two if it is to die that way and has one; or else as if shot.
+fn death_run<'a>(shape: &'a Shape, body: &Body) -> Option<&'a [(usize, usize)]> {
+    let wound = match body.wound {
+        Wound::Shot | Wound::BlownUp if body.unit.deployed => "Deployed Death",
+        Wound::Shot => "Shot",
+        Wound::BlownUp => "Blow Up",
+        Wound::Burnt => "Burnt",
+        Wound::Gassed => "Gassed",
+        Wound::RunOver => "Run Over",
+    };
+    let (first, second) = (format!("{wound} 1"), format!("{wound} 2"));
+    let names = [
+        body.second.then_some(second.as_str()),
+        Some(first.as_str()),
+        Some("Shot 1"),
+    ];
+    names.into_iter().flatten().find_map(|name| {
+        shape
+            .sequences
+            .iter()
+            .find(|sequence| sequence.name == name)
+            .map(|sequence| sequence.ranges.as_slice())
+    })
+}
+
+/// Draws the original's tornado, as it is at this time of the battle, if it has been read:
+/// coming up out of the sand, whirling, and sinking back into it as it dies away.
+pub(super) fn draw_tornado(canvas: &mut Canvas, tornado: &Tornado, time: f32) -> bool {
+    let Some(shape) = ORIGINAL
+        .get()
+        .and_then(|original| original.shapes.get(TORNADO))
+    else {
+        return false;
+    };
+    let frame = tornado_frame(shape, tornado.age(), tornado.left(), time);
+    let (x, y, z) = tornado.at;
+    let body = Place::turned([x, y, z], tornado.phase);
+    let posed = Posed {
+        body,
+        head: body,
+        frame,
+        slid: time * FRAMES_PER_SECOND,
+        worlds: pose(shape, 0.0, frame),
+    };
+    draw_posed(canvas, shape, &posed, [0.0; 3]);
+    true
+}
+
+/// Which frame of its model a tornado is at, this many seconds since it rose and before it is
+/// gone: rising for as long as its "Surface" plays, then sinking for as long as its "Sink"
+/// does, and in between going round its "Move" at this time of the battle.
+fn tornado_frame(shape: &Shape, age: f32, left: f32, time: f32) -> usize {
+    let find = |name: &str| {
+        shape
+            .sequences
+            .iter()
+            .find(|sequence| sequence.name == name)
+            .map(|sequence| sequence.ranges.as_slice())
+    };
+    let frames = |seconds: f32| (seconds * FRAMES_PER_SECOND) as usize;
+    if let Some(ranges) = find("Sink") {
+        let total: usize = ranges.iter().copied().map(length).sum();
+        // Its last frame as it goes.
+        if frames(left) < total
+            && let Some(frame) = once(ranges, (total - frames(left)).min(total - 1))
+        {
+            return frame;
+        }
+    }
+    if let Some(frame) = find("Surface").and_then(|ranges| once(ranges, frames(age))) {
+        return frame;
+    }
+    find("Move").map_or(0, |ranges| looped(ranges, frames(time)))
+}
+
+/// Draws a posed model in its house color.
+fn draw_posed(canvas: &mut Canvas, shape: &Shape, posed: &Posed, team: [f32; 3]) {
+    let Posed {
+        body,
+        head,
+        frame,
+        slid,
+        ref worlds,
+    } = *posed;
+    let pivot = shape.pivot.unwrap_or_default();
+    let mut veils = Vec::new();
     let mut model = Model::new(canvas, body);
-    for (part, world) in shape.parts.iter().zip(&worlds) {
+    for (part, world) in shape.parts.iter().zip(worlds) {
         let (mut model, from) = if part.head {
             (model.at(head), pivot)
         } else {
@@ -1187,14 +1502,14 @@ pub(super) fn draw(canvas: &mut Canvas, unit: &Unit, team: [f32; 3], time: f32) 
         // Only how far into its picture it has slid: a whole picture on looks the same.
         let slide = part.slide.map(|step| (step * slid).fract());
         let place = if part.head { head } else { body };
-        for glow in &part.glows {
-            glows.extend((0..3).map(|n| {
-                let at = to_place(point(world, glow.points[n]));
+        for veil in &part.veils {
+            veils.extend((0..3).map(|n| {
+                let at = to_place(point(world, veil.points[n]));
                 let [x, y, z] = place.point(std::array::from_fn(|i| at[i] - from[i]));
-                let [u, v] = glow.uv[n];
+                let [u, v] = veil.uv[n];
                 WorldVertex {
-                    picture: [u + slide[0], v + slide[1], glow.layer as f32],
-                    level: GLOW,
+                    picture: [u + slide[0], v + slide[1], veil.layer as f32],
+                    level: if veil.glows { GLOW } else { SEEN_THROUGH },
                     ..WorldVertex::shiny((x, y, z), [0.0, 1.0, 0.0], [1.0; 3], 0.0)
                 }
             }));
@@ -1235,16 +1550,31 @@ pub(super) fn draw(canvas: &mut Canvas, unit: &Unit, team: [f32; 3], time: f32) 
             );
         }
     }
-    canvas.decals.extend(glows);
-    true
+    canvas.decals.extend(veils);
 }
 
 /// What a decal's level is for a light's glow, which adds all of its picture.
 const GLOW: f32 = -1.0;
+/// What it is for what is seen through, which lays all of its picture over what is behind.
+pub(super) const SEEN_THROUGH: f32 = 1.0;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_building_shows_damaged_below_half_its_health_and_badly_below_a_quarter() {
+        let both = [Some("damaged"), Some("badly")];
+        assert_eq!(as_damaged(1.0, &both), None);
+        assert_eq!(as_damaged(0.6, &both), None);
+        assert_eq!(as_damaged(0.4, &both), Some(&"damaged"));
+        assert_eq!(as_damaged(0.1, &both), Some(&"badly"));
+        assert_eq!(
+            as_damaged(0.1, &[Some("damaged"), None]),
+            Some(&"damaged"),
+            "the worst there is"
+        );
+    }
 
     #[test]
     fn the_nose_of_an_original_model_points_along_and_its_right_across() {
@@ -1288,6 +1618,189 @@ mod tests {
             paint(&face(0.25), Some(&Picture::Missing)),
             Some((UNPAINTED, 0.0))
         );
+    }
+
+    #[test]
+    fn a_tornado_is_drawn_from_its_see_through_model_and_without_the_disc_is_not() {
+        let triangle = |name: &str| Object {
+            name: name.into(),
+            transform: IDENTITY,
+            animation: None,
+            bending: None,
+            vertices: [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 900.0, 0.0]]
+                .map(|position| xbf::Vertex {
+                    position,
+                    normal: [0.0, 0.0, -1.0],
+                })
+                .to_vec(),
+            faces: vec![xbf::Face {
+                corners: [0, 1, 2],
+                texture: Some(0),
+                uv: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            }],
+            children: Vec::new(),
+        };
+        let funnel = Picture::SeeThrough {
+            image: Image {
+                width: 1,
+                height: 1,
+                pixels: vec![[200, 180, 140, 90]],
+            },
+            layer: 7,
+        };
+        let mut shape = Shape::default();
+        for name in ["?tornado", "?~~2{LEECH}"] {
+            gather(
+                &triangle(name),
+                None,
+                &IDENTITY,
+                false,
+                &[&funnel],
+                &mut shape,
+            );
+        }
+        let veils = shape.parts.iter().map(|part| part.veils.len());
+        assert_eq!(
+            veils.collect::<Vec<_>>(),
+            [1, 0],
+            "a marker's see-through faces show, but not those that wait on something"
+        );
+        assert!(shape.parts.iter().all(|part| part.faces.is_empty()));
+        let body = Place::turned([0.0; 3], 0.0);
+        let posed = Posed {
+            body,
+            head: body,
+            frame: 0,
+            slid: 0.0,
+            worlds: pose(&shape, 0.0, 0),
+        };
+        let mut canvas = Canvas::default();
+        draw_posed(&mut canvas, &shape, &posed, [0.0; 3]);
+        assert_eq!(canvas.decals.len(), 3);
+        assert!(
+            canvas
+                .decals
+                .iter()
+                .all(|corner| corner.level == SEEN_THROUGH && corner.picture[2] == 7.0)
+        );
+        assert!(canvas.decals.iter().any(|corner| corner.y == 900.0));
+        // Without the disc's models there is none to draw, and ours is drawn.
+        let terrain = Terrain::open_with_cliff(0.0, 2715.0, 271.5);
+        let mut combat = crate::weapons::Combat::default();
+        while combat.tornados.is_empty() {
+            combat.stir_tornados(&terrain, 1.0);
+        }
+        assert!(!draw_tornado(&mut canvas, &combat.tornados[0], 0.0));
+    }
+
+    #[test]
+    fn a_soldier_dies_by_the_run_for_its_wound_to_its_end_and_lies_so() {
+        let sequence = |name: &str, first, last| Sequence {
+            name: name.into(),
+            ranges: vec![(first, last)],
+        };
+        let shape = Shape {
+            sequences: vec![
+                sequence("Shot 1", 100, 130),
+                sequence("Shot 2", 140, 160),
+                sequence("Burnt 1", 200, 260),
+                sequence("Deployed Death 1", 300, 320),
+            ],
+            ..Shape::default()
+        };
+        let body = |wound, second, deployed, age| {
+            let mut unit = Unit::for_test(0.0, 0.0, UnitKind::Infantry);
+            unit.deployed = deployed;
+            Body {
+                unit,
+                wound,
+                second,
+                age,
+            }
+        };
+        let run = |wound, second, deployed| death_run(&shape, &body(wound, second, deployed, 0.0));
+        assert_eq!(run(Wound::Burnt, false, false), Some(&[(200, 260)][..]));
+        assert_eq!(
+            run(Wound::Burnt, true, false),
+            Some(&[(200, 260)][..]),
+            "only one"
+        );
+        assert_eq!(run(Wound::Shot, true, false), Some(&[(140, 160)][..]));
+        assert_eq!(run(Wound::BlownUp, false, true), Some(&[(300, 320)][..]));
+        assert_eq!(
+            run(Wound::Gassed, false, false),
+            Some(&[(100, 130)][..]),
+            "as if shot without a run of its own"
+        );
+        let frame = |age| body_frame(&shape, &body(Wound::Burnt, false, false, age));
+        assert_eq!(frame(0.0), 200);
+        assert_eq!(frame(1.0), 225);
+        assert_eq!(frame(3.0), 260, "played to its end");
+        assert_eq!(frame(8.0), 260, "and lying so");
+    }
+
+    #[test]
+    fn the_sea_on_a_maps_ground_is_drawn_as_water_deep_under_it_and_the_land_as_ground() {
+        let triangle = |texture: usize, y: f32| Object {
+            name: "piece".into(),
+            transform: IDENTITY,
+            animation: None,
+            bending: None,
+            vertices: [[0.0, y, 0.0], [32.0, y, 0.0], [0.0, y, 32.0]]
+                .map(|position| xbf::Vertex {
+                    position,
+                    normal: [0.0, 1.0, 0.0],
+                })
+                .to_vec(),
+            faces: vec![xbf::Face {
+                corners: [0, 1, 2],
+                texture: Some(texture),
+                uv: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            }],
+            children: Vec::new(),
+        };
+        let seas = [false, true];
+        let mut pieces = Vec::new();
+        for (texture, y) in [(0, 20.0), (1, -131.0)] {
+            gather_land(&triangle(texture, y), &IDENTITY, &[], &seas, &mut pieces);
+        }
+        let (mut ground, mut water) = (Vec::new(), Vec::new());
+        for face in pieces.iter().flat_map(|piece| &piece.faces) {
+            lay(face, None, &mut ground, &mut water);
+        }
+        assert_eq!((ground.len(), water.len()), (3, 3));
+        assert!(
+            ground
+                .iter()
+                .all(|corner| corner.y == 20.0 && corner.level == 20.0)
+        );
+        assert!(
+            water
+                .iter()
+                .all(|corner| corner.y == -131.0 && corner.level == -SEA_DEPTH)
+        );
+        assert!(water.iter().all(|corner| corner.picture == NO_PICTURE));
+    }
+
+    #[test]
+    fn a_tornado_surfaces_whirls_and_sinks_by_its_sequences() {
+        let sequence = |name: &str, first, last| Sequence {
+            name: name.into(),
+            ranges: vec![(first, last)],
+        };
+        let shape = Shape {
+            sequences: vec![
+                sequence("Move", 150, 300),
+                sequence("Sink", 300, 450),
+                sequence("Surface", 0, 150),
+            ],
+            ..Shape::default()
+        };
+        assert_eq!(tornado_frame(&shape, 0.0, 30.0, 0.0), 0);
+        assert_eq!(tornado_frame(&shape, 2.0, 28.0, 0.0), 50);
+        assert_eq!(tornado_frame(&shape, 10.0, 20.0, 2.0), 200);
+        assert_eq!(tornado_frame(&shape, 28.0, 2.0, 0.0), 400);
+        assert_eq!(tornado_frame(&shape, 30.0, 0.0, 0.0), 449);
     }
 
     #[test]

@@ -614,3 +614,10 @@ void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int3
 }
 
 void oe_stop_sound(void) {}
+
+void oe_play_line(const float *samples, uint32_t frames, int32_t channels, int32_t rate) {
+    (void)samples;
+    (void)frames;
+    (void)channels;
+    (void)rate;
+}

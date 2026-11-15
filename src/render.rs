@@ -34,6 +34,10 @@ pub const CLEAR: [f32; 3] = [0.05, 0.05, 0.08];
 const INTRO_CLEAR: Color = [0.0, 0.0, 0.0, 1.0];
 const CLEAR_RGBA: Color = [CLEAR[0], CLEAR[1], CLEAR[2], 1.0];
 const TEXT: Color = [0.93, 0.89, 0.78, 1.0];
+/// How far a house's logo reaches from its middle, as a share of the circle it is shown in.
+const LOGO_SHARE: f32 = 0.85;
+/// How far a mini-house's logo reaches from its middle, for each of what its shape would.
+const ALLY_LOGO_SHARE: f32 = 1.4;
 /// How bright a headlight is where it leaves the vehicle.
 const HEADLIGHT: f32 = 0.35;
 /// How bright the flame of a rocket engine is at its nozzle.
@@ -140,6 +144,8 @@ struct Canvas {
     /// What goes on the screen over the whole world.
     vertices: Vec<Vertex>,
     ground: Vec<WorldVertex>,
+    /// The sea's surface.
+    water: Vec<WorldVertex>,
     /// What lies on the ground, see-through.
     decals: Vec<WorldVertex>,
     /// All that stands on the map, solid.
@@ -334,6 +340,25 @@ impl Canvas {
             thickness,
             BANNER_LINE,
             BANNER_LINE_END_ALPHA,
+        );
+    }
+
+    /// One of the pictures given to the backend, square, `half` across from its middle each way.
+    fn picture(&mut self, (cx, cy): (f32, f32), half: f32, layer: usize) {
+        let corner = |(u, v): (f32, f32)| {
+            let at = (cx + (u * 2.0 - 1.0) * half, cy + (v * 2.0 - 1.0) * half);
+            Vertex::pictured(at, (u, v), layer)
+        };
+        self.vertices.extend(
+            [
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
+            ]
+            .map(corner),
         );
     }
 
@@ -693,14 +718,10 @@ pub fn clear_color(game: &Game) -> [f32; 3] {
 #[cfg(test)]
 pub fn build(game: &Game) -> Vec<Vertex> {
     let frame = build_frame(game);
-    let effects = frame.effects.iter().map(|v| Vertex {
-        x: v.x,
-        y: v.y,
-        r: v.r,
-        g: v.g,
-        b: v.b,
-        a: v.a,
-    });
+    let effects = frame
+        .effects
+        .iter()
+        .map(|v| Vertex::premultiplied((v.x, v.y), [v.r, v.g, v.b, v.a]));
     effects.chain(frame.over.iter().copied()).collect()
 }
 
@@ -716,6 +737,7 @@ pub fn build_frame(game: &Game) -> Frame {
     let canvas = canvas_of(game);
     let view = battlefield::View::new(game.camera, game.width, game.height);
     let focus = (game.camera.x, game.camera.z);
+    let sea = original::sea_level(game.battle_map).unwrap_or(0.0);
     Frame {
         lights: if canvas.ground.is_empty() {
             Vec::new()
@@ -723,6 +745,7 @@ pub fn build_frame(game: &Game) -> Frame {
             lights_of(game)
         },
         ground: canvas.ground,
+        water: canvas.water,
         decals: canvas.decals,
         material: terrain.material(),
         objects: canvas.objects,
@@ -731,7 +754,8 @@ pub fn build_frame(game: &Game) -> Frame {
         over: canvas.vertices,
         time: game.battle_time(),
         view: view.matrix(),
-        mirror: view.mirror_matrix(),
+        mirror: view.mirror_matrix(sea),
+        sea,
         sun_view: view.sun_matrix(focus, light.sun, game.width, game.height),
         camera: view.position(),
         sun: light.sun,
@@ -1067,7 +1091,7 @@ fn draw_button(canvas: &mut Canvas, game: &Game, b: Button) {
         } else {
             BORDER
         };
-        draw_planet(canvas, game, faction, button_circle(b), ring);
+        draw_faction(canvas, game, faction, button_circle(b), ring);
         // The name goes below: the moving surface would make it hard to read on top.
         canvas.text_centered(b.label, cx, b.y + b.h + 28.0 * s, 4.0 * s, TEXT);
         return;
@@ -1126,8 +1150,30 @@ fn draw_options_panel(canvas: &mut Canvas, game: &Game) {
     draw_checkboxes(canvas, game, game.checkboxes());
 }
 
-/// A faction's planet inside a thin ring filling the given circle.
-fn draw_planet(
+/// The name of a faction's logo among the disc's pictures.
+fn faction_logo(faction: Faction) -> &'static str {
+    match faction {
+        Faction::Atreides => "atlogo",
+        Faction::Harkonnen => "hklogo",
+        Faction::Ordos => "orlogo",
+    }
+}
+
+/// The name of a mini-house's logo among the disc's pictures, if it is one.
+fn ally_logo(ally: Ally) -> Option<&'static str> {
+    match ally {
+        Ally::None => None,
+        Ally::Tleilaxu => Some("tllogo"),
+        Ally::Ix => Some("ixlogo"),
+        Ally::Guild => Some("gulogo"),
+        Ally::Fremen => Some("frlogo"),
+        Ally::Sardaukar => Some("imlogo"),
+    }
+}
+
+/// A faction's logo from the disc, or without it its planet, inside a thin ring filling the
+/// given circle.
+fn draw_faction(
     canvas: &mut Canvas,
     game: &Game,
     faction: Faction,
@@ -1135,6 +1181,11 @@ fn draw_planet(
     ring: Color,
 ) {
     let border = border_px(game.height);
+    if let Some(layer) = original::logo(faction_logo(faction)) {
+        canvas.bordered_circle((cx, cy), r, border, ring, BUTTON);
+        canvas.picture((cx, cy), r * LOGO_SHARE, layer);
+        return;
+    }
     canvas.circle(cx, cy, r, ring);
     planet::draw(
         &mut canvas.vertices,
@@ -1192,6 +1243,7 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
     let fog = game.fog.as_ref();
     if !original::draw_land(
         &mut canvas.ground,
+        &mut canvas.water,
         game.battle_map,
         fog,
         &view,
@@ -1346,6 +1398,21 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
     draw_on_threads(canvas, &ragdolls, |canvas, ragdoll| {
         let [r, g, b, _] = team_color(ragdoll.unit.color);
         models::draw_ragdoll(canvas, ragdoll, [r, g, b]);
+    });
+    // The dead lie with the original's models, dying as it shows them.
+    let bodies: Vec<_> = game
+        .combat
+        .bodies
+        .iter()
+        .filter(|body| {
+            let (x, y, z) = (body.unit.x, body.unit.y, body.unit.z);
+            game.sight_at(x, z) == Sight::Visible
+                && view.ball_on_screen((x, y, z), RAGDOLL_REACH).is_some()
+        })
+        .collect();
+    draw_on_threads(canvas, &bodies, |canvas, body| {
+        let [r, g, b, _] = team_color(body.unit.color);
+        original::draw_body(canvas, body, [r, g, b]);
     });
     for shatter in game
         .combat
@@ -1819,8 +1886,11 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     for wisp in game.combat.wisps.iter().filter(|w| seen(w.position)) {
         draw_wisp(canvas, view, wisp);
     }
+    // The disc's tornado where it is mounted, ours where it is not.
     for tornado in game.combat.tornados.iter().filter(|t| seen(t.at)) {
-        draw_tornado(canvas, game, view, tornado);
+        if !original::draw_tornado(canvas, tornado, game.battle_time()) {
+            draw_tornado(canvas, game, view, tornado);
+        }
     }
 }
 
@@ -2660,7 +2730,7 @@ fn draw_seen_model(canvas: &mut Canvas, game: &Game, unit: &Unit, seen: Seen) {
             draw_standing_model(canvas, game, unit);
             stain_model(canvas, drawn, unit);
             if unit.is_cloaked() {
-                cloak_model(canvas, drawn);
+                cloak_model(canvas, drawn, original::stealth(game.battle_time()));
             }
         }
         Seen::ShadowOnly => {
@@ -3005,12 +3075,28 @@ fn open_share_of_beam(game: &Game, lens: (f32, f32), far: (f32, f32), from: &Uni
         .fold(1.0, f32::min)
 }
 
-/// Marks what was just drawn of an invisible unit for the backend to draw as a shimmer of grey,
-/// blue and pink, every pixel its own and changing fast. Only its own side ever sees it.
-fn cloak_model(canvas: &mut Canvas, drawn: usize) {
-    for vertex in &mut canvas.objects[drawn..] {
-        vertex.stain = CLOAKED;
-    }
+/// Shows what was just drawn of an invisible unit as the original does, painted all over
+/// with the picture of its shimmer, `shimmer`, and seen through as much as that shows. Without
+/// the disc's, it is marked for the backend to draw as a shimmer of grey, blue and pink, every
+/// pixel its own and changing fast. Only its own side ever sees it.
+fn cloak_model(canvas: &mut Canvas, drawn: usize, shimmer: Option<usize>) {
+    let Some(layer) = shimmer else {
+        for vertex in &mut canvas.objects[drawn..] {
+            vertex.stain = CLOAKED;
+        }
+        return;
+    };
+    let painted = canvas.objects.drain(drawn..).map(|vertex| WorldVertex {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        level: original::SEEN_THROUGH,
+        stain: [0.0; 3],
+        team: [0.0; 3],
+        picture: [vertex.picture[0], vertex.picture[1], layer as f32],
+        ..vertex
+    });
+    canvas.decals.extend(painted);
 }
 
 /// What an invisible unit's stains are set to, for the backend to know it by.
@@ -3926,6 +4012,16 @@ fn short_name(role: Role) -> &'static str {
         Role::Refinery => "Refnry",
         Role::Harvester => "Harvest",
         Role::Palace(_) => "Palace",
+        Role::TlFleshVat => "FleshVat",
+        Role::IxResCentre => "Ix",
+        Role::GuPalace => "Guild",
+        Role::ImBarracks => "Sardkr",
+        Role::FrCamp => "Fremen",
+        Role::FrFremen => "Warrior",
+        Role::ImSardaukar => "Sardaukr",
+        Role::TlContaminator => "Contam",
+        Role::IxInfiltrator => "Infiltr",
+        Role::GuMaker => "Maker",
         Role::AtRocketTurret => "R Turret",
         Role::HkGunTurret => "Gun Trt",
         Role::AtPillbox => "MG Post",
@@ -4099,7 +4195,7 @@ fn draw_diplomacy(canvas: &mut Canvas, game: &Game) {
         match row.faction {
             _ if defeated => canvas.text_left("Defeated", faction_x, cy, px, DEFEAT_RED),
             Some(faction) => {
-                draw_planet(canvas, game, faction, (planet_x, cy, 26.0 * s), BORDER);
+                draw_faction(canvas, game, faction, (planet_x, cy, 26.0 * s), BORDER);
                 canvas.text_left(faction.label(), faction_x, cy, px, TEXT);
             }
             None => canvas.text_left("None", faction_x, cy, px, QUIET),
@@ -4179,7 +4275,7 @@ fn draw_opponents(canvas: &mut Canvas, game: &Game) {
                 canvas.text_centered(opponent.kind.label(), cx, cy, px, text_on(opponent.color));
             }
             Action::CycleOpponentFaction(slot) => {
-                draw_planet(
+                draw_faction(
                     canvas,
                     game,
                     setup.opponents[slot].faction,
@@ -4299,7 +4395,7 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
             Action::StartBattle => draw_button(canvas, game, b),
             Action::CycleFaction => {
                 canvas.text_centered(setup.faction.label(), cx, b.y - 24.0 * s, px, TEXT);
-                draw_planet(canvas, game, setup.faction, button_circle(b), edge);
+                draw_faction(canvas, game, setup.faction, button_circle(b), edge);
                 canvas.text_centered("Click to change", cx, b.y + b.h + 32.0 * s, px, QUIET);
             }
             Action::CycleAlly(slot) => {
@@ -4315,7 +4411,13 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
     draw_checkboxes(canvas, game, setup_checkboxes(game.width, game.height));
 }
 
+/// A mini-house's logo from the disc, or without it its shape, `r` across from its middle, or
+/// "None".
 fn draw_ally(canvas: &mut Canvas, ally: Ally, cx: f32, cy: f32, r: f32, px: f32) {
+    if let Some(layer) = ally_logo(ally).and_then(original::logo) {
+        canvas.picture((cx, cy), r * ALLY_LOGO_SHARE, layer);
+        return;
+    }
     match ally {
         Ally::None => canvas.text_centered("None", cx, cy, px, QUIET),
         Ally::Tleilaxu => canvas.polygon(cx, cy, r, 3, -FRAC_PI_2, TEXT),
@@ -4747,5 +4849,71 @@ mod size_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_house_and_mini_house_has_a_logo_the_disc_has() {
+        for faction in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
+            assert!(original::LOGOS.contains(&faction_logo(faction)));
+        }
+        let allies = [
+            Ally::Tleilaxu,
+            Ally::Ix,
+            Ally::Guild,
+            Ally::Fremen,
+            Ally::Sardaukar,
+        ];
+        for ally in allies {
+            assert!(original::LOGOS.contains(&ally_logo(ally).unwrap()));
+        }
+        assert_eq!(ally_logo(Ally::None), None);
+    }
+
+    #[test]
+    fn a_picture_is_a_square_showing_all_of_it() {
+        let mut canvas = Canvas::default();
+        canvas.picture((100.0, 50.0), 10.0, 3);
+        assert_eq!(canvas.vertices.len(), 6);
+        assert!(canvas.vertices.iter().all(|v| v.layer == 3.0));
+        let corner = |(x, y)| canvas.vertices.iter().find(|v| (v.x, v.y) == (x, y));
+        assert_eq!(corner((90.0, 40.0)).map(|v| (v.u, v.v)), Some((0.0, 0.0)));
+        assert_eq!(corner((110.0, 60.0)).map(|v| (v.u, v.v)), Some((1.0, 1.0)));
+    }
+
+    #[test]
+    fn an_invisible_unit_is_painted_with_the_discs_shimmer_and_seen_through_or_else_marked() {
+        let corner = |u| WorldVertex {
+            picture: [u, 0.5, 2.0],
+            ..WorldVertex::shiny((0.0, 0.0, 0.0), [0.0, 1.0, 0.0], [0.3, 0.2, 0.1], 0.0)
+        };
+        let mut canvas = Canvas::default();
+        canvas.objects.push(corner(0.0));
+        canvas
+            .objects
+            .extend([corner(0.25), corner(0.75), corner(1.0)]);
+        cloak_model(&mut canvas, 1, Some(9));
+        assert_eq!(canvas.objects.len(), 1, "what was drawn before stays");
+        assert_eq!(canvas.decals.len(), 3);
+        for (vertex, u) in canvas.decals.iter().zip([0.25, 0.75, 1.0]) {
+            assert_eq!(
+                vertex.picture,
+                [u, 0.5, 9.0],
+                "its own place on the shimmer"
+            );
+            assert_eq!(vertex.level, original::SEEN_THROUGH);
+            assert_eq!([vertex.r, vertex.g, vertex.b], [1.0; 3]);
+        }
+        let mut canvas = Canvas::default();
+        canvas
+            .objects
+            .extend([corner(0.25), corner(0.75), corner(1.0)]);
+        cloak_model(&mut canvas, 0, None);
+        assert!(canvas.decals.is_empty());
+        assert!(canvas.objects.iter().all(|v| v.stain == CLOAKED));
     }
 }

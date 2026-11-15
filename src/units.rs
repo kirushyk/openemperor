@@ -394,6 +394,26 @@ pub enum Role {
     Refinery,
     /// A house's own seat of power, without which its superweapon cannot fire.
     Palace(Faction),
+    /// The main building of the Tleilaxu, for a house allied with them.
+    TlFleshVat,
+    /// The main building of the house of Ix, for a house allied with them.
+    IxResCentre,
+    /// The main building of the Guild, for a house allied with them.
+    GuPalace,
+    /// The main building of the Sardaukar, for a house allied with them.
+    ImBarracks,
+    /// The main building of the Fremen, for a house allied with them.
+    FrCamp,
+    /// The Fremen's warrior: nobody sees it until it fires its long rifle.
+    FrFremen,
+    /// The Emperor's own soldier, with a heavy machine gun.
+    ImSardaukar,
+    /// The Tleilaxu's slow walker, that stabs infantry up close.
+    TlContaminator,
+    /// The house of Ix's small machine: nobody sees it, and deployed it blows itself up.
+    IxInfiltrator,
+    /// The Guild's machine, lobbing a heavy shell far off.
+    GuMaker,
 }
 
 /// The grid squares a building takes up, lined up with the map's grid: `cols` squares along x
@@ -551,7 +571,10 @@ impl Role {
             | Role::HkLightInf
             | Role::HkTrooper
             | Role::OrSaboteur
-            | Role::OrMortar => UnitKind::Infantry,
+            | Role::OrMortar
+            | Role::FrFremen
+            | Role::ImSardaukar
+            | Role::TlContaminator => UnitKind::Infantry,
             Role::HkAssault
             | Role::AtRepairUnit
             | Role::Mcv
@@ -568,7 +591,9 @@ impl Role {
             | Role::HkInkVine
             | Role::HkMissile
             | Role::AtMongoose
-            | Role::AtMinotaurus => UnitKind::Vehicle,
+            | Role::AtMinotaurus
+            | Role::IxInfiltrator
+            | Role::GuMaker => UnitKind::Vehicle,
             Role::AdvCarryall
             | Role::Carryall
             | Role::HkAdp
@@ -589,7 +614,12 @@ impl Role {
             | Role::Helipad
             | Role::Refinery
             | Role::Outpost
-            | Role::Palace(_) => UnitKind::Building,
+            | Role::Palace(_)
+            | Role::TlFleshVat
+            | Role::IxResCentre
+            | Role::GuPalace
+            | Role::ImBarracks
+            | Role::FrCamp => UnitKind::Building,
         }
     }
 
@@ -646,6 +676,16 @@ impl Role {
             Role::Palace(Faction::Atreides) => "Atreides Palace",
             Role::Palace(Faction::Harkonnen) => "Harkonnen Palace",
             Role::Palace(Faction::Ordos) => "Ordos Palace",
+            Role::TlFleshVat => "Tleilaxu Flesh Vat",
+            Role::IxResCentre => "House of Ix",
+            Role::GuPalace => "Guild Palace",
+            Role::ImBarracks => "Sardaukar Barracks",
+            Role::FrCamp => "Fremen Camp",
+            Role::FrFremen => "Fremen Warrior",
+            Role::ImSardaukar => "Imperial Sardaukar",
+            Role::TlContaminator => "Tleilaxu Contaminator",
+            Role::IxInfiltrator => "Ixian Infiltrator",
+            Role::GuMaker => "Guild Maker",
         }
     }
 
@@ -674,7 +714,17 @@ impl Role {
             | Role::Hanger
             | Role::Helipad
             | Role::Refinery
-            | Role::Palace(_) => WeaponKind::Unarmed,
+            | Role::Palace(_)
+            | Role::TlFleshVat
+            | Role::IxResCentre
+            | Role::GuPalace
+            | Role::ImBarracks
+            | Role::FrCamp
+            | Role::IxInfiltrator => WeaponKind::Unarmed,
+            Role::FrFremen => WeaponKind::Sniper,
+            Role::ImSardaukar => WeaponKind::Bullet,
+            Role::TlContaminator => WeaponKind::Pistol,
+            Role::GuMaker => WeaponKind::Mortar,
             Role::AtSniper => WeaponKind::Sniper,
             Role::Engineer | Role::AtKindjal => WeaponKind::Pistol,
             Role::HkAssault => WeaponKind::Cannon,
@@ -727,6 +777,14 @@ impl Role {
             Role::HkGunship => 320.0,
             Role::Helipad => 400.0,
             Role::Palace(_) => 1200.0,
+            Role::GuPalace => 2000.0,
+            Role::ImBarracks => 1000.0,
+            Role::FrCamp => 650.0,
+            Role::FrFremen => 130.0,
+            Role::ImSardaukar => 150.0,
+            Role::TlContaminator => 170.0,
+            Role::IxInfiltrator => 200.0,
+            Role::GuMaker => 250.0,
             Role::HkFlameTurret => 500.0,
             Role::AtPillbox | Role::OrGasTurret | Role::OrPopUpTurret => 450.0,
             _ => self.kind().max_health(),
@@ -742,7 +800,15 @@ impl Role {
                 Faction::Harkonnen => 6.0,
                 Faction::Ordos => 8.0,
             },
-            Role::AtInfantry | Role::AtSniper | Role::OrChemical | Role::OrSaboteur => 6.0,
+            Role::AtInfantry
+            | Role::AtSniper
+            | Role::OrChemical
+            | Role::OrSaboteur
+            | Role::FrFremen
+            | Role::ImSardaukar => 6.0,
+            Role::TlContaminator => 3.5,
+            Role::IxInfiltrator => 7.0,
+            Role::GuMaker => 4.0,
             Role::Engineer
             | Role::AtKindjal
             | Role::HkLightInf
@@ -810,7 +876,10 @@ impl Role {
             Role::Harvester => 12.0,
             Role::Helipad => 10.0,
             Role::Refinery => 18.0,
-            Role::Palace(_) => 30.0,
+            Role::Palace(_) | Role::GuPalace => 30.0,
+            Role::TlFleshVat | Role::IxResCentre | Role::ImBarracks | Role::FrCamp => 20.0,
+            Role::FrFremen | Role::ImSardaukar | Role::TlContaminator | Role::IxInfiltrator => 11.0,
+            Role::GuMaker => 15.0,
             Role::Outpost => 20.0,
             Role::Barracks => 15.0,
             Role::Factory | Role::Hanger => 20.0,
@@ -859,12 +928,40 @@ impl Role {
             Role::Hanger => 1100,
             Role::Refinery => 1500,
             Role::Palace(_) => 1600,
+            Role::TlFleshVat | Role::IxResCentre => 1000,
+            Role::GuPalace => 2000,
+            Role::ImBarracks => 700,
+            Role::FrCamp => 600,
+            Role::FrFremen => 150,
+            Role::ImSardaukar | Role::TlContaminator => 300,
+            Role::IxInfiltrator => 500,
+            Role::GuMaker => 1000,
+        }
+    }
+
+    /// What else its builder must have standing besides a construction yard: a mini-house's
+    /// main building needs a factory, or one that trains soldiers a barracks.
+    pub fn needs(self) -> Option<Role> {
+        match self {
+            Role::TlFleshVat | Role::IxResCentre | Role::GuPalace => Some(Role::Factory),
+            Role::ImBarracks | Role::FrCamp => Some(Role::Barracks),
+            _ => None,
         }
     }
 
     /// Whether it is a building that makes units.
     pub fn makes_units(self) -> bool {
-        matches!(self, Role::Barracks | Role::Factory | Role::Hanger)
+        matches!(
+            self,
+            Role::Barracks
+                | Role::Factory
+                | Role::Hanger
+                | Role::TlFleshVat
+                | Role::IxResCentre
+                | Role::GuPalace
+                | Role::ImBarracks
+                | Role::FrCamp
+        )
     }
 
     /// How many seconds it takes to set up what it deploys and to pack that up again, for one
@@ -888,6 +985,7 @@ impl Role {
                 | Role::HkDevastator
                 | Role::Mcv
                 | Role::OrEits
+                | Role::IxInfiltrator
         )
     }
 
@@ -951,7 +1049,10 @@ impl Role {
             Role::Palace(Faction::Harkonnen) => 117.7,
             Role::Outpost => 67.88,
             Role::Barracks => 90.51,
-            Role::Factory | Role::Hanger => 99.56,
+            Role::Factory | Role::Hanger | Role::FrCamp => 99.56,
+            Role::TlFleshVat | Role::ImBarracks => 67.88,
+            Role::IxResCentre => 117.7,
+            Role::GuPalace => 126.7,
             _ => self.kind().radius(),
         }
     }
@@ -977,6 +1078,11 @@ impl Role {
             (Role::Palace(Harkonnen), _) => (9, 7),
             (Role::Palace(Ordos), _) => (9, 6),
             (Role::Refinery, _) => (11, 7),
+            (Role::TlFleshVat, _) => (3, 6),
+            (Role::IxResCentre, _) => (7, 7),
+            (Role::GuPalace, _) => (7, 13),
+            (Role::ImBarracks, _) => (3, 5),
+            (Role::FrCamp, _) => (6, 6),
             (Role::Helipad, _) => (2, 3),
             // Deployed, as big as the original's construction yard.
             (Role::Mcv, Harkonnen) => (5, 8),
@@ -998,6 +1104,10 @@ impl Role {
             (Role::Palace(Atreides), _) => 220.0,
             (Role::Palace(Harkonnen), _) => 285.0,
             (Role::Palace(Ordos), _) => 200.0,
+            (Role::TlFleshVat, _) => 120.0,
+            (Role::IxResCentre, _) => 180.0,
+            (Role::GuPalace, _) => 260.0,
+            (Role::ImBarracks, _) => 80.0,
             (Role::OrGasTurret, _) => 20.0,
             (Role::OrPopUpTurret, _) => 50.0,
             (
@@ -1007,6 +1117,18 @@ impl Role {
             (Role::Helipad, _) => 72.0,
             (Role::Mcv, _) => 107.0,
             _ => 100.0,
+        }
+    }
+
+    /// What the original's rules call it, for a unit of this house: its own name, which our
+    /// name for it is in Rust's case, or for one every house has, its house's letters before it.
+    pub fn rules_name(self, house: Faction) -> String {
+        let name = format!("{self:?}");
+        match name.get(..2) {
+            Some(own @ ("At" | "Hk" | "Or" | "Tl" | "Ix" | "Gu" | "Im" | "Fr")) => {
+                own.to_uppercase() + &name[2..]
+            }
+            _ => house_letters(house).to_string() + &name,
         }
     }
 
@@ -1053,12 +1175,22 @@ impl Role {
             Role::HkGunship => [62.0, 27.2, 84.7],
             Role::OrAdp => [18.5, 32.4, 24.6],
             Role::OrEits => [69.3, 22.5, 38.3],
+            Role::FrFremen => [23.1, 35.9, 20.5],
+            Role::ImSardaukar => [15.3, 38.0, 20.7],
+            Role::TlContaminator => [19.1, 33.4, 16.3],
+            Role::IxInfiltrator => [51.7, 12.8, 20.6],
+            Role::GuMaker => [61.2, 28.8, 28.9],
             Role::Barracks
             | Role::Factory
             | Role::Hanger
             | Role::Refinery
             | Role::Outpost
             | Role::Palace(_)
+            | Role::TlFleshVat
+            | Role::IxResCentre
+            | Role::GuPalace
+            | Role::ImBarracks
+            | Role::FrCamp
             | Role::Helipad
             | Role::AtRocketTurret
             | Role::HkFlameTurret
@@ -1080,7 +1212,9 @@ impl Role {
     /// `original_size`. Drawing tests keep these up to date with the models.
     pub fn made_size(self) -> [f32; 3] {
         match self {
-            Role::AtInfantry => [0.415, 0.664, 0.2685],
+            Role::AtInfantry | Role::FrFremen | Role::ImSardaukar | Role::TlContaminator => {
+                [0.415, 0.664, 0.2685]
+            }
             Role::Scout => [0.31, 0.7703, 0.2685],
             Role::AtSniper => [0.645, 0.656, 0.2685],
             Role::Engineer => [0.4359, 0.675, 0.3266],
@@ -1102,8 +1236,9 @@ impl Role {
             Role::OrLaserTank => [0.946, 0.585, 0.6],
             Role::OrKobra => [1.77, 0.5808, 0.8],
             Role::OrApc => [1.058, 0.5366, 0.78],
-            Role::AtApc => [1.128, 0.5, 0.6],
-            Role::HkInkVine => [0.9416, 0.46, 0.524],
+            // Drawn with another's model, without the disc's.
+            Role::AtApc | Role::IxInfiltrator => [1.128, 0.5, 0.6],
+            Role::HkInkVine | Role::GuMaker => [0.9416, 0.46, 0.524],
             Role::HkMissile => [0.886, 0.439, 0.53],
             Role::AtMongoose => [0.776, 0.95, 0.4258],
             Role::AtMinotaurus => [1.87, 1.3, 0.9511],
@@ -1117,7 +1252,13 @@ impl Role {
             Role::OrEits => [1.34, 0.53, 1.08],
             Role::Barracks => [2.0, 0.69, 1.424],
             Role::Factory => [2.1, 1.5, 1.724],
-            Role::Hanger => [2.2, 0.86, 1.824],
+            // The plain block drawn for a building with no model of its own.
+            Role::Hanger
+            | Role::TlFleshVat
+            | Role::IxResCentre
+            | Role::GuPalace
+            | Role::ImBarracks
+            | Role::FrCamp => [2.2, 0.86, 1.824],
             Role::Refinery => [6.8307, 4.0, 5.2],
             Role::Outpost => [2.3, 1.95, 2.324],
             Role::Palace(Faction::Atreides) => [2.4, 1.5, 2.0],
@@ -1276,13 +1417,18 @@ impl Role {
         }
     }
 
-    /// The building that makes it, if anything does.
+    /// The building that makes it, if anything does: a mini-house's own for its units.
     pub fn made_in(self) -> Option<Role> {
-        match self.kind() {
-            UnitKind::Infantry => Some(Role::Barracks),
-            UnitKind::Vehicle => Some(Role::Factory),
-            UnitKind::Aircraft => Some(Role::Hanger),
-            UnitKind::Tower | UnitKind::Building => None,
+        match (self, self.kind()) {
+            (Role::FrFremen, _) => Some(Role::FrCamp),
+            (Role::ImSardaukar, _) => Some(Role::ImBarracks),
+            (Role::TlContaminator, _) => Some(Role::TlFleshVat),
+            (Role::IxInfiltrator, _) => Some(Role::IxResCentre),
+            (Role::GuMaker, _) => Some(Role::GuPalace),
+            (_, UnitKind::Infantry) => Some(Role::Barracks),
+            (_, UnitKind::Vehicle) => Some(Role::Factory),
+            (_, UnitKind::Aircraft) => Some(Role::Hanger),
+            (_, UnitKind::Tower | UnitKind::Building) => None,
         }
     }
 
@@ -1413,6 +1559,17 @@ pub enum Target {
     RunOver(u32),
 }
 
+/// How a unit was last hurt, which is how a soldier dies if that kills it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Wound {
+    #[default]
+    Shot,
+    BlownUp,
+    Burnt,
+    Gassed,
+    RunOver,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Unit {
     pub role: Role,
@@ -1470,6 +1627,11 @@ pub struct Unit {
     pub stride: f32,
     /// How far it leans into a turn along its length, in radians: positive to its right.
     pub bank: f32,
+    /// How a machine on the ground lies along the slope under it, in radians: its nose up, and
+    /// its right side down.
+    pub lean: [f32; 2],
+    /// How it was last hurt.
+    pub wound: Wound,
     /// Whether what sits on the ground has an enemy near enough to go up and fire on.
     alerted: bool,
     /// Whether a carryall holds a vehicle.
@@ -1993,8 +2155,10 @@ impl Unit {
 
     /// Whether it can go invisible: a scout, an Atreides APC, and a sniper with all three medals.
     pub fn can_cloak(&self) -> bool {
-        matches!(self.role, Role::Scout | Role::AtApc)
-            || (self.role == Role::AtSniper && self.rank() >= 3)
+        matches!(
+            self.role,
+            Role::Scout | Role::AtApc | Role::FrFremen | Role::IxInfiltrator
+        ) || (self.role == Role::AtSniper && self.rank() >= 3)
     }
 
     /// Whether it is invisible now: it shows for a while each time it opens fire.
@@ -2446,6 +2610,8 @@ impl Unit {
             recoil: [0.0; 4],
             stride: 0.0,
             bank: 0.0,
+            lean: [0.0; 2],
+            wound: Wound::Shot,
             alerted: false,
             carrying: false,
             unloading: false,
@@ -2598,6 +2764,8 @@ fn place_unit(
         recoil: [0.0; 4],
         stride: 0.0,
         bank: 0.0,
+        lean: [0.0; 2],
+        wound: Wound::Shot,
         alerted: false,
         carrying: false,
         unloading: false,
@@ -2627,6 +2795,9 @@ fn place_unit(
         passengers: [None; APC_ROOM],
         boarding: None,
     });
+    if let Some(unit) = units.last_mut() {
+        unit.lean = lean_on(terrain, unit);
+    }
 }
 
 #[cfg(test)]
@@ -2949,6 +3120,52 @@ pub fn leaves_lanes(units: &[Unit], plot: Plot, lane: i32) -> bool {
         .all(|theirs| plot.gap_to(theirs) >= lane)
 }
 
+/// How much of the way to lying along the ground under it a machine comes each second.
+const LEAN_RATE: f32 = 8.0;
+/// The most a machine leans, in radians, so that it does not stand up against a cliff.
+const MOST_LEAN: f32 = 0.5;
+
+/// How a unit would lie along the ground under it: a machine on the ground with its nose up as
+/// much higher the ground is under its front than its back, and its right side down as much
+/// lower it is there than on its left. Anything else stays upright.
+fn lean_on(terrain: &Terrain, unit: &Unit) -> [f32; 2] {
+    if unit.kind != UnitKind::Vehicle || unit.altitude > 0.0 {
+        return [0.0; 2];
+    }
+    let [along, _, across] = unit.role.original_size(unit.house);
+    let (sin, cos) = unit.heading.sin_cos();
+    let ground = |ahead: f32, side: f32| {
+        terrain.height_at(
+            unit.x + cos * ahead - sin * side,
+            unit.z + sin * ahead + cos * side,
+        )
+    };
+    let (front, back) = (ground(along / 2.0, 0.0), ground(-along / 2.0, 0.0));
+    let (right, left) = (ground(0.0, across / 2.0), ground(0.0, -across / 2.0));
+    [
+        (front - back).atan2(along).clamp(-MOST_LEAN, MOST_LEAN),
+        (left - right).atan2(across).clamp(-MOST_LEAN, MOST_LEAN),
+    ]
+}
+
+/// Brings a unit's lean nearer to how the ground under it lies, as it goes over it.
+fn settle_lean(unit: &mut Unit, terrain: &Terrain, dt: f32) {
+    let wanted = lean_on(terrain, unit);
+    let share = (LEAN_RATE * dt).min(1.0);
+    for (lean, wanted) in unit.lean.iter_mut().zip(wanted) {
+        *lean += (wanted - *lean) * share;
+    }
+}
+
+/// The letters the original's rules put before the names of a house's units.
+pub fn house_letters(house: Faction) -> &'static str {
+    match house {
+        Faction::Atreides => "AT",
+        Faction::Harkonnen => "HK",
+        Faction::Ordos => "OR",
+    }
+}
+
 /// A new building that has not been put anywhere yet.
 pub fn new_building(
     terrain: &Terrain,
@@ -3121,7 +3338,9 @@ pub fn switch_deployed(unit: &mut Unit) {
         (Role::OrMortar, true) => WeaponKind::Mortar,
         (Role::OrKobra, true) => WeaponKind::Siege,
         (Role::OrKobra, false) => WeaponKind::Cannon,
-        (Role::OrSaboteur | Role::HkDevastator | Role::OrEits, _) => WeaponKind::Unarmed,
+        (Role::OrSaboteur | Role::HkDevastator | Role::OrEits | Role::IxInfiltrator, _) => {
+            WeaponKind::Unarmed
+        }
         _ => WeaponKind::Pistol,
     };
     unit.destination = (unit.x, unit.z);
@@ -3911,6 +4130,7 @@ fn squash(units: &mut [Unit], teams: &[usize]) {
             let (dx, dz) = (units[b].x - units[a].x, units[b].z - units[a].z);
             let dy = units[b].sphere_y() - units[a].sphere_y();
             if dx.hypot(dz).hypot(dy) < units[a].radius() + units[b].radius() {
+                units[b].wound = Wound::RunOver;
                 units[b].alive = false;
                 units[b].selected = false;
                 let value = units[b].kind.kill_value();
@@ -4207,6 +4427,7 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
             // What flies keeps above the land's level over a pit.
             unit.y = unit.y.max(0.0);
         }
+        settle_lean(unit, terrain, dt);
         give_up_if_stuck(unit, held_back[i], dt);
         if !unit.kind.flies() {
             watch_for_stall(unit, dt);
@@ -4432,6 +4653,7 @@ pub fn carry(
             carrier.carrying = false;
             carrier.unloading = false;
             vehicle.y = terrain.height_at(spot.0, spot.1);
+            vehicle.lean = lean_on(terrain, vehicle);
             vehicle.destination = spot;
             vehicle.reset_progress();
             units.push(load.vehicle);
@@ -4987,6 +5209,7 @@ pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32],
                 // Its tracks run backwards.
                 unit.stride -= step.min(left);
                 unit.y = terrain.height_at(unit.x, unit.z);
+                settle_lean(unit, terrain, dt);
                 unit.destination = (unit.x, unit.z);
             }
             (Harvest::Dumping(_), Some((owner, (x, z), (out_x, out_z)))) => {
@@ -5456,6 +5679,7 @@ mod tests {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
         assert!(!units[1].alive, "run over");
+        assert_eq!(units[1].wound, Wound::RunOver);
         assert!(units[0].alive);
         assert!(
             (units[0].x - (MAP_MIDDLE_X + 135.8)).abs() < 9.051,
@@ -9360,6 +9584,45 @@ mod tests {
         );
         assert!(harvester.load > 0.0, "{harvester:?}");
         assert_eq!(harvester.harvest, Harvest::Collecting);
+    }
+
+    #[test]
+    fn a_machine_lies_along_the_slope_under_it_and_a_soldier_stands_up_straight() {
+        const RISE: f32 = 8.0;
+        let terrain = &Terrain::open_rock().with_rise_east(RISE);
+        let slope = (RISE / CELL_SIDE).atan();
+        let mut tank = unit_at(MAP_MIDDLE_X, MAP_MIDDLE_Z, UnitKind::Vehicle);
+        tank.role = Role::HkAssault;
+        // Nose to the east, up the slope.
+        tank.heading = 0.0;
+        let [nose_up, right_down] = lean_on(terrain, &tank);
+        assert!((nose_up - slope).abs() < 0.01, "{nose_up} {slope}");
+        assert!(right_down.abs() < 0.01);
+        // Nose to the south: its right side is to the west, down the slope.
+        tank.heading = FRAC_PI_2;
+        let [nose_up, right_down] = lean_on(terrain, &tank);
+        assert!(nose_up.abs() < 0.01);
+        assert!((right_down - slope).abs() < 0.01, "{right_down}");
+
+        // It comes round to it as it goes, not all at once.
+        tank.lean = [0.0; 2];
+        settle_lean(&mut tank, terrain, 0.05);
+        assert!(tank.lean[1] > 0.0 && tank.lean[1] < slope * 0.5);
+        for _ in 0..40 {
+            settle_lean(&mut tank, terrain, 0.05);
+        }
+        assert!((tank.lean[1] - slope).abs() < 0.01);
+
+        let soldier = unit_at(MAP_MIDDLE_X, MAP_MIDDLE_Z, UnitKind::Infantry);
+        assert_eq!(lean_on(terrain, &soldier), [0.0; 2]);
+        let mut flying = tank;
+        flying.altitude = 50.0;
+        assert_eq!(lean_on(terrain, &flying), [0.0; 2]);
+        assert_eq!(
+            lean_on(&Terrain::open_rock(), &tank),
+            [0.0; 2],
+            "flat ground"
+        );
     }
 
     #[test]

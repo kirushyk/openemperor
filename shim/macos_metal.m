@@ -9,14 +9,22 @@
 static NSString *const kShader = @
     "#include <metal_stdlib>\n"
     "using namespace metal;\n"
-    "struct In { packed_float2 pos; packed_float4 color; };\n"
+    "struct In { packed_float2 pos; packed_float4 color; packed_float2 uv; float layer; };\n"
     "struct Out { float4 pos [[position]]; float4 color; };\n"
-    "vertex Out vs(uint id [[vertex_id]], const device In *v [[buffer(0)]],\n"
-    "              constant float2 &size [[buffer(1)]]) {\n"
+    "struct OverOut { float4 pos [[position]]; float4 color; float2 uv; float layer [[flat]]; };\n"
+    "vertex OverOut vs(uint id [[vertex_id]], const device In *v [[buffer(0)]],\n"
+    "                  constant float2 &size [[buffer(1)]]) {\n"
     "  float2 p = float2(v[id].pos) / size * 2.0 - 1.0;\n"
-    "  Out o; o.pos = float4(p.x, -p.y, 0.0, 1.0); o.color = float4(v[id].color); return o;\n"
+    "  OverOut o; o.pos = float4(p.x, -p.y, 0.0, 1.0); o.color = float4(v[id].color);\n"
+    "  o.uv = float2(v[id].uv); o.layer = v[id].layer; return o;\n"
     "}\n"
-    "fragment float4 fs(Out in [[stage_in]]) { return in.color; }\n"
+    /* A corner with a picture shows it, its see-through parts letting through what is under. */
+    "fragment float4 fs(OverOut in [[stage_in]], texture2d_array<float> pictures [[texture(2)]],\n"
+    "                   sampler smooth [[sampler(0)]]) {\n"
+    "  if (in.layer < 0.0) return in.color;\n"
+    "  float4 t = pictures.sample(smooth, in.uv, uint(in.layer + 0.5));\n"
+    "  return in.color * float4(t.rgb * t.a, t.a);\n"
+    "}\n"
     /* The backdrop: one rectangle, given by its corners in clip space, made of six corners. */
     "struct ImageOut { float4 pos [[position]]; float2 uv; };\n"
     "vertex ImageOut vs_image(uint id [[vertex_id]], constant float4 &rect [[buffer(1)]]) {\n"
@@ -34,6 +42,7 @@ static NSString *const kShader = @
     "  float3 at = float3(v[id].pos); float2 p = at.xy / size * 2.0 - 1.0;\n"
     "  Out o; o.pos = float4(p.x, -p.y, at.z, 1.0); o.color = float4(v[id].color); return o;\n"
     "}\n"
+    "fragment float4 fs_effect(Out in [[stage_in]]) { return in.color; }\n"
     /* A tile's diagonal, in world units: the original game's coordinates, 32 to a tile's side. */
     "constant float TILE_DIAGONAL = 45.254834;\n"
     "struct WorldIn { packed_float3 pos; packed_float3 normal; packed_float3 color; float seen; float level; packed_float3 stain;\n"
@@ -43,7 +52,7 @@ static NSString *const kShader = @
     "struct PointLight { packed_float3 place; float radius; packed_float3 color; float unused; };\n"
     "struct Sky { float4x4 view; float4x4 sun_view; float2 size; float time; int material;\n"
     "             float3 camera; float3 sun; float3 air; float3 sunlight; int mirrored; int light_count;\n"
-    "             float2 wash; PointLight lights[16]; };\n"
+    "             float2 wash; float sea; float spare[3]; PointLight lights[16]; };\n"
     "vertex WorldOut vs_world(uint id [[vertex_id]], const device WorldIn *v [[buffer(0)]],\n"
     "                         constant Sky &sky [[buffer(1)]]) {\n"
     "  WorldOut o; o.world = float3(v[id].pos); o.pos = sky.view * float4(o.world, 1.0);\n"
@@ -393,8 +402,8 @@ static NSString *const kShader = @
     "                         sampler smooth [[sampler(0)]], sampler compare [[sampler(1)]],\n"
     "                         texture2d_array<float> pictures [[texture(2)]], sampler tiled [[sampler(2)]],\n"
     "                         texture2d<float> wash [[texture(3)]]) {\n"
-    "  /* The water's surface and what lies under it show nothing in the mirror. */\n"
-    "  if (sky.mirrored != 0 && (in.level < 0.0 || in.world.y < 0.0)) discard_fragment();\n"
+    "  /* What lies under the sea's surface shows nothing in the mirror. */\n"
+    "  if (sky.mirrored != 0 && in.world.y < sky.sea) discard_fragment();\n"
     "  float3 normal = normalize(in.normal);\n"
     "  float in_sun = sun_on(in.world, normal, sky, map, compare);\n"
     /* The ground's patterns and how high and deep it lies are laid out in tile diagonals. */
@@ -464,6 +473,8 @@ enum { FRAMES_IN_FLIGHT = 3, SHADOW_MAP = 4096 }; /* The game steps its sun view
 enum { MATERIAL_OBJECTS = 8 };
 /* And when it is the decals on the ground. */
 enum { MATERIAL_DECALS = 9 };
+/* And when it is the sea's surface. */
+enum { MATERIAL_WATER = 1 };
 
 @interface OeWindow : NSWindow
 @end
@@ -555,6 +566,7 @@ static BOOL make_pipelines(id<MTLLibrary> library) {
     blend_premultiplied(desc.colorAttachments[0]);
     g_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
     desc.vertexFunction = [library newFunctionWithName:@"vs_effect"];
+    desc.fragmentFunction = [library newFunctionWithName:@"fs_effect"];
     if (g_pipeline) g_effect_pipeline = [g_device newRenderPipelineStateWithDescriptor:desc error:&error];
 
     desc = [MTLRenderPipelineDescriptor new];
@@ -854,10 +866,12 @@ typedef struct {
     int32_t mirrored;
     int32_t light_count;
     float wash[2];
+    float sea;
+    float spare[3];
     OePointLight lights[OE_MAX_LIGHTS];
 } OeSky;
 
-enum { LISTS = 6 };
+enum { LISTS = 7 };
 
 /* Fills a slot's buffer with these lists, one after another, and notes their offsets. */
 static id<MTLBuffer> fill_buffer(uint32_t slot, const void *const lists[LISTS],
@@ -975,13 +989,14 @@ static void encode_mirror(id<MTLCommandBuffer> commands, id<MTLBuffer> buffer,
 static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, uint32_t slot,
                          const OeWorld *world, float r, float g, float b) {
     const void *const lists[LISTS] = {world->ground, world->objects, world->casters, world->effects,
-                                      world->over,   world->decals};
+                                      world->over,   world->decals,  world->water};
     const NSUInteger bytes[LISTS] = {world->ground_count * sizeof(OeWorldVertex),
                                      world->objects_count * sizeof(OeWorldVertex),
                                      world->casters_count * sizeof(OeWorldVertex),
                                      world->effects_count * sizeof(OeEffectVertex),
                                      world->over_count * sizeof(OeVertex),
-                                     world->decals_count * sizeof(OeWorldVertex)};
+                                     world->decals_count * sizeof(OeWorldVertex),
+                                     world->water_count * sizeof(OeWorldVertex)};
     NSUInteger offsets[LISTS];
     id<MTLBuffer> buffer = fill_buffer(slot, lists, bytes, offsets);
     float size[2] = {(float)target.width, (float)target.height};
@@ -998,13 +1013,14 @@ static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, u
     memcpy(sky.sunlight, world->sunlight, sizeof(world->sunlight));
     memcpy(sky.wash, world->wash, sizeof(world->wash));
     if (!g_wash) sky.wash[0] = sky.wash[1] = 0;
+    sky.sea = world->sea;
     sky.light_count = (int32_t)MIN(world->lights_count, OE_MAX_LIGHTS);
     if (sky.light_count) {
         memcpy(sky.lights, world->lights, sizeof(OePointLight) * (size_t)sky.light_count);
     }
 
     BOOL has_world = world->ground_count > 0;
-    BOOL has_water = has_world && world->material == 1;
+    BOOL has_water = has_world && world->water_count > 0;
     if (has_world) encode_shadows(commands, buffer, offsets, world, &sky);
     if (has_water) encode_mirror(commands, buffer, offsets, world, &sky, size);
 
@@ -1024,8 +1040,12 @@ static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, u
     if (has_world) {
         [encoder setRenderPipelineState:g_world_pipeline];
         [encoder setDepthStencilState:g_depth_write];
-        bind_world(encoder, has_water ? g_mirror : empty_texture(), &sky, world->material);
+        bind_world(encoder, empty_texture(), &sky, world->material);
         draw_list(encoder, buffer, offsets[0], world->ground_count);
+        if (has_water) {
+            bind_world(encoder, g_mirror, &sky, MATERIAL_WATER);
+            draw_list(encoder, buffer, offsets[6], world->water_count);
+        }
         bind_world(encoder, empty_texture(), &sky, MATERIAL_OBJECTS);
         draw_list(encoder, buffer, offsets[1], world->objects_count);
         /* After all that is solid, which hides what lies behind it, and writing no depth. */
@@ -1058,6 +1078,8 @@ static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, u
     if (world->over_count) {
         [encoder setRenderPipelineState:g_pipeline];
         [encoder setDepthStencilState:g_depth_ignored];
+        [encoder setFragmentTexture:pictures() atIndex:2];
+        [encoder setFragmentSamplerState:g_sampler atIndex:0];
         draw_list(encoder, buffer, offsets[4], world->over_count);
     }
     [encoder endEncoding];
@@ -1158,46 +1180,52 @@ void oe_set_wash(const uint8_t *rgba, int32_t width, int32_t height) {
     g_wash = texture;
 }
 
-/* The sound playing: its samples, how many, and how far the queue has been given them. */
-static AudioQueueRef g_sound;
-static float *g_samples;
-static uint32_t g_sample_count, g_samples_queued;
-static int32_t g_sound_loops;
+/* A sound playing on a queue of its own: its samples, how many, and how far the queue has been
+ * given them. */
+typedef struct {
+    AudioQueueRef queue;
+    float *samples;
+    uint32_t count, queued;
+    int32_t loops;
+} Channel;
+
+/* The music, and the lines units speak over it. */
+static Channel g_music, g_line;
 
 /* Gives the queue the next stretch of samples in this buffer, or lets it run dry at the end. */
 static void queue_samples(void *user, AudioQueueRef queue, AudioQueueBufferRef buffer) {
-    (void)user;
+    Channel *channel = user;
     uint32_t room = buffer->mAudioDataBytesCapacity / sizeof(float);
-    if (g_sound_loops && g_samples_queued >= g_sample_count) g_samples_queued = 0;
-    uint32_t count = MIN(room, g_sample_count - g_samples_queued);
+    if (channel->loops && channel->queued >= channel->count) channel->queued = 0;
+    uint32_t count = MIN(room, channel->count - channel->queued);
     if (!count) return;
-    memcpy(buffer->mAudioData, g_samples + g_samples_queued, count * sizeof(float));
-    g_samples_queued += count;
+    memcpy(buffer->mAudioData, channel->samples + channel->queued, count * sizeof(float));
+    channel->queued += count;
     buffer->mAudioDataByteSize = count * (uint32_t)sizeof(float);
     AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
 }
 
-void oe_stop_sound(void) {
-    if (g_sound) {
-        AudioQueueStop(g_sound, true);
-        AudioQueueDispose(g_sound, true);
-        g_sound = NULL;
+static void stop_channel(Channel *channel) {
+    if (channel->queue) {
+        AudioQueueStop(channel->queue, true);
+        AudioQueueDispose(channel->queue, true);
+        channel->queue = NULL;
     }
-    free(g_samples);
-    g_samples = NULL;
-    g_sample_count = g_samples_queued = 0;
+    free(channel->samples);
+    channel->samples = NULL;
+    channel->count = channel->queued = 0;
 }
 
-void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
-                   int32_t loop) {
+static void play_channel(Channel *channel, const float *samples, uint32_t frames,
+                         int32_t channels, int32_t rate, int32_t loop) {
     enum { BUFFERS = 3 };
-    oe_stop_sound();
-    g_sound_loops = loop;
+    stop_channel(channel);
+    channel->loops = loop;
     if (!samples || !frames || channels <= 0 || rate <= 0) return;
-    g_sample_count = frames * (uint32_t)channels;
-    g_samples = malloc(g_sample_count * sizeof(float));
-    if (!g_samples) return;
-    memcpy(g_samples, samples, g_sample_count * sizeof(float));
+    channel->count = frames * (uint32_t)channels;
+    channel->samples = malloc(channel->count * sizeof(float));
+    if (!channel->samples) return;
+    memcpy(channel->samples, samples, channel->count * sizeof(float));
     uint32_t frame_bytes = (uint32_t)channels * (uint32_t)sizeof(float);
     AudioStreamBasicDescription format = {
         .mSampleRate = rate,
@@ -1209,23 +1237,37 @@ void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int3
         .mChannelsPerFrame = (uint32_t)channels,
         .mBitsPerChannel = 32,
     };
-    if (AudioQueueNewOutput(&format, queue_samples, NULL, NULL, NULL, 0, &g_sound) != noErr) {
-        g_sound = NULL;
-        oe_stop_sound();
+    if (AudioQueueNewOutput(&format, queue_samples, channel, NULL, NULL, 0, &channel->queue) !=
+        noErr) {
+        channel->queue = NULL;
+        stop_channel(channel);
         return;
     }
     /* A quarter of a second in each buffer. */
     for (int i = 0; i < BUFFERS; i++) {
         AudioQueueBufferRef buffer;
-        if (AudioQueueAllocateBuffer(g_sound, (uint32_t)rate / 4 * frame_bytes, &buffer) == noErr) {
-            queue_samples(NULL, g_sound, buffer);
+        if (AudioQueueAllocateBuffer(channel->queue, (uint32_t)rate / 4 * frame_bytes, &buffer) ==
+            noErr) {
+            queue_samples(channel, channel->queue, buffer);
         }
     }
-    AudioQueueStart(g_sound, NULL);
+    AudioQueueStart(channel->queue, NULL);
+}
+
+void oe_stop_sound(void) { stop_channel(&g_music); }
+
+void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
+                   int32_t loop) {
+    play_channel(&g_music, samples, frames, channels, rate, loop);
+}
+
+void oe_play_line(const float *samples, uint32_t frames, int32_t channels, int32_t rate) {
+    play_channel(&g_line, samples, frames, channels, rate, 0);
 }
 
 void oe_shutdown(void) {
     oe_stop_sound();
+    stop_channel(&g_line);
     set_captured(NO);
     [g_window close];
 }

@@ -1,5 +1,5 @@
 //! The music on the game's disc: tracks packed one after another into a `.bag` file, behind an
-//! index that starts with "GABA".
+//! index that starts with "GABA". The disc's other sounds are kept in bags too.
 
 use std::fs::File;
 use std::io::Read;
@@ -14,9 +14,10 @@ pub const LEAST_BATTLE_SECONDS: f32 = 60.0;
 const MAGIC: &[u8; 4] = b"GABA";
 /// The index's head: the magic, its version, how many tracks, and how long each entry is.
 const HEAD: usize = 16;
-/// How much of an entry its name takes, and where its offset and size follow.
+/// How much of an entry its name takes, and where its offset, size, rate, format and block
+/// follow.
 const NAME: usize = 32;
-const LEAST_ENTRY: usize = NAME + 8;
+const LEAST_ENTRY: usize = NAME + 20;
 /// More tracks than this means it is not an index at all.
 const MOST_TRACKS: usize = 4096;
 
@@ -26,9 +27,21 @@ pub struct Track {
     pub name: String,
     pub offset: u32,
     pub size: u32,
+    /// Samples a second.
+    pub rate: u32,
+    /// How its sound is kept: `Track::STEREO` and the others.
+    pub format: u32,
+    /// How many bytes each block of a packed sound takes.
+    pub block: u32,
 }
 
 impl Track {
+    /// What its format marks.
+    pub const STEREO: u32 = 1;
+    pub const SIXTEEN_BITS: u32 = 4;
+    /// Packed four bits to a sample, as IMA ADPCM.
+    pub const PACKED: u32 = 8;
+
     /// Where FFmpeg finds this track inside the bag at `bag`.
     pub fn location(&self, bag: &Path) -> String {
         let end = u64::from(self.offset) + u64::from(self.size);
@@ -46,7 +59,7 @@ pub fn find(path: &Path, name: &str) -> Option<Track> {
 }
 
 /// Every track in the bag at `path`, if it is there and is a bag.
-fn list(path: &Path) -> Option<Vec<Track>> {
+pub fn list(path: &Path) -> Option<Vec<Track>> {
     let mut file = File::open(path).ok()?;
     let mut head = [0; HEAD];
     file.read_exact(&mut head).ok()?;
@@ -125,6 +138,9 @@ fn tracks(index: &[u8]) -> Option<Vec<Track>> {
                 name: String::from_utf8_lossy(name).into_owned(),
                 offset: word(index, at + NAME)?,
                 size: word(index, at + NAME + 4)?,
+                rate: word(index, at + NAME + 8)?,
+                format: word(index, at + NAME + 12)?,
+                block: word(index, at + NAME + 16)?,
             })
         })
         .collect()
@@ -168,12 +184,18 @@ mod tests {
                 Track {
                     name: "IN_Menu".into(),
                     offset: 528,
-                    size: 512_000
+                    size: 512_000,
+                    rate: 0,
+                    format: 0,
+                    block: 0,
                 },
                 Track {
                     name: "IN_Score".into(),
                     offset: 512_528,
-                    size: 9
+                    size: 9,
+                    rate: 0,
+                    format: 0,
+                    block: 0,
                 },
             ]
         );
@@ -209,6 +231,9 @@ mod tests {
                 name: name.into(),
                 offset: 0,
                 size: 0,
+                rate: 0,
+                format: 0,
+                block: 0,
             })
             .collect();
         let played = round_robin(
@@ -235,6 +260,9 @@ mod tests {
             name: "IN_Menu".into(),
             offset: 0,
             size: 0,
+            rate: 0,
+            format: 0,
+            block: 0,
         };
         let played = round_robin(vec![short], |_| 32.0, |&s| s > LEAST_BATTLE_SECONDS);
         assert!(played.recv().is_err());

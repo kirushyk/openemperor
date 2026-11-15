@@ -166,6 +166,12 @@ const PALACE_CELL: usize = BUILDING_BUILDS.len() + 2;
 const OUTPOST_CELL: usize = PALACE_CELL + 1;
 /// The Buildings menu's cell for a refinery, after the outpost.
 const REFINERY_CELL: usize = OUTPOST_CELL + 1;
+/// The Buildings menu's cells for the main buildings of the player's two allies, after the
+/// refinery.
+const ALLY_CELLS: [usize; 2] = [REFINERY_CELL + 1, REFINERY_CELL + 2];
+/// The Infantry menu's cells for what the player's two allies make there, after the house's
+/// own five; the Vehicles menu has no room left.
+const ALLY_UNIT_CELLS: [usize; 2] = [5, 6];
 /// How long before the superweapon is ready the launcher on top of a palace starts to open.
 const LAUNCHER_OPENS_SECONDS: f32 = 3.0;
 /// How much an opponent has standing at most before it stops making more, so that a long battle
@@ -305,6 +311,17 @@ pub enum BuildTab {
     Buildings,
 }
 
+/// What the player's units answer, out loud, when they are told something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Said {
+    /// They have just been selected.
+    Selected,
+    /// They have been sent somewhere.
+    Moving,
+    /// They have been told to attack.
+    Attacking,
+}
+
 /// The three playable factions: A is blue, H red, O cyan. Each is shown as its planet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Faction {
@@ -381,6 +398,30 @@ pub enum Ally {
 }
 
 impl Ally {
+    /// The main building of the mini-house, which a house allied with it can put up.
+    pub fn main_building(self) -> Option<Role> {
+        match self {
+            Ally::None => None,
+            Ally::Tleilaxu => Some(Role::TlFleshVat),
+            Ally::Ix => Some(Role::IxResCentre),
+            Ally::Guild => Some(Role::GuPalace),
+            Ally::Fremen => Some(Role::FrCamp),
+            Ally::Sardaukar => Some(Role::ImBarracks),
+        }
+    }
+
+    /// What a house allied with the mini-house can have its main building make.
+    pub fn unit(self) -> Option<Role> {
+        match self {
+            Ally::None => None,
+            Ally::Tleilaxu => Some(Role::TlContaminator),
+            Ally::Ix => Some(Role::IxInfiltrator),
+            Ally::Guild => Some(Role::GuMaker),
+            Ally::Fremen => Some(Role::FrFremen),
+            Ally::Sardaukar => Some(Role::ImSardaukar),
+        }
+    }
+
     fn next(self) -> Self {
         match self {
             Ally::None => Ally::Tleilaxu,
@@ -1509,6 +1550,8 @@ pub struct Game {
     pub carried: Vec<units::Carried>,
     /// The id of the unit the camera stays on, if any.
     following: Option<u32>,
+    /// What the player's units have just answered, and who answered, until it is heard.
+    reply: Option<(Said, Vec<(Role, Faction)>)>,
     pub site: Site,
     /// Seconds until opponents next build something.
     opponent_random: u32,
@@ -1617,6 +1660,7 @@ impl Game {
             units: Vec::new(),
             carried: Vec::new(),
             following: None,
+            reply: None,
             site: Site::Idle,
             opponent_random: 1,
             start_random: 1,
@@ -1859,6 +1903,10 @@ impl Game {
     pub fn build_role(&self, tab: BuildTab, cell: usize) -> Option<Role> {
         let house = self.faction_of(0);
         let role = match tab {
+            BuildTab::Infantry if ALLY_UNIT_CELLS.contains(&cell) => {
+                let slot = ALLY_UNIT_CELLS.iter().position(|&of| of == cell)?;
+                self.player_allies()[slot].unit()
+            }
             BuildTab::Infantry => INFANTRY_BUILDS
                 .iter()
                 .find(|(of, _)| *of == house)
@@ -1881,6 +1929,10 @@ impl Game {
             }
             BuildTab::Buildings if cell == OUTPOST_CELL => Some(Role::Outpost),
             BuildTab::Buildings if cell == REFINERY_CELL => Some(Role::Refinery),
+            BuildTab::Buildings if ALLY_CELLS.contains(&cell) => {
+                let slot = ALLY_CELLS.iter().position(|&of| of == cell)?;
+                self.player_allies()[slot].main_building()
+            }
             BuildTab::Buildings => BUILDING_BUILDS
                 .into_iter()
                 .chain(Role::towers_of(house))
@@ -2171,9 +2223,27 @@ impl Game {
     }
 
     /// Whether the player has what makes this: the building it is made in, or for a building a
-    /// deployed MCV.
+    /// deployed MCV, and what else it needs standing.
     pub fn can_produce(&self, role: Role) -> bool {
         self.units.iter().any(|u| u.owner == 0 && u.can_make(role))
+            && role.needs().is_none_or(|needed| self.has_standing(needed))
+    }
+
+    /// Whether the player has a building of this role up and standing.
+    fn has_standing(&self, role: Role) -> bool {
+        self.units
+            .iter()
+            .any(|u| u.owner == 0 && u.alive && u.role == role && !u.is_under_construction())
+    }
+
+    /// The mini-houses the player is allied with: in a skirmish, as it was set up; otherwise
+    /// none.
+    pub fn player_allies(&self) -> [Ally; 2] {
+        if self.battle_kind == BattleKind::Skirmish {
+            self.skirmish.allies
+        } else {
+            [Ally::None; 2]
+        }
     }
 
     /// Whether a build tab can be used: the player has something that makes any of what is on
@@ -2351,7 +2421,10 @@ impl Game {
                 if self.can_produce(role) {
                     return role.name();
                 }
-                match role.made_in() {
+                match role.made_in().or_else(|| {
+                    role.needs()
+                        .filter(|_| self.units.iter().any(|u| u.owner == 0 && u.can_make(role)))
+                }) {
                     Some(Role::Barracks) => "Needs a Barracks",
                     Some(Role::Factory) => "Needs a Factory",
                     Some(_) => "Needs a Hangar",
@@ -2619,8 +2692,10 @@ impl Game {
                 }
                 AttackOrder::Place(place) => units::order_attack_place(&mut self.units, place),
             }
+            self.answer(Said::Attacking);
         } else if let Some(chosen) = self.attackable_under_cursor() {
             units::order_attack(&mut self.units, chosen, &self.teams);
+            self.answer(Said::Attacking);
         } else if let Some(apc) = self.boardable_under_cursor().filter(|_| !adding) {
             units::order_board(&mut self.units, apc);
         } else if let Some(apc) = self.unloadable_under_cursor().filter(|_| !adding) {
@@ -2636,6 +2711,7 @@ impl Game {
         } else if let Some(sand) = self.harvest_here().filter(|_| !adding) {
             let terrain = battlefield::terrain(self.battle_map);
             units::order_harvest(&mut self.units, sand, terrain, &self.teams);
+            self.answer(Said::Moving);
         } else if let Some(picked) = self.unit_under_cursor() {
             // A building, tower or not, is always picked on its own.
             let adding = adding && !self.units[picked].kind.is_building();
@@ -2653,6 +2729,7 @@ impl Game {
                 units::order_move(&mut self.units, target, terrain, &self.teams);
             }
             units::set_gathering(&mut self.units, target);
+            self.answer(Said::Moving);
         }
         if self.click_mode == Some(ClickMode::March) {
             self.click_mode = None;
@@ -3402,7 +3479,43 @@ impl Game {
         }
     }
 
+    /// Takes in what the player did. Units the player has just selected answer.
     pub fn handle(&mut self, event: Event) {
+        let before: Vec<u32> = self.selected_units().iter().map(|u| u.id).collect();
+        let earlier = self.reply.take();
+        self.handle_event(event);
+        if self.reply.is_none()
+            && self
+                .units
+                .iter()
+                .any(|u| u.selected && !before.contains(&u.id))
+        {
+            self.answer(Said::Selected);
+        }
+        if self.reply.is_none() {
+            self.reply = earlier;
+        }
+    }
+
+    /// What the player's units have answered since this was last asked, and who answered.
+    pub fn take_reply(&mut self) -> Option<(Said, Vec<(Role, Faction)>)> {
+        self.reply.take()
+    }
+
+    /// Has the selected units answer this.
+    fn answer(&mut self, said: Said) {
+        let speakers: Vec<(Role, Faction)> = self
+            .selected_units()
+            .iter()
+            .filter(|u| !u.kind.is_building())
+            .map(|u| (u.role, u.house))
+            .collect();
+        if !speakers.is_empty() {
+            self.reply = Some((said, speakers));
+        }
+    }
+
+    fn handle_event(&mut self, event: Event) {
         match event {
             Event::Quit => self.quit = true,
             Event::Focus(focused) => {
@@ -3567,6 +3680,7 @@ impl Game {
                         battlefield::terrain(self.battle_map),
                         &self.teams,
                     );
+                    self.answer(Said::Moving);
                 }
                 (_, Key::Escape) => self.go_back(),
                 _ => {}
@@ -5086,7 +5200,7 @@ mod tests {
         game.units[soldier].alive = false;
         let flashes = game.combat.blasts.len();
         game.update(0.01);
-        assert_eq!(game.combat.ragdolls.len(), 1);
+        assert_eq!(game.combat.bodies.len(), 1);
         assert_eq!(game.combat.blasts.len(), flashes);
     }
 
@@ -5121,15 +5235,9 @@ mod tests {
         let mut body = game.units[soldier];
         (body.x, body.z) = (game.camera.x, game.camera.z);
         game.combat.drop_body(&body);
-        let without = {
-            let mut bare = game.combat.clone();
-            bare.ragdolls.clear();
-            let with = std::mem::replace(&mut game.combat, bare);
-            let count = crate::render::build_frame(&game).objects.len();
-            game.combat = with;
-            count
-        };
-        assert!(crate::render::build_frame(&game).objects.len() > without);
+        // Without the disc there is no model to show it dying with, but it still lies there.
+        assert_eq!(game.combat.bodies.len(), 1);
+        assert!(!crate::render::build(&game).is_empty());
     }
 
     fn pick_superweapon(game: &mut Game) {
@@ -7822,6 +7930,123 @@ mod tests {
     }
 
     #[test]
+    fn an_allied_mini_houses_main_building_is_offered_once_allied_needing_what_rules_say() {
+        let mut game = in_battle();
+        for cell in ALLY_CELLS {
+            assert_eq!(
+                game.build_role(BuildTab::Buildings, cell),
+                None,
+                "not allied"
+            );
+        }
+        game.skirmish.allies = [Ally::Fremen, Ally::Guild];
+        assert_eq!(
+            ALLY_CELLS.map(|cell| game.build_role(BuildTab::Buildings, cell)),
+            [Some(Role::FrCamp), Some(Role::GuPalace)]
+        );
+        for (ally, role, needs) in [
+            (Ally::Tleilaxu, Role::TlFleshVat, Role::Factory),
+            (Ally::Ix, Role::IxResCentre, Role::Factory),
+            (Ally::Guild, Role::GuPalace, Role::Factory),
+            (Ally::Sardaukar, Role::ImBarracks, Role::Barracks),
+            (Ally::Fremen, Role::FrCamp, Role::Barracks),
+        ] {
+            assert_eq!(ally.main_building(), Some(role));
+            assert_eq!(role.kind(), UnitKind::Building);
+            assert_eq!(role.needs(), Some(needs));
+            assert!(game.can_produce(role), "{role:?}");
+            let kept = game.units.clone();
+            game.units.retain(|u| u.owner != 0 || u.role != needs);
+            assert!(!game.can_produce(role), "{role:?} without a {needs:?}");
+            game.units = kept;
+        }
+        assert_eq!(
+            [Role::FrCamp, Role::GuPalace].map(|r| r.rules_name(Faction::Atreides)),
+            ["FRCamp", "GUPalace"]
+        );
+        assert_eq!(Ally::None.main_building(), None);
+    }
+
+    #[test]
+    fn an_allied_mini_houses_unit_is_offered_once_allied_and_made_in_its_main_building() {
+        for (ally, role, building) in [
+            (Ally::Tleilaxu, Role::TlContaminator, Role::TlFleshVat),
+            (Ally::Ix, Role::IxInfiltrator, Role::IxResCentre),
+            (Ally::Guild, Role::GuMaker, Role::GuPalace),
+            (Ally::Sardaukar, Role::ImSardaukar, Role::ImBarracks),
+            (Ally::Fremen, Role::FrFremen, Role::FrCamp),
+        ] {
+            let mut game = in_battle();
+            for cell in ALLY_UNIT_CELLS {
+                assert_eq!(
+                    game.build_role(BuildTab::Infantry, cell),
+                    None,
+                    "not allied"
+                );
+            }
+            game.skirmish.allies = [Ally::None, ally];
+            assert_eq!(
+                game.build_role(BuildTab::Infantry, ALLY_UNIT_CELLS[0]),
+                None
+            );
+            assert_eq!(
+                game.build_role(BuildTab::Infantry, ALLY_UNIT_CELLS[1]),
+                Some(role)
+            );
+            assert_eq!(ally.unit(), Some(role));
+            assert_eq!(role.made_in(), Some(building));
+            assert!(!game.can_produce(role), "{role:?} needs its {building:?}");
+            // Its main building, up and standing beside the player's barracks.
+            let mut made_in = *game
+                .units
+                .iter()
+                .find(|u| u.owner == 0 && u.role == Role::Barracks)
+                .unwrap();
+            made_in.role = building;
+            made_in.id = game.next_unit_id;
+            game.next_unit_id += 1;
+            game.units.push(made_in);
+            assert!(game.can_produce(role), "{role:?}");
+            let before = game.units.len();
+            click_hud(&mut game, Action::BuildTab(BuildTab::Infantry));
+            click_hud(&mut game, Action::BuildCell(ALLY_UNIT_CELLS[1]));
+            game.update(role.build_seconds() + 0.5);
+            let made = game.units[before..].iter().find(|u| u.role == role);
+            let made = made.unwrap_or_else(|| panic!("{role:?} is made"));
+            assert_eq!((made.owner, made.kind), (0, role.kind()));
+        }
+    }
+
+    #[test]
+    fn each_mini_houses_main_building_is_built_and_placed_like_other_buildings() {
+        for ally in [
+            Ally::Tleilaxu,
+            Ally::Ix,
+            Ally::Guild,
+            Ally::Sardaukar,
+            Ally::Fremen,
+        ] {
+            let mut game = in_battle();
+            game.skirmish.allies = [ally, Ally::None];
+            let role = ally.main_building().unwrap();
+            let cell = ALLY_CELLS[0];
+            click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+            let money = game.player_money();
+            click_hud(&mut game, Action::BuildCell(cell));
+            game.update(role.build_seconds() + 0.1);
+            assert_eq!(game.site, Site::Ready(role), "{ally:?}");
+            assert_eq!(game.player_money(), money - role.cost(), "{ally:?}");
+            click_hud(&mut game, Action::BuildCell(cell));
+            let (x, y) = buildable_spot_on_screen(&mut game);
+            game.handle(Event::MouseMove(x, y));
+            click_at(&mut game, x, y);
+            let built = *game.units.last().unwrap();
+            assert_eq!((built.role, built.owner), (role, 0), "{ally:?}");
+            assert_eq!(built.kind, UnitKind::Building);
+        }
+    }
+
+    #[test]
     fn only_one_building_goes_up_at_a_time_and_the_others_are_greyed_out() {
         let mut game = in_battle();
         click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
@@ -9251,6 +9476,43 @@ mod tests {
     }
 
     #[test]
+    fn units_answer_being_selected_sent_somewhere_and_told_to_attack() {
+        let mut game = in_battle();
+        game.fog = None;
+        let _ = game.take_reply();
+        select_first_group(&mut game);
+        let (said, speakers) = game.take_reply().expect("the group answers");
+        assert_eq!(said, Said::Selected);
+        assert_eq!(speakers.len(), FIRST_GROUP);
+        assert!(
+            speakers
+                .iter()
+                .all(|&(_, house)| house == game.faction_of(0))
+        );
+
+        let (x, y) = clear_spot_on_screen();
+        click_at(&mut game, x, y);
+        assert_eq!(game.take_reply().map(|(said, _)| said), Some(Said::Moving));
+        click_at(&mut game, x, y);
+        assert_eq!(
+            game.take_reply().map(|(said, _)| said),
+            Some(Said::Moving),
+            "the same again"
+        );
+
+        let (_, (x, y)) = enemy_beside_first_group(&mut game);
+        click_at(&mut game, x, y);
+        assert_eq!(
+            game.take_reply().map(|(said, _)| said),
+            Some(Said::Attacking)
+        );
+
+        // Nothing new selected, nothing said.
+        game.handle(Event::MouseMove(x + 1.0, y));
+        assert_eq!(game.take_reply(), None);
+    }
+
+    #[test]
     fn a_click_sends_the_selected_units_to_separate_spots_there() {
         let mut game = in_battle();
         select_first_group(&mut game);
@@ -9918,6 +10180,22 @@ mod tests {
         click(&mut game, Action::SinglePlayer);
         click(&mut game, Action::Tutorial);
         assert_eq!(game.faction, None);
+    }
+
+    #[test]
+    fn without_the_disc_the_setup_and_diplomacy_show_planets_and_shapes_not_logos() {
+        let mut game = in_setup();
+        game.skirmish.opponents[0].allies[0] = Ally::Fremen;
+        let plain = |game: &Game| {
+            crate::render::build(game)
+                .iter()
+                .all(|v| v.layer == crate::platform::NO_LAYER)
+        };
+        assert!(plain(&game));
+        let mut battle = in_battle();
+        battle.handle(Event::KeyDown(Key::Tab));
+        assert!(battle.stats_open);
+        assert!(plain(&battle));
     }
 
     #[test]

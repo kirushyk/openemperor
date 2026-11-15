@@ -3,7 +3,8 @@
 use std::ffi::CString;
 
 /// A corner of a triangle, its color already multiplied by its alpha. The backends blend it
-/// over what is there by adding its color to what its alpha leaves showing.
+/// over what is there by adding its color to what its alpha leaves showing. One with a picture
+/// shows that picture there, tinted by its color.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vertex {
@@ -13,30 +14,49 @@ pub struct Vertex {
     pub g: f32,
     pub b: f32,
     pub a: f32,
+    /// Where in its picture it is, from 0 to 1 across and down.
+    pub u: f32,
+    pub v: f32,
+    /// Which of the pictures given with `Platform::set_pictures` it shows, or `NO_LAYER`.
+    pub layer: f32,
 }
+
+/// The layer of a corner that shows no picture, only its color.
+pub const NO_LAYER: f32 = -1.0;
 
 impl Vertex {
     pub fn new((x, y): (f32, f32), [r, g, b, a]: [f32; 4]) -> Self {
-        Vertex {
-            x,
-            y,
-            r: r * a,
-            g: g * a,
-            b: b * a,
-            a,
-        }
+        Vertex::premultiplied((x, y), [r * a, g * a, b * a, a])
     }
 
-    /// Light: it adds its color to what is there and covers none of it.
-    pub fn light((x, y): (f32, f32), [r, g, b]: [f32; 3]) -> Self {
+    /// A corner whose color has already been multiplied by its alpha.
+    pub fn premultiplied((x, y): (f32, f32), [r, g, b, a]: [f32; 4]) -> Self {
         Vertex {
             x,
             y,
             r,
             g,
             b,
-            a: 0.0,
+            a,
+            u: 0.0,
+            v: 0.0,
+            layer: NO_LAYER,
         }
+    }
+
+    /// A corner of a picture, at this place in it, shown as it is.
+    pub fn pictured((x, y): (f32, f32), (u, v): (f32, f32), layer: usize) -> Self {
+        Vertex {
+            u,
+            v,
+            layer: layer as f32,
+            ..Vertex::new((x, y), [1.0; 4])
+        }
+    }
+
+    /// Light: it adds its color to what is there and covers none of it.
+    pub fn light((x, y): (f32, f32), [r, g, b]: [f32; 3]) -> Self {
+        Vertex::premultiplied((x, y), [r, g, b, 0.0])
     }
 }
 
@@ -154,6 +174,9 @@ pub enum Material {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
     pub ground: Vec<WorldVertex>,
+    /// The sea's surface, drawn as water, each corner as deep below it as its level says
+    /// below 0.
+    pub water: Vec<WorldVertex>,
     /// What lies on the ground and lets it show through, unlit, and lights' glows: each corner
     /// as much of its picture as its level says.
     pub decals: Vec<WorldVertex>,
@@ -169,8 +192,9 @@ pub struct Frame {
     /// Seconds, to keep the ground moving.
     pub time: f32,
     pub view: [f32; 16],
-    /// The same view with everything seen in a mirror at height 0.
+    /// The same view with everything seen in a mirror at the height of the sea, `sea`.
     pub mirror: [f32; 16],
+    pub sea: f32,
     /// The world as the sun sees it, for shadows.
     pub sun_view: [f32; 16],
     pub camera: [f32; 3],
@@ -203,7 +227,8 @@ impl Frame {
             [v.r * light, v.g * light, v.b * light, 1.0]
         };
         let mut flat = Vec::new();
-        for triangle in self.ground.chunks(3).chain(self.objects.chunks(3)) {
+        let solid = self.ground.chunks(3).chain(self.water.chunks(3));
+        for triangle in solid.chain(self.objects.chunks(3)) {
             let placed: Option<Vec<(f32, f32)>> = triangle.iter().map(place).collect();
             if let Some(placed) = placed {
                 flat.extend(
@@ -214,14 +239,11 @@ impl Frame {
                 );
             }
         }
-        flat.extend(self.effects.iter().map(|v| Vertex {
-            x: v.x,
-            y: v.y,
-            r: v.r,
-            g: v.g,
-            b: v.b,
-            a: v.a,
-        }));
+        flat.extend(
+            self.effects
+                .iter()
+                .map(|v| Vertex::premultiplied((v.x, v.y), [v.r, v.g, v.b, v.a])),
+        );
         flat.extend(self.over.iter().copied());
         flat
     }
@@ -283,6 +305,8 @@ pub enum Event {
 struct RawWorld {
     ground: *const WorldVertex,
     ground_count: u32,
+    water: *const WorldVertex,
+    water_count: u32,
     decals: *const WorldVertex,
     decals_count: u32,
     objects: *const WorldVertex,
@@ -305,6 +329,7 @@ struct RawWorld {
     ambient: [f32; 3],
     sunlight: [f32; 3],
     wash: [f32; 2],
+    sea: f32,
 }
 
 unsafe extern "C" {
@@ -319,6 +344,7 @@ unsafe extern "C" {
     fn oe_set_wash(rgba: *const u8, width: i32, height: i32);
     fn oe_play_sound(samples: *const f32, frames: u32, channels: i32, rate: i32, looped: i32);
     fn oe_stop_sound();
+    fn oe_play_line(samples: *const f32, frames: u32, channels: i32, rate: i32);
     fn oe_shutdown();
 }
 
@@ -389,6 +415,8 @@ impl Platform {
         let world = RawWorld {
             ground: frame.ground.as_ptr(),
             ground_count: frame.ground.len() as u32,
+            water: frame.water.as_ptr(),
+            water_count: frame.water.len() as u32,
             decals: frame.decals.as_ptr(),
             decals_count: frame.decals.len() as u32,
             objects: frame.objects.as_ptr(),
@@ -411,6 +439,7 @@ impl Platform {
             ambient: frame.ambient,
             sunlight: frame.sunlight,
             wash: frame.wash,
+            sea: frame.sea,
         };
         // SAFETY: the pointers are valid for their counts, and the shim copies them all before
         // returning.
@@ -502,6 +531,20 @@ impl Platform {
         // SAFETY: stopping is always safe, playing or not.
         unsafe { oe_stop_sound() }
     }
+
+    /// Plays interleaved samples once over the sound, cutting off the line played before.
+    pub fn play_line(&mut self, samples: &[f32], channels: u32, rate: u32) {
+        let frames = samples.len() / channels.max(1) as usize;
+        // SAFETY: the samples hold `frames` frames of `channels`, and the shim copies them.
+        unsafe {
+            oe_play_line(
+                samples.as_ptr(),
+                frames as u32,
+                channels as i32,
+                rate as i32,
+            )
+        }
+    }
 }
 
 impl Drop for Platform {
@@ -526,6 +569,7 @@ mod tests {
         let over = Vertex::new((3.0, 4.0), [1.0, 1.0, 1.0, 1.0]);
         let frame = Frame {
             ground: vec![corner(1.0), corner(1.0), corner(0.5)],
+            water: Vec::new(),
             decals: Vec::new(),
             material: Material::Pictured,
             objects: Vec::new(),
@@ -536,6 +580,7 @@ mod tests {
             time: 0.0,
             view: identity,
             mirror: identity,
+            sea: 0.0,
             sun_view: identity,
             camera: [0.0; 3],
             sun: [0.0, 1.0, 0.0],

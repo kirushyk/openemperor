@@ -369,6 +369,18 @@ impl Terrain {
         Self::open().with_ground(Ground::Rock, (0, 0), (MOST_CELLS, MOST_CELLS))
     }
 
+    /// The same, its ground rising this much from each corner of the grid to the next going
+    /// east, for tests.
+    #[cfg(test)]
+    pub fn with_rise_east(mut self, rise: f32) -> Self {
+        for v in 0..=self.height {
+            for u in 0..=self.width {
+                self.heights[grid_index(u, v)] = u as f32 * rise;
+            }
+        }
+        self
+    }
+
     /// Flat sand with a round cliff of this radius in the way, for tests of how units get
     /// around it.
     #[cfg(test)]
@@ -1007,11 +1019,13 @@ impl View {
         ]
     }
 
-    /// `matrix` with everything as it looks in a mirror lying at height 0.
-    pub fn mirror_matrix(&self) -> [f32; 16] {
+    /// `matrix` with everything as it looks in a mirror lying at this height: what is above
+    /// it as far below it.
+    pub fn mirror_matrix(&self, height: f32) -> [f32; 16] {
         let mut matrix = self.matrix();
-        for value in &mut matrix[4..8] {
-            *value = -*value;
+        for row in 0..4 {
+            matrix[12 + row] += 2.0 * height * matrix[4 + row];
+            matrix[4 + row] = -matrix[4 + row];
         }
         matrix
     }
@@ -1603,11 +1617,15 @@ mod tests {
         let camera = Camera::centered();
         let view = View::new(camera, W, H);
         let above = through(view.matrix(), (camera.x, 90.51, camera.z));
-        let reflected = through(view.mirror_matrix(), (camera.x, 90.51, camera.z));
+        let reflected = through(view.mirror_matrix(0.0), (camera.x, 90.51, camera.z));
         assert!(reflected.1 > above.1);
         let at_it = through(view.matrix(), (camera.x, 0.0, camera.z));
-        let at_it_reflected = through(view.mirror_matrix(), (camera.x, 0.0, camera.z));
+        let at_it_reflected = through(view.mirror_matrix(0.0), (camera.x, 0.0, camera.z));
         assert!(near(at_it.1, at_it_reflected.1, 0.01));
+        // A sea lower down mirrors what is above it as far below it.
+        let low = through(view.mirror_matrix(-131.0), (camera.x, 90.51, camera.z));
+        let under = through(view.matrix(), (camera.x, -352.51, camera.z));
+        assert!(near(low.0, under.0, 0.01) && near(low.1, under.1, 0.01));
     }
 
     #[test]

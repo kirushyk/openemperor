@@ -13,6 +13,8 @@ mod music;
 mod planet;
 mod platform;
 mod render;
+#[cfg(target_os = "macos")]
+mod sounds;
 mod strategy;
 mod units;
 #[cfg(target_os = "macos")]
@@ -75,7 +77,11 @@ fn main() {
     if mounted {
         render::load_original_models(disc);
         units::fire_from(render::original_muzzles);
+        std::thread::spawn(|| sounds::load(std::path::Path::new(DISC)));
     }
+    // Which of its lines a unit says, each time another.
+    #[cfg(target_os = "macos")]
+    let mut line_random = seed | 1;
     #[cfg(target_os = "macos")]
     let (mut movie, menu_music, battle_music) = {
         // A movie given on the command line plays in place of the disc's.
@@ -125,6 +131,14 @@ fn main() {
         let now = Instant::now();
         game.update((now - last).as_secs_f32());
         last = now;
+        // What the player's units answer is said over the music.
+        #[cfg(target_os = "macos")]
+        if let Some((said, speakers)) = game.take_reply() {
+            let pick = (battlefield::next_random(&mut line_random) * 1024.0) as usize;
+            if let Some(line) = sounds::reply(said, &speakers, pick) {
+                platform.play_line(&line.samples, line.channels, line.rate);
+            }
+        }
         #[cfg(target_os = "macos")]
         if let Some(playing) = &mut movie {
             if playing.advance(game.screen_elapsed()) {

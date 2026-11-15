@@ -8,6 +8,9 @@
 typedef struct {
     float x, y; /* pixels, origin top-left, y down */
     float r, g, b, a;
+    float u, v;  /* where in its picture, 0..1 across and down */
+    float layer; /* which of the pictures oe_set_pictures gave it shows, or -1 for none; only
+                  * the macOS backend shows pictures so far */
 } OeVertex;
 
 enum {
@@ -87,6 +90,8 @@ enum { OE_MAX_LIGHTS = 16 };
 typedef struct {
     const OeWorldVertex *ground;
     uint32_t ground_count;
+    const OeWorldVertex *water; /* the sea's surface, each corner as deep as its level is below 0 */
+    uint32_t water_count;
     const OeWorldVertex *decals; /* unlit, showing their pictures' alpha times their level; a
                                     level below 0 adds the picture as a light's glow */
     uint32_t decals_count;
@@ -103,13 +108,14 @@ typedef struct {
     int32_t material; /* 0 plain, 1 water, 2 sand, 3 lava, 4 ice, 5 stone, 6 moss; 8 for objects */
     float time;
     float view[16];   /* by columns */
-    float mirror[16]; /* the view as seen in a mirror at height 0 */
+    float mirror[16]; /* the view as seen in a mirror at the height of the sea */
     float sun_view[16];
     float camera[3];
     float sun[3];
     float ambient[3];  /* the light everything gets */
     float sunlight[3]; /* and what a face turned to the sun gets on top */
     float wash[2];     /* how far along x and z the wash reaches over the ground; 0 for none */
+    float sea;         /* how high the sea is, which the mirror is at */
 } OeWorld;
 
 /* Draws a frame and presents: the sun's shadow map, the reflection if there is water, then the
@@ -141,6 +147,10 @@ void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int3
 
 /* Stops the sound, if any is playing. */
 void oe_stop_sound(void);
+
+/* Plays interleaved float samples once over the sound, replacing the line played before, if
+ * it is still playing. Only the macOS backend makes a sound so far. */
+void oe_play_line(const float *samples, uint32_t frames, int32_t channels, int32_t rate);
 
 void oe_shutdown(void);
 

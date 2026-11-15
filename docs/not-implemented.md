@@ -5,13 +5,14 @@ we are missing is in [units.md](units.md). This list is about everything else.
 
 ## Models and their effects
 
-- **Effect helpers in the models**: the parts whose names start with `?` or `#` that are not
-  lights are not drawn. These include:
+- **Effect helpers in the models**: the parts whose names start with `?` or `#` are not
+  drawn, except for lights and for faces with see-through `@` pictures (the tornado, the
+  buildings' ground skirts). These include:
   - muzzle flashes (`?bigflash…`) and tracer bullets (`?mgbullet…`);
   - the windtraps' wind (`?leftwind`, `?rightwind`);
   - the palace's and the lightning gate's lightning (`?lightning…`);
   - Ordos shields (`?{SHIELD}`) and the Leech's mark (`?~~2{LEECH}`);
-  - the sandworm's mouth and the tornado (`?sandymouth`, `?worm02`, `?tornado`).
+  - the sandworm's mouth (`?sandymouth`, `?worm02`).
 
   Many of these have picture slides in the model that would play once they are drawn.
 - **The effects block of a model**: we read only its animation runs and its picture slides
@@ -26,8 +27,10 @@ we are missing is in [units.md](units.md). This list is about everything else.
   - idle variants ("Idle 0", "Idle 1");
   - infantry crouching ("Crouch", "CrouchFire");
   - "Win";
-  - each kind of death: "Blow Up", "Shot", "Burnt", "Gassed", "Run Over", "Deployed Death",
-    "Explode".
+  - "Explode" (the saboteur's own blast).
+- **Deaths without the disc**: our ragdoll is commented out, so without the disc's models a
+  dead soldier is not shown. A wound comes from the last weapon that hurt the soldier; mines,
+  the superweapon and the saw count as shots.
 - **Smoke from buildings** comes from our own pipe and stack positions, not from the models'
   `#smokey…` nodes. This covers the deployed MCV, the refinery and the factory.
 - **Tracks** start their picture from the beginning again whenever a machine stops. The
@@ -37,6 +40,10 @@ we are missing is in [units.md](units.md). This list is about everything else.
 - **A deployed Kobra** turns its whole body to aim, as other vehicles do. It does not turn
   only its turret.
 - **Lower-detail models**: only the `_H0` models are read.
+- **Invisible units**: their own side sees them painted with the disc's `hackedstealth0–7`
+  shimmer, one frame per update and seen through as much as it shows. The original also draws
+  two copies first, each blended with what is behind it (`DESTCOLOR`) and jittered by 1 and
+  then 2 units; we don't draw those.
 
 ## Lights
 
@@ -50,6 +57,11 @@ we are missing is in [units.md](units.md). This list is about everything else.
 
 ## Maps
 
+- **The sea** (faces painted `sea.tga` or `icesea.tga`) is drawn with our own water shader,
+  not the original's picture. The disc's maps have no sea bed, so the sea is drawn as
+  `SEA_DEPTH` deep everywhere and doesn't grow shallow near the shore. Its mirror lies at the
+  lowest of it, which on a river that falls (Caladan: River Delta) is a little under parts of
+  it. Only the Metal backend draws it as water.
 - **Campaign map names** come from their folders, such as "Draconis Iv Hw" or "Hk Start". The
   game's text names only three of them.
 - **Campaign maps with only one start** are listed, but a skirmish needs more.
@@ -64,6 +76,16 @@ we are missing is in [units.md](units.md). This list is about everything else.
   it back.
 - **Groups and the stairs**: a group with any vehicle in it is only sent to spots vehicles can
   reach, even its infantry.
+
+## Sounds
+
+- **Only the units' answers play**: what they say when selected, sent somewhere or told to
+  attack. Weapons, explosions, deaths, engines, buildings, the interface and the mentat's
+  speech are not played, though the sound tables and `AUDIO.BAG` have them.
+- **Radio static**: an aircraft's answers are laid over static in the original (its tables'
+  `Control = random attack decay`). Only the speech plays.
+- **The tables' settings** (`Volume`, `FShift`, `Limit`, `Control`) are not read: a line plays
+  at its own level, and each answer cuts off the one before.
 
 ## Other platforms
 

@@ -117,16 +117,30 @@ Each house has its own model of each of these.
 
 ## The small factions
 
-Our skirmish setup already lets you pick these as allies, but none of their units or
-buildings exist yet.
+In a skirmish, the player can put up the main building of each mini-house they are allied
+with. It is in the Buildings menu after the refinery, and it needs a construction yard and,
+as `Rules.txt` says, a factory or a barracks. It costs what `Rules.txt` says. It is drawn with
+the disc's model, or without the disc with our plain block.
 
-| Faction | Original units | Original building | Ours |
-| --- | --- | --- | --- |
-| Ix | IXInfiltrator, IXProjector | IXResCentre | — |
-| Tleilaxu | TLContaminator, TLLeech | TLFleshVat | — |
-| Sardaukar | IMSardaukar, IMADVSardaukar, IMDropShip | IMBarracks | — |
-| Fremen | FRFremen, FRADVFremen, WormRider | FRCamp | — |
-| Guild | GUMaker, GUNIABTank | GUPalace | — |
+Each main building makes its mini-house's first unit, which is in the Infantry menu after the
+house's own five (the Vehicles menu has no room left). Their cost and speed come from
+`Rules.txt`. Their health and build time are scaled like our other units'. They are drawn with
+the disc's models; without the disc, soldiers are our plain soldier, the Infiltrator our
+Atreides APC, and the Maker our Inkvine. The other units need an upgraded main building, and
+we have no upgrades yet (TASK-16). The drop ship is called in, not built.
+
+| Faction | Original units | Ours | Original building | Ours | Needs |
+| --- | --- | --- | --- | --- | --- |
+| Ix | IXInfiltrator | Ixian Infiltrator: unseen and unarmed; deployed, it blows up with a saboteur's bomb | IXResCentre | House of Ix | Factory |
+| Ix | IXProjector | — (needs an upgrade) | | | |
+| Tleilaxu | TLContaminator | Tleilaxu Contaminator: stabs up close; doesn't turn whom it kills yet | TLFleshVat | Tleilaxu Flesh Vat | Factory |
+| Tleilaxu | TLLeech | — (needs an upgrade) | | | |
+| Sardaukar | IMSardaukar | Imperial Sardaukar: a heavy machine gun | IMBarracks | Sardaukar Barracks | Barracks |
+| Sardaukar | IMADVSardaukar, IMDropShip | — | | | |
+| Fremen | FRFremen | Fremen Warrior: unseen until it fires, with a sniper's rifle | FRCamp | Fremen Camp | Barracks |
+| Fremen | FRADVFremen, WormRider | — (needs an upgrade) | | | |
+| Guild | GUMaker | Guild Maker: lobs a heavy shell far off | GUPalace | Guild Palace | Factory |
+| Guild | GUNIABTank | — (needs an upgrade) | | | |
 
 ## Campaign, neutral and scenery units
 

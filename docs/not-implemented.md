@@ -116,6 +116,9 @@ we are missing is in [units.md](units.md). This list is about everything else.
   doesn't fade with distance from the camera or pan to where it is.
 - **Radio static**: an aircraft's answers are laid over static in the original (its tables'
   `Control = random attack decay`). Only the speech plays.
+- **The volume options**: Music Volume sets the music and the movies, Voice Volume the units'
+  answers, and Sound Volume the battlefield's sounds. Movies play at the music's level, and
+  the options are not kept between runs.
 - **Many sounds at once**: the macOS backend plays up to 16 battlefield sounds together. Past
   that, a new one takes the place of the one that would end soonest.
 

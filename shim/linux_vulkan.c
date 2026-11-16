@@ -622,6 +622,12 @@ void oe_play_line(const float *samples, uint32_t frames, int32_t channels, int32
     (void)rate;
 }
 
+void oe_set_volumes(float music, float lines, float effects) {
+    (void)music;
+    (void)lines;
+    (void)effects;
+}
+
 void oe_play_effect(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
                     float volume) {
     (void)samples;

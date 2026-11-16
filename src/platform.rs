@@ -351,6 +351,7 @@ unsafe extern "C" {
     fn oe_stop_sound();
     fn oe_play_line(samples: *const f32, frames: u32, channels: i32, rate: i32);
     fn oe_play_effect(samples: *const f32, frames: u32, channels: i32, rate: i32, volume: f32);
+    fn oe_set_volumes(music: f32, lines: f32, effects: f32);
     fn oe_shutdown();
 }
 
@@ -552,6 +553,13 @@ impl Platform {
                 rate as i32,
             )
         }
+    }
+
+    /// How loud, from 0 to 1, the music and movies play, the lines units speak, and the
+    /// battlefield's sounds, from now on and for what is playing.
+    pub fn set_volumes(&mut self, music: f32, lines: f32, effects: f32) {
+        // SAFETY: it takes plain numbers.
+        unsafe { oe_set_volumes(music, lines, effects) }
     }
 
     /// Plays interleaved samples once at `volume`, from 0 to 1, over everything else and over

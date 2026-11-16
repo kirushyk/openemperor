@@ -1199,10 +1199,17 @@ typedef struct {
 
 /* The music, and the lines units speak over it. */
 static Channel g_music, g_line;
-/* The battlefield's sounds, played over each other, and when each ends. */
+/* The battlefield's sounds, played over each other, when each ends, and each one's own volume. */
 enum { EFFECTS = 16 };
 static Channel g_effects[EFFECTS];
 static double g_effect_ends[EFFECTS];
+static float g_effect_volumes[EFFECTS];
+/* How loud the music, the lines and the effects play, as the options set them. */
+static float g_music_volume = 1.0f, g_line_volume = 1.0f, g_effects_volume = 1.0f;
+
+static void set_volume(Channel *channel, float volume) {
+    if (channel->queue) AudioQueueSetParameter(channel->queue, kAudioQueueParam_Volume, volume);
+}
 
 /* Gives the queue the next stretch of samples in this buffer, or lets it run dry at the end. */
 static void queue_samples(void *user, AudioQueueRef queue, AudioQueueBufferRef buffer) {
@@ -1271,10 +1278,21 @@ void oe_stop_sound(void) { stop_channel(&g_music); }
 void oe_play_sound(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
                    int32_t loop) {
     play_channel(&g_music, samples, frames, channels, rate, loop);
+    set_volume(&g_music, g_music_volume);
 }
 
 void oe_play_line(const float *samples, uint32_t frames, int32_t channels, int32_t rate) {
     play_channel(&g_line, samples, frames, channels, rate, 0);
+    set_volume(&g_line, g_line_volume);
+}
+
+void oe_set_volumes(float music, float lines, float effects) {
+    g_music_volume = music;
+    g_line_volume = lines;
+    g_effects_volume = effects;
+    set_volume(&g_music, music);
+    set_volume(&g_line, lines);
+    for (int i = 0; i < EFFECTS; i++) set_volume(&g_effects[i], g_effect_volumes[i] * effects);
 }
 
 void oe_play_effect(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
@@ -1287,9 +1305,8 @@ void oe_play_effect(const float *samples, uint32_t frames, int32_t channels, int
         if (g_effect_ends[i] < g_effect_ends[pick]) pick = i;
     }
     play_channel(&g_effects[pick], samples, frames, channels, rate, 0);
-    if (g_effects[pick].queue) {
-        AudioQueueSetParameter(g_effects[pick].queue, kAudioQueueParam_Volume, volume);
-    }
+    g_effect_volumes[pick] = volume;
+    set_volume(&g_effects[pick], volume * g_effects_volume);
     g_effect_ends[pick] = now + (double)frames / rate;
 }
 

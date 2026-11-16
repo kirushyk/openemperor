@@ -155,6 +155,11 @@ void oe_stop_sound(void);
  * it is still playing. Only the macOS backend makes a sound so far. */
 void oe_play_line(const float *samples, uint32_t frames, int32_t channels, int32_t rate);
 
+/* How loud, from 0 to 1, the music (and movies) play, the lines units speak, and the sounds
+ * of oe_play_effect on top of their own volume: at once for what is playing, and for what
+ * plays after. Only the macOS backend makes a sound so far. */
+void oe_set_volumes(float music, float lines, float effects);
+
 /* Plays interleaved float samples once at `volume`, 0 to 1, over everything else and over each
  * other, as many at a time as the backend has room for: past that, in place of the one that
  * would end soonest. Only the macOS backend makes a sound so far. */

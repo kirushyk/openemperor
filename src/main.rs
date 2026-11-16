@@ -126,6 +126,8 @@ fn main() {
     // The battlefield's sounds of firing and dying, waiting their turn and playing.
     #[cfg(target_os = "macos")]
     let mut effects = sounds::Effects::default();
+    // The volumes last given to the backend, to give them again only when they change.
+    let mut volumes = None;
     let mut last = Instant::now();
     while !game.quit {
         while let Some(event) = platform.poll_event() {
@@ -145,6 +147,18 @@ fn main() {
                 let line = &effect.line;
                 platform.play_effect(&line.samples, line.channels, line.rate, effect.volume);
             }
+        }
+        // How loud the options say the music, the units and the battlefield are.
+        let settings = &game.settings;
+        let wanted = [
+            settings.music_volume,
+            settings.voice_volume,
+            settings.sound_volume,
+        ];
+        if volumes != Some(wanted) {
+            let [music, lines, effects] = wanted.map(|volume| volume as f32 / 100.0);
+            platform.set_volumes(music, lines, effects);
+            volumes = Some(wanted);
         }
         // What the player's units answer is said over the music.
         #[cfg(target_os = "macos")]

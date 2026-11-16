@@ -656,7 +656,7 @@ pub enum Toggle {
     FogOfWar,
 }
 
-/// Option values, not saved between runs. Only the game speed is applied so far.
+/// Option values, not saved between runs. The game speed and the volumes are applied so far.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     /// From 1 to `UPDATES_PER_SECOND.len()`, as on the original's slider.

@@ -190,6 +190,9 @@ const BY_THE_SAND: f32 = 2.0 * CELL_SIDE;
 /// and has its middle this far out from that point.
 pub const REFINERY_PAD_HUB: (f32, f32) = (0.0, -1.6);
 pub const REFINERY_PAD_TURNS: [f32; 3] = [-FRAC_PI_4, 0.0, FRAC_PI_4];
+/// The order a refinery comes by its pads: the middle one it is built with, then the others
+/// as it is upgraded.
+const REFINERY_PAD_ORDER: [usize; 3] = [1, 0, 2];
 pub const REFINERY_PAD_REACH: f32 = 2.8;
 /// How far each way a refinery's pad reaches: across it, and along it from the building out.
 pub const REFINERY_PAD_HALF: (f32, f32) = (0.78, 1.25);
@@ -399,6 +402,8 @@ pub enum Role {
     Palace(Faction),
     /// One square of wall, joined to the walls beside it.
     Wall,
+    /// Makes the power the other buildings use.
+    Windtrap,
     /// The main building of the Tleilaxu, for a house allied with them.
     TlFleshVat,
     /// The main building of the house of Ix, for a house allied with them.
@@ -649,7 +654,8 @@ impl Role {
             | Role::GuPalace
             | Role::ImBarracks
             | Role::FrCamp
-            | Role::Wall => UnitKind::Building,
+            | Role::Wall
+            | Role::Windtrap => UnitKind::Building,
         }
     }
 
@@ -712,6 +718,7 @@ impl Role {
             Role::ImBarracks => "Sardaukar Barracks",
             Role::FrCamp => "Fremen Camp",
             Role::Wall => "Wall",
+            Role::Windtrap => "Windtrap",
             Role::FrFremen => "Fremen Warrior",
             Role::ImSardaukar => "Imperial Sardaukar",
             Role::TlContaminator => "Tleilaxu Contaminator",
@@ -752,6 +759,7 @@ impl Role {
             | Role::ImBarracks
             | Role::FrCamp
             | Role::Wall
+            | Role::Windtrap
             | Role::IxInfiltrator => WeaponKind::Unarmed,
             Role::FrFremen => WeaponKind::Sniper,
             Role::ImSardaukar => WeaponKind::Bullet,
@@ -797,6 +805,7 @@ impl Role {
             Role::OrChemical => 575.0,
             Role::ImSardaukar => 900.0,
             Role::TlContaminator | Role::GuMaker | Role::Wall => 1000.0,
+            Role::Windtrap => 1500.0,
             Role::HkAssault => 2400.0,
             Role::AtRepairUnit | Role::HkMissile | Role::OrAdp | Role::OrDustScout => 1100.0,
             Role::Mcv => 4500.0,
@@ -948,6 +957,8 @@ impl Role {
             Role::Factory | Role::Hanger => 20.0,
             // A square at a time: the original's 60 against a pillbox's 309.
             Role::Wall => 1.5,
+            // The original's 240 against a pillbox's 309.
+            Role::Windtrap => 6.0,
             Role::AtRocketTurret | Role::HkGunTurret | Role::OrPopUpTurret => 12.0,
             Role::AtPillbox | Role::HkFlameTurret | Role::OrGasTurret => 8.0,
         }
@@ -998,6 +1009,7 @@ impl Role {
             Role::ImBarracks => 700,
             Role::FrCamp => 600,
             Role::Wall => 20,
+            Role::Windtrap => 225,
             Role::FrFremen => 150,
             Role::ImSardaukar | Role::TlContaminator => 300,
             Role::IxInfiltrator => 500,
@@ -1015,6 +1027,7 @@ impl Role {
                 Some(Role::Factory)
             }
             Role::ImBarracks | Role::FrCamp => Some(Role::Barracks),
+            Role::Barracks | Role::Refinery | Role::Factory | Role::Outpost => Some(Role::Windtrap),
             role if role.kind() == UnitKind::Tower => Some(Role::Barracks),
             Role::Helipad | Role::Palace(_) => Some(Role::Hanger),
             _ => None,
@@ -1024,7 +1037,103 @@ impl Role {
     /// Whether a side with nothing else left still stands while it has one: not so a wall, as
     /// the original's `ExcludeFromSkirmishLose`.
     pub fn counts_for_losing(self) -> bool {
-        self != Role::Wall
+        !matches!(self, Role::Wall | Role::Windtrap)
+    }
+
+    /// How much power one makes, as the original's `PowerGenerated`.
+    pub fn power_made(self) -> i32 {
+        if self == Role::Windtrap { 100 } else { 0 }
+    }
+
+    /// How much power one uses, as the original's `PowerUsed`. A refinery's every further pad
+    /// uses its own, counted with `Unit::power_used`.
+    pub fn power_used(self) -> i32 {
+        match self {
+            Role::Barracks => 20,
+            Role::Refinery | Role::Factory => 40,
+            Role::Outpost | Role::TlFleshVat | Role::IxResCentre => 60,
+            Role::Hanger => 50,
+            Role::Helipad | Role::ImBarracks => 30,
+            Role::Palace(_) => 150,
+            Role::GuPalace => 180,
+            Role::AtRocketTurret | Role::HkGunTurret | Role::OrPopUpTurret => 75,
+            _ => 0,
+        }
+    }
+
+    /// What one upgrade of it costs, as the original's `UpgradeCost`, for what can be
+    /// upgraded: an MCV deployed, as the construction yard; a refinery, each further pad.
+    pub fn upgrade_cost(self) -> Option<i32> {
+        match self {
+            Role::Mcv => Some(600),
+            Role::Barracks => Some(800),
+            Role::Factory | Role::Hanger | Role::Refinery => Some(1200),
+            Role::TlFleshVat | Role::IxResCentre => Some(1500),
+            Role::GuPalace => Some(1600),
+            Role::ImBarracks | Role::FrCamp => Some(1000),
+            _ => None,
+        }
+    }
+
+    /// What one upgrade of it costs, and how long it takes.
+    fn upgrade_price(self) -> (i32, f32) {
+        (self.upgrade_cost().unwrap_or(0), self.upgrade_seconds())
+    }
+
+    /// How many times it can be upgraded: a refinery to its third pad, anything else once.
+    pub fn most_upgrades(self) -> u8 {
+        match self {
+            Role::Refinery => 2,
+            role if role.upgrade_cost().is_some() => 1,
+            _ => 0,
+        }
+    }
+
+    /// How long one upgrade of it takes, in seconds: a refinery pad's `UpgradeBuildTime` of
+    /// 720, scaled as build times are. The original gives no other building one: they take as
+    /// long as building them does.
+    pub fn upgrade_seconds(self) -> f32 {
+        match self {
+            Role::Refinery => 18.0,
+            _ => self.build_seconds(),
+        }
+    }
+
+    /// Whether what makes it has to be upgraded first, as the original's
+    /// `UpgradedPrimaryRequired`: the advanced turrets need the construction yard's upgrade.
+    pub fn needs_upgraded_maker(self) -> bool {
+        matches!(
+            self,
+            Role::AtRocketTurret
+                | Role::HkGunTurret
+                | Role::OrPopUpTurret
+                | Role::AtKindjal
+                | Role::Engineer
+                | Role::HkFlamer
+                | Role::OrMortar
+                | Role::OrSaboteur
+                | Role::HkFlame
+                | Role::HkMissile
+                | Role::HkInkVine
+                | Role::AtApc
+                | Role::AtRepairUnit
+                | Role::AtMinotaurus
+                | Role::OrApc
+                | Role::OrKobra
+                | Role::HkGunship
+                | Role::AtOrni
+                | Role::OrEits
+                | Role::AdvCarryall
+        )
+    }
+
+    /// Whether it stops working while its owner is short of power, as the original's
+    /// `DisableWithLowPower`: the advanced turrets.
+    pub fn needs_power_to_work(self) -> bool {
+        matches!(
+            self,
+            Role::AtRocketTurret | Role::HkGunTurret | Role::OrPopUpTurret
+        )
     }
 
     /// Whether the battle's statistics count it, and the chat says when it is lost: not a
@@ -1204,6 +1313,7 @@ impl Role {
             ) => 80.0,
             (Role::Helipad, _) => 72.0,
             (Role::Wall, _) => 48.0,
+            (Role::Windtrap, _) => 70.0,
             (Role::Mcv, _) => 107.0,
             _ => 100.0,
         }
@@ -1281,6 +1391,7 @@ impl Role {
             | Role::ImBarracks
             | Role::FrCamp
             | Role::Wall
+            | Role::Windtrap
             | Role::Helipad
             | Role::AtRocketTurret
             | Role::HkFlameTurret
@@ -1362,6 +1473,7 @@ impl Role {
             Role::OrGasTurret => [1.0, 0.645, 1.0],
             Role::OrPopUpTurret => [1.0, 0.63, 1.0],
             Role::Wall => [1.0, 1.0, 1.0],
+            Role::Windtrap => [1.0, 1.4, 1.0],
         }
     }
 
@@ -1765,6 +1877,13 @@ pub struct Unit {
     /// For a square of wall, which of its sides another of its owner's walls joins it on:
     /// towards +x, +z, -x and -z.
     pub wall_joins: [bool; 4],
+    /// How many times a building has been upgraded: for a refinery, how many pads it has
+    /// beyond its first.
+    pub upgrades: u8,
+    /// The seconds left of the upgrade a building is having, if it is having one.
+    pub upgrading: Option<f32>,
+    /// Whether it is a turret standing idle because its owner is short of power.
+    pub unpowered: bool,
     /// Seconds left until a building just placed is finished, and works.
     pub constructing: f32,
     /// Which way a building looks.
@@ -2156,6 +2275,7 @@ impl Unit {
         self.alive
             && !self.is_under_construction()
             && role.made_by(self.house)
+            && (self.upgrades > 0 || !role.needs_upgraded_maker())
             && match role.made_in() {
                 Some(maker) => self.role == maker,
                 None => self.role == Role::Mcv && self.deployed,
@@ -2172,6 +2292,34 @@ impl Unit {
             deck: 0.0,
         });
         self.altitude = pad_top();
+    }
+
+    /// How much power it uses: a refinery its own and each further pad's 20.
+    pub fn power_used(&self) -> i32 {
+        let pads = if self.role == Role::Refinery {
+            20 * i32::from(self.upgrades)
+        } else {
+            0
+        };
+        self.role.power_used() + pads
+    }
+
+    /// Which of a refinery's pads harvesters can use: its middle one, and one more for each
+    /// time it was upgraded, in the order of the original's `DeployTile`.
+    pub fn working_pads(&self) -> impl Iterator<Item = usize> + use<> {
+        REFINERY_PAD_ORDER
+            .into_iter()
+            .take(1 + usize::from(self.upgrades))
+    }
+
+    /// Whether it is a standing building that can be upgraded now: one with an upgrade left
+    /// that is not having one, and for an MCV, deployed.
+    pub fn can_be_upgraded(&self) -> bool {
+        self.alive
+            && !self.is_under_construction()
+            && self.upgrading.is_none()
+            && self.upgrades < self.role.most_upgrades()
+            && (self.role != Role::Mcv || self.deployed)
     }
 
     /// Whether it is a building still going up.
@@ -2758,6 +2906,9 @@ impl Unit {
             popped: 0.0,
             gun_turn: 0.0,
             wall_joins: [false; 4],
+            upgrades: 0,
+            upgrading: None,
+            unpowered: false,
             constructing: 0.0,
             facing: Facing::default(),
             deployment: Deployment::Idle,
@@ -2914,6 +3065,9 @@ fn place_unit(
         popped: 0.0,
         gun_turn: 0.0,
         wall_joins: [false; 4],
+        upgrades: 0,
+        upgrading: None,
+        unpowered: false,
         constructing: 0.0,
         facing: Facing::default(),
         deployment: Deployment::Idle,
@@ -3040,31 +3194,129 @@ pub fn cancel_making(units: &mut [Unit], role: Role, owner: usize, money: &mut i
 /// How much of what it costs to make this has been paid with these seconds of it left: the
 /// share of the work done.
 pub fn paid_for(role: Role, left: f32) -> i32 {
-    let done = 1.0 - (left / role.build_seconds().max(0.001)).clamp(0.0, 1.0);
-    (role.cost() as f32 * done).floor() as i32
+    paid_of((role.cost(), role.build_seconds()), left)
 }
 
 /// Works `dt` seconds more on making this, which needed `left` seconds more, paying for each
 /// bit of it out of `money` as it goes: the work stops where the money runs out. Returns the
 /// seconds still left.
 pub fn work_and_pay(role: Role, left: f32, dt: f32, money: &mut i32) -> f32 {
-    let paid = paid_for(role, left);
+    pay_as_it_goes((role.cost(), role.build_seconds()), left, dt, money)
+}
+
+/// What has been paid so far of something costing this much over this many seconds, with
+/// `left` seconds still to go.
+fn paid_of((cost, seconds): (i32, f32), left: f32) -> i32 {
+    let done = 1.0 - (left / seconds.max(0.001)).clamp(0.0, 1.0);
+    (cost as f32 * done).floor() as i32
+}
+
+/// Works `dt` seconds more on something costing this much over this many seconds, as
+/// `work_and_pay` does.
+fn pay_as_it_goes(price: (i32, f32), left: f32, dt: f32, money: &mut i32) -> f32 {
+    let (cost, seconds) = price;
+    let paid = paid_of(price, left);
     let can_pay = (*money).max(0);
     // As far as the money goes, short of where the work would get to.
-    let affordable = role.build_seconds() * (1.0 - (paid + can_pay) as f32 / role.cost() as f32);
+    let affordable = seconds * (1.0 - (paid + can_pay) as f32 / cost as f32);
     let left_now = (left - dt).max(0.0).max(affordable).min(left);
-    *money -= (paid_for(role, left_now) - paid).min(can_pay);
+    *money -= (paid_of(price, left_now) - paid).min(can_pay);
     left_now
+}
+
+/// How much slower an owner short of power builds, makes and upgrades.
+const LOW_POWER_PACE: f32 = 0.5;
+
+/// The power an owner's standing buildings make and use.
+pub fn power(units: &[Unit], owner: usize) -> (i32, i32) {
+    units
+        .iter()
+        .filter(|u| u.alive && u.owner == owner && !u.is_under_construction())
+        .fold((0, 0), |(made, used), u| {
+            (made + u.role.power_made(), used + u.power_used())
+        })
+}
+
+/// Whether an owner's buildings use more power than they make.
+pub fn is_short_of_power(units: &[Unit], owner: usize) -> bool {
+    let (made, used) = power(units, owner);
+    used > made
+}
+
+/// How fast an owner's work goes: slower while short of power.
+pub fn work_pace(units: &[Unit], owner: usize) -> f32 {
+    if is_short_of_power(units, owner) {
+        LOW_POWER_PACE
+    } else {
+        1.0
+    }
+}
+
+/// Stops the turrets that need power of every owner short of it, and lets the others work.
+pub fn settle_power(units: &mut [Unit]) {
+    let owners = units.iter().map(|u| u.owner + 1).max().unwrap_or(0);
+    let short: Vec<bool> = (0..owners).map(|o| is_short_of_power(units, o)).collect();
+    for unit in units.iter_mut() {
+        unit.unpowered = unit.role.needs_power_to_work() && short[unit.owner];
+    }
+}
+
+/// Starts upgrading the first of an owner's standing buildings of this role that can still be
+/// upgraded and is not being. Returns whether one was started.
+pub fn start_upgrade(units: &mut [Unit], owner: usize, role: Role) -> bool {
+    let building = units
+        .iter_mut()
+        .find(|u| u.owner == owner && u.role == role && u.can_be_upgraded());
+    building.is_some_and(|building| {
+        building.upgrading = Some(role.upgrade_seconds());
+        true
+    })
+}
+
+/// Calls off the upgrade an owner's building of this role is having, giving back what was
+/// paid for it. Returns whether there was one.
+pub fn cancel_upgrade(units: &mut [Unit], owner: usize, role: Role, money: &mut i32) -> bool {
+    let building = units
+        .iter_mut()
+        .find(|u| u.alive && u.owner == owner && u.role == role && u.upgrading.is_some());
+    building.is_some_and(|building| {
+        let left = building.upgrading.take().unwrap_or(0.0);
+        *money += paid_of(role.upgrade_price(), left);
+        true
+    })
+}
+
+/// Counts down every building's upgrade, paid for from each owner's `money`. Returns the
+/// buildings whose upgrade is done, already counted on them.
+pub fn work_on_upgrades(units: &mut [Unit], money: &mut [i32], dt: f32) -> Vec<usize> {
+    let paces: Vec<f32> = (0..money.len()).map(|o| work_pace(units, o)).collect();
+    let mut done = Vec::new();
+    for (i, unit) in units.iter_mut().enumerate().filter(|(_, u)| u.alive) {
+        let (Some(money), Some(left)) = (money.get_mut(unit.owner), unit.upgrading) else {
+            continue;
+        };
+        let dt = dt * paces[unit.owner];
+        let left = pay_as_it_goes(unit.role.upgrade_price(), left, dt, money);
+        unit.upgrading = Some(left);
+        if left <= 0.0 {
+            unit.upgrading = None;
+            unit.upgrades += 1;
+            done.push(i);
+        }
+    }
+    done
 }
 
 /// Counts down what every building is making, paid for from each owner's `money`. Returns the
 /// buildings done with theirs.
 pub fn work_on_making(units: &mut [Unit], money: &mut [i32], dt: f32) -> Vec<usize> {
+    let paces: Vec<f32> = (0..money.len()).map(|o| work_pace(units, o)).collect();
     let mut done = Vec::new();
     for (i, unit) in units.iter_mut().enumerate().filter(|(_, u)| u.alive) {
         let Some(money) = money.get_mut(unit.owner) else {
             continue;
         };
+        let dt = dt * paces[unit.owner];
         if let Some((role, left)) = &mut unit.making {
             *left = work_and_pay(*role, *left, dt, money);
             if *left <= 0.0 {
@@ -3445,7 +3697,12 @@ pub fn new_building(
     built[0]
 }
 
-/// Puts up an owner's three buildings in a row behind a group's middle.
+/// How far behind a group's middle the windtraps of its base stand.
+#[cfg(test)]
+const WINDTRAPS_BEHIND: f32 = BUILDINGS_BEHIND + 260.0;
+
+/// Puts up an owner's three buildings in a row behind a group's middle, a windtrap behind
+/// each, all of them upgraded as far as they go.
 #[cfg(test)]
 fn place_base(
     units: &mut Vec<Unit>,
@@ -3465,6 +3722,12 @@ fn place_base(
             center.1 + behind.1 * BUILDINGS_BEHIND + across_z * along,
         );
         place_building(units, terrain, at, role, side);
+        // Behind each, a windtrap: enough power for all of it.
+        let trap = (
+            center.0 + behind.0 * WINDTRAPS_BEHIND + across_x * along,
+            center.1 + behind.1 * WINDTRAPS_BEHIND + across_z * along,
+        );
+        place_building(units, terrain, trap, Role::Windtrap, side);
     }
     let pad = (
         center.0 - behind.0 * PAD_AHEAD + across_x * PAD_ALONG,
@@ -3479,6 +3742,9 @@ fn place_base(
     place_building(units, terrain, mcv, Role::Mcv, side);
     if let Some(mcv) = units.last_mut() {
         switch_deployed(mcv);
+    }
+    for building in units.iter_mut().filter(|u| u.owner == side.0) {
+        building.upgrades = building.role.most_upgrades();
     }
 }
 
@@ -5329,7 +5595,9 @@ fn free_dock(units: &[Unit], harvester: &Unit) -> Option<Dock> {
         .filter(|u| is_refinery_of(u, harvester.owner))
         .flat_map(|refinery| {
             let id = refinery.id;
-            (0..REFINERY_PAD_TURNS.len()).map(move |pad| (Dock { refinery: id, pad }, refinery))
+            refinery
+                .working_pads()
+                .map(move |pad| (Dock { refinery: id, pad }, refinery))
         })
         .filter(|&(dock, _)| !taken(dock))
         .min_by(|(a, from_a), (b, from_b)| {
@@ -9650,6 +9918,8 @@ mod tests {
         let mut refinery = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Building);
         refinery.role = Role::Refinery;
         refinery.weapon = WeaponKind::Unarmed;
+        // With all three of its pads.
+        refinery.upgrades = Role::Refinery.most_upgrades();
         let mut units = vec![refinery];
         for n in 0..harvesters {
             let x = MAP_MIDDLE_X + 181.0 + 90.51 * n as f32;

@@ -2054,6 +2054,7 @@ impl Combat {
                 units[i].salvo_fired = 0;
             }
             if !units[i].has_rockets()
+                || units[i].unpowered
                 || units[i].is_under_construction()
                 || units[i].theft.is_some()
                 || !units[i].can_launch()

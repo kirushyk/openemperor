@@ -106,10 +106,10 @@ Each house has its own model of each of these.
 | Hanger | Hangar | Disc | |
 | Helipad | Landing Pad | Disc for Atreides and Harkonnen, ours for Ordos | The original gives House Ordos no landing pad. We give it one, drawn with our model. |
 | Refinery | Refinery | Disc | Our harvesters dock at our refinery's pad places, not the original's. |
-| RefineryDock | part of the Refinery | — | |
+| RefineryDock | a Refinery's upgrade: its second and third pad | part of the Refinery's model | Each brings a harvester, as the original's. |
 | Outpost | Outpost | Disc | |
 | Palace | Atreides Palace, Harkonnen Palace, Ordos Palace | Disc | |
-| SmWindtrap | — | — | The original's power plant. |
+| SmWindtrap | Windtrap | Disc | Makes 100 power. |
 | Wall | Wall | Disc | Each house's six pieces (alone, end, middle, corner, T, cross), turned to join the walls beside it. |
 | Starport | — | — | |
 | FactoryFrigate | — | — | |

@@ -167,6 +167,17 @@ const MODELS: &[(Role, Option<Faction>, &str)] = {
             "Buildings\\hk_refinery_H0.xbf",
         ),
         (Role::Refinery, Some(Ordos), "Buildings\\OR_refinery_H0.xbf"),
+        (
+            Role::Windtrap,
+            Some(Atreides),
+            "Buildings\\AT_Windtrap_H0.XbF",
+        ),
+        (
+            Role::Windtrap,
+            Some(Harkonnen),
+            "Buildings\\HK_Windtrap_H0.XBF",
+        ),
+        (Role::Windtrap, Some(Ordos), "Buildings\\or_windtrap_H0.XbF"),
         (Role::Palace(Atreides), None, "Buildings\\AT_Palace_H0.XbF"),
         (Role::Palace(Harkonnen), None, "Buildings\\hk_palace_h0.XBF"),
         (Role::Palace(Ordos), None, "Buildings\\OR_Palace_H0.XBF"),
@@ -385,6 +396,24 @@ const ICONS: &[(Role, Option<Faction>, &str, &str)] = {
             "OR_popupturret",
             "grey_OR_popupturret",
         ),
+        (
+            Role::Windtrap,
+            Some(Atreides),
+            "AT_Windtrap",
+            "grey_AT_Windtrap",
+        ),
+        (
+            Role::Windtrap,
+            Some(Harkonnen),
+            "HK_Windtrap",
+            "grey_HK_Windtrap",
+        ),
+        (
+            Role::Windtrap,
+            Some(Ordos),
+            "OR_Windtrap",
+            "grey_OR_Windtrap",
+        ),
         // Every house's, as the original's ArtIni.txt has it.
         (Role::Wall, None, "HK_Wall", "grey_HK_Wall"),
         (Role::TlFleshVat, None, "TL_FleshVat", "grey_TL_FleshVat"),
@@ -409,6 +438,32 @@ const ICONS: &[(Role, Option<Faction>, &str, &str)] = {
         (Role::FrFremen, None, "FR_Fremen", "Grey_FR_Fremen"),
     ]
 };
+
+/// The build buttons of what only the Upgrades menu shows, for each house: the pad a refinery
+/// gains, the original's RefineryDock, and the construction yard, lit and grey.
+const UPGRADE_ICONS: [(Faction, [(&str, &str); 2]); 3] = [
+    (
+        Faction::Atreides,
+        [
+            ("AT_RefineryPAD", "grey_AT_RefineryPAD"),
+            ("Ico2_acy", "grey_Ico2_acy"),
+        ],
+    ),
+    (
+        Faction::Harkonnen,
+        [
+            ("HK_RefineryPAD", "grey_HK_RefineryPAD"),
+            ("Ico2_hcy", "grey_Ico2_hcy"),
+        ],
+    ),
+    (
+        Faction::Ordos,
+        [
+            ("OR_RefineryPAD", "grey_OR_RefineryPAD"),
+            ("ORico2_acy", "grey_ORico2_acy"),
+        ],
+    ),
+];
 
 /// The part of a Kobra's model that swings its raised cannon round.
 const SWIVEL: &str = "gunpivot";
@@ -470,10 +525,11 @@ const DAMAGED: [&str; 2] = ["_h1.", "_h2."];
 const UI_INDEX: &str = "\\data\\UI0001.RFH";
 const UI_DATA: &str = "\\data\\UI0001.RFD";
 const SIDEBAR: &str = "SIDEBAR\\SIDEBAR1.XBF";
-const TAB_SYMBOLS: [(BuildTab, &str); 3] = [
+const TAB_SYMBOLS: [(BuildTab, &str); 4] = [
     (BuildTab::Infantry, "infantrybody"),
     (BuildTab::Vehicles, "vehiclebody"),
     (BuildTab::Buildings, "buildingbody"),
+    (BuildTab::Upgrades, "upgradebuildings"),
 ];
 
 /// What the name of its model as it is destroyed ends with.
@@ -534,6 +590,8 @@ struct Original {
     layers: usize,
     /// Which of the pictures each of `ICONS` is, lit and grey, if the disc has it.
     icons: Vec<Option<(usize, usize)>>,
+    /// Which of the pictures each of `UPGRADE_ICONS` is, a house's pad and then its yard.
+    upgrade_icons: Vec<[Option<(usize, usize)>; 2]>,
     /// The symbol of each of `TAB_SYMBOLS`, as flat triangles in a square from -1 to 1
     /// across and down, if the disc has it.
     tab_symbols: Vec<Vec<[(f32, f32); 3]>>,
@@ -1097,6 +1155,15 @@ fn read_shapes(disc: &Path) -> Option<Original> {
             Some((lit, give(grey).unwrap_or(lit)))
         })
         .collect();
+    let upgrade_icons = UPGRADE_ICONS
+        .iter()
+        .map(|(_, pictures)| {
+            pictures.map(|(lit, grey)| {
+                let lit = give(lit)?;
+                Some((lit, give(grey).unwrap_or(lit)))
+            })
+        })
+        .collect();
     let tab_symbols = read_tab_symbols(disc).unwrap_or_default();
     (!shapes.is_empty()).then_some(Original {
         shapes,
@@ -1108,6 +1175,7 @@ fn read_shapes(disc: &Path) -> Option<Original> {
         pictures,
         layers,
         icons,
+        upgrade_icons,
         archive,
         spice,
     })
@@ -1631,6 +1699,20 @@ pub fn stealth(time: f32) -> Option<usize> {
 /// house, grey while it cannot be made, once the disc's are read.
 pub fn icon(role: Role, house: Faction, grey: bool) -> Option<usize> {
     let (lit, dim) = ORIGINAL.get()?.icons[icon_at(role, house)?]?;
+    Some(if grey { dim } else { lit })
+}
+
+/// Which of the pictures is the Upgrades menu's button for a building of this role of this
+/// house: a refinery's is the pad it gains, a deployed MCV's the construction yard, and any
+/// other building's its own build button.
+pub fn upgrade_icon(role: Role, house: Faction, grey: bool) -> Option<usize> {
+    let which = match role {
+        Role::Refinery => 0,
+        Role::Mcv => 1,
+        _ => return icon(role, house, grey),
+    };
+    let at = UPGRADE_ICONS.iter().position(|&(of, _)| of == house)?;
+    let (lit, dim) = ORIGINAL.get()?.upgrade_icons[at][which]?;
     Some(if grey { dim } else { lit })
 }
 

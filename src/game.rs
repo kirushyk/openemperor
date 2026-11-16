@@ -19,15 +19,25 @@ const DEFAULT_BATTLE_MONEY: i32 = 10000;
 const CLICK_SLOP: f32 = 6.0;
 /// How near a click must land to a unit to pick it, at 1080 pixels tall.
 const PICK_RADIUS: f32 = 25.0;
-/// A placeholder reading until buildings produce and consume energy.
-const STARTING_ENERGY: i32 = 65;
 
 /// What a cell of a build menu holds: something to make, or the palace's superweapon to fire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entry {
     Make(Role),
     Superweapon,
+    /// An upgrade of the player's building of this role.
+    Upgrade(Role),
 }
+
+/// What the Upgrades menu lists before the allies' buildings, in the order of the original's
+/// `[BuildingTypes]`: the construction yard, which a deployed MCV is, comes last there.
+const UPGRADE_ORDER: [Role; 5] = [
+    Role::Barracks,
+    Role::Refinery,
+    Role::Factory,
+    Role::Hanger,
+    Role::Mcv,
+];
 
 /// What each house's Infantry menu lists, in the order of the original's `[UnitTypes]` in
 /// `Rules.txt`. Ordos AA troopers are left out: we have none yet.
@@ -110,11 +120,12 @@ fn vehicle_order(house: Faction) -> &'static [Entry] {
 }
 
 /// What each house's Buildings menu lists, in the order of the original's `[BuildingTypes]`.
-/// Ordos have no landing pad. Windtraps, starports and refinery pads are left out: we have
-/// none yet.
+/// Ordos have no landing pad. Starports are left out: we have none yet. A refinery's further
+/// pads are among the upgrades.
 fn building_order(house: Faction) -> impl Iterator<Item = Role> {
     let [lesser, greater] = Role::towers_of(house);
     [
+        Role::Windtrap,
         Role::Barracks,
         Role::Wall,
         Role::Refinery,
@@ -316,6 +327,7 @@ pub enum BuildTab {
     Infantry,
     Vehicles,
     Buildings,
+    Upgrades,
 }
 
 /// What the player's units answer, out loud, when they are told something.
@@ -1602,7 +1614,6 @@ pub struct Game {
     /// New units get ids never used in this battle, so a missile cannot chase the wrong one.
     next_unit_id: u32,
     pub build_tab: BuildTab,
-    pub energy: i32,
     /// The player's money first, then each opponent's.
     money: Vec<i32>,
     /// The refineries whose owners have had the harvester each new one brings, by id.
@@ -1694,7 +1705,6 @@ impl Game {
             control_groups: Default::default(),
             next_unit_id: 0,
             build_tab: BuildTab::Infantry,
-            energy: STARTING_ENERGY,
             money: vec![DEFAULT_BATTLE_MONEY],
             refineries_served: Vec::new(),
             short_of_harvesters: Vec::new(),
@@ -1743,9 +1753,11 @@ impl Game {
     /// Whether the player has a finished outpost, whose radar sees the whole map and puts
     /// enemies on the minimap.
     pub fn has_outpost(&self) -> bool {
-        self.units.iter().any(|u| {
-            u.alive && u.owner == 0 && u.role == Role::Outpost && !u.is_under_construction()
-        })
+        // Its radar goes out while its owner is short of power.
+        !units::is_short_of_power(&self.units, 0)
+            && self.units.iter().any(|u| {
+                u.alive && u.owner == 0 && u.role == Role::Outpost && !u.is_under_construction()
+            })
     }
 
     /// How far the launcher on top of this palace is open, from 0 to 1: it opens as the
@@ -1932,11 +1944,19 @@ impl Game {
                 .chain(allies.iter().filter_map(|ally| ally.main_building()))
                 .map(Entry::Make)
                 .collect(),
+            BuildTab::Upgrades => UPGRADE_ORDER
+                .into_iter()
+                .chain(allies.iter().filter_map(|ally| ally.main_building()))
+                .map(Entry::Upgrade)
+                .collect(),
         };
         listed
             .into_iter()
             .filter(|&entry| match entry {
                 Entry::Superweapon => self.superweapon().is_some(),
+                Entry::Upgrade(role) => {
+                    self.can_upgrade(role) || self.upgrade_progress(role).is_some()
+                }
                 Entry::Make(role) => {
                     self.can_produce(role)
                         || self.making_progress(role).is_some()
@@ -1956,7 +1976,56 @@ impl Game {
     pub fn build_role(&self, tab: BuildTab, cell: usize) -> Option<Role> {
         match self.build_entry(tab, cell)? {
             Entry::Make(role) => Some(role),
-            Entry::Superweapon => None,
+            Entry::Superweapon | Entry::Upgrade(_) => None,
+        }
+    }
+
+    /// Whether the player has a building of this role that could be upgraded now.
+    pub fn can_upgrade(&self, role: Role) -> bool {
+        self.units
+            .iter()
+            .any(|u| u.owner == 0 && u.role == role && u.can_be_upgraded())
+    }
+
+    /// How far along the upgrade of the player's building of this role is, from 0 to 1, if
+    /// one is being upgraded.
+    pub fn upgrade_progress(&self, role: Role) -> Option<f32> {
+        self.units
+            .iter()
+            .filter(|u| u.alive && u.owner == 0 && u.role == role)
+            .find_map(|u| u.upgrading)
+            .map(|left| 1.0 - left / role.upgrade_seconds().max(0.001))
+    }
+
+    /// The power the player's buildings make and use.
+    pub fn player_power(&self) -> (i32, i32) {
+        units::power(&self.units, 0)
+    }
+
+    /// The share of the power the player's buildings make that is to spare, from 0 with none
+    /// or too little to 1 with none of it used.
+    pub fn power_to_spare(&self) -> f32 {
+        let (made, used) = self.player_power();
+        if made <= 0 {
+            0.0
+        } else {
+            (1.0 - used as f32 / made as f32).clamp(0.0, 1.0)
+        }
+    }
+
+    /// Moves along every building's upgrade. A refinery's new pad brings its harvester.
+    fn work_on_upgrades(&mut self, dt: f32) {
+        let terrain = battlefield::terrain(self.battle_map);
+        for building in units::work_on_upgrades(&mut self.units, &mut self.money, dt) {
+            let upgraded = self.units[building];
+            if upgraded.owner == 0 {
+                self.post_chat(format!("{} upgraded", upgraded.name()));
+            }
+            if upgraded.role == Role::Refinery {
+                let ids = (self.next_unit_id, self.next_unit_id + 1);
+                self.next_unit_id += 2;
+                units::deliver_harvester(&mut self.units, terrain, (building, false), ids);
+            }
         }
     }
 
@@ -2297,6 +2366,7 @@ impl Game {
         if let Site::Building(role, left) = self.site
             && self.can_produce(role)
         {
+            let dt = dt * units::work_pace(&self.units, 0);
             let left = units::work_and_pay(role, left, dt, &mut self.money[0]);
             self.site = if left > 0.0 {
                 Site::Building(role, left)
@@ -2577,14 +2647,31 @@ impl Game {
             if self.build_entry(self.build_tab, cell) == Some(Entry::Superweapon) {
                 return self.superweapon().map(Superweapon::name);
             }
+            if let Some(Entry::Upgrade(role)) = self.build_entry(self.build_tab, cell) {
+                return Some(match role {
+                    Role::Refinery => "Refinery Pad",
+                    Role::Mcv => "Upgrade Construction Yard",
+                    _ => "Upgrade",
+                });
+            }
             return self.build_role(self.build_tab, cell).map(|role| {
                 if self.can_produce(role) {
                     return role.name();
+                }
+                // What makes it stands, and has what it needs, but is not upgraded.
+                let unmade = |u: &Unit| {
+                    let mut upgraded = *u;
+                    upgraded.upgrades = 1;
+                    u.owner == 0 && !u.can_make(role) && upgraded.can_make(role)
+                };
+                if role.needs_upgraded_maker() && self.units.iter().any(unmade) {
+                    return "Needs an upgrade";
                 }
                 match role.made_in().or_else(|| {
                     role.needs()
                         .filter(|_| self.units.iter().any(|u| u.owner == 0 && u.can_make(role)))
                 }) {
+                    Some(Role::Windtrap) => "Needs a Windtrap",
                     Some(Role::Barracks) => "Needs a Barracks",
                     Some(Role::Factory) => "Needs a Factory",
                     Some(_) => "Needs a Hangar",
@@ -3238,7 +3325,6 @@ impl Game {
         self.stats_open = false;
         self.battle_time = 0.0;
         self.build_tab = BuildTab::Infantry;
-        self.energy = STARTING_ENERGY;
         self.money = if skirmish {
             vec![self.skirmish.money; 1 + self.skirmish.ai_players as usize]
         } else {
@@ -3614,7 +3700,9 @@ impl Game {
                         }
                         plan.think(&mut self.units, terrain, &self.teams, dt);
                     }
+                    units::settle_power(&mut self.units);
                     self.work_on_making(dt);
+                    self.work_on_upgrades(dt);
                     self.work_on_site(dt);
                     self.deliver_harvesters(dt);
                     self.drop_crates(dt);
@@ -3743,6 +3831,9 @@ impl Game {
                 {
                     // On a build button it calls off one of those, and the selection stands.
                     // What was paid for it so far comes back.
+                    if let Some(Entry::Upgrade(role)) = self.build_entry(self.build_tab, cell) {
+                        units::cancel_upgrade(&mut self.units, 0, role, &mut self.money[0]);
+                    }
                     if let Some(role) = self.build_role(self.build_tab, cell) {
                         if self.site == Site::Placing(Role::Wall) && role == Role::Wall {
                             // Nothing is paid for a wall until it is placed.
@@ -4003,6 +4094,9 @@ impl Game {
             }
             // It is paid for while it is made. A busy building queues it.
             units::start_making(&mut self.units, role, 0);
+        } else if let Some(Entry::Upgrade(role)) = self.build_entry(self.build_tab, cell) {
+            // Paid for while it goes on, as what is made is.
+            units::start_upgrade(&mut self.units, 0, role);
         } else if self.build_entry(self.build_tab, cell) == Some(Entry::Superweapon)
             && self.strike_recharge <= 0.0
         {
@@ -7160,6 +7254,7 @@ mod tests {
         assert_eq!(
             buildings,
             [
+                Role::Windtrap,
                 Role::Barracks,
                 Role::Wall,
                 Role::Refinery,
@@ -7183,6 +7278,7 @@ mod tests {
             let game = in_battle_as(house);
             let [lesser, greater] = Role::towers_of(house);
             let mut expected = vec![
+                Role::Windtrap,
                 Role::Barracks,
                 Role::Wall,
                 Role::Refinery,
@@ -8084,8 +8180,13 @@ mod tests {
             assert!(!game.tab_enabled(tab), "nothing to make {tab:?} yet");
         }
 
-        while game.battle_time < 80.0 {
+        // A windtrap first, another for the greater tower, and the yard's upgrade it needs.
+        let mut made_soldiers = vec![false; owners];
+        while game.battle_time < 150.0 {
             game.update(0.25);
+            for soldier in game.units.iter().filter(|u| u.kind == UnitKind::Infantry) {
+                made_soldiers[soldier.owner] = true;
+            }
         }
         assert!(!game.units[0].deployed, "the player deploys their own");
         let has = |game: &Game, owner: usize, role: Role| {
@@ -8101,6 +8202,14 @@ mod tests {
                 .find(|u| u.owner == owner && u.role == Role::Mcv);
             assert!(mcv.is_some_and(|u| u.deployed), "owner {owner} deploys");
             let [lesser, greater] = Role::towers_of(mcv.unwrap().house);
+            assert!(
+                has(&game, owner, Role::Windtrap) > 0,
+                "owner {owner} powers it"
+            );
+            assert!(
+                !units::is_short_of_power(&game.units, owner),
+                "owner {owner} is not short of power"
+            );
             for role in [Role::Barracks, Role::Factory, lesser, greater] {
                 assert_eq!(
                     has(&game, owner, role),
@@ -8108,18 +8217,15 @@ mod tests {
                     "owner {owner} builds a {role:?}"
                 );
             }
-            let soldiers = game
-                .units
-                .iter()
-                .filter(|u| u.owner == owner && u.kind == UnitKind::Infantry)
-                .count();
-            assert!(soldiers > 0, "owner {owner} makes an army");
+            assert!(made_soldiers[owner], "owner {owner} makes an army");
         }
 
-        // What it loses, it builds again.
+        // What it loses, it builds again, with the money for it.
         game.units
             .retain(|u| u.owner != 1 || u.role != Role::Barracks);
-        let back = game.battle_time + 40.0;
+        game.money[1] += 4000;
+        // After what it already has on its way.
+        let back = game.battle_time + 80.0;
         while game.battle_time < back {
             game.update(0.25);
         }
@@ -8254,7 +8360,8 @@ mod tests {
         assert_eq!(game.site, Site::Idle, "nothing to build it");
 
         units::switch_deployed(&mut game.units[mcv]);
-        click_hud(&mut game, Action::BuildCell(0));
+        let barracks = cell_of(&game, BuildTab::Buildings, Role::Barracks);
+        click_hud(&mut game, Action::BuildCell(barracks));
         assert!(matches!(game.site, Site::Building(Role::Barracks, _)));
         units::switch_deployed(&mut game.units[mcv]);
         let before = game.site;
@@ -8431,7 +8538,8 @@ mod tests {
         click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
         let (first, second) = (Role::Barracks, Role::Factory);
         assert!(!game.is_held_up_by_site(second), "nothing on its way");
-        click_hud(&mut game, Action::BuildCell(0));
+        let cell = cell_of(&game, BuildTab::Buildings, first);
+        click_hud(&mut game, Action::BuildCell(cell));
         assert_eq!(game.site, Site::Building(first, first.build_seconds()));
         assert!(game.is_held_up_by_site(second));
         assert!(!game.is_held_up_by_site(first), "it shows its own progress");
@@ -8439,7 +8547,8 @@ mod tests {
             !game.is_held_up_by_site(Role::AtInfantry),
             "a unit waits for no site"
         );
-        click_hud(&mut game, Action::BuildCell(1));
+        let other = cell_of(&game, BuildTab::Buildings, second);
+        click_hud(&mut game, Action::BuildCell(other));
         assert_eq!(
             game.site,
             Site::Building(first, first.build_seconds()),
@@ -8448,15 +8557,16 @@ mod tests {
         game.update(first.build_seconds() + 0.1);
         assert_eq!(game.site, Site::Ready(first));
         assert!(game.is_held_up_by_site(second), "until it is placed");
-        click_hud(&mut game, Action::BuildCell(1));
+        let other = cell_of(&game, BuildTab::Buildings, second);
+        click_hud(&mut game, Action::BuildCell(other));
         assert_eq!(game.site, Site::Ready(first));
     }
 
     #[test]
     fn rocket_and_gun_turrets_are_built_and_placed_like_other_buildings() {
         for (cell, role, name) in [
-            (5, Role::AtPillbox, "Machinegun Post"),
-            (6, Role::AtRocketTurret, "Rocket Turret"),
+            (6, Role::AtPillbox, "Machinegun Post"),
+            (7, Role::AtRocketTurret, "Rocket Turret"),
         ] {
             let mut game = in_battle();
             click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
@@ -8482,9 +8592,10 @@ mod tests {
             .retain(|u| u.role != Role::Barracks || u.owner != 0);
         assert!(!game.can_produce(Role::Scout));
         click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
-        click_hud(&mut game, Action::BuildCell(0));
+        let cell = cell_of(&game, BuildTab::Buildings, Role::Barracks);
+        click_hud(&mut game, Action::BuildCell(cell));
         game.update(Role::Barracks.build_seconds() + 0.1);
-        click_hud(&mut game, Action::BuildCell(0));
+        click_hud(&mut game, Action::BuildCell(cell));
         let (x, y) = buildable_spot_on_screen(&mut game);
         click_at(&mut game, x, y);
         assert!(!game.can_produce(Role::Scout), "still going up");
@@ -12298,6 +12409,12 @@ mod tests {
             !menu(&game).contains(&Entry::Make(Role::TlFleshVat)),
             "not before a factory"
         );
+        // Power first: the barracks and the factory need a windtrap standing.
+        assert!(!menu(&game).contains(&Entry::Make(Role::Barracks)));
+        // Two: one is too little for all four buildings, and short of power all goes slower.
+        build_and_place(&mut game, Role::Windtrap);
+        build_and_place(&mut game, Role::Windtrap);
+        game.update(units::CONSTRUCTION_SECONDS + 0.1);
         build_and_place(&mut game, Role::Barracks);
         build_and_place(&mut game, Role::Factory);
         assert!(
@@ -12486,5 +12603,163 @@ mod tests {
         assert!(route.len() > 5);
         let shown: Vec<_> = game.placing_squares().into_iter().map(|(c, _)| c).collect();
         assert_eq!(shown, route);
+    }
+
+    #[test]
+    fn windtraps_make_the_power_buildings_use_and_short_of_it_turrets_stop_and_work_slows() {
+        let mut game = in_battle();
+        let (made, used) = game.player_power();
+        assert_eq!(made, 300, "three windtraps");
+        // The hangar, the factory, the barracks, the pad and the rocket turret.
+        assert_eq!(used, 50 + 40 + 20 + 30 + 75);
+        assert!(game.power_to_spare() > 0.0 && game.power_to_spare() < 1.0);
+        game.update(0.1);
+        let turret = |game: &Game| {
+            *game
+                .units
+                .iter()
+                .find(|u| u.owner == 0 && u.role == Role::AtRocketTurret)
+                .unwrap()
+        };
+        assert!(!turret(&game).unpowered);
+
+        // Two windtraps gone: short of power.
+        let mut left = 2;
+        game.units.retain(|u| {
+            let goes = u.owner == 0 && u.role == Role::Windtrap && left > 0;
+            left -= usize::from(goes);
+            !goes
+        });
+        assert!(units::is_short_of_power(&game.units, 0));
+        assert_eq!(game.power_to_spare(), 0.0);
+        game.update(0.1);
+        assert!(turret(&game).unpowered, "the advanced turret stops");
+        assert!(
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0 && u.role == Role::HkFlameTurret)
+                .all(|u| !u.unpowered),
+            "the lesser one needs none"
+        );
+        // And what is built goes up at half the pace.
+        let cell = cell_of(&game, BuildTab::Buildings, Role::Windtrap);
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        click_hud(&mut game, Action::BuildCell(cell));
+        game.update(Role::Windtrap.build_seconds() + 0.1);
+        assert!(matches!(game.site, Site::Building(Role::Windtrap, _)));
+        game.update(Role::Windtrap.build_seconds());
+        assert_eq!(game.site, Site::Ready(Role::Windtrap));
+
+        // With none at all, what needs a windtrap is not on offer.
+        game.units
+            .retain(|u| u.owner != 0 || u.role != Role::Windtrap);
+        for role in [Role::Barracks, Role::Refinery, Role::Factory, Role::Outpost] {
+            assert_eq!(role.needs(), Some(Role::Windtrap));
+            assert!(!game.can_produce(role), "{role:?}");
+        }
+    }
+
+    #[test]
+    fn buildings_are_upgraded_from_the_upgrades_tab_and_what_needs_it_waits_for_it() {
+        let mut game = in_battle();
+        // Nothing left to upgrade on a base upgraded all the way.
+        assert!(!game.tab_enabled(BuildTab::Upgrades));
+        for unit in game.units.iter_mut().filter(|u| u.owner == 0) {
+            unit.upgrades = 0;
+        }
+        assert_eq!(
+            game.menu(BuildTab::Upgrades),
+            [Role::Barracks, Role::Factory, Role::Hanger, Role::Mcv].map(Entry::Upgrade),
+            "no refinery to give a pad to"
+        );
+        for role in [
+            Role::AtKindjal,
+            Role::Engineer,
+            Role::AtMinotaurus,
+            Role::AtOrni,
+        ] {
+            assert!(role.needs_upgraded_maker());
+            assert!(!game.can_produce(role), "{role:?} waits for the upgrade");
+        }
+        assert!(!game.can_produce(Role::AtRocketTurret), "the yard's");
+        assert!(game.can_produce(Role::AtInfantry) && game.can_produce(Role::AtPillbox));
+
+        click_hud(&mut game, Action::BuildTab(BuildTab::Upgrades));
+        let money = game.player_money();
+        click_hud(&mut game, Action::BuildCell(0));
+        game.update(Role::Barracks.upgrade_seconds() / 2.0);
+        let progress = game.upgrade_progress(Role::Barracks).unwrap();
+        assert!(progress > 0.4 && progress < 0.6, "{progress}");
+        assert!(!game.can_produce(Role::AtKindjal), "not yet");
+        // A right click calls it off and pays back.
+        game.handle(Event::RightDown);
+        assert_eq!(game.upgrade_progress(Role::Barracks), None);
+        assert_eq!(game.player_money(), money);
+
+        click_hud(&mut game, Action::BuildCell(0));
+        game.update(Role::Barracks.upgrade_seconds() + 0.1);
+        assert_eq!(
+            game.player_money(),
+            money - 800,
+            "the original's UpgradeCost"
+        );
+        assert!(game.can_produce(Role::AtKindjal) && game.can_produce(Role::Engineer));
+        assert!(!game.can_produce(Role::AtMinotaurus), "the factory is not");
+        assert!(
+            !game
+                .menu(BuildTab::Upgrades)
+                .contains(&Entry::Upgrade(Role::Barracks)),
+            "once is all"
+        );
+        assert_eq!(Role::Mcv.upgrade_cost(), Some(600));
+        assert_eq!(Role::Factory.upgrade_cost(), Some(1200));
+        assert_eq!(Role::Wall.upgrade_cost(), None);
+    }
+
+    #[test]
+    fn a_refinery_gains_a_pad_and_a_harvester_with_each_of_its_two_upgrades() {
+        let mut game = in_battle();
+        let mut refinery = *game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.role == Role::Barracks)
+            .unwrap();
+        refinery.role = Role::Refinery;
+        refinery.upgrades = 0;
+        refinery.id = game.next_unit_id;
+        game.next_unit_id += 1;
+        game.refineries_served.push(refinery.id);
+        game.units.push(refinery);
+        let at = game.units.len() - 1;
+        assert_eq!(game.units[at].working_pads().collect::<Vec<_>>(), [1]);
+        let harvesters = |game: &Game| {
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0 && u.role == Role::Harvester)
+                .count()
+        };
+        let before = harvesters(&game);
+        let (_, used) = game.player_power();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Upgrades));
+        let money = game.player_money();
+        for pads in [2, 3] {
+            let cell = game
+                .menu(BuildTab::Upgrades)
+                .iter()
+                .position(|&entry| entry == Entry::Upgrade(Role::Refinery))
+                .expect("a pad on offer");
+            click_hud(&mut game, Action::BuildCell(cell));
+            game.update(Role::Refinery.upgrade_seconds() + 0.1);
+            assert_eq!(game.units[at].working_pads().count(), pads);
+        }
+        assert_eq!(game.units[at].working_pads().collect::<Vec<_>>(), [1, 0, 2]);
+        assert_eq!(game.player_money(), money - 2 * 1200);
+        assert_eq!(
+            harvesters(&game),
+            before + 2,
+            "each pad brings its harvester"
+        );
+        assert_eq!(game.player_power().1, used + 2 * 20, "and uses its power");
+        assert!(!game.can_upgrade(Role::Refinery), "three pads are all");
     }
 }

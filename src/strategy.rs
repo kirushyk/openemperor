@@ -39,8 +39,18 @@ fn build_order(house: Faction) -> [Role; 12] {
         Role::Barracks,
     ]
 }
+/// What an opponent upgrades, in this order.
+const UPGRADE_ORDER: [Role; 5] = [
+    Role::Mcv,
+    Role::Barracks,
+    Role::Factory,
+    Role::Hanger,
+    Role::Refinery,
+];
+/// How many fighters an opponent has before it spends on upgrades other than its yard's.
+const FIGHTERS_BEFORE_UPGRADES: usize = 4;
 /// How far from its MCV an opponent looks for room for a building, ring by ring, and how many
-/// places it tries on each ring.
+/// places it tries on the first ring: as many again on each ring further out.
 const BUILD_RINGS: [f32; 8] = [153.9, 262.5, 371.1, 479.7, 588.3, 696.9, 805.5, 914.1];
 const BUILD_TRIES: usize = 12;
 /// How many empty squares an opponent leaves between its buildings, for its harvesters and
@@ -123,6 +133,7 @@ impl Strategy {
             }
             return None;
         }
+        self.upgrade(units, *money);
         let (role, left) = match self.building {
             Some(building) => building,
             None => {
@@ -130,6 +141,7 @@ impl Strategy {
                 (role, role.build_seconds())
             }
         };
+        let dt = dt * units::work_pace(units, owner);
         let left = units::work_and_pay(role, left, dt, money);
         self.building = Some((role, left));
         if left > 0.0 {
@@ -142,6 +154,35 @@ impl Strategy {
         let mut building = units::new_building(terrain, at, role, (owner, maker.color), id);
         building.house = maker.house;
         Some(building)
+    }
+
+    /// Starts upgrading one of its buildings, one at a time, once it has the money for that,
+    /// for what its base needs next, and as much again to go on making its army.
+    fn upgrade(&self, units: &mut [Unit], money: i32) {
+        let owner = self.owner;
+        if units
+            .iter()
+            .any(|u| u.owner == owner && u.upgrading.is_some())
+        {
+            return;
+        }
+        let fighters = units
+            .iter()
+            .filter(|u| u.alive && u.owner == owner && !u.kind.is_building() && u.weapon.is_armed())
+            .count();
+        // Its yard at once, for the towers that need it; the rest once it has a few fighters.
+        let role = UPGRADE_ORDER.into_iter().find(|&role| {
+            (role == Role::Mcv || fighters >= FIGHTERS_BEFORE_UPGRADES)
+                && units
+                    .iter()
+                    .any(|u| u.owner == owner && u.role == role && u.can_be_upgraded())
+        });
+        // Twice its cost: the other half is left for its army meanwhile.
+        if let Some(role) = role
+            && money >= 2 * role.upgrade_cost().unwrap_or(0) + self.saving_for(units)
+        {
+            units::start_upgrade(units, owner, role);
+        }
     }
 
     /// What its base still needs paid: the rest of the building on its way, or all of the
@@ -166,11 +207,26 @@ impl Strategy {
             .find(|u| u.alive && u.owner == self.owner && u.role == Role::Mcv)?
             .house;
         let order = build_order(house);
-        order.iter().copied().enumerate().find_map(|(i, role)| {
+        let makes = |role: Role| {
+            units
+                .iter()
+                .any(|u| u.owner == self.owner && u.can_make(role))
+        };
+        let next = order.iter().copied().enumerate().find_map(|(i, role)| {
             let wanted = order[..=i].iter().filter(|&&r| r == role).count();
-            let can = role.made_by(house) && role.needs().is_none_or(|needed| has(needed) > 0);
+            let can = makes(role) && role.needs().is_none_or(|needed| has(needed) > 0);
             (can && has(role) < wanted).then_some(role)
-        })
+        });
+        // Power first: a windtrap before anything, and another whenever what comes next
+        // would use more than there is.
+        let (made, used) = units::power(units, self.owner);
+        let short = next.is_none_or(|role| used + role.power_used() > made);
+        let all_built = next.is_none() && used <= made && has(Role::Windtrap) > 0;
+        if short && !all_built {
+            Some(Role::Windtrap)
+        } else {
+            next
+        }
     }
 
     /// Where its buildings stand, on average, if it has any.
@@ -358,9 +414,11 @@ fn room_near(
     (x, z): (f32, f32),
 ) -> Option<(f32, f32)> {
     BUILD_RINGS.iter().enumerate().find_map(|(ring, &reach)| {
-        (0..BUILD_TRIES).find_map(|n| {
+        // The wider the ring, the more places on it: as far apart on each.
+        let tries = BUILD_TRIES * (ring + 1);
+        (0..tries).find_map(|n| {
             // Each ring starts a little further round, so that rings do not line up.
-            let angle = (n as f32 + ring as f32 * 0.5) / BUILD_TRIES as f32 * std::f32::consts::TAU;
+            let angle = (n as f32 + ring as f32 * 0.5) / tries as f32 * std::f32::consts::TAU;
             let plot = role.plot_at(house, (x + reach * angle.cos(), z + reach * angle.sin()));
             let fits = units::can_place_building(units, terrain, plot)
                 && units::leaves_lanes(units, plot, LANE);

@@ -111,6 +111,32 @@ and its warhead's share against each armour from `[WarheadTypes]`, and each turr
   than the construction yard's 4000, though it is armoured as the yard.
 - **The exe**: none of this was read from `GAME.EXE`; only `Rules.txt`.
 
+## Power and upgrades
+
+Windtraps make 100 power and buildings use `Rules.txt`'s `PowerUsed`; the barracks, refinery,
+factory and outpost need a windtrap; the turrets marked `DisableWithLowPower` stop while
+their owner is short. Buildings are upgraded from an Upgrades tab for their `UpgradeCost`,
+and what is marked `UpgradedPrimaryRequired` waits for it. A refinery starts with its middle
+pad and gains one, with a harvester, for each of its two upgrades (`RefineryDock`). Opponents
+build windtraps to stay powered and upgrade once they have a few fighters. Not known or not
+done:
+
+- **What else low power does**: ours halves the pace of building, making and upgrading, and
+  puts out the outpost's radar. The original's rule is in `GAME.EXE` and was not read; its
+  strings name `PowerDown`, `LowPower` and `RadarOff`.
+- **How long an upgrade takes**: only the refinery pad has an `UpgradeBuildTime` (720); the
+  others take as long as building the building.
+- **Which building is upgraded**: the original speaks of the *primary* building of a kind.
+  Ours upgrades the first one standing that is not, and each building counts for itself: one
+  lost takes its upgrade with it.
+- **`UpgradeTechLevel` and `TechLevel`** hold nothing back.
+- **The pads' look**: a refinery is drawn with all three pads from the start; only the
+  upgraded ones take harvesters.
+- **The mini-houses' upgraded units** (`IXProjector`, `TLLeech`, `IMADVSardaukar`,
+  `FRADVFremen`, `GUNIABTank`): their buildings can be upgraded, but we have none of these.
+- **The power gauge** round the minimap shows the share of power to spare and the number;
+  the original's bar is its own model (`Power%02d`).
+
 ## Walls
 
 Walls are placed as the original's are: a click picks the first square, the route to the
@@ -192,13 +218,8 @@ piece for how it joins its owner's walls beside it. Not done yet:
 
 - **Build menus** list what can be made now, packed from the first cell in the order of the
   original's `[UnitTypes]` and `[BuildingTypes]`. Not done yet:
-  - what we have no units for is missing from them: windtraps, starports, refinery
-    pads, the Ordos AA trooper, the sonic tank and the deviator;
-  - upgrades: the original wants an upgraded building for many things (its
-    `UpgradedPrimaryRequired`), such as engineers, Kindjal infantry, the flame tank, the gun
-    turret and the ornithopter. We let them be made without one;
-  - windtraps: the barracks, the factory, the refinery and the outpost need one in the
-    original. We don't ask for it;
+  - what we have no units for is missing from them: starports, the Ordos AA trooper, the
+    sonic tank and the deviator;
   - starports: the palace needs one in the original, and the Devastator too. We ask for a
     hangar in its place for the palace, which a starport needs, and nothing more for the
     Devastator;
@@ -209,8 +230,8 @@ piece for how it joins its owner's walls beside it. Not done yet:
 
 - **The build menu's tabs** show the disc's symbols (the sidebar model's `infantrybody`,
   `vehiclebody` and `buildingbody`) flat, in one colour. The original draws them as glowing
-  3D shapes (`!06%crimsonglow.tga`), with flares over the selected tab. It also has Upgrade
-  and Starport tabs, which we have nothing for.
+  3D shapes (`!06%crimsonglow.tga`), with flares over the selected tab. The Upgrades tab
+  shows its `upgradebuildings`. It also has a Starport tab, which we have nothing for.
 
 ## Other platforms
 

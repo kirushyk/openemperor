@@ -32,7 +32,6 @@ const CELL_SIZE: f32 = (PANEL_W - GAP * (GRID_COLUMNS - 1) as f32) / GRID_COLUMN
 /// The gauge runs clockwise from 7 o'clock to 12 o'clock, in degrees from 12 o'clock.
 pub const GAUGE_START_DEGREES: f32 = 210.0;
 pub const GAUGE_END_DEGREES: f32 = 360.0;
-pub const MAX_ENERGY: i32 = 100;
 
 pub const CHAT_LINES: usize = 5;
 
@@ -136,12 +135,13 @@ pub fn grid_cells(width: f32, height: f32) -> Vec<Button> {
     all
 }
 
-/// The three tabs, standing out to the left of the grid.
+/// The four tabs, standing out to the left of the grid.
 pub fn build_tabs(width: f32, height: f32) -> Vec<Button> {
-    const TABS: [(BuildTab, &str); 3] = [
+    const TABS: [(BuildTab, &str); 4] = [
         (BuildTab::Infantry, "Infantry"),
         (BuildTab::Vehicles, "Vehicles"),
         (BuildTab::Buildings, "Buildings"),
+        (BuildTab::Upgrades, "Upgrades"),
     ];
     let s = ui_scale(height);
     let x = panel_x(width, height) - (GAP + TAB_W) * s;
@@ -290,7 +290,7 @@ mod tests {
     fn tabs_stand_to_the_left_of_the_grid() {
         let cells = grid_cells(W, H);
         let tabs = build_tabs(W, H);
-        assert_eq!(tabs.len(), 3);
+        assert_eq!(tabs.len(), 4);
         for tab in &tabs {
             assert!(tab.x + tab.w <= cells[0].x);
             assert!(tab.y >= cells[0].y);

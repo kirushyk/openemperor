@@ -4,10 +4,11 @@ use crate::battlefield;
 use crate::fog::{Fog, Sight};
 use crate::font;
 use crate::game::{
-    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Faction, Game, OPPONENT_SLOTS,
-    Outcome, PlaceSquare, STATS_ROW_STEP, STATS_ROW_TOP, Screen, TeamColor, buttons, checkbox_size,
-    color_slots, map_items, minimap_rect, modal_rect, opponent_row, opponent_widgets,
-    options_panel, setup_checkboxes, setup_widgets, small_text_px, stats_rect, ui_scale,
+    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Entry, Faction, Game,
+    OPPONENT_SLOTS, Outcome, PlaceSquare, STATS_ROW_STEP, STATS_ROW_TOP, Screen, TeamColor,
+    buttons, checkbox_size, color_slots, map_items, minimap_rect, modal_rect, opponent_row,
+    opponent_widgets, options_panel, setup_checkboxes, setup_widgets, small_text_px, stats_rect,
+    ui_scale,
 };
 use crate::hud;
 use crate::planet;
@@ -27,7 +28,8 @@ pub use original::names_icon;
 pub use original::{
     PICTURE_SIDE, icon as original_icon, load as load_original_models, muzzles as original_muzzles,
     noise_sounds as original_noise_sounds, pictures as original_pictures,
-    tab_symbol as original_tab_symbol, wash as original_wash,
+    tab_symbol as original_tab_symbol, upgrade_icon as original_upgrade_icon,
+    wash as original_wash,
 };
 
 type Color = [f32; 4];
@@ -3856,7 +3858,7 @@ fn draw_energy_gauge(canvas: &mut Canvas, game: &Game) {
     const SEGMENTS: usize = 48;
     let (cx, cy, inner, outer) = hud::gauge(game.width, game.height);
     let span = hud::GAUGE_END_DEGREES - hud::GAUGE_START_DEGREES;
-    let filled = game.energy as f32 / hud::MAX_ENERGY as f32;
+    let filled = game.power_to_spare();
     let shade = |t: f32| -> Color {
         let mix = |a: f32, b: f32| a + (b - a) * t;
         [
@@ -3891,7 +3893,11 @@ fn draw_energy_gauge(canvas: &mut Canvas, game: &Game) {
     }
     let (x, y) = hud::energy_label_center(game.width, game.height);
     canvas.text_centered(
-        &game.energy.to_string(),
+        // What is to spare: below nothing while short of power.
+        &{
+            let (made, used) = game.player_power();
+            (made - used).to_string()
+        },
         x,
         y,
         small_text_px(game.height),
@@ -3909,6 +3915,7 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
         BuildTab::Infantry => 'I',
         BuildTab::Vehicles => 'V',
         BuildTab::Buildings => 'B',
+        BuildTab::Upgrades => 'U',
     };
     for (i, cell) in hud::grid_cells(game.width, game.height)
         .into_iter()
@@ -3931,6 +3938,10 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
                 let seconds = (game.strike_recharge.ceil() as i32).to_string();
                 canvas.text_centered(&seconds, cx, cy, small_text_px(game.height), TEXT);
             }
+            continue;
+        }
+        if let Some(Entry::Upgrade(role)) = game.build_entry(game.build_tab, i) {
+            draw_upgrade_cell(canvas, game, cell, role);
             continue;
         }
         // Tip text gives the full name of what it makes.
@@ -4055,6 +4066,7 @@ fn short_name(role: Role) -> &'static str {
         Role::ImBarracks => "Sardkr",
         Role::FrCamp => "Fremen",
         Role::Wall => "Wall",
+        Role::Windtrap => "Windtrap",
         Role::FrFremen => "Warrior",
         Role::ImSardaukar => "Sardaukr",
         Role::TlContaminator => "Contam",
@@ -4166,7 +4178,52 @@ fn draw_tab_symbol(canvas: &mut Canvas, tab: BuildTab, cx: f32, cy: f32, size: f
             }
             canvas.rect(left + 0.6 * u, top - 4.0 * u, 1.3 * u, 4.0 * u, c);
         }
+        BuildTab::Upgrades => {
+            // An arrow pointing up.
+            canvas.triangle(
+                [
+                    (cx, cy - 4.4 * u),
+                    (cx + 3.6 * u, cy - 0.4 * u),
+                    (cx - 3.6 * u, cy - 0.4 * u),
+                ],
+                c,
+            );
+            canvas.rect(cx - 1.4 * u, cy - 0.4 * u, 2.8 * u, 4.6 * u, c);
+        }
     }
+}
+
+/// A cell of the Upgrades menu: the disc's picture of the building, or of the pad a refinery
+/// gains, grey while it cannot be upgraded; what the upgrade costs; and how far along it is.
+fn draw_upgrade_cell(canvas: &mut Canvas, game: &Game, cell: Button, role: Role) {
+    let s = ui_scale(game.height);
+    let (cx, cy) = (cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
+    let can = game.can_upgrade(role);
+    let cost = role.upgrade_cost().unwrap_or(0);
+    if let Some(layer) = original_upgrade_icon(role, game.faction_of(0), !can) {
+        let half = cell.w / 2.0 - border_px(game.height) * 2.0;
+        canvas.picture((cx, cy), half, layer);
+    } else {
+        let symbol = if can { GOLD } else { GOLD_DIM };
+        draw_tab_symbol(canvas, BuildTab::Upgrades, cx, cy, cell.w * 0.5, symbol);
+        let (x, y) = (cell.x + 6.0 * s, cell.y + 14.0 * s);
+        canvas.text_left(short_name(role), x, y, chat_px(game), TEXT);
+    }
+    if let Some(progress) = game.upgrade_progress(role) {
+        for wedge in making_dim_wedges((cell.x, cell.y, cell.w, cell.h), progress) {
+            canvas.triangle(wedge, MAKING_DIM);
+        }
+    }
+    let affordable = cost <= game.player_money();
+    let color = if can && affordable { TEXT } else { QUIET };
+    let y = cell.y + cell.h - 12.0 * s;
+    canvas.text_left(
+        &format!("${cost}"),
+        cell.x + 6.0 * s,
+        y,
+        chat_px(game),
+        color,
+    );
 }
 
 /// The last few messages, on small dark strips so they read over any terrain.

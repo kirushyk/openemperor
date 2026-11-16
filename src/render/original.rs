@@ -10,7 +10,7 @@ use crate::battlefield::{self, CELL_SIDE, Terrain, View};
 use crate::fog::Fog;
 use crate::game::{BuildTab, Faction};
 use crate::platform::{NO_PICTURE, WorldVertex};
-use crate::units::{Harvest, Role, Unit, UnitKind, Wound};
+use crate::units::{Harvest, Role, Unit, UnitKind, WallPiece, Wound};
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
 use std::collections::HashMap;
@@ -385,6 +385,8 @@ const ICONS: &[(Role, Option<Faction>, &str, &str)] = {
             "OR_popupturret",
             "grey_OR_popupturret",
         ),
+        // Every house's, as the original's ArtIni.txt has it.
+        (Role::Wall, None, "HK_Wall", "grey_HK_Wall"),
         (Role::TlFleshVat, None, "TL_FleshVat", "grey_TL_FleshVat"),
         (Role::IxResCentre, None, "IX_ResCentre", "grey_IX_ResCentre"),
         (Role::GuPalace, None, "GU_Palace", "Grey_Gu_Palace"),
@@ -410,6 +412,45 @@ const ICONS: &[(Role, Option<Faction>, &str, &str)] = {
 
 /// The part of a Kobra's model that swings its raised cannon round.
 const SWIVEL: &str = "gunpivot";
+
+/// Each house's pieces of wall, in the order of `WallPiece`: named as the original's
+/// `GAME.EXE` names them, its `Xaf` and then "", "_End", "_Middle", "_Corner", "_TJoin" or
+/// "_Cross" before the detail and damage letters.
+const WALLS: [(Faction, [&str; 6]); 3] = [
+    (
+        Faction::Atreides,
+        [
+            "Buildings\\AT_Wall_H0.xbf",
+            "Buildings\\AT_Wall_End_H0.xbf",
+            "Buildings\\AT_Wall_Middle_H0.xbf",
+            "Buildings\\AT_Wall_Corner_H0.xbf",
+            "Buildings\\AT_Wall_TJoin_H0.xbf",
+            "Buildings\\AT_Wall_Cross_H0.xbf",
+        ],
+    ),
+    (
+        Faction::Harkonnen,
+        [
+            "Buildings\\HK_Wall_H0.xbf",
+            "Buildings\\HK_Wall_End_H0.xbf",
+            "Buildings\\HK_Wall_Middle_H0.xbf",
+            "Buildings\\HK_Wall_Corner_H0.xbf",
+            "Buildings\\HK_Wall_TJoin_H0.xbf",
+            "Buildings\\HK_Wall_Cross_H0.xbf",
+        ],
+    ),
+    (
+        Faction::Ordos,
+        [
+            "Buildings\\OR_Wall_H0.xbf",
+            "Buildings\\OR_Wall_End_H0.xbf",
+            "Buildings\\OR_Wall_Middle_H0.xbf",
+            "Buildings\\OR_Wall_Corner_H0.xbf",
+            "Buildings\\OR_Wall_TJoin_H0.xbf",
+            "Buildings\\OR_Wall_Cross_H0.xbf",
+        ],
+    ),
+];
 
 /// The construction yard each house's MCV deploys into.
 const CONSTRUCTION_YARDS: [(Faction, &str); 3] = [
@@ -968,6 +1009,7 @@ fn read_shapes(disc: &Path) -> Option<Original> {
     let mut pictures = HashMap::new();
     let names = MODELS.iter().map(|&(_, _, name)| name);
     let names = names.chain(CONSTRUCTION_YARDS.iter().map(|&(_, name)| name));
+    let names = names.chain(WALLS.iter().flat_map(|(_, pieces)| pieces.iter().copied()));
     let names = names.chain([TORNADO]);
     let shapes: HashMap<_, _> = names
         .filter_map(|name| Some((name, read_shape(&archive, name, &mut pictures)?)))
@@ -1469,7 +1511,13 @@ fn shape_of(unit: &Unit) -> Option<&'static Shape> {
 
 /// The name of the original's whole model of a unit.
 fn model_name(unit: &Unit) -> Option<&'static str> {
-    if unit.role == Role::Mcv && unit.deployed {
+    if unit.role == Role::Wall {
+        let (piece, _) = WallPiece::of(unit.wall_joins);
+        WALLS
+            .iter()
+            .find(|&&(house, _)| house == unit.house)
+            .map(|(_, pieces)| pieces[piece as usize])
+    } else if unit.role == Role::Mcv && unit.deployed {
         CONSTRUCTION_YARDS
             .iter()
             .find(|&&(house, _)| house == unit.house)
@@ -1710,6 +1758,14 @@ fn places(shape: &Shape, unit: &Unit) -> (Place, Place) {
     match unit.kind {
         UnitKind::Aircraft => {
             let body = Place::flying(unit);
+            (body, body.moved(pivot))
+        }
+        // Turned so that its piece joins the walls beside it. As it is made, its +x lies
+        // along the world's +x turned a quarter back.
+        UnitKind::Building if unit.role == Role::Wall => {
+            let (_, turns) = WallPiece::of(unit.wall_joins);
+            let heading = (turns as f32 - 1.0) * FRAC_PI_2;
+            let body = Place::turned([unit.x, unit.y, unit.z], heading);
             (body, body.moved(pivot))
         }
         // Lined up with the map's grid squares, the front of it out of the side it faces.
@@ -2439,6 +2495,41 @@ mod tests {
             let way = (z - pz).atan2(x - px);
             let off = crate::units::turn_between(way, kobra.heading + turn);
             assert!(off.abs() < 0.2, "swung {turn}: off by {off}");
+        }
+    }
+
+    #[test]
+    fn a_wall_on_the_disc_reaches_out_towards_each_wall_it_joins() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(index) = archive::from_cabinet(&disc.join(CABINET), INDEX) else {
+            return;
+        };
+        let archive = Archive::open(&index, &disc.join(DATA)).unwrap();
+        for (house, pieces) in WALLS {
+            for name in pieces {
+                assert!(
+                    read_shape(&archive, name, &mut HashMap::new()).is_some(),
+                    "{name}"
+                );
+            }
+            let shape = read_shape(&archive, pieces[1], &mut HashMap::new()).unwrap();
+            let mut wall = Unit::for_test(1000.0, 1000.0, UnitKind::Building);
+            (wall.role, wall.house) = (Role::Wall, house);
+            // As made, an end joins towards its +x, where it reaches the square's edge.
+            for (side, way) in [
+                (0, (16.0, 0.0)),
+                (1, (0.0, 16.0)),
+                (2, (-16.0, 0.0)),
+                (3, (0.0, -16.0)),
+            ] {
+                wall.wall_joins = std::array::from_fn(|i| i == side);
+                let [x, _, z] = places(&shape, &wall).0.point(to_place([16.0, 0.0, 0.0]));
+                let off = ((x - wall.x - way.0).abs(), (z - wall.z - way.1).abs());
+                assert!(
+                    off.0 < 0.01 && off.1 < 0.01,
+                    "{house:?} side {side}: {off:?}"
+                );
+            }
         }
     }
 }

@@ -191,6 +191,7 @@ impl Strategy {
     ) -> Option<usize> {
         nearest(units, (x, z), |u| {
             u.kind.is_building()
+                && u.role.counts_for_losing()
                 && units::are_enemies(teams, self.owner, u.owner)
                 && !u.hidden_from(self.owner, teams)
         })
@@ -333,7 +334,7 @@ impl Strategy {
             return;
         }
         let building = nearest(units, (unit.x, unit.z), |u| {
-            u.kind.is_building() && unit.can_attack(u, teams)
+            u.kind.is_building() && u.role.counts_for_losing() && unit.can_attack(u, teams)
         });
         if let Some(building) = building {
             let id = units[building].id;

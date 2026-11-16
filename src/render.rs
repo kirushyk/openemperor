@@ -3387,6 +3387,8 @@ fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
                 draw_helipad(canvas, unit, color);
             } else if unit.role == Role::Refinery {
                 draw_refinery(canvas, unit, color);
+            } else if unit.role == Role::Wall {
+                draw_wall(canvas, unit);
             } else {
                 let open = game.launcher_open(unit);
                 draw_building(canvas, unit, color, game.battle_time(), open);
@@ -3599,6 +3601,31 @@ fn stretch_drawn(canvas: &mut Canvas, drawn: usize, unit: &Unit, turn: f32) {
         let [nx, ny, nz] = vertex.normal;
         let [nx, ny, nz] = unit_vector([nx / stretch_x, ny / stretch_y, nz / stretch_z]);
         vertex.normal = [nx * cos - nz * sin, ny, nx * sin + nz * cos];
+    }
+}
+
+/// A square of wall in its house's colors: a post, and a stretch of wall from it out to each
+/// side another wall joins it on.
+fn draw_wall(canvas: &mut Canvas, unit: &Unit) {
+    const POST: f32 = 0.25;
+    const THICK: f32 = 0.2;
+    const TOP: f32 = 0.9;
+    let (x, z, y) = (unit.x, unit.z, unit.y);
+    let (walls, roof) = house_paint(unit.house);
+    draw_turned_box(canvas, (x, z, POST, POST, 0.0), (y, y + 1.0), roof);
+    for (side, &(dx, dz)) in [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]
+        .iter()
+        .enumerate()
+    {
+        if unit.wall_joins[side] {
+            let (half_x, half_z) = if dx != 0.0 {
+                (0.25, THICK)
+            } else {
+                (THICK, 0.25)
+            };
+            let arm = (x + dx * 0.25, z + dz * 0.25, half_x, half_z, 0.0);
+            draw_turned_box(canvas, arm, (y, y + TOP), walls);
+        }
     }
 }
 
@@ -4027,6 +4054,7 @@ fn short_name(role: Role) -> &'static str {
         Role::GuPalace => "Guild",
         Role::ImBarracks => "Sardkr",
         Role::FrCamp => "Fremen",
+        Role::Wall => "Wall",
         Role::FrFremen => "Warrior",
         Role::ImSardaukar => "Sardaukr",
         Role::TlContaminator => "Contam",

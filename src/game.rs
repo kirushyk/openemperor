@@ -110,12 +110,13 @@ fn vehicle_order(house: Faction) -> &'static [Entry] {
 }
 
 /// What each house's Buildings menu lists, in the order of the original's `[BuildingTypes]`.
-/// Ordos have no landing pad. Windtraps, walls, starports and refinery pads are left out: we
-/// have none yet.
+/// Ordos have no landing pad. Windtraps, starports and refinery pads are left out: we have
+/// none yet.
 fn building_order(house: Faction) -> impl Iterator<Item = Role> {
     let [lesser, greater] = Role::towers_of(house);
     [
         Role::Barracks,
+        Role::Wall,
         Role::Refinery,
         Role::Factory,
         Role::Outpost,
@@ -297,6 +298,9 @@ pub struct Casualties {
 
 impl Casualties {
     fn count(&mut self, unit: &Unit) {
+        if !unit.role.counts_for_stats() {
+            return;
+        }
         match unit.kind {
             UnitKind::Infantry => self.infantry += 1,
             UnitKind::Vehicle => self.vehicles += 1,
@@ -1562,6 +1566,10 @@ pub struct Game {
     placing_facing: units::Facing,
     /// The press of the button on the map while placing something, until it is let go.
     placing_press: Option<PlacingPress>,
+    /// The square a wall being placed starts from, once it has been clicked.
+    wall_start: Option<(i32, i32)>,
+    /// The squares of wall still to go up, in the order they do.
+    wall_plan: std::collections::VecDeque<(i32, i32)>,
     /// Where the next battle's sides are placed from.
     start_random: u32,
     /// The place the player's base started.
@@ -1668,6 +1676,8 @@ impl Game {
             opponent_random: 1,
             start_random: 1,
             placing_facing: units::Facing::default(),
+            wall_start: None,
+            wall_plan: std::collections::VecDeque::new(),
             placing_press: None,
             home: (0.0, 0.0),
             strategies: Vec::new(),
@@ -2150,6 +2160,10 @@ impl Game {
     /// The number to show on this role's button: how many are ordered, once there is more than
     /// the one its dimming already shows.
     pub fn queue_badge(&self, role: Role) -> Option<usize> {
+        // Walls show how many squares are still to go up, the one on its way among them.
+        if role == Role::Wall && self.wall_plan.len() > 1 {
+            return Some(self.wall_plan.len());
+        }
         let orders: usize = self
             .units
             .iter()
@@ -2286,6 +2300,13 @@ impl Game {
             let left = units::work_and_pay(role, left, dt, &mut self.money[0]);
             self.site = if left > 0.0 {
                 Site::Building(role, left)
+            } else if role == Role::Wall {
+                self.put_up_wall();
+                if self.wall_plan.is_empty() {
+                    Site::Idle
+                } else {
+                    Site::Building(role, role.build_seconds())
+                }
             } else {
                 self.post_chat(format!("{} ready to place", role.name()));
                 Site::Ready(role)
@@ -2293,9 +2314,109 @@ impl Game {
         }
     }
 
+    /// Puts up the next square of the wall on its way, done and paid for, where it was planned:
+    /// if something has come to stand there since, that square is left out and paid back.
+    fn put_up_wall(&mut self) {
+        let Some((u, v)) = self.wall_plan.pop_front() else {
+            return;
+        };
+        let terrain = battlefield::terrain(self.battle_map);
+        if !units::cell_is_free(&self.units, terrain, (u, v)) {
+            self.money[0] += Role::Wall.cost();
+            return;
+        }
+        let side = (0, self.player_color());
+        let at = battlefield::grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+        let mut wall = units::new_building(terrain, at, Role::Wall, side, self.next_unit_id);
+        wall.house = self.faction_of(0);
+        wall.constructing = units::CONSTRUCTION_SECONDS;
+        self.units.push(wall);
+        self.next_unit_id += 1;
+        units::join_walls(&mut self.units);
+    }
+
+    /// The color the player's side is drawn in.
+    fn player_color(&self) -> TeamColor {
+        self.stats_rows()
+            .first()
+            .map_or(TeamColor::Blue, |row| row.color)
+    }
+
+    /// Whether a square of wall could go up there for the player: free rock they have seen.
+    fn can_wall(&self, (u, v): (i32, i32)) -> bool {
+        let terrain = battlefield::terrain(self.battle_map);
+        let (x, z) = battlefield::grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+        units::cell_is_free(&self.units, terrain, (u, v))
+            && self.sight_at(x, z) != Sight::Unexplored
+    }
+
+    /// The square under the cursor, on the map's grid.
+    fn square_under_cursor(&self) -> Option<(i32, i32)> {
+        let (x, z) = self.land_under_cursor()?;
+        let (u, v) = battlefield::world_to_grid(x, z);
+        Some((u.floor() as i32, v.floor() as i32))
+    }
+
+    /// Whether a wall could start on this square: one it could go up on, near enough to one
+    /// of the player's buildings.
+    fn can_start_wall(&self, (u, v): (i32, i32)) -> bool {
+        let plot = units::Plot {
+            u,
+            v,
+            cols: 1,
+            rows: 1,
+        };
+        self.can_produce(Role::Wall)
+            && self.can_wall((u, v))
+            && units::is_near_building_of(&self.units, plot, 0)
+    }
+
+    /// The squares the wall being placed would take, from where it starts to the cursor, once
+    /// its start is picked.
+    fn wall_route(&self) -> Option<Vec<(i32, i32)>> {
+        let from = self.wall_start?;
+        units::wall_route(from, self.square_under_cursor()?, |cell| {
+            self.can_wall(cell)
+        })
+    }
+
+    /// A click on the map while placing a wall: the first picks where it starts, the second
+    /// where it ends, and the squares between go up one after another. Neither does anything
+    /// where the wall cannot go.
+    fn click_wall(&mut self) {
+        let Some(cell) = self.square_under_cursor() else {
+            return;
+        };
+        if self.wall_start.is_none() {
+            if self.can_start_wall(cell) {
+                self.wall_start = Some(cell);
+            }
+            return;
+        }
+        if let Some(route) = self.wall_route() {
+            self.wall_plan = route.into();
+            self.wall_start = None;
+            self.site = Site::Building(Role::Wall, Role::Wall.build_seconds());
+        }
+    }
+
+    /// Stops placing a wall: back to picking its start once that is picked, or not placing it
+    /// at all.
+    fn call_off_wall(&mut self) {
+        if self.wall_start.take().is_none() {
+            self.site = Site::Idle;
+        }
+    }
+
     /// A click on a building's button: starts it, or takes it up to place once it is ready.
+    /// A wall is placed first, and then built a square at a time.
     fn click_building(&mut self, role: Role) {
         match self.site {
+            Site::Idle if role == Role::Wall => {
+                self.aiming_strike = false;
+                self.site = Site::Placing(role);
+                self.wall_start = None;
+            }
             Site::Idle => self.site = Site::Building(role, role.build_seconds()),
             Site::Ready(ready) if ready == role => {
                 self.aiming_strike = false;
@@ -2364,6 +2485,9 @@ impl Game {
         let Site::Placing(role) = self.site else {
             return None;
         };
+        if role == Role::Wall {
+            return None;
+        }
         // Held down and dragged, the squares stay where they were pressed and only turn.
         let (x, y) = self.placing_press.map_or(self.mouse, |press| press.from);
         let terrain = battlefield::terrain(self.battle_map);
@@ -2377,6 +2501,9 @@ impl Game {
     /// The grid squares of the building being placed and what each shows: blocked unless it
     /// is free land the player has seen, near enough to one of their buildings.
     pub fn placing_squares(&self) -> Vec<((i32, i32), PlaceSquare)> {
+        if self.site == Site::Placing(Role::Wall) {
+            return self.wall_squares();
+        }
         let Some((role, plot)) = self.placing_plot() else {
             return Vec::new();
         };
@@ -2398,6 +2525,31 @@ impl Game {
                 ((u, v), square)
             })
             .collect()
+    }
+
+    /// What a wall being placed shows: the one square under the cursor until its start is
+    /// picked, then the squares it would run along to the cursor, or where it starts and the
+    /// cursor's square blocked if it cannot get there.
+    fn wall_squares(&self) -> Vec<((i32, i32), PlaceSquare)> {
+        let Some(cursor) = self.square_under_cursor() else {
+            return Vec::new();
+        };
+        let Some(start) = self.wall_start else {
+            let square = if self.can_start_wall(cursor) {
+                PlaceSquare::Free
+            } else {
+                PlaceSquare::Blocked
+            };
+            return vec![(cursor, square)];
+        };
+        match self.wall_route() {
+            Some(route) => route
+                .into_iter()
+                .map(|cell| (cell, PlaceSquare::Free))
+                .collect(),
+            None if cursor == start => vec![(start, PlaceSquare::Free)],
+            None => vec![(start, PlaceSquare::Free), (cursor, PlaceSquare::Blocked)],
+        }
     }
 
     /// The building about to be placed, on its squares, and whether it can go there.
@@ -2650,6 +2802,11 @@ impl Game {
         }
         // A drag has only turned what is being placed; the click to put it down is still to come.
         if self.placing_press.take().is_some_and(|press| press.turned) {
+            self.selection_anchor = None;
+            return;
+        }
+        if self.site == Site::Placing(Role::Wall) {
+            self.click_wall();
             self.selection_anchor = None;
             return;
         }
@@ -2937,13 +3094,16 @@ impl Game {
             if unit.owner == 0 {
                 self.lost.count(unit);
                 self.lost.infantry += aboard;
-                lost_names.push(unit.name());
+                if unit.role.counts_for_stats() {
+                    lost_names.push(unit.name());
+                }
             } else if units::are_enemies(&self.teams, 0, unit.owner) {
                 self.killed.count(unit);
                 self.killed.infantry += aboard;
             }
         }
         self.units.retain(|u| u.alive);
+        units::join_walls(&mut self.units);
         for name in lost_names {
             self.post_chat(format!("{name} lost"));
         }
@@ -2951,11 +3111,9 @@ impl Game {
         if self.outcome.is_some() {
             return;
         }
-        let player_left = self.units.iter().any(|u| u.owner == 0);
-        let enemies_left = self
-            .units
-            .iter()
-            .any(|u| units::are_enemies(&self.teams, 0, u.owner));
+        let standing = || self.units.iter().filter(|u| u.role.counts_for_losing());
+        let player_left = standing().any(|u| u.owner == 0);
+        let enemies_left = standing().any(|u| units::are_enemies(&self.teams, 0, u.owner));
         self.outcome = if !player_left {
             Some(Outcome::Defeat)
         } else if !enemies_left {
@@ -2979,7 +3137,10 @@ impl Game {
     fn report_defeats(&mut self) {
         let rows = self.stats_rows();
         for (owner, row) in rows.iter().enumerate() {
-            let beaten = !self.units.iter().any(|u| u.owner == owner);
+            let beaten = !self
+                .units
+                .iter()
+                .any(|u| u.owner == owner && u.role.counts_for_losing());
             if beaten && !self.reported_defeated[owner] {
                 self.reported_defeated[owner] = true;
                 self.post_chat(format!("{} defeated", row.name));
@@ -3108,6 +3269,8 @@ impl Game {
         self.control_groups = Default::default();
         self.following = None;
         self.site = Site::Idle;
+        self.wall_start = None;
+        self.wall_plan.clear();
         self.opponent_random = map as u32 * 2 + 1;
         self.strategies = (1..colors.len())
             .map(|owner| {
@@ -3379,6 +3542,11 @@ impl Game {
             self.selection_anchor = None;
             return;
         }
+        if self.site == Site::Placing(Role::Wall) {
+            self.call_off_wall();
+            self.selection_anchor = None;
+            return;
+        }
         if let Site::Placing(role) = self.site {
             self.site = Site::Ready(role);
             self.selection_anchor = None;
@@ -3576,16 +3744,25 @@ impl Game {
                     // On a build button it calls off one of those, and the selection stands.
                     // What was paid for it so far comes back.
                     if let Some(role) = self.build_role(self.build_tab, cell) {
-                        if self.site_of(role) {
+                        if self.site == Site::Placing(Role::Wall) && role == Role::Wall {
+                            // Nothing is paid for a wall until it is placed.
+                            self.call_off_wall();
+                        } else if self.site_of(role) {
                             self.money[0] += match self.site {
                                 Site::Building(_, left) => units::paid_for(role, left),
                                 _ => role.cost(),
                             };
                             self.site = Site::Idle;
+                            if role == Role::Wall {
+                                self.wall_plan.clear();
+                            }
                         } else {
                             units::cancel_making(&mut self.units, role, 0, &mut self.money[0]);
                         }
                     }
+                } else if self.site == Site::Placing(Role::Wall) {
+                    self.call_off_wall();
+                    self.selection_anchor = None;
                 } else if let Site::Placing(role) = self.site {
                     // Elsewhere it only stops placing; the building stays ready.
                     self.site = Site::Ready(role);
@@ -3634,7 +3811,8 @@ impl Game {
                     self.click_battle_minimap();
                     if !self.minimap_dragging {
                         self.begin_selection();
-                        if matches!(self.site, Site::Placing(_)) && self.selection_anchor.is_some()
+                        if matches!(self.site, Site::Placing(role) if role != Role::Wall)
+                            && self.selection_anchor.is_some()
                         {
                             self.placing_press = Some(PlacingPress {
                                 from: self.mouse,
@@ -6983,6 +7161,7 @@ mod tests {
             buildings,
             [
                 Role::Barracks,
+                Role::Wall,
                 Role::Refinery,
                 Role::Factory,
                 Role::Outpost,
@@ -7005,6 +7184,7 @@ mod tests {
             let [lesser, greater] = Role::towers_of(house);
             let mut expected = vec![
                 Role::Barracks,
+                Role::Wall,
                 Role::Refinery,
                 Role::Factory,
                 Role::Outpost,
@@ -8275,8 +8455,8 @@ mod tests {
     #[test]
     fn rocket_and_gun_turrets_are_built_and_placed_like_other_buildings() {
         for (cell, role, name) in [
-            (4, Role::AtPillbox, "Machinegun Post"),
-            (5, Role::AtRocketTurret, "Rocket Turret"),
+            (5, Role::AtPillbox, "Machinegun Post"),
+            (6, Role::AtRocketTurret, "Rocket Turret"),
         ] {
             let mut game = in_battle();
             click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
@@ -12135,5 +12315,176 @@ mod tests {
             assert!(menu(&game).contains(&Entry::Make(role)), "{role:?}");
             build_and_place(&mut game, role);
         }
+    }
+
+    /// Puts the cursor over the middle of a grid square.
+    fn point_at_square(game: &mut Game, (u, v): (i32, i32)) {
+        let terrain = battlefield::terrain(game.battle_map);
+        let (x, z) = battlefield::grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+        let (sx, sy) = game.view().project(x, terrain.height_at(x, z), z).unwrap();
+        game.handle(Event::MouseMove(sx, sy));
+        assert_eq!(game.square_under_cursor(), Some((u, v)));
+    }
+
+    /// Clicks where the cursor is.
+    fn click_here(game: &mut Game) {
+        let (x, y) = game.mouse;
+        click_at(game, x, y);
+    }
+
+    /// A square a wall can start on, with free rock for five more squares along +x, by one
+    /// of the player's buildings up on rock.
+    fn wall_start_square(game: &mut Game) -> (i32, i32) {
+        buildable_spot_on_screen(game);
+        let squares: Vec<(i32, i32)> = game
+            .units
+            .iter()
+            .filter(|u| u.owner == 0)
+            .filter_map(Unit::plot)
+            .flat_map(|plot| {
+                (plot.u - 6..plot.u + plot.cols + 6)
+                    .flat_map(move |u| (plot.v - 6..plot.v + plot.rows + 6).map(move |v| (u, v)))
+            })
+            .collect();
+        let start = squares
+            .into_iter()
+            .find(|&(u, v)| {
+                game.can_start_wall((u, v)) && (1..6).all(|i| game.can_wall((u + i, v)))
+            })
+            .expect("room for a wall");
+        game.camera.look_at(
+            (start.0 as f32 + 3.0) * battlefield::CELL_SIDE,
+            (start.1 as f32 + 0.5) * battlefield::CELL_SIDE,
+        );
+        game.update_fog();
+        start
+    }
+
+    #[test]
+    fn a_wall_is_placed_from_one_click_to_the_next_and_goes_up_a_square_at_a_time() {
+        let mut game = in_battle();
+        let cell = cell_of(&game, BuildTab::Buildings, Role::Wall);
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        let money = game.player_money();
+        click_hud(&mut game, Action::BuildCell(cell));
+        assert_eq!(
+            game.site,
+            Site::Placing(Role::Wall),
+            "placed before it is built"
+        );
+        assert_eq!(game.player_money(), money, "nothing paid yet");
+        let start = wall_start_square(&mut game);
+        point_at_square(&mut game, start);
+        assert_eq!(
+            game.placing_squares(),
+            [(start, PlaceSquare::Free)],
+            "the cursor is one square"
+        );
+        click_here(&mut game);
+        assert_eq!(game.wall_start, Some(start));
+
+        let end = (start.0 + 4, start.1);
+        point_at_square(&mut game, end);
+        let shown: Vec<_> = game.placing_squares().into_iter().map(|(c, _)| c).collect();
+        assert_eq!(
+            shown,
+            (0..5).map(|i| (start.0 + i, start.1)).collect::<Vec<_>>()
+        );
+        // A right click lets go of the start, and another of the wall.
+        game.handle(Event::RightDown);
+        assert_eq!(
+            (game.site, game.wall_start),
+            (Site::Placing(Role::Wall), None)
+        );
+        game.handle(Event::RightDown);
+        assert_eq!(game.site, Site::Idle);
+
+        click_hud(&mut game, Action::BuildCell(cell));
+        point_at_square(&mut game, start);
+        click_here(&mut game);
+        point_at_square(&mut game, end);
+        click_here(&mut game);
+        assert_eq!(
+            game.site,
+            Site::Building(Role::Wall, Role::Wall.build_seconds())
+        );
+        assert_eq!(game.queue_badge(Role::Wall), Some(5));
+        let walls = |game: &Game| -> Vec<Unit> {
+            game.units
+                .iter()
+                .filter(|u| u.role == Role::Wall)
+                .copied()
+                .collect()
+        };
+        game.update(Role::Wall.build_seconds() * 0.5);
+        assert!(walls(&game).is_empty(), "the first still going up");
+        assert!(
+            game.making_progress(Role::Wall)
+                .is_some_and(|p| p > 0.4 && p < 0.6)
+        );
+        game.update(Role::Wall.build_seconds() * 0.5 + 0.01);
+        assert_eq!(walls(&game).len(), 1, "one square at a time");
+        for _ in 0..40 {
+            game.update(0.25);
+        }
+        let built = walls(&game);
+        assert_eq!(built.len(), 5);
+        assert_eq!(game.site, Site::Idle);
+        assert_eq!(game.player_money(), money - 5 * Role::Wall.cost());
+        let pieces: Vec<_> = built
+            .iter()
+            .map(|w| units::WallPiece::of(w.wall_joins))
+            .collect();
+        use units::WallPiece::{End, Middle};
+        assert_eq!(
+            pieces,
+            [(End, 0), (Middle, 0), (Middle, 0), (Middle, 0), (End, 2)]
+        );
+        assert!(
+            built.iter().all(|w| !w.is_selectable()),
+            "walls are never picked"
+        );
+        // Nobody stands on a wall's square, and walls alone do not keep a side in the battle.
+        assert!(!units::cell_is_free(
+            &game.units,
+            battlefield::terrain(game.battle_map),
+            start
+        ));
+        game.units.retain(|u| u.owner != 0 || u.role == Role::Wall);
+        game.update(0.1);
+        assert_eq!(game.outcome, Some(Outcome::Defeat));
+    }
+
+    #[test]
+    fn a_wall_goes_round_a_building_in_its_way() {
+        let mut game = in_battle();
+        click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
+        let cell = cell_of(&game, BuildTab::Buildings, Role::Wall);
+        click_hud(&mut game, Action::BuildCell(cell));
+        let start = wall_start_square(&mut game);
+        let end = (start.0 + 4, start.1);
+        // A tower stands on the way between.
+        let mut post = *game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.kind == UnitKind::Tower)
+            .unwrap();
+        (post.x, post.z) = battlefield::grid_to_world(start.0 as f32 + 2.5, start.1 as f32 + 0.5);
+        post.id = game.next_unit_id;
+        game.next_unit_id += 1;
+        let plot = post.plot().unwrap();
+        game.units.push(post);
+        game.wall_start = Some(start);
+        game.camera.look_at(post.x, post.z);
+        point_at_square(&mut game, end);
+        let route = game.wall_route().expect("a way round");
+        assert_eq!((route[0], *route.last().unwrap()), (start, end));
+        let on_post = |(u, v): (i32, i32)| {
+            (plot.u..plot.u + plot.cols).contains(&u) && (plot.v..plot.v + plot.rows).contains(&v)
+        };
+        assert!(route.iter().all(|&cell| !on_post(cell)), "{route:?}");
+        assert!(route.len() > 5);
+        let shown: Vec<_> = game.placing_squares().into_iter().map(|(c, _)| c).collect();
+        assert_eq!(shown, route);
     }
 }

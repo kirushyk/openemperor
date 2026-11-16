@@ -110,7 +110,7 @@ Each house has its own model of each of these.
 | Outpost | Outpost | Disc | |
 | Palace | Atreides Palace, Harkonnen Palace, Ordos Palace | Disc | |
 | SmWindtrap | — | — | The original's power plant. |
-| Wall | — | — | |
+| Wall | Wall | Disc | Each house's six pieces (alone, end, middle, corner, T, cross), turned to join the walls beside it. |
 | Starport | — | — | |
 | FactoryFrigate | — | — | |
 | Smelter | — | — | Left out of the original's own build list (commented out). |
@@ -118,7 +118,7 @@ Each house has its own model of each of these.
 ## The small factions
 
 In a skirmish, the player can put up the main building of each mini-house they are allied
-with. It is in the Buildings menu after the refinery, and it needs a construction yard and,
+with. It is in the Buildings menu after the palace, and it needs a construction yard and,
 as `Rules.txt` says, a factory or a barracks. It costs what `Rules.txt` says. It is drawn with
 the disc's model, or without the disc with our plain block.
 

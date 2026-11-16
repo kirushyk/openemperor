@@ -83,6 +83,28 @@ we are missing is in [units.md](units.md). This list is about everything else.
 - **Groups and the stairs**: a group with any vehicle in it is only sent to spots vehicles can
   reach, even its infantry.
 
+## Walls
+
+Walls are placed as the original's are: a click picks the first square, the route to the
+cursor shows one square wide, a second click sets it, and a right click lets go of the first
+square, then of the wall. The squares then go up one after another, 20 credits and 1.5
+seconds each, as `Rules.txt`'s `Cost` and `BuildTime` scaled. Each square shows the disc's
+piece for how it joins its owner's walls beside it. Not done yet:
+
+- **How the original routes a wall**: its `GAME.EXE` places walls in a cursor mode
+  (`WallSection`, `WallPlacement`) that was not read through. Ours takes the shortest way
+  over free rock the player has seen, turning as few times as it can, and goes up to 12
+  squares beyond the box round its two ends to get round what is in the way. Only its first
+  square has to be near one of the player's buildings.
+- **The placing cursor**: the original shows `placement\build_wall.xbf`; ours colours the
+  squares as for other buildings.
+- **Going up**: the original's `_HC` model shows a wall rising out of the ground. Ours goes up
+  under the same crane as other buildings.
+- **Sounds**: the original's `WallThud` as a square goes down.
+- **Opponents** never build walls. The original's AI does, with its `MinMoneyToStartBuildingWalls`
+  and gives up after a while ("AI has been building walls for %d minutes so aborting").
+- **Ix walls**: the disc has `IX_Wall` pieces too, which nothing we have uses.
+
 ## Sounds
 
 - **What plays**: the units' answers; every unit's firing, as its model's "Fire" run has it;
@@ -142,7 +164,7 @@ we are missing is in [units.md](units.md). This list is about everything else.
 
 - **Build menus** list what can be made now, packed from the first cell in the order of the
   original's `[UnitTypes]` and `[BuildingTypes]`. Not done yet:
-  - what we have no units for is missing from them: windtraps, walls, starports, refinery
+  - what we have no units for is missing from them: windtraps, starports, refinery
     pads, the Ordos AA trooper, the sonic tank and the deviator;
   - upgrades: the original wants an upgraded building for many things (its
     `UpgradedPrimaryRequired`), such as engineers, Kindjal infantry, the flame tank, the gun

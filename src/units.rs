@@ -394,6 +394,8 @@ pub enum Role {
     Refinery,
     /// A house's own seat of power, without which its superweapon cannot fire.
     Palace(Faction),
+    /// One square of wall, joined to the walls beside it.
+    Wall,
     /// The main building of the Tleilaxu, for a house allied with them.
     TlFleshVat,
     /// The main building of the house of Ix, for a house allied with them.
@@ -619,7 +621,8 @@ impl Role {
             | Role::IxResCentre
             | Role::GuPalace
             | Role::ImBarracks
-            | Role::FrCamp => UnitKind::Building,
+            | Role::FrCamp
+            | Role::Wall => UnitKind::Building,
         }
     }
 
@@ -681,6 +684,7 @@ impl Role {
             Role::GuPalace => "Guild Palace",
             Role::ImBarracks => "Sardaukar Barracks",
             Role::FrCamp => "Fremen Camp",
+            Role::Wall => "Wall",
             Role::FrFremen => "Fremen Warrior",
             Role::ImSardaukar => "Imperial Sardaukar",
             Role::TlContaminator => "Tleilaxu Contaminator",
@@ -720,6 +724,7 @@ impl Role {
             | Role::GuPalace
             | Role::ImBarracks
             | Role::FrCamp
+            | Role::Wall
             | Role::IxInfiltrator => WeaponKind::Unarmed,
             Role::FrFremen => WeaponKind::Sniper,
             Role::ImSardaukar => WeaponKind::Bullet,
@@ -780,6 +785,8 @@ impl Role {
             Role::GuPalace => 2000.0,
             Role::ImBarracks => 1000.0,
             Role::FrCamp => 650.0,
+            // The original's 1000, scaled as its other buildings are.
+            Role::Wall => 330.0,
             Role::FrFremen => 130.0,
             Role::ImSardaukar => 150.0,
             Role::TlContaminator => 170.0,
@@ -883,6 +890,8 @@ impl Role {
             Role::Outpost => 20.0,
             Role::Barracks => 15.0,
             Role::Factory | Role::Hanger => 20.0,
+            // A square at a time: the original's 60 against a pillbox's 309.
+            Role::Wall => 1.5,
             Role::AtRocketTurret | Role::HkGunTurret | Role::OrPopUpTurret => 12.0,
             Role::AtPillbox | Role::HkFlameTurret | Role::OrGasTurret => 8.0,
         }
@@ -932,6 +941,7 @@ impl Role {
             Role::GuPalace => 2000,
             Role::ImBarracks => 700,
             Role::FrCamp => 600,
+            Role::Wall => 20,
             Role::FrFremen => 150,
             Role::ImSardaukar | Role::TlContaminator => 300,
             Role::IxInfiltrator => 500,
@@ -953,6 +963,18 @@ impl Role {
             Role::Helipad | Role::Palace(_) => Some(Role::Hanger),
             _ => None,
         }
+    }
+
+    /// Whether a side with nothing else left still stands while it has one: not so a wall, as
+    /// the original's `ExcludeFromSkirmishLose`.
+    pub fn counts_for_losing(self) -> bool {
+        self != Role::Wall
+    }
+
+    /// Whether the battle's statistics count it, and the chat says when it is lost: not a
+    /// wall, as the original's `CountsForStats`.
+    pub fn counts_for_stats(self) -> bool {
+        self != Role::Wall
     }
 
     /// Whether it is a building that makes units.
@@ -1093,6 +1115,7 @@ impl Role {
             (Role::ImBarracks, _) => (3, 5),
             (Role::FrCamp, _) => (6, 6),
             (Role::Helipad, _) => (2, 3),
+            (Role::Wall, _) => (1, 1),
             // Deployed, as big as the original's construction yard.
             (Role::Mcv, Harkonnen) => (5, 8),
             (Role::Mcv, _) => (5, 7),
@@ -1124,6 +1147,7 @@ impl Role {
                 _,
             ) => 80.0,
             (Role::Helipad, _) => 72.0,
+            (Role::Wall, _) => 48.0,
             (Role::Mcv, _) => 107.0,
             _ => 100.0,
         }
@@ -1200,6 +1224,7 @@ impl Role {
             | Role::GuPalace
             | Role::ImBarracks
             | Role::FrCamp
+            | Role::Wall
             | Role::Helipad
             | Role::AtRocketTurret
             | Role::HkFlameTurret
@@ -1280,6 +1305,7 @@ impl Role {
             // Risen, with its gun out.
             Role::OrGasTurret => [1.0, 0.645, 1.0],
             Role::OrPopUpTurret => [1.0, 0.63, 1.0],
+            Role::Wall => [1.0, 1.0, 1.0],
         }
     }
 
@@ -1680,6 +1706,9 @@ pub struct Unit {
     pub popped: f32,
     /// How far a deployed Kobra has swung its raised cannon round from its nose, in radians.
     pub gun_turn: f32,
+    /// For a square of wall, which of its sides another of its owner's walls joins it on:
+    /// towards +x, +z, -x and -z.
+    pub wall_joins: [bool; 4],
     /// Seconds left until a building just placed is finished, and works.
     pub constructing: f32,
     /// Which way a building looks.
@@ -2603,7 +2632,8 @@ impl Unit {
 
     /// Whether the player can select it, and so give it orders.
     pub fn is_selectable(&self) -> bool {
-        self.owner == 0 && self.theft.is_none()
+        // Walls never are, as the original's `Selectable`.
+        self.owner == 0 && self.theft.is_none() && self.role != Role::Wall
     }
 
     /// Whether a box or the select-all key takes it. Buildings, towers among them, are only
@@ -2661,6 +2691,7 @@ impl Unit {
             revealed: 0.0,
             popped: 0.0,
             gun_turn: 0.0,
+            wall_joins: [false; 4],
             constructing: 0.0,
             facing: Facing::default(),
             deployment: Deployment::Idle,
@@ -2816,6 +2847,7 @@ fn place_unit(
         revealed: 0.0,
         popped: 0.0,
         gun_turn: 0.0,
+        wall_joins: [false; 4],
         constructing: 0.0,
         facing: Facing::default(),
         deployment: Deployment::Idle,
@@ -3146,6 +3178,136 @@ pub fn is_near_building_of(units: &[Unit], plot: Plot, owner: usize) -> bool {
         .filter(|u| u.alive && u.owner == owner)
         .filter_map(Unit::plot)
         .any(|theirs| plot.gap_to(theirs) <= BUILD_REACH)
+}
+
+/// The original's pieces of wall, by how a square of it joins the walls beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallPiece {
+    /// Joined to none.
+    Single,
+    /// Joined on one side.
+    End,
+    /// Joined on two opposite sides.
+    Middle,
+    /// Joined on two sides at a right angle.
+    Corner,
+    /// Joined on three sides.
+    TJoin,
+    /// Joined on all four.
+    Cross,
+}
+
+impl WallPiece {
+    /// The piece for a square joined on these sides, towards +x, +z, -x and -z, and how many
+    /// quarter turns from +x towards +z the piece is turned: as it is made, an end joins
+    /// towards +x, a middle towards ±x, a corner towards +x and +z, and a T towards ±x and +z.
+    pub fn of(joins: [bool; 4]) -> (WallPiece, usize) {
+        const MADE: [(WallPiece, [bool; 4]); 6] = [
+            (WallPiece::Single, [false; 4]),
+            (WallPiece::End, [true, false, false, false]),
+            (WallPiece::Middle, [true, false, true, false]),
+            (WallPiece::Corner, [true, true, false, false]),
+            (WallPiece::TJoin, [true, true, true, false]),
+            (WallPiece::Cross, [true; 4]),
+        ];
+        MADE.iter()
+            .find_map(|&(piece, made)| {
+                (0..4)
+                    .find(|&turns| (0..4).all(|side| made[side] == joins[(side + turns) % 4]))
+                    .map(|turns| (piece, turns))
+            })
+            .unwrap_or((WallPiece::Single, 0))
+    }
+}
+
+/// Sets which sides each square of wall is joined on, by its owner's walls beside it.
+pub fn join_walls(units: &mut [Unit]) {
+    const SIDES: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
+    let square = |unit: &Unit| unit.plot().map(|plot| (plot.u, plot.v));
+    let walls: std::collections::HashSet<(usize, (i32, i32))> = units
+        .iter()
+        .filter(|u| u.alive && u.role == Role::Wall)
+        .filter_map(|u| Some((u.owner, square(u)?)))
+        .collect();
+    for unit in units.iter_mut().filter(|u| u.role == Role::Wall) {
+        if let Some((u, v)) = square(unit) {
+            unit.wall_joins = SIDES.map(|(du, dv)| walls.contains(&(unit.owner, (u + du, v + dv))));
+        }
+    }
+}
+
+/// How far beyond the box round its two ends a wall's way may go round what is in the way, in
+/// grid squares.
+const WALL_DETOUR: i32 = 12;
+
+/// The squares a wall runs along from one square to another, one after another, both ends
+/// among them: as short as it can be over squares `can` takes, and of those, as straight,
+/// turning as few times as it can. `None` if it cannot get there.
+pub fn wall_route(
+    from: (i32, i32),
+    to: (i32, i32),
+    can: impl Fn((i32, i32)) -> bool,
+) -> Option<Vec<(i32, i32)>> {
+    const WAYS: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
+    if !can(from) || !can(to) {
+        return None;
+    }
+    let low = (
+        from.0.min(to.0) - WALL_DETOUR,
+        from.1.min(to.1) - WALL_DETOUR,
+    );
+    let high = (
+        from.0.max(to.0) + WALL_DETOUR,
+        from.1.max(to.1) + WALL_DETOUR,
+    );
+    let (width, height) = (high.0 - low.0 + 1, high.1 - low.1 + 1);
+    let index =
+        |(u, v): (i32, i32), way: usize| (((v - low.1) * width + (u - low.0)) * 4) as usize + way;
+    // For each square and the way it was come into: its cost, squares then turns, and whence.
+    let mut best = vec![(u32::MAX, u32::MAX); (width * height * 4) as usize];
+    let mut came = vec![usize::MAX; best.len()];
+    let mut open = std::collections::BinaryHeap::new();
+    for way in 0..WAYS.len() {
+        best[index(from, way)] = (0, 0);
+        open.push(std::cmp::Reverse(((0, 0), from, way)));
+    }
+    let mut end = None;
+    while let Some(std::cmp::Reverse((cost, at, way))) = open.pop() {
+        if cost > best[index(at, way)] {
+            continue;
+        }
+        if at == to {
+            end = Some(index(at, way));
+            break;
+        }
+        for (next_way, (du, dv)) in WAYS.iter().enumerate() {
+            let next = (at.0 + du, at.1 + dv);
+            if next.0 < low.0 || next.1 < low.1 || next.0 > high.0 || next.1 > high.1 || !can(next)
+            {
+                continue;
+            }
+            let turns = cost.1 + u32::from(next_way != way && at != from);
+            let next_cost = (cost.0 + 1, turns);
+            let i = index(next, next_way);
+            if next_cost < best[i] {
+                best[i] = next_cost;
+                came[i] = index(at, way);
+                open.push(std::cmp::Reverse((next_cost, next, next_way)));
+            }
+        }
+    }
+    let mut at = end?;
+    let square = |i: usize| {
+        let cell = (i / 4) as i32;
+        (low.0 + cell % width, low.1 + cell / width)
+    };
+    let mut route = vec![square(at)];
+    while came[at] != usize::MAX {
+        at = came[at];
+        route.push(square(at));
+    }
+    route.reverse();
+    Some(route)
 }
 
 /// Whether these squares leave at least this many empty squares between them and every other
@@ -9948,5 +10110,78 @@ mod tests {
         assert_eq!(crates.len(), 1);
         assert!(open_crates(&[far], &mut crates, &mut money, 1.5).is_empty());
         assert!(crates.is_empty(), "left too long, it is gone");
+    }
+
+    #[test]
+    fn a_wall_runs_straight_turns_once_to_reach_aside_and_goes_round_what_is_in_the_way() {
+        let open = |_: (i32, i32)| true;
+        assert_eq!(
+            wall_route((2, 5), (6, 5), open),
+            Some(vec![(2, 5), (3, 5), (4, 5), (5, 5), (6, 5)])
+        );
+        assert_eq!(wall_route((2, 5), (2, 5), open), Some(vec![(2, 5)]));
+        let bent = wall_route((0, 0), (3, 2), open).unwrap();
+        assert_eq!(bent.len(), 6, "as short as it can be");
+        let turns = bent
+            .windows(3)
+            .filter(|w| (w[1].0 - w[0].0, w[1].1 - w[0].1) != (w[2].0 - w[1].0, w[2].1 - w[1].1))
+            .count();
+        assert_eq!(turns, 1, "turning once: {bent:?}");
+        // A block in the way of the straight line: round it, as straight as it can.
+        let blocked = |(u, v): (i32, i32)| !(u == 4 && (4..=6).contains(&v));
+        let round = wall_route((2, 5), (6, 5), blocked).unwrap();
+        assert!(round.iter().all(|&cell| blocked(cell)));
+        assert_eq!(round.len(), 9, "{round:?}");
+        assert!(
+            round
+                .windows(2)
+                .all(|w| (w[0].0 - w[1].0).abs() + (w[0].1 - w[1].1).abs() == 1)
+        );
+        // Walled in all round: no way.
+        let shut = |(u, v): (i32, i32)| (u, v) == (0, 0) || (u - 10).abs() + (v - 10).abs() < 3;
+        assert_eq!(wall_route((0, 0), (10, 10), shut), None);
+        assert_eq!(wall_route((0, 0), (10, 10), |c| c != (10, 10)), None);
+    }
+
+    #[test]
+    fn each_square_of_wall_takes_the_piece_for_how_it_joins_turned_onto_its_neighbours() {
+        let [e, s, w, n] = [0, 1, 2, 3];
+        let joins = |sides: &[usize]| std::array::from_fn(|i| sides.contains(&i));
+        assert_eq!(WallPiece::of(joins(&[])), (WallPiece::Single, 0));
+        assert_eq!(WallPiece::of(joins(&[e])), (WallPiece::End, 0));
+        assert_eq!(WallPiece::of(joins(&[n])), (WallPiece::End, 3));
+        assert_eq!(WallPiece::of(joins(&[e, w])), (WallPiece::Middle, 0));
+        assert_eq!(WallPiece::of(joins(&[s, n])), (WallPiece::Middle, 1));
+        assert_eq!(WallPiece::of(joins(&[e, s])), (WallPiece::Corner, 0));
+        assert_eq!(WallPiece::of(joins(&[w, n])), (WallPiece::Corner, 2));
+        assert_eq!(WallPiece::of(joins(&[n, e])), (WallPiece::Corner, 3));
+        assert_eq!(WallPiece::of(joins(&[e, s, w])), (WallPiece::TJoin, 0));
+        assert_eq!(WallPiece::of(joins(&[s, w, n])), (WallPiece::TJoin, 1));
+        assert_eq!(WallPiece::of(joins(&[e, s, w, n])), (WallPiece::Cross, 0));
+
+        // Walls in a plus, and one of another owner's beside it that does not join.
+        let wall_at = |(u, v): (i32, i32), owner: usize| {
+            let mut wall = Unit::for_test(
+                (u as f32 + 0.5) * CELL_SIDE,
+                (v as f32 + 0.5) * CELL_SIDE,
+                UnitKind::Building,
+            );
+            wall.role = Role::Wall;
+            wall.owner = owner;
+            wall
+        };
+        let mut walls: Vec<Unit> = [(10, 10), (11, 10), (9, 10), (10, 11), (10, 9)]
+            .iter()
+            .map(|&at| wall_at(at, 0))
+            .collect();
+        walls.push(wall_at((12, 10), 1));
+        join_walls(&mut walls);
+        assert_eq!(WallPiece::of(walls[0].wall_joins).0, WallPiece::Cross);
+        assert_eq!(WallPiece::of(walls[1].wall_joins), (WallPiece::End, 2));
+        assert_eq!(WallPiece::of(walls[3].wall_joins), (WallPiece::End, 3));
+        assert_eq!(WallPiece::of(walls[5].wall_joins).0, WallPiece::Single);
+        walls[0].alive = false;
+        join_walls(&mut walls);
+        assert_eq!(WallPiece::of(walls[1].wall_joins).0, WallPiece::Single);
     }
 }

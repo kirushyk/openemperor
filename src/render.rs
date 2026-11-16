@@ -20,6 +20,7 @@ use std::sync::OnceLock;
 use std::thread;
 
 mod backdrop;
+mod frontend;
 mod models;
 mod original;
 
@@ -900,17 +901,20 @@ fn canvas_of(game: &Game) -> Canvas {
                     canvas.rect(0.0, 0.0, game.width, game.height, DIM);
                 }
             }
+            // Whether the original's scene, which has its own title, is behind the menu.
+            let mut scene = false;
             if matches!(game.screen, Screen::MainMenu | Screen::SinglePlayerMenu) && !game.in_battle
             {
-                // Rising from the bottom of the screen, leaving the title on clear sky.
-                let (y, radius) = (game.height * 0.66, game.height * 0.48);
-                backdrop::draw(
-                    &mut canvas,
-                    (game.width, game.height),
-                    (cx, y, radius),
-                    game.menu_seconds(),
-                );
-                planet::draw_sandy(&mut canvas.vertices, cx, y, radius, game.menu_seconds());
+                // The original's own scene off the disc, once it is read; until then, and
+                // without the disc, ours: a planet rising from the bottom of the screen,
+                // leaving the title on clear sky.
+                let screen = (game.width, game.height);
+                scene = original::draw_menu(&mut canvas.vertices, screen, game.menu_seconds());
+                if !scene {
+                    let (y, radius) = (game.height * 0.66, game.height * 0.48);
+                    backdrop::draw(&mut canvas, screen, (cx, y, radius), game.menu_seconds());
+                    planet::draw_sandy(&mut canvas.vertices, cx, y, radius, game.menu_seconds());
+                }
                 canvas.text_left(
                     VERSION,
                     24.0 * s,
@@ -927,6 +931,7 @@ fn canvas_of(game: &Game) -> Canvas {
                 | Screen::SkirmishSetup
                 | Screen::EscapeMenu
                 | Screen::BattleStats => None,
+                _ if scene => None,
                 _ => Some(TITLE),
             };
             if let Some(title) = title {

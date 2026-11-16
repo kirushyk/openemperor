@@ -820,6 +820,12 @@ const SINGLE_PLAYER_MENU: &[(Action, &str, Anchor)] = &[
     (Action::Back, "Back", Anchor::BottomLeft),
 ];
 
+/// How far down the screen the middle of each centered button of the main menu and of the
+/// single player menu is, as a share of its height: where the original's `main.xbf` has its
+/// `single` and `Mplayer`, and its `Campaign`, `Tutorial`, `Skirmish` and `Load`.
+const MAIN_MENU_ROWS: [f32; 2] = [0.684, 0.792];
+const SINGLE_PLAYER_ROWS: [f32; 4] = [0.576, 0.684, 0.792, 0.919];
+
 const BACK_ONLY: &[(Action, &str, Anchor)] = &[(Action::Back, "Back", Anchor::BottomLeft)];
 
 const BATTLE_STATS: &[(Action, &str, Anchor)] =
@@ -1483,13 +1489,22 @@ pub fn buttons(screen: Screen, width: f32, height: f32) -> Vec<Button> {
     let centered = items.iter().filter(|i| i.2 == Anchor::Center).count() as f32;
     let stack_h = centered * BUTTON_H + (centered - 1.0) * GAP;
     let mut y = (1080.0 - stack_h) / 2.0;
+    // The main menus' stand where the original's scene has them, under its planet.
+    let mut rows = match screen {
+        Screen::MainMenu => MAIN_MENU_ROWS.iter(),
+        Screen::SinglePlayerMenu => SINGLE_PLAYER_ROWS.iter(),
+        _ => [].iter(),
+    };
 
     let mut all: Vec<Button> = items
         .iter()
         .map(|&(action, label, anchor)| {
             let (px, py, w) = match anchor {
                 Anchor::Center => {
-                    let top = y;
+                    let top = match rows.next() {
+                        Some(middle) => middle * 1080.0 - BUTTON_H / 2.0,
+                        None => y,
+                    };
                     y += BUTTON_H + GAP;
                     ((width - CENTER_W * s) / 2.0, top * s, CENTER_W)
                 }
@@ -4228,10 +4243,11 @@ mod tests {
             (b[0].x + b[0].w / 2.0 - W / 2.0).abs() < 0.5,
             "centered horizontally"
         );
-        assert!(
-            b[0].y < H / 2.0 && b[1].y + b[1].h > H / 2.0,
-            "centered vertically"
-        );
+        // Under the planet, where the original's scene has them.
+        let middle = |b: &Button| (b.y + b.h / 2.0) / H;
+        assert!((middle(&b[0]) - 0.684).abs() < 0.001, "{}", middle(&b[0]));
+        assert!((middle(&b[1]) - 0.792).abs() < 0.001, "{}", middle(&b[1]));
+        assert!(b[0].y + b[0].h < b[1].y, "one under the other");
         assert!(b[2].x < W / 2.0 && b[2].y > H / 2.0, "exit is bottom left");
         assert!(
             b[3].x > W / 2.0 && b[3].y > H / 2.0,

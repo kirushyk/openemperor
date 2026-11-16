@@ -233,6 +233,28 @@ piece for how it joins its owner's walls beside it. Not done yet:
   3D shapes (`!06%crimsonglow.tga`), with flares over the selected tab. The Upgrades tab
   shows its `upgradebuildings`. It also has a Starport tab, which we have nothing for.
 
+## Menus
+
+The main menu and the single player menu show the original's own scene off the disc,
+`frontend\main.xbf`: its ring frame, title, Arrakis turning, glows, nebulas, horizons and the
+tunnel of glyphs, drawn flat from where its camera stands, with our buttons where its own
+are. Not done yet:
+
+- **The storm clouds over Arrakis** (the scene's `cloud`) are left out: with what we read of
+  them they come out as blocks.
+- **The buttons** are ours, with our font. The original's are text in its own font
+  (`FONT\STANDARD.MAP`) with a box and a highlight (`@button_64.tga`), and sounds
+  (`NavButtonClick`, `NavButtonRollOver`).
+- **Every other screen** has its own scene we do not show yet: `Options.xbf`,
+  `HouseSelect.XBF`, `Wol_SetupSkirmish.XBF` (the skirmish setup), `campaign.xbf`,
+  `loadsave.xbf`, `Credits.xbf`, `ingameoptions.xbf`, `popup.xbf` and the score screens.
+- **The stars** (`#star…`) and whatever else its marked objects stand for.
+- **How it moves between menus**: the original's buttons slide (their meshes are animated).
+- **Pictures** are cut to 128-pixel tiles, at most four a side: the 512-pixel title and
+  rings are whole, anything larger would be shrunk.
+- **Wide screens**: the original's view is 4:3; ours fills the height and shows what the
+  scene has beyond its sides.
+
 ## Other platforms
 
 - **Windows and Linux**: their backends (`shim/windows_d3d11.c`, `shim/linux_vulkan.c`) draw

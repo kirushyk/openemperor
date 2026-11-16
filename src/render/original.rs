@@ -4,12 +4,13 @@
 //! colors its picture has under it, and the house color where the picture leaves room for it.
 
 use super::Canvas;
+use super::frontend;
 use super::models::{Model, Paint, Place};
 use crate::archive::{self, Archive};
 use crate::battlefield::{self, CELL_SIDE, Terrain, View};
 use crate::fog::Fog;
 use crate::game::{BuildTab, Faction};
-use crate::platform::{NO_PICTURE, WorldVertex};
+use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
 use crate::units::{Harvest, Role, Unit, UnitKind, WallPiece, Wound};
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
@@ -559,7 +560,7 @@ const SAMPLE_STEPS: usize = 3;
 /// Less of a face than this showing through its picture and it is left out.
 const LEAST_COVER: f32 = 0.5;
 
-const IDENTITY: [[f32; 4]; 4] = [
+pub(super) const IDENTITY: [[f32; 4]; 4] = [
     [1.0, 0.0, 0.0, 0.0],
     [0.0, 1.0, 0.0, 0.0],
     [0.0, 0.0, 1.0, 0.0],
@@ -592,6 +593,8 @@ struct Original {
     icons: Vec<Option<(usize, usize)>>,
     /// Which of the pictures each of `UPGRADE_ICONS` is, a house's pad and then its yard.
     upgrade_icons: Vec<[Option<(usize, usize)>; 2]>,
+    /// The main menu's scene, if the disc has it.
+    menu: Option<frontend::Scene>,
     /// The symbol of each of `TAB_SYMBOLS`, as flat triangles in a square from -1 to 1
     /// across and down, if the disc has it.
     tab_symbols: Vec<Vec<[(f32, f32); 3]>>,
@@ -1165,6 +1168,8 @@ fn read_shapes(disc: &Path) -> Option<Original> {
         })
         .collect();
     let tab_symbols = read_tab_symbols(disc).unwrap_or_default();
+    let menu = read_interface(disc, frontend::SCENE)
+        .and_then(|model| frontend::read(&model, &archive, &mut pictures, &mut layers));
     (!shapes.is_empty()).then_some(Original {
         shapes,
         damaged,
@@ -1176,18 +1181,34 @@ fn read_shapes(disc: &Path) -> Option<Original> {
         layers,
         icons,
         upgrade_icons,
+        menu,
         archive,
         spice,
+    })
+}
+
+/// A file out of the disc's interface archive.
+fn read_interface(disc: &Path, name: &str) -> Option<Vec<u8>> {
+    let cabinet = disc.join(CABINET);
+    let index = archive::from_cabinet(&cabinet, UI_INDEX)?;
+    let data = archive::from_cabinet(&cabinet, UI_DATA)?;
+    archive::read_in(&index, &data, name)
+}
+
+/// Draws the original's main menu scene behind the menus, as it is this many seconds on, once
+/// the disc's is read. Returns whether it was drawn.
+pub(super) fn draw_menu(vertices: &mut Vec<Vertex>, screen: (f32, f32), time: f32) -> bool {
+    let scene = ORIGINAL.get().and_then(|original| original.menu.as_ref());
+    scene.is_some_and(|scene| {
+        scene.draw(vertices, screen, time);
+        true
     })
 }
 
 /// The tabs' symbols out of the sidebar model, each in the order of `TAB_SYMBOLS`. The model
 /// faces along x, its right along y and its up along z.
 fn read_tab_symbols(disc: &Path) -> Option<Vec<Vec<[(f32, f32); 3]>>> {
-    let cabinet = disc.join(CABINET);
-    let index = archive::from_cabinet(&cabinet, UI_INDEX)?;
-    let data = archive::from_cabinet(&cabinet, UI_DATA)?;
-    let model = xbf::parse(&archive::read_in(&index, &data, SIDEBAR)?)?;
+    let model = xbf::parse(&read_interface(disc, SIDEBAR)?)?;
     fn find(object: &Object, above: &[[f32; 4]; 4], name: &str) -> Option<Vec<[[f32; 3]; 3]>> {
         let world = times(&object.transform, above);
         if object.name.eq_ignore_ascii_case(name) {
@@ -1505,11 +1526,11 @@ fn winding_normal([a, b, c]: &[[f32; 3]; 3]) -> [f32; 3] {
 }
 
 /// One transform after another, for row vectors: `first`, then `then`.
-fn times(first: &[[f32; 4]; 4], then: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+pub(super) fn times(first: &[[f32; 4]; 4], then: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     std::array::from_fn(|r| std::array::from_fn(|c| (0..4).map(|k| first[r][k] * then[k][c]).sum()))
 }
 
-fn point(world: &[[f32; 4]; 4], [x, y, z]: [f32; 3]) -> [f32; 3] {
+pub(super) fn point(world: &[[f32; 4]; 4], [x, y, z]: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|c| x * world[0][c] + y * world[1][c] + z * world[2][c] + world[3][c])
 }
 

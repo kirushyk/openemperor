@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 const CABINET: &str = "INSTALL/Game1.cab";
 const BAG: &str = "INSTALL/DATA/SFX/AUDIO.BAG";
@@ -22,8 +22,15 @@ const TABLES: [&str; 4] = [
     "\\data\\Sfx\\ORDOSSFX.TXT",
     "\\data\\Sfx\\GeneralSFX.txt",
 ];
-/// What a section's line naming its sounds starts with.
+/// What a section's lines naming its sounds, how loud they play and how many may play at once
+/// start with.
 const SOUNDS: &str = "sounds";
+const VOLUME: &str = "volume";
+const LIMIT: &str = "limit";
+/// How loud a section plays, out of a hundred, and how many of its sounds may play at once,
+/// where it does not say: the original's `[GlobalDefaults]` in `Sfx.txt`.
+const DEFAULT_VOLUME: f32 = 80.0;
+const DEFAULT_LIMIT: usize = 5;
 
 /// What the name of a section of what is said ends with.
 fn ending(said: Said) -> &'static str {
@@ -50,12 +57,23 @@ struct Sound {
     speech: bool,
 }
 
+/// One of the tables' sections: the sounds one of which plays for it, and how loud and how
+/// many at once, if it says.
+#[derive(Debug, Default, PartialEq)]
+struct Section {
+    sounds: Vec<Sound>,
+    volume: Option<f32>,
+    limit: Option<usize>,
+}
+
 struct Sounds {
     bag: PathBuf,
     /// The bag's sounds, by their names in lower case.
     tracks: HashMap<String, Track>,
-    /// The tables' sections, by their names in lower case: their sounds.
-    sections: HashMap<String, Vec<Sound>>,
+    /// The tables' sections, by their names in lower case.
+    sections: HashMap<String, Section>,
+    /// The sounds read out of the bag so far, by their names.
+    read: Mutex<HashMap<String, Arc<Line>>>,
 }
 
 static SOUNDS_READ: OnceLock<Sounds> = OnceLock::new();
@@ -82,6 +100,7 @@ pub fn load(disc: &Path) {
         bag,
         tracks,
         sections,
+        read: Mutex::default(),
     });
 }
 
@@ -94,14 +113,19 @@ pub fn reply(said: Said, speakers: &[(Role, Faction)], pick: usize) -> Option<Li
     let section = sections_for(said, speakers)
         .into_iter()
         .find_map(|name| sounds.sections.get(&name.to_lowercase()))?;
-    let speech: Vec<&Sound> = section.iter().filter(|sound| sound.speech).collect();
+    let speech: Vec<&Sound> = section.sounds.iter().filter(|sound| sound.speech).collect();
     let lines = if speech.is_empty() {
-        section.iter().collect()
+        section.sounds.iter().collect()
     } else {
         speech
     };
     let sound = lines.get(pick % lines.len().max(1))?;
-    let track = sounds.tracks.get(&sound.name)?;
+    read_line(sounds, &sound.name)
+}
+
+/// The sound of this name out of the bag.
+fn read_line(sounds: &Sounds, name: &str) -> Option<Line> {
+    let track = sounds.tracks.get(name)?;
     let mut bytes = vec![0; track.size as usize];
     let mut bag = File::open(&sounds.bag).ok()?;
     bag.seek(SeekFrom::Start(u64::from(track.offset))).ok()?;
@@ -115,6 +139,82 @@ pub fn reply(said: Said, speakers: &[(Role, Faction)], pick: usize) -> Option<Li
         },
         rate: track.rate,
     })
+}
+
+/// A sound of the battlefield to play once, and how loud, from 0 to 1.
+pub struct Effect {
+    pub line: Arc<Line>,
+    pub volume: f32,
+}
+
+/// The battlefield's sounds: those still to come, each by its section and when it plays, and
+/// those playing, each by its section and when it ends, in seconds of its own clock.
+#[derive(Default)]
+pub struct Effects {
+    clock: f32,
+    waiting: Vec<(f32, String)>,
+    playing: Vec<(String, f32)>,
+    picks: usize,
+}
+
+impl Effects {
+    /// Sounds to play, each by its section and how many seconds from now.
+    pub fn hear(&mut self, sounds: Vec<(f32, String)>) {
+        let clock = self.clock;
+        self.waiting.extend(
+            sounds
+                .into_iter()
+                .map(|(after, name)| (clock + after, name.to_lowercase())),
+        );
+    }
+
+    /// Lets this many seconds go by, and gives what is due to play now: one of each due
+    /// section's sounds, as loud as it says, unless as many as it allows are playing already.
+    pub fn due(&mut self, seconds: f32) -> Vec<Effect> {
+        self.clock += seconds;
+        let clock = self.clock;
+        self.playing.retain(|&(_, ends)| ends > clock);
+        let (due, waiting) = std::mem::take(&mut self.waiting)
+            .into_iter()
+            .partition(|&(at, _)| at <= clock);
+        self.waiting = waiting;
+        let Some(sounds) = SOUNDS_READ.get() else {
+            return Vec::new();
+        };
+        let mut effects = Vec::new();
+        for (_, name) in due {
+            let Some(section) = sounds.sections.get(&name) else {
+                continue;
+            };
+            let playing = self.playing.iter().filter(|(n, _)| *n == name).count();
+            if section.sounds.is_empty() || playing >= section.limit.unwrap_or(DEFAULT_LIMIT) {
+                continue;
+            }
+            self.picks = self.picks.wrapping_add(1);
+            let sound = &section.sounds[self.picks % section.sounds.len()];
+            let Some(line) = cached_line(sounds, &sound.name) else {
+                continue;
+            };
+            let lasts = line.samples.len() as f32 / (line.channels * line.rate).max(1) as f32;
+            self.playing.push((name, clock + lasts));
+            effects.push(Effect {
+                line,
+                volume: section.volume.unwrap_or(DEFAULT_VOLUME) / 100.0,
+            });
+        }
+        effects
+    }
+}
+
+/// The sound of this name, read out of the bag the first time it is wanted.
+fn cached_line(sounds: &Sounds, name: &str) -> Option<Arc<Line>> {
+    let mut read = sounds.read.lock().ok()?;
+    if let Some(line) = read.get(name) {
+        return Some(line.clone());
+    }
+    let line = Arc::new(read_line(sounds, name)?);
+    read.insert(name.to_string(), line.clone());
+    Some(line)
 }
 
 /// The sections that might hold what these units say, the likeliest first.
@@ -131,23 +231,29 @@ fn sections_for(said: Said, speakers: &[(Role, Faction)]) -> Vec<String> {
 }
 
 /// Adds the sections of a sound table to these: for each `[name]`, the sounds its `Sounds =`
-/// lines name, past a `$` that marks speech, up to a `;` that starts a remark.
-fn read_table(text: &str, sections: &mut HashMap<String, Vec<Sound>>) {
+/// lines name, past a `$` that marks speech, and how loud and how many at once its `Volume =`
+/// and `Limit =` say, each up to a `;` that starts a remark.
+fn read_table(text: &str, sections: &mut HashMap<String, Section>) {
     let mut section: Option<String> = None;
     for line in text.split(['\r', '\n']) {
         let line = line.split(';').next().unwrap_or("").trim();
         if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
             section = Some(name.trim().to_lowercase());
-        } else if let (Some(section), Some((key, names))) = (&section, line.split_once('='))
-            && key.trim().eq_ignore_ascii_case(SOUNDS)
-        {
-            sections
-                .entry(section.clone())
-                .or_default()
-                .extend(names.split_whitespace().map(|name| Sound {
-                    name: name.trim_start_matches('$').to_lowercase(),
-                    speech: name.starts_with('$'),
-                }));
+        } else if let (Some(section), Some((key, value))) = (&section, line.split_once('=')) {
+            let key = key.trim();
+            let entry = sections.entry(section.clone()).or_default();
+            if key.eq_ignore_ascii_case(SOUNDS) {
+                entry
+                    .sounds
+                    .extend(value.split_whitespace().map(|name| Sound {
+                        name: name.trim_start_matches('$').to_lowercase(),
+                        speech: name.starts_with('$'),
+                    }));
+            } else if key.eq_ignore_ascii_case(VOLUME) {
+                entry.volume = value.trim().parse().ok();
+            } else if key.eq_ignore_ascii_case(LIMIT) {
+                entry.limit = value.trim().parse().ok();
+            }
         }
     }
 }
@@ -239,11 +345,12 @@ mod tests {
     fn a_table_lists_each_sections_sounds_past_their_marks_and_remarks() {
         let mut sections = HashMap::new();
         read_table(
-            "[LocalDefaults]\r\nType\t=\tDialog\r\n\r\n[ATKindjalSelection]\r\nSounds = $00-US02\t\t ;\"Awaiting orders.\"\r\nSounds = $00-US04\r\n;Sounds = $00-US06\r[hkcrush]\rSounds=crush_guy_1 crush_guy_2\r",
+            "[LocalDefaults]\r\nType\t=\tDialog\r\n\r\n[ATKindjalSelection]\r\nSounds = $00-US02\t\t ;\"Awaiting orders.\"\r\nSounds = $00-US04\r\n;Sounds = $00-US06\r[hkcrush]\rSounds=crush_guy_1 crush_guy_2\rLimit = 1\rVolume=70 ;loud\r",
             &mut sections,
         );
         let names = |section: &str| -> Vec<(&str, bool)> {
             sections[section]
+                .sounds
                 .iter()
                 .map(|sound| (sound.name.as_str(), sound.speech))
                 .collect()
@@ -256,7 +363,9 @@ mod tests {
             names("hkcrush"),
             [("crush_guy_1", false), ("crush_guy_2", false)]
         );
-        assert!(!sections.contains_key("localdefaults"));
+        assert!(sections["localdefaults"].sounds.is_empty());
+        assert_eq!(sections["hkcrush"].volume, Some(70.0));
+        assert_eq!(sections["hkcrush"].limit, Some(1));
     }
 
     #[test]

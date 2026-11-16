@@ -152,6 +152,12 @@ void oe_stop_sound(void);
  * it is still playing. Only the macOS backend makes a sound so far. */
 void oe_play_line(const float *samples, uint32_t frames, int32_t channels, int32_t rate);
 
+/* Plays interleaved float samples once at `volume`, 0 to 1, over everything else and over each
+ * other, as many at a time as the backend has room for: past that, in place of the one that
+ * would end soonest. Only the macOS backend makes a sound so far. */
+void oe_play_effect(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
+                    float volume);
+
 void oe_shutdown(void);
 
 #endif

@@ -845,6 +845,21 @@ pub struct PoisonZone {
     pub life: f32,
 }
 
+/// What a unit lets be heard, as it was then: its firing, or its death.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Noise {
+    pub unit: Unit,
+    pub made: Made,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Made {
+    /// With its second weapon, or second gun, if it has one.
+    Fired { second: bool },
+    /// As it was wounded, the second way of two if it has two.
+    Died { wound: Wound, second: bool },
+}
+
 /// Everything in flight or lingering on the battlefield.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Combat {
@@ -875,6 +890,8 @@ pub struct Combat {
     random: u32,
     pub strikes: Vec<Strike>,
     pub poison: Vec<PoisonZone>,
+    /// What has been heard since they were last taken.
+    pub noises: Vec<Noise>,
 }
 
 /// What dust thrown up from the land looks like: paler than the land, which would hide it.
@@ -1072,6 +1089,11 @@ impl Combat {
     }
 
     /// Lets an aircraft fall from where it was shot down, with the way it had on it.
+    /// Lets this unit be heard as it is.
+    pub fn hear(&mut self, unit: &Unit, made: Made) {
+        self.noises.push(Noise { unit: *unit, made });
+    }
+
     pub fn shoot_down(&mut self, unit: &Unit) {
         let mut random = self.random | 1;
         let along = if unit.is_under_way() {
@@ -1113,7 +1135,7 @@ impl Combat {
             unit.heading += wreck.spin * 0.4 * dt;
             let ground = terrain.height_at(unit.x, unit.z).max(0.0);
             if unit.y + unit.altitude <= ground {
-                hits.push((unit.x, ground, unit.z, unit.radius()));
+                hits.push((*unit, ground));
                 return false;
             }
             wreck.owed += SMOKE_PER_SECOND * dt;
@@ -1140,8 +1162,15 @@ impl Combat {
         let room = PARTICLES_ALIVE_AT_MOST.saturating_sub(self.particles.len());
         trail.truncate(room);
         self.particles.append(&mut trail);
-        for (x, ground, z, radius) in hits {
-            self.explode((x, ground, z), radius * 3.0);
+        for (unit, ground) in hits {
+            self.explode((unit.x, ground, unit.z), unit.radius() * 3.0);
+            self.hear(
+                &unit,
+                Made::Died {
+                    wound: unit.wound,
+                    second: false,
+                },
+            );
         }
     }
 
@@ -1202,6 +1231,13 @@ impl Combat {
         let center = unit.center();
         let size = unit.radius().max(18.1);
         self.explode_destroyed(center, size * 3.5, unit.overkill());
+        self.hear(
+            unit,
+            Made::Died {
+                wound: unit.wound,
+                second: false,
+            },
+        );
         let excess =
             (self.particles.len() + SMOKE + FIRE + SPARKS).saturating_sub(PARTICLES_ALIVE_AT_MOST);
         self.particles.drain(..excess.min(self.particles.len()));
@@ -1262,16 +1298,18 @@ impl Combat {
         if self.bodies.len() >= BODIES_AT_MOST {
             self.bodies.remove(0);
         }
+        let wound = if blast.is_some() {
+            Wound::BlownUp
+        } else {
+            unit.wound
+        };
         self.bodies.push(Body {
             unit: *unit,
-            wound: if blast.is_some() {
-                Wound::BlownUp
-            } else {
-                unit.wound
-            },
+            wound,
             second,
             age: 0.0,
         });
+        self.hear(unit, Made::Died { wound, second });
         // Our own ragdoll, flung about by its bones, before the original's deaths took its
         // place:
         // let (sin, cos) = unit.heading.sin_cos();
@@ -1863,6 +1901,11 @@ impl Combat {
     /// Fires a unit's weapon at its aim and starts its reload.
     fn shoot(&mut self, units: &mut [Unit], i: usize, aim: Aim, teams: &[usize]) {
         let weapon = units[i].weapon;
+        // A Devastator is heard as what leaves it: its plasma, its rockets, or both.
+        if units[i].role != Role::HkDevastator {
+            let second = units[i].second_tube;
+            self.hear(&units[i], Made::Fired { second });
+        }
         units[i].cooldown = weapon.cooldown();
         // Firing gives an invisible unit away for a while.
         units[i].revealed = REVEAL_SECONDS;
@@ -1953,6 +1996,9 @@ impl Combat {
                 };
                 // A Devastator's plasma cannot reach aircraft: only its rockets go after them.
                 if weapon.can_target(target.map_or(0.0, |t| units[t].height_as_target())) {
+                    if weapon == WeaponKind::Plasma {
+                        self.hear(&units[i], Made::Fired { second: false });
+                    }
                     self.missiles.push(Missile {
                         position: from,
                         direction,
@@ -1965,6 +2011,7 @@ impl Combat {
                 }
                 units[i].second_tube = !units[i].second_tube;
                 if weapon == WeaponKind::Plasma && !units[i].second_tube {
+                    self.hear(&units[i], Made::Fired { second: true });
                     self.walker_rockets.extend((0..3).map(|tube| WalkerRocket {
                         walker_id: units[i].id,
                         tube,
@@ -5407,6 +5454,48 @@ mod tests {
         assert!(
             distance(first, combat.missiles[1].position) > 36.2,
             "the other gun"
+        );
+    }
+
+    #[test]
+    fn firing_and_dying_are_heard_as_they_happen() {
+        let mut units = [
+            as_role(Role::AtInfantry, 0.0, 2715.0),
+            target_at(226.3, 2715.0),
+        ];
+        let mut combat = Combat::default();
+        combat.shoot(&mut units, 0, Aim::Unit(1), &TEAMS);
+        assert_eq!(combat.noises.len(), 1);
+        assert_eq!(combat.noises[0].unit.role, Role::AtInfantry);
+        assert_eq!(combat.noises[0].made, Made::Fired { second: false });
+        let mut burnt = as_role(Role::AtInfantry, 0.0, 2715.0);
+        burnt.wound = Wound::Burnt;
+        combat.drop_body(&burnt);
+        let body = combat.bodies[0];
+        assert_eq!(
+            combat.noises[1].made,
+            Made::Died {
+                wound: Wound::Burnt,
+                second: body.second
+            },
+            "as its body dies"
+        );
+        // A Devastator's plasma, then its rockets, are heard each as they leave.
+        let mut units = [
+            as_role(Role::HkDevastator, 0.0, 2715.0),
+            target_at(226.3, 2715.0),
+        ];
+        let mut combat = Combat::default();
+        combat.shoot(&mut units, 0, Aim::Unit(1), &TEAMS);
+        combat.shoot(&mut units, 0, Aim::Unit(1), &TEAMS);
+        let made: Vec<Made> = combat.noises.iter().map(|noise| noise.made).collect();
+        assert_eq!(
+            made,
+            [
+                Made::Fired { second: false },
+                Made::Fired { second: false },
+                Made::Fired { second: true },
+            ]
         );
     }
 

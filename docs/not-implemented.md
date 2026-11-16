@@ -15,12 +15,17 @@ we are missing is in [units.md](units.md). This list is about everything else.
   - the sandworm's mouth (`?sandymouth`, `?worm02`).
 
   Many of these have picture slides in the model that would play once they are drawn.
-- **The effects block of a model**: we read only its animation runs and its picture slides
-  (kind 7). The rest is not read. That is:
+- **The effects block of a model**: we read its animation runs, its picture slides (kind 7)
+  and its sounds (kind 9), each at its frame. The rest is not used. That is:
   - its effect definitions: `Dlight`, the smoke (`sm`), `GFlash`, `fire`, `Engine`;
-  - its other event kinds: 1–6, 8 and 9.
+  - its other event kinds: 1–6, 8, 10–12.
 
   So the model's smoke, fire and flashes don't play, and its lights cast no light.
+- **How the effects block is laid out** is only partly worked out. Ahead of the effects is a
+  table of how many start at each frame. Those it gives the first frame are not among the
+  effects that follow, and each group of effects has one more than the table counts. We
+  take that one to be at the last frame, which puts the infantry's "Crush" in "Run Over"
+  where it belongs, but it is a guess.
 - **Animation runs not played**:
   - turning on the spot ("Turn Left", "Turn Right");
   - starting and stopping ("Move Start", "Move Stop");
@@ -79,16 +84,49 @@ we are missing is in [units.md](units.md). This list is about everything else.
 
 ## Sounds
 
-- **Only the units' answers play**: what they say when selected, sent somewhere or told to
-  attack. Weapons, explosions, deaths, engines, buildings, the interface and the mentat's
-  speech are not played, though the sound tables and `AUDIO.BAG` have them.
+- **What plays**: the units' answers; every unit's firing, as its model's "Fire" run has it;
+  and every unit's death: a soldier's from the run for its wound, a machine's or an
+  aircraft's from its "Explode", and a building's or a tower's from its ruin's (`_H3`) model.
+  Only what the player sees on the screen is heard.
+- **Not played yet**, though the models and tables have them:
+  - engines and moving ("Move Start", "Move", "Move Stop": `TrikeMove`, `HKTrackStartMove`…)
+    and footsteps;
+  - deploying and packing up (`KindjalDeploy`, `MortarDeploy`, `MCVDeploy`), and the
+    Kobra's and the pop-up turret's rising;
+  - aircraft taking off, flying and landing, and the carryalls picking up;
+  - the harvester eating and unloading spice;
+  - buildings' own loops (`HKAmbient1`, `ATFactoryNoise1`), their burning once badly
+    damaged (`ATBurningLarge` in the `_H2` models), and building and construction sounds;
+  - hits and explosions where shots land (`ShellDetonation`, `RocketDetonation`), apart from
+    those in a soldier's death;
+  - the interface (`UISFX.TXT`, `InterfaceSFX.txt`) and the mentat's speech.
+- **Names that lead nowhere**: many models name sounds no loaded table has, such as
+  `ATMedium1`, `ATLarge1`, `HKLarge1`, `ORSmall1`, `GunHit`, `Leech` and `Explode2.wav`. Only
+  `ImportedSfx.txt` lists most of them, pointing at sounds that are in neither bag. `Sfx.txt`
+  doesn't include that file, so the original likely plays nothing for them either, and
+  neither do we. This leaves the carryalls, the MCV, the trike, the drone, the Eye in the
+  Sky, the dust scout and the Devastator with no death sound.
+- **Ruins missing from the disc**: the Ordos buildings, and the Harkonnen hangar, landing pad
+  and refinery, have no `_H3` model, so they go up without a sound. So does the Harkonnen
+  palace, whose ruin plays none.
+- **The tables' settings**: we read `Volume` and `Limit`, and pick among a section's sounds in
+  turn. `Range`, `Priority`, `Type`, `MinVolume`, `Delay`, `FShift`, `VShift`, `LoopLimit` and
+  `Control`'s `attack` and `decay` are not read.
+- **Where a sound is**: every sound plays at its section's volume and in the middle. It
+  doesn't fade with distance from the camera or pan to where it is.
 - **Radio static**: an aircraft's answers are laid over static in the original (its tables'
   `Control = random attack decay`). Only the speech plays.
-- **The tables' settings** (`Volume`, `FShift`, `Limit`, `Control`) are not read: a line plays
-  at its own level, and each answer cuts off the one before.
+- **Many sounds at once**: the macOS backend plays up to 16 battlefield sounds together. Past
+  that, a new one takes the place of the one that would end soonest.
+
+## Interface
+
+- **The Ordos landing pad's build button** shows our symbol and name: the disc has no picture
+  for it, and no model either.
 
 ## Other platforms
 
 - **Windows and Linux**: their backends (`shim/windows_d3d11.c`, `shim/linux_vulkan.c`) draw
   only the flat picture. They have no lit 3D world, so no model pictures, map wash, decals,
-  glows or spice on the ground. Their picture, wash and sound calls do nothing.
+  glows or spice on the ground. Their picture, wash and sound calls do nothing, the
+  battlefield's sounds too.

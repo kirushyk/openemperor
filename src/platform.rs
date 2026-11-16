@@ -345,6 +345,7 @@ unsafe extern "C" {
     fn oe_play_sound(samples: *const f32, frames: u32, channels: i32, rate: i32, looped: i32);
     fn oe_stop_sound();
     fn oe_play_line(samples: *const f32, frames: u32, channels: i32, rate: i32);
+    fn oe_play_effect(samples: *const f32, frames: u32, channels: i32, rate: i32, volume: f32);
     fn oe_shutdown();
 }
 
@@ -542,6 +543,22 @@ impl Platform {
                 frames as u32,
                 channels as i32,
                 rate as i32,
+            )
+        }
+    }
+
+    /// Plays interleaved samples once at `volume`, from 0 to 1, over everything else and over
+    /// each other.
+    pub fn play_effect(&mut self, samples: &[f32], channels: u32, rate: u32, volume: f32) {
+        let frames = samples.len() / channels.max(1) as usize;
+        // SAFETY: the samples hold `frames` frames of `channels`, and the shim copies them.
+        unsafe {
+            oe_play_effect(
+                samples.as_ptr(),
+                frames as u32,
+                channels as i32,
+                rate as i32,
+                volume,
             )
         }
     }

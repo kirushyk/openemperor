@@ -27,7 +27,7 @@ mod original;
 pub use original::names_icon;
 pub use original::{
     PICTURE_SIDE, icon as original_icon, load as load_original_models, muzzles as original_muzzles,
-    pictures as original_pictures, wash as original_wash,
+    noise_sounds as original_noise_sounds, pictures as original_pictures, wash as original_wash,
 };
 
 type Color = [f32; 4];

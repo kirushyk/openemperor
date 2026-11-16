@@ -8,7 +8,7 @@ use crate::platform::{Event, Key, Modifier};
 use crate::strategy::Strategy;
 use crate::units::{self, Role, Unit, UnitKind};
 use crate::weapons::OVERKILL_BLOWS_APART;
-use crate::weapons::{Combat, Superweapon};
+use crate::weapons::{Combat, Made, Noise, Superweapon};
 
 pub const INTRO_SECONDS: f32 = 3.0;
 pub const LOADING_SECONDS: f32 = 2.0;
@@ -2918,6 +2918,11 @@ impl Game {
             } else {
                 self.combat
                     .explode_destroyed(unit.center(), unit.radius() * 2.0, overkill);
+                let made = Made::Died {
+                    wound: unit.wound,
+                    second: false,
+                };
+                self.combat.hear(unit, made);
             }
             // Whoever it has on board dies with it.
             let aboard = unit.passengers.iter().flatten().count() as i32;
@@ -3498,6 +3503,23 @@ impl Game {
     }
 
     /// What the player's units have answered since this was last asked, and who answered.
+    /// What has been heard on the battlefield since this was last asked, of what the player
+    /// sees on the screen: units firing and dying.
+    pub fn take_noises(&mut self) -> Vec<Noise> {
+        let noises = std::mem::take(&mut self.combat.noises);
+        let view = self.view();
+        noises
+            .into_iter()
+            .filter(|noise| {
+                let (x, y, z) = noise.unit.center();
+                self.sight_at(x, z) == Sight::Visible
+                    && view.project(x, y, z).is_some_and(|(px, py)| {
+                        (0.0..=self.width).contains(&px) && (0.0..=self.height).contains(&py)
+                    })
+            })
+            .collect()
+    }
+
     pub fn take_reply(&mut self) -> Option<(Said, Vec<(Role, Faction)>)> {
         self.reply.take()
     }

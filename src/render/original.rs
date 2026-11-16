@@ -11,7 +11,7 @@ use crate::fog::Fog;
 use crate::game::Faction;
 use crate::platform::{NO_PICTURE, WorldVertex};
 use crate::units::{Harvest, Role, Unit, UnitKind, Wound};
-use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, REVEAL_SECONDS, Tornado};
+use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, TAU};
@@ -401,6 +401,10 @@ const BUILDINGS: &str = "buildings\\";
 /// as it is damaged and then badly.
 const WHOLE: &str = "_h0.";
 const DAMAGED: [&str; 2] = ["_h1.", "_h2."];
+/// What the name of its model as it is destroyed ends with.
+const DESTROYED: &str = "_h3.";
+/// The run of a model's animation as it is destroyed.
+const EXPLODE: &str = "Explode";
 /// How much of its health a building has left when it shows each of its damaged models. The
 /// disc does not say; these are the shares Westwood's games turn a health bar yellow and red at.
 const DAMAGED_BELOW: [f32; 2] = [0.5, 0.25];
@@ -442,6 +446,9 @@ struct Original {
     /// A building's or a tower's models as it is damaged, then badly, as the disc has them,
     /// by the name of its whole one.
     damaged: HashMap<&'static str, [Option<Shape>; 2]>,
+    /// What a building or a tower sounds like as it is destroyed, by the name of its whole
+    /// model: what its ruin's model plays as it goes up.
+    ruins: HashMap<&'static str, Vec<(f32, String)>>,
     /// Which of the pictures each house's logo is, by its name.
     logos: HashMap<&'static str, usize>,
     /// Which of the pictures are the frames of the shimmer an invisible unit shows its own
@@ -596,6 +603,8 @@ struct Shape {
     sequences: Vec<Sequence>,
     /// The parts whose pictures slide over them, by name.
     slides: Vec<Slide>,
+    /// The sounds its animation plays, each at its frame, by its section in the sound tables.
+    sounds: Vec<(usize, String)>,
 }
 
 /// A part of a model: its faces, the part it sits in, where it is in that one, and whether it
@@ -924,17 +933,33 @@ fn read_shapes(disc: &Path) -> Option<Original> {
     let shapes: HashMap<_, _> = names
         .filter_map(|name| Some((name, read_shape(&archive, name, &mut pictures)?)))
         .collect();
-    let damaged = shapes
+    let variant = |name: &str, of: &str| {
+        let lower = name.to_lowercase();
+        let at = lower.rfind(WHOLE)?;
+        Some(format!(
+            "{}{of}{}",
+            &lower[..at],
+            &lower[at + WHOLE.len()..]
+        ))
+    };
+    let buildings: Vec<&'static str> = shapes
         .keys()
+        .copied()
         .filter(|name| name.to_lowercase().starts_with(BUILDINGS))
+        .collect();
+    let damaged = buildings
+        .iter()
         .map(|&name| {
-            let variant = |of: &str| {
-                let lower = name.to_lowercase();
-                let at = lower.rfind(WHOLE)?;
-                let variant = format!("{}{of}{}", &lower[..at], &lower[at + WHOLE.len()..]);
-                read_shape(&archive, &variant, &mut pictures)
-            };
-            (name, DAMAGED.map(variant))
+            let shape = |of: &str| read_shape(&archive, &variant(name, of)?, &mut pictures);
+            (name, DAMAGED.map(shape))
+        })
+        .collect();
+    let ruins = buildings
+        .iter()
+        .filter_map(|&name| {
+            let model = xbf::parse(&archive.read(&variant(name, DESTROYED)?)?)?;
+            let explode = model.sequences.iter().find(|s| s.name == EXPLODE)?;
+            Some((name, sounds_in(&model.sounds, &explode.ranges)))
         })
         .collect();
     let mut given: Vec<(usize, Vec<u8>)> = pictures
@@ -994,6 +1019,7 @@ fn read_shapes(disc: &Path) -> Option<Original> {
     (!shapes.is_empty()).then_some(Original {
         shapes,
         damaged,
+        ruins,
         logos,
         stealth,
         pictures,
@@ -1079,6 +1105,7 @@ fn read_shape(
     let mut shape = Shape {
         sequences: model.sequences,
         slides: model.slides,
+        sounds: model.sounds,
         ..Shape::default()
     };
     for object in &model.objects {
@@ -1319,17 +1346,7 @@ fn paint(face: &xbf::Face, picture: Option<&Picture>) -> Option<([f32; 3], f32)>
 /// The model the original has for the unit, if it has been read: a building's or a tower's
 /// as damaged as it is.
 fn shape_of(unit: &Unit) -> Option<&'static Shape> {
-    let name = if unit.role == Role::Mcv && unit.deployed {
-        CONSTRUCTION_YARDS
-            .iter()
-            .find(|&&(house, _)| house == unit.house)?
-            .1
-    } else {
-        MODELS
-            .iter()
-            .find(|&&(role, house, _)| role == unit.role && house.is_none_or(|h| h == unit.house))?
-            .2
-    };
+    let name = model_name(unit)?;
     let original = ORIGINAL.get()?;
     let share = unit.health / unit.max_health();
     let damaged = original
@@ -1337,6 +1354,87 @@ fn shape_of(unit: &Unit) -> Option<&'static Shape> {
         .get(name)
         .and_then(|shapes| as_damaged(share, shapes));
     damaged.or_else(|| original.shapes.get(name))
+}
+
+/// The name of the original's whole model of a unit.
+fn model_name(unit: &Unit) -> Option<&'static str> {
+    if unit.role == Role::Mcv && unit.deployed {
+        CONSTRUCTION_YARDS
+            .iter()
+            .find(|&&(house, _)| house == unit.house)
+            .map(|&(_, name)| name)
+    } else {
+        MODELS
+            .iter()
+            .find(|&&(role, house, _)| role == unit.role && house.is_none_or(|h| h == unit.house))
+            .map(|&(_, _, name)| name)
+    }
+}
+
+/// The sounds a run of a model's animation plays, played from its start: each by its section
+/// in the sound tables, and how many seconds into the run it is.
+fn sounds_in(sounds: &[(usize, String)], ranges: &[(usize, usize)]) -> Vec<(f32, String)> {
+    let mut into = 0;
+    let mut heard = Vec::new();
+    for &(first, last) in ranges {
+        heard.extend(
+            sounds
+                .iter()
+                .filter(|&&(frame, _)| (first..=last).contains(&frame))
+                .map(|(frame, name)| {
+                    (
+                        (into + frame - first) as f32 / FRAMES_PER_SECOND,
+                        name.clone(),
+                    )
+                }),
+        );
+        into += length((first, last));
+    }
+    heard
+}
+
+/// What the original's model of a unit plays as it is heard: the run it fires with, as
+/// `frame` picks it, or the run it dies with, a soldier's as it was wounded, and a building's
+/// or a tower's as its ruin goes up. Each sound, by its section in the sound tables, comes
+/// with how many seconds after it is heard it plays.
+pub fn noise_sounds(noise: &Noise) -> Vec<(f32, String)> {
+    let unit = &noise.unit;
+    let Some((original, name)) = ORIGINAL.get().zip(model_name(unit)) else {
+        return Vec::new();
+    };
+    if let Made::Died { .. } = noise.made
+        && matches!(unit.kind, UnitKind::Building | UnitKind::Tower)
+    {
+        return original.ruins.get(name).cloned().unwrap_or_default();
+    }
+    let Some(shape) = original.shapes.get(name) else {
+        return Vec::new();
+    };
+    let find = |names: &[&str]| {
+        names.iter().find_map(|&name| {
+            shape
+                .sequences
+                .iter()
+                .find(|sequence| sequence.name == name)
+                .map(|sequence| sequence.ranges.as_slice())
+        })
+    };
+    let run = match noise.made {
+        Made::Fired { .. } if unit.deployed => find(&["Deployed Fire", "Fire 1"]),
+        Made::Fired { second: true } => find(&["Fire 1", "Fire 0"]),
+        Made::Fired { second: false } => find(&["Fire 0"]),
+        Made::Died { wound, second } if unit.kind == UnitKind::Infantry => death_run(
+            shape,
+            &Body {
+                unit: *unit,
+                wound,
+                second,
+                age: 0.0,
+            },
+        ),
+        Made::Died { .. } => find(&[EXPLODE]),
+    };
+    run.map_or_else(Vec::new, |ranges| sounds_in(&shape.sounds, ranges))
 }
 
 /// Of a building's damaged models, the one for this share of its health left: the worst it
@@ -2039,6 +2137,19 @@ mod tests {
         assert_eq!(tornado_frame(&shape, 10.0, 20.0, 2.0), 200);
         assert_eq!(tornado_frame(&shape, 28.0, 2.0, 0.0), 400);
         assert_eq!(tornado_frame(&shape, 30.0, 0.0, 0.0), 449);
+    }
+
+    #[test]
+    fn a_run_plays_the_sounds_in_its_ranges_as_far_into_it_as_they_are() {
+        let sounds = [
+            (5, "before".to_string()),
+            (10, "first".to_string()),
+            (14, "second".to_string()),
+            (40, "third".to_string()),
+        ];
+        let heard = sounds_in(&sounds, &[(10, 20), (40, 45)]);
+        let at = |frames: usize, name: &str| (frames as f32 / FRAMES_PER_SECOND, name.to_string());
+        assert_eq!(heard, [at(0, "first"), at(4, "second"), at(10, "third")]);
     }
 
     #[test]

@@ -123,14 +123,29 @@ fn main() {
     // with, once they have been.
     #[cfg(target_os = "macos")]
     let mut pictures_given = None;
+    // The battlefield's sounds of firing and dying, waiting their turn and playing.
+    #[cfg(target_os = "macos")]
+    let mut effects = sounds::Effects::default();
     let mut last = Instant::now();
     while !game.quit {
         while let Some(event) = platform.poll_event() {
             game.handle(event);
         }
         let now = Instant::now();
-        game.update((now - last).as_secs_f32());
+        let seconds = (now - last).as_secs_f32();
+        game.update(seconds);
         last = now;
+        // What is heard on the battlefield, as the disc's models play it.
+        #[cfg(target_os = "macos")]
+        {
+            for noise in game.take_noises() {
+                effects.hear(render::original_noise_sounds(&noise));
+            }
+            for effect in effects.due(seconds) {
+                let line = &effect.line;
+                platform.play_effect(&line.samples, line.channels, line.rate, effect.volume);
+            }
+        }
         // What the player's units answer is said over the music.
         #[cfg(target_os = "macos")]
         if let Some((said, speakers)) = game.take_reply() {

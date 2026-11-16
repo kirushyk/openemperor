@@ -7,6 +7,9 @@ pub struct Model {
     pub objects: Vec<Object>,
     pub sequences: Vec<Sequence>,
     pub slides: Vec<Slide>,
+    /// The sounds its animation plays, each at its frame, by the name of the section of the
+    /// sound tables that lists it.
+    pub sounds: Vec<(usize, String)>,
 }
 
 /// A part whose picture slides over it as the model's animation plays, such as a belt or a
@@ -143,7 +146,7 @@ pub fn parse(data: &[u8]) -> Option<Model> {
     }
     let effects = reader.count()?;
     let effects = reader.bytes(effects)?;
-    let (sequences, slides) = (sequences(effects), slides(effects));
+    let (sequences, slides, sounds) = (sequences(effects), slides(effects), sounds(effects));
     let names = reader.count()?;
     // Some names have a 2 in front of them; empty ones stand between the rest.
     let textures = reader
@@ -166,6 +169,7 @@ pub fn parse(data: &[u8]) -> Option<Model> {
         objects,
         sequences,
         slides,
+        sounds,
     })
 }
 
@@ -225,10 +229,146 @@ const PADDING: [u8; 3] = [0xcc; 3];
 /// list starts is not said: it is the first place after a string's end that all the rest reads
 /// as one.
 fn sequences(effects: &[u8]) -> Vec<Sequence> {
+    sequences_at(effects)
+        .map(|(_, list)| list)
+        .unwrap_or_default()
+}
+
+/// Where the sequences start in a model's effects, and the sequences.
+fn sequences_at(effects: &[u8]) -> Option<(usize, Vec<Sequence>)> {
     (1..effects.len())
         .filter(|&at| effects[at - 1] == 0 && effects[at].is_ascii_graphic())
-        .find_map(|at| sequence_list(effects, at))
-        .unwrap_or_default()
+        .find_map(|at| Some((at, sequence_list(effects, at)?)))
+}
+
+/// What starts each of the effects a model's animation sets off as it goes: its kind, a
+/// hundred, then a bit for each thing it carries, which follow in turn.
+const EFFECT_HEAD: usize = 12;
+const EFFECT_MARK: i32 = 100;
+/// The kind of effect that plays a sound.
+const SOUND: i32 = 9;
+/// The bits for the names an effect carries, and for its numbers with how many bytes each is.
+const NAMED: [i32; 3] = [0x02, 0x04, 0x10];
+const NUMBERED: [(i32, usize); 5] = [(0x08, 8), (0x20, 4), (0x40, 8), (0x80, 96), (0x100, 12)];
+/// How far ahead of the effects their table of how many there are at each frame may end, and
+/// the most frames it has, and effects at a frame.
+const TABLE_GAP: usize = 512;
+const MOST_FRAMES: usize = 6000;
+const MOST_AT_A_FRAME: u32 = 200;
+/// The most groups the effects are told in.
+const MOST_GROUPS: u32 = 64;
+
+/// The effects from `at` on, each its kind and the first name it carries, if they run right up
+/// to `end`.
+fn effect_list(effects: &[u8], mut at: usize, end: usize) -> Option<Vec<(i32, Option<String>)>> {
+    let word = |at: usize| {
+        Some(i32::from_le_bytes(
+            effects.get(at..at + 4)?.try_into().ok()?,
+        ))
+    };
+    let mut list = Vec::new();
+    while at < end {
+        let (kind, mark, carries) = (word(at)?, word(at + 4)?, word(at + 8)?);
+        let known = NAMED.iter().chain(NUMBERED.iter().map(|(bit, _)| bit));
+        if mark != EFFECT_MARK
+            || carries <= 0
+            || carries & !known.fold(0, |all, bit| all | bit) != 0
+        {
+            return None;
+        }
+        at += EFFECT_HEAD;
+        let mut name = None;
+        for _ in NAMED.iter().filter(|&&bit| carries & bit != 0) {
+            let length = effects.get(at..end)?.iter().position(|&byte| byte == 0)?;
+            name.get_or_insert_with(|| {
+                effects[at..at + length]
+                    .iter()
+                    .map(|&b| char::from(b))
+                    .collect()
+            });
+            at += length + 1;
+        }
+        at += NUMBERED
+            .iter()
+            .filter(|&&(bit, _)| carries & bit != 0)
+            .map(|&(_, bytes)| bytes)
+            .sum::<usize>();
+        list.push((kind, name));
+    }
+    (at == end).then_some(list)
+}
+
+/// The sounds a model's animation plays, each at its frame. Its effects run up to its
+/// sequences, after their groups' count and a name, and ahead of those a table of how many
+/// effects start at each frame, one after another. Those at its first frame are told apart
+/// from the rest, and each group has one more than the table says, at its end.
+fn sounds(effects: &[u8]) -> Vec<(usize, String)> {
+    let Some((end, _)) = sequences_at(effects) else {
+        return Vec::new();
+    };
+    let word = |at: usize| {
+        effects
+            .get(at..at + 4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+    };
+    let Some((start, list)) = (0..end)
+        .filter(|&at| word(at + 4) == Some(EFFECT_MARK as u32))
+        .find_map(|at| Some((at, effect_list(effects, at, end)?)))
+    else {
+        return Vec::new();
+    };
+    // The table: its length, then its counts, ending ahead of the groups' count and a name
+    // that runs up to the effects.
+    let named = |from: usize| {
+        start > 0
+            && effects[start - 1] == 0
+            && effects.get(from..start - 1).is_some_and(|name| {
+                name.iter()
+                    .all(|&byte| byte == b' ' || byte.is_ascii_graphic())
+            })
+    };
+    // It is the one whose effects past the first frame, and one more for each group, are all
+    // the effects there are.
+    let counts = (start.saturating_sub(4 * MOST_FRAMES)..start.saturating_sub(4))
+        .filter_map(|at| {
+            let frames = word(at)? as usize;
+            let ends = at + 4 + 4 * frames;
+            if !(1..MOST_FRAMES).contains(&frames) || ends > start || start - ends > TABLE_GAP {
+                return None;
+            }
+            let groups = word(ends)?;
+            if groups > MOST_GROUPS || !named(ends + 4) {
+                return None;
+            }
+            let counts: Vec<u32> = (0..frames)
+                .map(|n| word(at + 4 + 4 * n))
+                .collect::<Option<_>>()?;
+            let told = counts[1..]
+                .iter()
+                .map(|&count| count as usize)
+                .sum::<usize>();
+            let fits = counts.iter().all(|&count| count <= MOST_AT_A_FRAME)
+                && told + groups as usize == list.len();
+            fits.then_some(counts)
+        })
+        .last();
+    let Some(counts) = counts else {
+        return Vec::new();
+    };
+    let frames: Vec<usize> = counts
+        .iter()
+        .enumerate()
+        .skip(1)
+        .flat_map(|(frame, &count)| std::iter::repeat_n(frame, count as usize))
+        .collect();
+    list.into_iter()
+        .enumerate()
+        .filter(|(_, (kind, _))| *kind == SOUND)
+        .filter_map(|(n, (_, name))| {
+            let frame = frames.get(n).or(frames.last()).copied().unwrap_or(0);
+            Some((frame, name?))
+        })
+        .collect()
 }
 
 /// The list read from `at` on, each a name, a number, and its ranges, as long as the next does
@@ -826,6 +966,49 @@ mod tests {
             ]
         );
         assert_eq!(sequences(b"FXDataHeader\0\0\0\0\0"), []);
+    }
+
+    #[test]
+    fn sounds_play_at_the_frames_the_table_ahead_of_the_effects_gives_them() {
+        let effect = |kind: i32, carries: i32, names: &[&str]| {
+            let mut bytes = [kind, EFFECT_MARK, carries].map(i32::to_le_bytes).concat();
+            for name in names {
+                bytes.extend(name.as_bytes());
+                bytes.push(0);
+            }
+            bytes
+        };
+        let mut effects = b"FXDataHeader\0".to_vec();
+        // Four frames: one effect at the first, told apart, one at the second, three at the last,
+        // and the group's own one more.
+        effects.extend([4u32, 1, 1, 0, 3].map(u32::to_le_bytes).concat());
+        effects.extend(1u32.to_le_bytes());
+        effects.extend(b"MASTER\0");
+        effects.extend(effect(SOUND, 0x04, &["ATLightMG-Shortburst"]));
+        effects.extend(effect(3, 0x06, &["5E2D5BE0#29", "gun"]));
+        effects.extend(effect(11, 0x40, &[]));
+        effects.extend([0; 8]);
+        effects.extend(effect(SOUND, 0x04, &["ATNormalManDying"]));
+        effects.extend(effect(SOUND, 0x04, &["ATCrush"]));
+        let mut entry = b"Fire 0\0".to_vec();
+        entry.resize(SEQUENCE_NAME, 0xcc);
+        entry.extend(1i32.to_le_bytes());
+        entry.extend([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        entry.extend(PADDING);
+        entry.extend([1u32, 3].map(u32::to_le_bytes).concat());
+        effects.extend(entry);
+        effects.extend([0; 4]);
+        let found = sounds(&effects);
+        let named = |frame: usize, name: &str| (frame, name.to_string());
+        assert_eq!(
+            found,
+            [
+                named(1, "ATLightMG-Shortburst"),
+                named(3, "ATNormalManDying"),
+                named(3, "ATCrush"),
+            ]
+        );
+        assert!(sounds(b"FXDataHeader\0\0\0\0\0").is_empty());
     }
 
     #[test]

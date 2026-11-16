@@ -1191,6 +1191,10 @@ typedef struct {
 
 /* The music, and the lines units speak over it. */
 static Channel g_music, g_line;
+/* The battlefield's sounds, played over each other, and when each ends. */
+enum { EFFECTS = 16 };
+static Channel g_effects[EFFECTS];
+static double g_effect_ends[EFFECTS];
 
 /* Gives the queue the next stretch of samples in this buffer, or lets it run dry at the end. */
 static void queue_samples(void *user, AudioQueueRef queue, AudioQueueBufferRef buffer) {
@@ -1265,9 +1269,26 @@ void oe_play_line(const float *samples, uint32_t frames, int32_t channels, int32
     play_channel(&g_line, samples, frames, channels, rate, 0);
 }
 
+void oe_play_effect(const float *samples, uint32_t frames, int32_t channels, int32_t rate,
+                    float volume) {
+    if (!frames || channels <= 0 || rate <= 0) return;
+    double now = CACurrentMediaTime();
+    /* One that has ended, or else the one that ends soonest. */
+    int pick = 0;
+    for (int i = 1; i < EFFECTS; i++) {
+        if (g_effect_ends[i] < g_effect_ends[pick]) pick = i;
+    }
+    play_channel(&g_effects[pick], samples, frames, channels, rate, 0);
+    if (g_effects[pick].queue) {
+        AudioQueueSetParameter(g_effects[pick].queue, kAudioQueueParam_Volume, volume);
+    }
+    g_effect_ends[pick] = now + (double)frames / rate;
+}
+
 void oe_shutdown(void) {
     oe_stop_sound();
     stop_channel(&g_line);
+    for (int i = 0; i < EFFECTS; i++) stop_channel(&g_effects[i]);
     set_captured(NO);
     [g_window close];
 }

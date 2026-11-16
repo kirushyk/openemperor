@@ -385,6 +385,26 @@ const ICONS: &[(Role, Option<Faction>, &str, &str)] = {
             "OR_popupturret",
             "grey_OR_popupturret",
         ),
+        (Role::TlFleshVat, None, "TL_FleshVat", "grey_TL_FleshVat"),
+        (Role::IxResCentre, None, "IX_ResCentre", "grey_IX_ResCentre"),
+        (Role::GuPalace, None, "GU_Palace", "Grey_Gu_Palace"),
+        (Role::ImBarracks, None, "IM_Barracks", "Grey_IM_Barracks"),
+        (Role::FrCamp, None, "FR_Camp", "Grey_FR_Camp"),
+        (
+            Role::TlContaminator,
+            None,
+            "TL_Contaminator",
+            "grey_TL_Contaminator",
+        ),
+        (
+            Role::IxInfiltrator,
+            None,
+            "IX_Infiltrator",
+            "grey_IX_Infiltrator",
+        ),
+        (Role::GuMaker, None, "GU_Maker", "grey_GU_Maker"),
+        (Role::ImSardaukar, None, "IM_Sardaukar", "grey_IM_Sardaukar"),
+        (Role::FrFremen, None, "FR_Fremen", "Grey_FR_Fremen"),
     ]
 };
 

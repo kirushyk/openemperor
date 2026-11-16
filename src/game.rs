@@ -5947,6 +5947,17 @@ mod tests {
                     );
                 }
             }
+            for ally in [
+                Ally::Tleilaxu,
+                Ally::Ix,
+                Ally::Guild,
+                Ally::Fremen,
+                Ally::Sardaukar,
+            ] {
+                for role in [ally.main_building(), ally.unit()].into_iter().flatten() {
+                    assert!(crate::render::names_icon(role, house), "{house:?} {role:?}");
+                }
+            }
         }
     }
 
@@ -12047,6 +12058,82 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A spot on screen where a building of this role can go up for the player now.
+    fn placeable_on_screen(game: &Game, role: Role) -> Option<(f32, f32)> {
+        let terrain = battlefield::terrain(game.battle_map);
+        (1..100)
+            .flat_map(|i| (1..60).map(move |j| (i as f32 * W / 100.0, j as f32 * H / 60.0)))
+            .filter(|&(x, y)| !hud::covers(x, y, W, H))
+            .find(|&(x, y)| {
+                game.view().land_at(terrain, x, y).is_some_and(|at| {
+                    let plot = role.plot_facing(game.faction_of(0), at, game.placing_facing);
+                    units::can_place_building(&game.units, terrain, plot)
+                        && units::is_near_building_of(&game.units, plot, 0)
+                })
+            })
+    }
+
+    /// Builds one from the Buildings menu as the player does: clicks it, waits, clicks it
+    /// again and puts it down on screen.
+    fn build_and_place(game: &mut Game, role: Role) {
+        let cell = cell_of(game, BuildTab::Buildings, role);
+        click_hud(game, Action::BuildTab(BuildTab::Buildings));
+        click_hud(game, Action::BuildCell(cell));
+        let ticks = ((role.build_seconds() + 1.0) * 10.0) as usize;
+        for _ in 0..ticks {
+            game.update(0.1);
+        }
+        assert_eq!(game.site, Site::Ready(role));
+        click_hud(game, Action::BuildCell(cell));
+        let (x, y) = placeable_on_screen(game, role).unwrap_or_else(|| panic!("room for {role:?}"));
+        game.handle(Event::MouseMove(x, y));
+        click_at(game, x, y);
+        let built = game.units.last().unwrap();
+        assert_eq!((built.role, built.owner), (role, 0));
+        assert_eq!(game.site, Site::Idle);
+    }
+
+    #[test]
+    fn allies_picked_in_the_setup_have_their_buildings_built_once_a_factory_and_barracks_stand() {
+        let mut game = in_setup();
+        click_widget(&mut game, Action::CycleAlly(0));
+        click_widget(&mut game, Action::CycleAlly(1));
+        click_widget(&mut game, Action::StartBattle);
+        game.update(LOADING_SECONDS);
+        assert_eq!(game.player_allies(), [Ally::Tleilaxu, Ally::Ix]);
+        game.units[0].selected = true;
+        game.toggle_deploy();
+        for _ in 0..200 {
+            game.update(0.1);
+        }
+        let mcv = game.units[0];
+        assert!(mcv.deployed);
+        game.camera.look_at(mcv.x, mcv.z);
+        game.update_fog();
+        let menu = |game: &Game| game.menu(BuildTab::Buildings);
+        assert!(
+            !menu(&game).contains(&Entry::Make(Role::TlFleshVat)),
+            "not before a factory"
+        );
+        build_and_place(&mut game, Role::Barracks);
+        build_and_place(&mut game, Role::Factory);
+        assert!(
+            !menu(&game).contains(&Entry::Make(Role::TlFleshVat)),
+            "not while the factory is still going up"
+        );
+        while game
+            .units
+            .iter()
+            .any(|u| u.owner == 0 && u.is_under_construction())
+        {
+            game.update(0.1);
+        }
+        for role in [Role::TlFleshVat, Role::IxResCentre] {
+            assert!(menu(&game).contains(&Entry::Make(role)), "{role:?}");
+            build_and_place(&mut game, role);
         }
     }
 }

@@ -119,6 +119,21 @@ we are missing is in [units.md](units.md). This list is about everything else.
 - **Many sounds at once**: the macOS backend plays up to 16 battlefield sounds together. Past
   that, a new one takes the place of the one that would end soonest.
 
+## Camera
+
+- **What follows the original**: its `CAMERA.INI`. The camera stands 1290 from what it looks
+  at, divided by its zoom, which goes from 0.5 out to 1.25 in. It looks 50° down, turned 45°,
+  and a battle opens from 0.35 out, turning 45° on its way in over 4 seconds.
+- **Not known yet**:
+  - its field of view: ours is about 40° from top to bottom;
+  - the keys the original turns and resets the camera with. Its commands are Rotate Left,
+    Rotate Right and Reset Camera, but their default keys are not in a text file. We use `,`
+    and `.` to turn by 15° and `/` to reset, and two fingers turning on a trackpad;
+  - how far a wheel notch zooms. Ours moves a twentieth of the way;
+  - `MinTilt`, `MaxTilt` and the inertia settings. With `InertiaAngle 0` the inertia does
+    nothing, and nothing else is known to change the tilt.
+- **The minimap** stays as it is when the camera turns.
+
 ## Interface
 
 - **Build menus** list what can be made now, packed from the first cell in the order of the

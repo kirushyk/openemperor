@@ -25,8 +25,11 @@ enum {
     OE_EVENT_WHEEL = 8,      /* y = notches turned, positive away from the player */
     OE_EVENT_RIGHT_DOWN = 9, /* right button; on a Mac trackpad, a two-finger click or tap */
     OE_EVENT_CONTROL = 10,   /* a = 1 when a Control key is pressed, 0 when it is let go */
-    OE_EVENT_NUMBER_KEY = 11 /* a = 1 to 9, by place on the number row; b = OE_HELD_*.
-                              * Comes as well as the OE_EVENT_KEY_DOWN for that key. */
+    OE_EVENT_NUMBER_KEY = 11, /* a = 1 to 9, by place on the number row; b = OE_HELD_*.
+                               * Comes as well as the OE_EVENT_KEY_DOWN for that key. */
+    OE_EVENT_MAGNIFY = 12,    /* y = how much bigger a trackpad pinch makes things: 0.1 for a
+                               * tenth bigger, below 0 for smaller */
+    OE_EVENT_ROTATE = 13      /* y = degrees fingers turn on a trackpad, anticlockwise */
 };
 
 enum {

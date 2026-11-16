@@ -5567,16 +5567,11 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
     }
 }
 
-/// Whether a point on the ground is inside a rectangle lined up with the screen: (left, top,
-/// right, bottom) in `battlefield::across_and_down`.
-pub fn in_rectangle((west, north, east, south): (f32, f32, f32, f32), x: f32, z: f32) -> bool {
-    let (x, z) = crate::battlefield::across_and_down(x, z);
+/// Whether a point on the ground, as far across the screen and down it as
+/// `Camera::across_and_down` has it, is inside a rectangle lined up with the screen: (left,
+/// top, right, bottom).
+pub fn in_rectangle((west, north, east, south): (f32, f32, f32, f32), (x, z): (f32, f32)) -> bool {
     x >= west && x <= east && z >= north && z <= south
-}
-
-/// Whether a unit stands inside a rectangle on the ground.
-pub fn in_selection(rectangle: (f32, f32, f32, f32), unit: &Unit) -> bool {
-    in_rectangle(rectangle, unit.x, unit.z)
 }
 
 fn scramble(mut value: u32) -> u32 {
@@ -9337,6 +9332,8 @@ mod tests {
             let (x, z) = from_across_and_down(across + right, down + lower);
             Unit { x, z, ..unit }
         };
+        let in_selection =
+            |rectangle, unit: &Unit| in_rectangle(rectangle, across_and_down(unit.x, unit.z));
         assert!(in_selection(rectangle, &unit));
         assert!(in_selection(rectangle, &at(361.9, -452.4)), "on the border");
         assert!(!in_selection(rectangle, &at(-140.3, 0.0)), "left of it");
@@ -9345,16 +9342,6 @@ mod tests {
         assert!(
             !in_selection(rectangle, &at(MAP_MIDDLE_X, 457.0)),
             "below it"
-        );
-    }
-
-    #[test]
-    fn a_units_height_does_not_change_whether_it_is_selected() {
-        let rectangle = (MAP_MIDDLE_X - 135.8, 2263.0, 362.0, 3168.0);
-        let low = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Infantry);
-        assert_eq!(
-            in_selection(rectangle, &low),
-            in_selection(rectangle, &Unit { y: 31.68, ..low })
         );
     }
 

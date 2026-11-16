@@ -743,6 +743,14 @@ static int32_t translate(NSEvent *e, OeEvent *out) {
             out->y = notches;
             return 1;
         }
+        case NSEventTypeMagnify:
+            out->kind = OE_EVENT_MAGNIFY;
+            out->y = (float)e.magnification;
+            return 1;
+        case NSEventTypeRotate:
+            out->kind = OE_EVENT_ROTATE;
+            out->y = e.rotation;
+            return 1;
         case NSEventTypeRightMouseDown:
             out->kind = OE_EVENT_RIGHT_DOWN;
             return 1;

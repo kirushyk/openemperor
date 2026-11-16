@@ -13,7 +13,7 @@ use crate::fog::Fog;
 use crate::platform::Material;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::f32::consts::FRAC_1_SQRT_2;
+use std::f32::consts::{FRAC_1_SQRT_2, TAU};
 use std::sync::OnceLock;
 
 /// The middle of the biggest map, which tests are mostly set on.
@@ -43,23 +43,26 @@ pub const DAYLIGHT: Light = Light {
 /// The sand's color, for the dust thrown up from it.
 pub const SAND: [f32; 3] = [0.78, 0.64, 0.40];
 
-/// Which ways on the ground the screen's right and its bottom are, as (x, z): the map's columns
-/// run down to the right and its rows down to the left.
-const SCREEN_RIGHT: (f32, f32) = (FRAC_1_SQRT_2, -FRAC_1_SQRT_2);
-const SCREEN_DOWN: (f32, f32) = (FRAC_1_SQRT_2, FRAC_1_SQRT_2);
-
-/// Zooming moves the camera between two fixed positions and narrows the field of view at
-/// the same time, in one movement. Top: high and looking almost straight down.
-const TOP_HEIGHT: f32 = 1358.0;
-const TOP_PITCH_DEGREES: f32 = 75.0;
-/// Bottom: low and looking almost forward, 30 degrees down from the ground.
-const BOTTOM_HEIGHT: f32 = 362.0;
-const BOTTOM_PITCH_DEGREES: f32 = 30.0;
-/// How much the field of view narrows at the very end of the zoom.
-const MAX_LENS: f32 = 2.0;
+/// The original's camera, as its `CAMERA.INI` has it. It stands this far from what it looks
+/// at, divided by its zoom, which goes from far out to near in between these two. It looks
+/// down at the ground this many degrees, and turned this far: at that turn the map's columns
+/// run down the screen to the right and its rows down to the left.
+const DISTANCE: f32 = 1290.0;
+const MIN_ZOOM: f32 = 0.5;
+const MAX_ZOOM: f32 = 1.25;
+const DEFAULT_ZOOM: f32 = 1.0;
+const TILT_DEGREES: f32 = 50.0;
+const DEFAULT_ANGLE_DEGREES: f32 = 45.0;
+/// How a battle opens in the original: from this far out, turning through this many degrees
+/// to the usual view in this many seconds.
+const START_ZOOM: f32 = 0.35;
+const START_SPIN_DEGREES: f32 = 45.0;
+const START_SECONDS: f32 = 4.0;
 /// Share of the whole zoom per wheel notch.
 const ZOOM_PER_NOTCH: f32 = 0.05;
-/// How quickly the camera catches up with the wheel; higher is snappier.
+/// How far one press of a key turns the camera.
+const TURN_PER_PRESS_DEGREES: f32 = 15.0;
+/// How quickly the camera catches up with the wheel and the keys; higher is snappier.
 const ZOOM_EASING: f32 = 10.0;
 /// Vertical field of view, as the tangent of half its angle (about 40 degrees in total).
 const HALF_FOV_TAN: f32 = 0.364;
@@ -849,19 +852,37 @@ fn depth_terms() -> (f32, f32) {
     (FAR / (FAR - NEAR), -NEAR * FAR / (FAR - NEAR))
 }
 
-/// A point on the ground as how far across the screen and down it, the camera's turn taken off.
-pub fn across_and_down(x: f32, z: f32) -> (f32, f32) {
-    (
-        x * SCREEN_RIGHT.0 + z * SCREEN_RIGHT.1,
-        x * SCREEN_DOWN.0 + z * SCREEN_DOWN.1,
-    )
+/// Which ways on the ground the screen's right and its bottom are, as (x, z), with the camera
+/// turned this many radians.
+fn screen_axes(yaw: f32) -> ((f32, f32), (f32, f32)) {
+    let (sin, cos) = yaw.sin_cos();
+    ((cos, -sin), (sin, cos))
 }
 
-/// The world point that is this far across the screen and down it.
+#[cfg(test)]
+/// A point on the ground as how far across the screen and down it, the camera turned the
+/// original's usual way.
+pub fn across_and_down(x: f32, z: f32) -> (f32, f32) {
+    turned_across_and_down(DEFAULT_ANGLE_DEGREES.to_radians(), x, z)
+}
+
+#[cfg(test)]
+/// The world point that is this far across the screen and down it, the camera turned the
+/// original's usual way.
 pub fn from_across_and_down(across: f32, down: f32) -> (f32, f32) {
+    turned_from_across_and_down(DEFAULT_ANGLE_DEGREES.to_radians(), across, down)
+}
+
+fn turned_across_and_down(yaw: f32, x: f32, z: f32) -> (f32, f32) {
+    let (right, down) = screen_axes(yaw);
+    (x * right.0 + z * right.1, x * down.0 + z * down.1)
+}
+
+fn turned_from_across_and_down(yaw: f32, across: f32, down: f32) -> (f32, f32) {
+    let (right, below) = screen_axes(yaw);
     (
-        across * SCREEN_RIGHT.0 + down * SCREEN_DOWN.0,
-        across * SCREEN_RIGHT.1 + down * SCREEN_DOWN.1,
+        across * right.0 + down * below.0,
+        across * right.1 + down * below.1,
     )
 }
 
@@ -879,8 +900,15 @@ pub fn world_to_grid(x: f32, z: f32) -> (f32, f32) {
 pub struct Camera {
     pub x: f32,
     pub z: f32,
+    /// How near in it is, as the original's zoom: what its distance is divided by.
     pub zoom: f32,
     zoom_target: f32,
+    /// How far it is turned about the point it looks at, in radians, and where the keys have
+    /// sent it.
+    pub yaw: f32,
+    yaw_target: f32,
+    /// Seconds left of the battle's opening sweep in.
+    opening: f32,
     /// How far the map it is kept on reaches along x and along z.
     extent: (f32, f32),
 }
@@ -892,28 +920,97 @@ impl Camera {
         Self::centered_on((side, side))
     }
 
-    /// Looking at the middle of a map reaching this far along x and z, from the top position.
+    /// Looking at the middle of a map reaching this far along x and z, as the original's
+    /// camera usually does.
     pub fn centered_on(extent: (f32, f32)) -> Self {
+        let yaw = DEFAULT_ANGLE_DEGREES.to_radians();
         Camera {
             x: extent.0 / 2.0,
             z: extent.1 / 2.0,
-            zoom: 0.0,
-            zoom_target: 0.0,
+            zoom: DEFAULT_ZOOM,
+            zoom_target: DEFAULT_ZOOM,
+            yaw,
+            yaw_target: yaw,
+            opening: 0.0,
             extent,
         }
     }
 
-    /// Positive notches go down towards the bottom position.
-    pub fn zoom_by(&mut self, notches: f32) {
-        self.zoom_target = (self.zoom_target + notches * ZOOM_PER_NOTCH).clamp(0.0, 1.0);
+    /// Starts the sweep a battle opens with: far out and turned back, gliding in to the usual
+    /// view.
+    pub fn open(&mut self) {
+        self.opening = START_SECONDS;
+        self.zoom = START_ZOOM;
+        self.yaw = self.yaw_target - START_SPIN_DEGREES.to_radians();
     }
 
-    /// One frame of the camera gliding towards where the wheel left it.
+    /// Positive notches zoom in.
+    pub fn zoom_by(&mut self, notches: f32) {
+        let step = notches * ZOOM_PER_NOTCH * (MAX_ZOOM - MIN_ZOOM);
+        self.zoom_target = (self.zoom_target + step).clamp(MIN_ZOOM, MAX_ZOOM);
+    }
+
+    /// Zooms in by this factor, as fingers spread apart on a trackpad, or out below 1.
+    pub fn magnify(&mut self, factor: f32) {
+        self.zoom_target = (self.zoom_target * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        if self.opening <= 0.0 {
+            self.zoom = self.zoom_target;
+        }
+    }
+
+    /// Turns the camera about the point it looks at by this many radians, as fingers turn on
+    /// a trackpad: the ground goes round the other way.
+    pub fn turn(&mut self, radians: f32) {
+        self.yaw_target += radians;
+        if self.opening <= 0.0 {
+            self.yaw = self.yaw_target;
+        }
+    }
+
+    /// Turns the camera a step, as a key does, to the left for less than nothing.
+    pub fn turn_step(&mut self, way: f32) {
+        self.yaw_target += way * TURN_PER_PRESS_DEGREES.to_radians();
+    }
+
+    /// Back to the usual turn, the short way round, and the usual zoom.
+    pub fn reset(&mut self) {
+        let usual = DEFAULT_ANGLE_DEGREES.to_radians();
+        let turns = ((self.yaw - usual) / TAU).round();
+        self.yaw_target = usual + turns * TAU;
+        self.zoom_target = DEFAULT_ZOOM;
+    }
+
+    /// One frame of the camera gliding towards where the wheel and keys left it, or of the
+    /// battle's opening sweep.
     pub fn ease_zoom(&mut self, dt: f32) {
-        self.zoom += (self.zoom_target - self.zoom) * (1.0 - (-ZOOM_EASING * dt).exp());
+        if self.opening > 0.0 {
+            self.opening = (self.opening - dt).max(0.0);
+            let done = 1.0 - self.opening / START_SECONDS;
+            let eased = done * done * (3.0 - 2.0 * done);
+            let spin = START_SPIN_DEGREES.to_radians() * (1.0 - eased);
+            self.zoom = START_ZOOM + (self.zoom_target - START_ZOOM) * eased;
+            self.yaw = self.yaw_target - spin;
+            return;
+        }
+        let share = 1.0 - (-ZOOM_EASING * dt).exp();
+        self.zoom += (self.zoom_target - self.zoom) * share;
+        self.yaw += (self.yaw_target - self.yaw) * share;
         if (self.zoom_target - self.zoom).abs() < 0.001 {
             self.zoom = self.zoom_target;
         }
+        if (self.yaw_target - self.yaw).abs() < 0.0005 {
+            self.yaw = self.yaw_target;
+        }
+    }
+
+    /// A point on the ground as how far across the screen and down it, as it is turned.
+    pub fn across_and_down(&self, x: f32, z: f32) -> (f32, f32) {
+        turned_across_and_down(self.yaw, x, z)
+    }
+
+    /// The world point that is this far across the screen and down it, as it is turned.
+    pub fn from_across_and_down(&self, across: f32, down: f32) -> (f32, f32) {
+        turned_from_across_and_down(self.yaw, across, down)
     }
 
     /// Centers the view on a world point, kept on the map.
@@ -931,33 +1028,24 @@ impl Camera {
     /// One frame of edge scrolling, `direction` given on the screen. Slower when low, so the
     /// ground crosses the screen at about the same pace from either position.
     pub fn scroll(&mut self, direction: (f32, f32), scroll_rate: i32, dt: f32) {
-        let pace = self.altitude() / TOP_HEIGHT / self.lens();
+        let pace = self.distance() / DISTANCE;
         let distance = SCROLL_PER_RATE * scroll_rate as f32 * pace * dt;
-        let (right, down) = (direction.0 * distance, direction.1 * distance);
-        self.move_by(
-            right * SCREEN_RIGHT.0 + down * SCREEN_DOWN.0,
-            right * SCREEN_RIGHT.1 + down * SCREEN_DOWN.1,
-        );
+        let (dx, dz) = self.from_across_and_down(direction.0 * distance, direction.1 * distance);
+        self.move_by(dx, dz);
     }
 
-    /// How far between the two positions: 0 at the top, 1 at the bottom.
-    fn descent(self) -> f32 {
-        self.zoom
-    }
-
-    fn altitude(self) -> f32 {
-        TOP_HEIGHT + (BOTTOM_HEIGHT - TOP_HEIGHT) * self.descent()
-    }
-
-    /// Magnification from narrowing the field of view: 1 at the top, growing on the way down.
-    fn lens(self) -> f32 {
-        1.0 + (MAX_LENS - 1.0) * self.zoom
+    /// How far it stands from the point it looks at.
+    fn distance(self) -> f32 {
+        DISTANCE / self.zoom.max(0.01)
     }
 }
 
 /// A camera pose ready for projecting, for one frame on one screen.
 pub struct View {
     position: [f32; 3],
+    /// Which ways on the ground the screen's right and its bottom are, as (x, z).
+    right: (f32, f32),
+    down: (f32, f32),
     /// Unit vectors in the plane of up and the screen's bottom on the ground: the camera never
     /// rolls.
     forward: [f32; 2],
@@ -968,20 +1056,16 @@ pub struct View {
 
 impl View {
     pub fn new(camera: Camera, width: f32, height: f32) -> Self {
-        let degrees =
-            TOP_PITCH_DEGREES + (BOTTOM_PITCH_DEGREES - TOP_PITCH_DEGREES) * camera.descent();
-        let (sin, cos) = degrees.to_radians().sin_cos();
-        let altitude = camera.altitude();
-        let back = altitude * cos / sin;
+        let (sin, cos) = TILT_DEGREES.to_radians().sin_cos();
+        let (altitude, back) = (camera.distance() * sin, camera.distance() * cos);
+        let (right, down) = screen_axes(camera.yaw);
         View {
-            position: [
-                camera.x + SCREEN_DOWN.0 * back,
-                altitude,
-                camera.z + SCREEN_DOWN.1 * back,
-            ],
+            position: [camera.x + down.0 * back, altitude, camera.z + down.1 * back],
+            right,
+            down,
             forward: [-sin, -cos],
             up: [cos, -sin],
-            focal: height / (2.0 * HALF_FOV_TAN) * camera.lens(),
+            focal: height / (2.0 * HALF_FOV_TAN),
             center: (width / 2.0, height / 2.0),
         }
     }
@@ -994,8 +1078,8 @@ impl View {
         let (a, b) = depth_terms();
         let [f0, f1] = self.forward;
         let [u0, u1] = self.up;
-        let (r0, r1) = SCREEN_RIGHT;
-        let (d0, d1) = SCREEN_DOWN;
+        let (r0, r1) = self.right;
+        let (d0, d1) = self.down;
         let side = r0 * px + r1 * pz;
         let back = d0 * px + d1 * pz;
         let along = f0 * py + f1 * back;
@@ -1123,8 +1207,8 @@ impl View {
     fn relative(&self, x: f32, y: f32, z: f32) -> (f32, f32, f32) {
         let [px, py, pz] = self.position;
         let (dx, rel_y, dz) = (x - px, y - py, z - pz);
-        let side = dx * SCREEN_RIGHT.0 + dz * SCREEN_RIGHT.1;
-        let back = dx * SCREEN_DOWN.0 + dz * SCREEN_DOWN.1;
+        let side = dx * self.right.0 + dz * self.right.1;
+        let back = dx * self.down.0 + dz * self.down.1;
         let up = rel_y * self.up[0] + back * self.up[1];
         (side, up, rel_y * self.forward[0] + back * self.forward[1])
     }
@@ -1231,8 +1315,8 @@ impl View {
         let t = (height - py) / ray_y;
         let (side, back) = (side * t, ray_back * t);
         Some((
-            px + SCREEN_RIGHT.0 * side + SCREEN_DOWN.0 * back,
-            pz + SCREEN_RIGHT.1 * side + SCREEN_DOWN.1 * back,
+            px + self.right.0 * side + self.down.0 * back,
+            pz + self.right.1 * side + self.down.1 * back,
         ))
     }
 
@@ -1357,14 +1441,16 @@ pub fn seen_at(fog: Option<&Fog>, x: f32, z: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::FRAC_PI_2;
 
     const W: f32 = 2880.0;
     const H: f32 = 1800.0;
 
-    fn at_zoom(zoom: f32) -> Camera {
+    /// The camera this share of the way from as far out as it zooms, at 0, to as near in, at 1.
+    fn at_zoom(share: f32) -> Camera {
         let mut camera = Camera::centered();
-        camera.zoom = zoom;
-        camera.zoom_target = zoom;
+        camera.zoom = MIN_ZOOM + (MAX_ZOOM - MIN_ZOOM) * share;
+        camera.zoom_target = camera.zoom;
         camera
     }
 
@@ -1530,18 +1616,74 @@ mod tests {
     }
 
     #[test]
-    fn zoom_has_two_fixed_positions_with_the_requested_tilt() {
+    fn the_camera_stands_as_far_as_the_original_puts_it_looking_down_as_it_does() {
+        let camera = Camera::centered();
+        let view = View::new(camera, W, H);
+        let [x, y, z] = view.position;
+        let away = (x - camera.x).hypot(y).hypot(z - camera.z);
+        assert!(near(away, DISTANCE, 0.5), "{away}");
+        for share in [0.0, 0.5, 1.0] {
+            assert!(
+                (pitch(at_zoom(share)) - TILT_DEGREES).abs() < 0.01,
+                "{share}"
+            );
+        }
+        let far = View::new(at_zoom(0.0), W, H).position[1];
+        let near_in = View::new(at_zoom(1.0), W, H).position[1];
+        assert!(near(far / near_in, MAX_ZOOM / MIN_ZOOM, 0.01));
+        let mut camera = Camera::centered();
+        camera.zoom_by(1000.0);
+        camera.ease_zoom(10.0);
+        assert_eq!(camera.zoom, MAX_ZOOM);
+        camera.zoom_by(-1000.0);
+        camera.ease_zoom(10.0);
+        assert_eq!(camera.zoom, MIN_ZOOM);
+    }
+
+    #[test]
+    fn a_battle_opens_far_out_and_turned_and_sweeps_in_to_the_usual_view() {
+        let mut camera = Camera::centered();
+        let usual = (camera.zoom, camera.yaw);
+        camera.open();
+        assert_eq!(camera.zoom, START_ZOOM);
+        assert!(near(
+            camera.yaw,
+            usual.1 - START_SPIN_DEGREES.to_radians(),
+            1e-5
+        ));
+        camera.ease_zoom(START_SECONDS / 2.0);
+        assert!(camera.zoom > START_ZOOM && camera.zoom < usual.0);
+        camera.ease_zoom(START_SECONDS / 2.0);
+        assert_eq!((camera.zoom, camera.yaw), usual);
+    }
+
+    #[test]
+    fn the_camera_turns_about_what_it_looks_at_and_back() {
+        let mut camera = Camera::centered();
+        let usual = camera.yaw;
+        let middle = |camera: Camera| View::new(camera, W, H).ground_at(W / 2.0, H / 2.0).unwrap();
+        let looked_at = middle(camera);
+        camera.turn(FRAC_PI_2);
         assert!(
-            (pitch(at_zoom(0.0)) - 75.0).abs() < 0.01,
-            "top looks almost straight down"
+            near(camera.yaw, usual + FRAC_PI_2, 1e-5),
+            "at once, as fingers turn"
         );
-        assert!(
-            (pitch(at_zoom(1.0)) - 30.0).abs() < 0.01,
-            "bottom is 30 degrees from the ground"
-        );
-        assert!(
-            View::new(at_zoom(1.0), W, H).position[1] < View::new(at_zoom(0.0), W, H).position[1]
-        );
+        let (x, z) = middle(camera);
+        assert!(near(x, looked_at.0, 0.5) && near(z, looked_at.1, 0.5));
+        // The screen's right is now where its bottom was.
+        let (right, _) = screen_axes(camera.yaw);
+        let (_, down) = screen_axes(usual);
+        assert!(near(right.0, -down.0, 1e-5) && near(right.1, -down.1, 1e-5));
+        camera.turn_step(1.0);
+        camera.ease_zoom(10.0);
+        let stepped = usual + FRAC_PI_2 + TURN_PER_PRESS_DEGREES.to_radians();
+        assert!(near(camera.yaw, stepped, 1e-4));
+        camera.reset();
+        camera.ease_zoom(10.0);
+        assert!(near(camera.yaw, usual, 1e-4), "the short way back");
+        // A box lined up with the screen turns with it.
+        let (across, down) = camera.across_and_down(100.0, 50.0);
+        assert_eq!(camera.from_across_and_down(across, down).0.round(), 100.0);
     }
 
     #[test]

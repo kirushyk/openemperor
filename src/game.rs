@@ -1775,7 +1775,7 @@ impl Game {
     }
 
     /// The selection while dragging one: a rectangle on the ground lined up with the screen,
-    /// as (left, top, right, bottom) in `battlefield::across_and_down`, between where the drag
+    /// as (left, top, right, bottom) in `Camera::across_and_down`, between where the drag
     /// started on the map and the ground under the cursor.
     /// There is none while a press is placing a building: a drag then only turns it.
     pub fn selection_ground(&self) -> Option<(f32, f32, f32, f32)> {
@@ -1784,8 +1784,8 @@ impl Game {
         }
         let (x, z) = self.selection_anchor?;
         let (cursor_x, cursor_z) = self.view().ground_at(self.mouse.0, self.mouse.1)?;
-        let (x, z) = battlefield::across_and_down(x, z);
-        let (cursor_x, cursor_z) = battlefield::across_and_down(cursor_x, cursor_z);
+        let (x, z) = self.camera.across_and_down(x, z);
+        let (cursor_x, cursor_z) = self.camera.across_and_down(cursor_x, cursor_z);
         Some((
             x.min(cursor_x),
             z.min(cursor_z),
@@ -1803,7 +1803,7 @@ impl Game {
         let view = self.view();
         let screen = (0.0, 0.0, self.width, self.height);
         let corners = [(west, north), (east, north), (east, south), (west, south)]
-            .map(|(across, down)| battlefield::from_across_and_down(across, down));
+            .map(|(across, down)| self.camera.from_across_and_down(across, down));
         (0..corners.len())
             .filter_map(|i| {
                 let (a, b) =
@@ -1823,7 +1823,8 @@ impl Game {
         else {
             return false;
         };
-        units::in_selection(rectangle, unit) || self.appears_in_selection(rectangle, unit)
+        units::in_rectangle(rectangle, self.camera.across_and_down(unit.x, unit.z))
+            || self.appears_in_selection(rectangle, unit)
     }
 
     fn appears_in_selection(&self, rectangle: (f32, f32, f32, f32), unit: &Unit) -> bool {
@@ -1835,7 +1836,8 @@ impl Game {
         let appears_over = view
             .project(x, y, z)
             .and_then(|(px, py)| view.ground_at(px, py));
-        appears_over.is_some_and(|(x, z)| units::in_rectangle(rectangle, x, z))
+        appears_over
+            .is_some_and(|(x, z)| units::in_rectangle(rectangle, self.camera.across_and_down(x, z)))
     }
 
     /// Whether the cursor is over the battlefield itself, with nothing in the way.
@@ -3068,6 +3070,7 @@ impl Game {
         self.killed = Casualties::default();
         self.lost = Casualties::default();
         self.camera = Camera::centered_on(battlefield::terrain(map).extent());
+        self.camera.open();
         self.in_battle = true;
         self.pausable = true;
         self.key_paused = false;
@@ -3601,6 +3604,13 @@ impl Game {
                     self.camera.zoom_by(notches);
                 }
             }
+            Event::Magnify(by) if self.screen == Screen::InGame && !self.key_paused => {
+                self.camera.magnify(1.0 + by);
+            }
+            Event::Rotate(degrees) if self.screen == Screen::InGame && !self.key_paused => {
+                self.camera.turn(degrees.to_radians());
+            }
+            Event::Magnify(_) | Event::Rotate(_) => {}
             Event::Resize(w, h) => {
                 self.width = w as f32;
                 self.height = h as f32;
@@ -3661,6 +3671,14 @@ impl Game {
                 }
                 (Screen::InGame, Key::Tab) => self.stats_open = !self.stats_open,
                 (Screen::InGame, Key::Char('d' | 'D')) if !self.key_paused => self.toggle_deploy(),
+                // The camera turns left or right about what it looks at, and back as it was.
+                (Screen::InGame, Key::Char(',' | '<')) if !self.key_paused => {
+                    self.camera.turn_step(-1.0);
+                }
+                (Screen::InGame, Key::Char('.' | '>')) if !self.key_paused => {
+                    self.camera.turn_step(1.0);
+                }
+                (Screen::InGame, Key::Char('/' | '?')) if !self.key_paused => self.camera.reset(),
                 (Screen::InGame, Key::Char('s' | 'S')) if !self.key_paused => {
                     units::order_stop(&mut self.units);
                 }
@@ -5803,8 +5821,8 @@ mod tests {
     /// A box around the player's first group, which starts at the middle of the screen.
     fn around_first_group() -> ((f32, f32), (f32, f32)) {
         (
-            (W / 2.0 - 400.0, H / 2.0 - 400.0),
-            (W / 2.0 + 400.0, H / 2.0 + 400.0),
+            (W / 2.0 - 480.0, H / 2.0 - 480.0),
+            (W / 2.0 + 480.0, H / 2.0 + 480.0),
         )
     }
 
@@ -7310,17 +7328,24 @@ mod tests {
             let frame = crate::render::build_frame(game);
             (frame.objects.len(), frame.casters.len())
         };
-        game.camera.zoom = 1.0;
+        game.camera.zoom = 1.25;
         let (near, _) = drawn(&mut game, tank_at(cx, cz));
-        game.camera.zoom = 0.0;
+        game.camera.zoom = 0.5;
+        // As far up a small screen as can be, it shows small enough to be simpler.
+        let full = (game.width, game.height);
+        (game.width, game.height) = (480.0, 300.0);
+        let (fx, fz) = crate::battlefield::View::new(game.camera, game.width, game.height)
+            .ground_at(game.width / 2.0, 1.0)
+            .unwrap();
+        let (far, _) = drawn(&mut game, tank_at(fx, fz));
+        (game.width, game.height) = full;
+        assert!(far > 0 && far < near, "{far} {near}");
         let (cx, cz) = crate::battlefield::View::new(game.camera, game.width, game.height)
             .ground_at(game.width / 2.0, game.height / 2.0)
             .unwrap();
-        let (far, _) = drawn(&mut game, tank_at(cx, cz));
-        assert!(far > 0 && far < near, "{far} {near}");
         assert_eq!(drawn(&mut game, tank_at(cx + 22630.0, cz)), (0, 0));
         // Just past the screen's west edge, the sun throws its shadow east, back onto it.
-        let (objects, casters) = (0..400)
+        let (objects, casters) = (0..2000)
             .map(|step| {
                 let (x, z) = beside((cx, cz), -(step as f32) * 2.263);
                 drawn(&mut game, tank_at(x, z))
@@ -9930,10 +9955,7 @@ mod tests {
         let mut game = in_battle();
         game.handle(Event::Wheel(10.0));
         settle_zoom(&mut game);
-        assert_eq!(
-            game.camera.zoom, 0.5,
-            "the low position shows perspective best"
-        );
+        assert_eq!(game.camera.zoom, 1.25, "near in shows perspective best");
         game.handle(Event::MouseMove(W / 2.0 - 300.0, H / 2.0 - 300.0));
         game.handle(Event::MouseDown);
         game.handle(Event::MouseMove(W / 2.0 + 300.0, H / 2.0 + 300.0));
@@ -9968,15 +9990,16 @@ mod tests {
         let view = game.view();
         let a = (W / 2.0 - 500.0, H / 2.0 - 400.0);
         let b = (W / 2.0 + 500.0, H / 2.0 + 400.0);
-        let corner_a = view.ground_at(a.0, a.1).unwrap();
-        let corner_b = view.ground_at(b.0, b.1).unwrap();
-        // Just inside the far edge's width on the ground, though the near edge is what
-        // would bound it in a rectangle drawn on the screen.
-        let inside_x = corner_b.0 - 4.525;
-        game.units[0].x = inside_x;
-        game.units[0].z = corner_a.1 + 4.525;
-        game.units[1].x = corner_b.0 + 4.525;
-        game.units[1].z = corner_a.1 + 4.525;
+        let corner = |(x, y): (f32, f32)| {
+            let (x, z) = view.ground_at(x, y).unwrap();
+            game.camera.across_and_down(x, z)
+        };
+        let (corner_a, corner_b) = (corner(a), corner(b));
+        // Just inside the far edge's right end on the ground, and just outside it: on the
+        // screen both are left of where the near edge ends.
+        let place = |across: f32| game.camera.from_across_and_down(across, corner_a.1 + 4.525);
+        (game.units[0].x, game.units[0].z) = place(corner_b.0 - 4.525);
+        (game.units[1].x, game.units[1].z) = place(corner_b.0 + 4.525);
         drag_select(&mut game, a, b);
         assert!(game.units[0].selected, "inside on the ground");
         assert!(!game.units[1].selected, "outside on the ground");
@@ -11338,41 +11361,74 @@ mod tests {
     fn settle_zoom(game: &mut Game) {
         // Parked mid-screen so that edge scrolling stays out of the way.
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
-        for _ in 0..200 {
+        for _ in 0..300 {
             game.update(0.016);
         }
     }
 
     #[test]
-    fn the_wheel_zooms_only_on_the_battlefield() {
+    fn the_wheel_and_a_pinch_zoom_and_keys_and_fingers_turn_only_on_the_battlefield() {
         let mut game = in_battle();
+        settle_zoom(&mut game);
+        let usual = game.camera;
         game.handle(Event::Wheel(100.0));
         settle_zoom(&mut game);
-        assert_eq!(game.camera.zoom, 1.0, "wheel away from the player descends");
+        assert!(
+            game.camera.zoom > usual.zoom,
+            "wheel away from the player zooms in"
+        );
+        let near_in = game.camera.zoom;
         game.handle(Event::Wheel(-100.0));
         settle_zoom(&mut game);
-        assert_eq!(game.camera.zoom, 0.0);
+        assert!(game.camera.zoom < usual.zoom);
+        game.handle(Event::Magnify(0.2));
+        assert!(game.camera.zoom > usual.zoom * 0.0 && game.camera.zoom < near_in);
+        let pinched = game.camera.zoom;
+        game.handle(Event::Magnify(0.2));
+        assert!(game.camera.zoom > pinched, "fingers spread apart zoom in");
+        game.handle(Event::Rotate(90.0));
+        assert!((game.camera.yaw - usual.yaw - 90f32.to_radians()).abs() < 1e-4);
+        game.handle(Event::KeyDown(Key::Char('/')));
+        settle_zoom(&mut game);
+        assert!(
+            (game.camera.yaw - usual.yaw).abs() < 1e-3,
+            "and back as it was"
+        );
+        game.handle(Event::KeyDown(Key::Char('.')));
+        settle_zoom(&mut game);
+        assert!(game.camera.yaw > usual.yaw);
 
         let mut game = in_setup();
+        let before = game.camera;
         game.handle(Event::Wheel(100.0));
+        game.handle(Event::Magnify(0.5));
+        game.handle(Event::Rotate(45.0));
         for _ in 0..50 {
             game.update(0.016);
         }
-        assert_eq!(game.camera.zoom, 0.0, "menus ignore it");
+        assert_eq!(
+            (game.camera.zoom, game.camera.yaw),
+            (before.zoom, before.yaw),
+            "menus ignore it"
+        );
     }
 
     #[test]
-    fn a_new_battle_starts_at_the_top_position() {
+    fn a_new_battle_opens_with_the_originals_sweep_in_whatever_the_last_one_ended_at() {
         let mut game = in_battle();
-        game.handle(Event::Wheel(5.0));
         settle_zoom(&mut game);
-        assert!(game.camera.zoom > 0.0);
+        let usual = game.camera;
+        game.handle(Event::Wheel(5.0));
+        game.handle(Event::Rotate(30.0));
+        settle_zoom(&mut game);
+        assert!(game.camera.zoom > usual.zoom);
         leave_battle(&mut game);
         click(&mut game, Action::SinglePlayer);
         click(&mut game, Action::Tutorial);
         game.update(LOADING_SECONDS);
+        assert!(game.camera.zoom < usual.zoom, "it starts out far");
         settle_zoom(&mut game);
-        assert_eq!(game.camera.zoom, 0.0);
+        assert_eq!((game.camera.zoom, game.camera.yaw), (usual.zoom, usual.yaw));
     }
 
     fn click_at(game: &mut Game, x: f32, y: f32) {

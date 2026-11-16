@@ -297,6 +297,11 @@ pub enum Event {
     Control(bool),
     /// 1 to 9 pressed on the number row, as well as the `KeyDown` for the same press.
     NumberKey(usize, Option<Modifier>),
+    /// A pinch on a trackpad: how much bigger it makes things, 0.1 for a tenth bigger, below 0
+    /// for smaller.
+    Magnify(f32),
+    /// Fingers turning on a trackpad, in degrees, anticlockwise.
+    Rotate(f32),
 }
 
 /// Mirrors `OeWorld` in `shim/oe_shim.h`.
@@ -405,6 +410,8 @@ impl Platform {
                         _ => None,
                     },
                 ),
+                12 => Event::Magnify(raw.y),
+                13 => Event::Rotate(raw.y),
                 _ => continue,
             };
             return Some(event);

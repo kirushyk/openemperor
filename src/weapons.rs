@@ -1951,15 +1951,18 @@ impl Combat {
                 } else {
                     direction_to((0.0, 0.0, 0.0), (dx / flat, 0.8, dz / flat))
                 };
-                self.missiles.push(Missile {
-                    position: from,
-                    direction,
-                    weapon,
-                    target_id: target.map_or(NO_UNIT, |t| units[t].id),
-                    place: target.is_none().then_some(to),
-                    shooter,
-                    fuel: MISSILE_FUEL_SECONDS,
-                });
+                // A Devastator's plasma cannot reach aircraft: only its rockets go after them.
+                if weapon.can_target(target.map_or(0.0, |t| units[t].height_as_target())) {
+                    self.missiles.push(Missile {
+                        position: from,
+                        direction,
+                        weapon,
+                        target_id: target.map_or(NO_UNIT, |t| units[t].id),
+                        place: target.is_none().then_some(to),
+                        shooter,
+                        fuel: MISSILE_FUEL_SECONDS,
+                    });
+                }
                 units[i].second_tube = !units[i].second_tube;
                 if weapon == WeaponKind::Plasma && !units[i].second_tube {
                     self.walker_rockets.extend((0..3).map(|tube| WalkerRocket {
@@ -5405,6 +5408,35 @@ mod tests {
             distance(first, combat.missiles[1].position) > 36.2,
             "the other gun"
         );
+    }
+
+    #[test]
+    fn a_huge_walker_sends_only_its_rockets_after_aircraft() {
+        let devastator = as_role(Role::HkDevastator, 0.0, 2715.0);
+        let mut plane = target_at(226.3, 2715.0);
+        plane.kind = UnitKind::Aircraft;
+        plane.altitude = 135.8;
+        assert!(
+            devastator.can_attack(&plane, &TEAMS),
+            "its rockets reach up"
+        );
+        assert!(!WeaponKind::Plasma.can_target(plane.height_as_target()));
+        let mut units = [devastator, plane];
+        let mut combat = Combat::default();
+        combat.shoot(&mut units, 0, Aim::Unit(1), &TEAMS);
+        combat.shoot(&mut units, 0, Aim::Unit(1), &TEAMS);
+        assert!(combat.missiles.is_empty(), "no plasma");
+        for _ in 0..3 {
+            combat.launch_walker_rockets(&units, WALKER_ROCKET_GAP_SECONDS);
+        }
+        assert_eq!(combat.missiles.len(), 3);
+        assert!(
+            combat
+                .missiles
+                .iter()
+                .all(|m| m.weapon == WeaponKind::Rockets)
+        );
+        assert!(combat.missiles.iter().all(|m| m.target_id == units[1].id));
     }
 
     #[test]

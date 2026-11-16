@@ -2220,7 +2220,14 @@ impl Unit {
             && other.alive
             && self.id != other.id
             && self.weapon.goes_for(other.kind)
-            && self.weapon.can_target(other.height_as_target())
+            && self.can_aim_at(other.height_as_target())
+    }
+
+    /// Whether anything it fires reaches this high: a Devastator's plasma stays on the
+    /// ground, but its rockets go up after aircraft too.
+    pub fn can_aim_at(&self, altitude: f32) -> bool {
+        self.weapon.can_target(altitude)
+            || (self.role == Role::HkDevastator && WeaponKind::Rockets.can_target(altitude))
     }
 
     /// Whether it can be told to fire at a place on the ground.
@@ -2283,7 +2290,7 @@ impl Unit {
             && self.has_rockets()
             && are_enemies(teams, self.owner, other.owner)
             && self.weapon.goes_for(other.kind)
-            && self.weapon.can_target(other.height_as_target())
+            && self.can_aim_at(other.height_as_target())
     }
 
     /// Whether it opens fire on another unit in range unprompted: what it can attack, and an

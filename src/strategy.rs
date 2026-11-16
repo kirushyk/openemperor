@@ -168,7 +168,8 @@ impl Strategy {
         let order = build_order(house);
         order.iter().copied().enumerate().find_map(|(i, role)| {
             let wanted = order[..=i].iter().filter(|&&r| r == role).count();
-            (has(role) < wanted).then_some(role)
+            let can = role.made_by(house) && role.needs().is_none_or(|needed| has(needed) > 0);
+            (can && has(role) < wanted).then_some(role)
         })
     }
 

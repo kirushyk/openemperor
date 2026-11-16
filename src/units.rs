@@ -939,12 +939,18 @@ impl Role {
         }
     }
 
-    /// What else its builder must have standing besides a construction yard: a mini-house's
-    /// main building needs a factory, or one that trains soldiers a barracks.
+    /// What else its builder must have standing besides a construction yard, as the original's
+    /// `Rules.txt` has it: armed towers a barracks, a hangar a factory, a landing pad a hangar,
+    /// a mini-house's main building a factory, or one that trains soldiers a barracks. A palace
+    /// needs a starport, and a starport a hangar: we have no starport, so it needs the hangar.
     pub fn needs(self) -> Option<Role> {
         match self {
-            Role::TlFleshVat | Role::IxResCentre | Role::GuPalace => Some(Role::Factory),
+            Role::TlFleshVat | Role::IxResCentre | Role::GuPalace | Role::Hanger => {
+                Some(Role::Factory)
+            }
             Role::ImBarracks | Role::FrCamp => Some(Role::Barracks),
+            role if role.kind() == UnitKind::Tower => Some(Role::Barracks),
+            Role::Helipad | Role::Palace(_) => Some(Role::Hanger),
             _ => None,
         }
     }
@@ -1018,8 +1024,11 @@ impl Role {
             | Role::HkDevastator
             | Role::HkInkVine
             | Role::HkMissile
-            | Role::HkGunship => house == Faction::Harkonnen,
-            Role::AtAdp => house == Faction::Atreides,
+            | Role::HkGunship
+            | Role::HkAdp => house == Faction::Harkonnen,
+            Role::AtAdp | Role::AtOrni => house == Faction::Atreides,
+            // The original gives Ordos no landing pad.
+            Role::Helipad => house != Faction::Ordos,
             _ => true,
         }
     }

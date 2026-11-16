@@ -121,8 +121,22 @@ we are missing is in [units.md](units.md). This list is about everything else.
 
 ## Interface
 
-- **The Ordos landing pad's build button** shows our symbol and name: the disc has no picture
-  for it, and no model either.
+- **Build menus** list what can be made now, packed from the first cell in the order of the
+  original's `[UnitTypes]` and `[BuildingTypes]`. Not done yet:
+  - what we have no units for is missing from them: windtraps, walls, starports, refinery
+    pads, the Ordos AA trooper, the sonic tank and the deviator;
+  - upgrades: the original wants an upgraded building for many things (its
+    `UpgradedPrimaryRequired`), such as engineers, Kindjal infantry, the flame tank, the gun
+    turret and the ornithopter. We let them be made without one;
+  - windtraps: the barracks, the factory, the refinery and the outpost need one in the
+    original. We don't ask for it;
+  - starports: the palace needs one in the original, and the Devastator too. We ask for a
+    hangar in its place for the palace, which a starport needs, and nothing more for the
+    Devastator;
+  - tech levels (`TechLevel`): nothing is held back by them;
+  - the original's Next and Prev buttons, for a menu of more than 15: none of ours has that
+    many;
+  - the "New construction options" line when something new can be made.
 
 ## Other platforms
 

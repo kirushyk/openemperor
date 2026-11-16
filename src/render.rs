@@ -5,10 +5,9 @@ use crate::fog::{Fog, Sight};
 use crate::font;
 use crate::game::{
     Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Faction, Game, OPPONENT_SLOTS,
-    Outcome, PlaceSquare, STATS_ROW_STEP, STATS_ROW_TOP, SUPERWEAPON_CELL, Screen, TeamColor,
-    buttons, checkbox_size, color_slots, map_items, minimap_rect, modal_rect, opponent_row,
-    opponent_widgets, options_panel, setup_checkboxes, setup_widgets, small_text_px, stats_rect,
-    ui_scale,
+    Outcome, PlaceSquare, STATS_ROW_STEP, STATS_ROW_TOP, Screen, TeamColor, buttons, checkbox_size,
+    color_slots, map_items, minimap_rect, modal_rect, opponent_row, opponent_widgets,
+    options_panel, setup_checkboxes, setup_widgets, small_text_px, stats_rect, ui_scale,
 };
 use crate::hud;
 use crate::planet;
@@ -3889,7 +3888,7 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
     {
         draw_button(canvas, game, cell);
         let (cx, cy) = (cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
-        if game.build_tab == BuildTab::Vehicles && i == SUPERWEAPON_CELL {
+        if game.build_tab == BuildTab::Vehicles && game.superweapon_cell() == Some(i) {
             let armed = game.superweapon().is_some();
             let ready = armed && game.strike_recharge <= 0.0;
             let color = if !ready {

@@ -94,10 +94,14 @@ and its warhead's share against each armour from `[WarheadTypes]`, and each turr
   rocket turret's salvos and the Minotaurus's four cannons, and flame and gas sprays. A spray
   hit is the share of the original's shot that falls in its time.
 - **Our own numbers** are still used for the gas a cistern leaves, the Tleilaxu's poison, the
-  buzzsaw's saw, the superweapons (`DeathHandBomb`, `Hawk_B` and the Ordos beam), and the
-  falloff of blasts, which the original's bullets switch with `ReduceDamageWithDistance`.
-- **Blast radii, `FriendlyDamageAmount`, projectile `Speed`, `TurnRate`, `HomingDelay` and
-  `MinRange`** are ours, not the bullets'.
+  buzzsaw's saw, and the superweapons (`DeathHandBomb`, `Hawk_B` and the Ordos beam).
+- **Projectiles** fly and burst as their bullets: missiles at their `Speed` and `TurnRate`
+  per update, straight until their `HomingDelay` and straight for good if not `Homing` (the
+  Devastator's plasma); bursts as far as `BlastRadius`, weaker outwards unless
+  `ReduceDamageWithDistance` is false, and hurting friends by `FriendlyDamageAmount`. Still
+  ours: how fast shells and bombs fly (their bullets have no `Speed`, or the bomb's 8 we do
+  not use), the arc they take, `MinRange`, and the bursts of bullets that strike at once (the
+  Kindjal's and the Kobra's 64 on its tracks), which hurt only what they hit.
 - **Infantry on rock** take less damage in the original: their armour `None, 50, InfRock`
   halves it there.
 - **Shields**: the laser tank's `ShieldHealth` 300 and its self-repair.

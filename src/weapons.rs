@@ -10,17 +10,14 @@ use std::f32::consts::{PI, TAU};
 
 use crate::units::{
     Armour, BURNS_PAST, CANNON_HEIGHT, CANNON_SIDES, CONSTRUCTION_DOWN, CONSTRUCTION_UP,
-    HEALTH_SCALE, Point, ROCKET_SIDES, Role, SMOKES_PAST, TUBE_HEIGHT, Target, Unit, UnitKind,
-    Wound, are_enemies, are_friends, distance, substeps, turn_between,
+    HEALTH_SCALE, Point, ROCKET_SIDES, Role, SMOKES_PAST, TUBE_HEIGHT, Target, UPDATES_PER_SECOND,
+    Unit, UnitKind, Wound, are_enemies, are_friends, distance, substeps, turn_between,
 };
 
 /// A unit with nothing in range looks again this often, in seconds.
 const RETARGET_SECONDS: f32 = 0.25;
 
 const MISSILE_SPEED: f32 = 407.3;
-const PLASMA_SPEED: f32 = 905.1;
-/// Radians per second a missile can turn: fast targets can out-turn it.
-const MISSILE_TURN: f32 = 2.5;
 const MISSILE_FUEL_SECONDS: f32 = 4.0;
 /// How near a missile must come, beyond touching its target, to go off.
 const MISSILE_FUSE: f32 = 9.051;
@@ -31,21 +28,18 @@ const SHELL_SPEED: f32 = 316.8;
 const SHELL_ARC: f32 = 0.35;
 const SHELL_BLAST_RADIUS: f32 = 72.41;
 /// An Eye in the Sky's bombs: how many it lets go, how far out from under it the farthest
-/// lands, how wide each one's blast is, how many times harder it hits buildings than anything
-/// else, and how fast they fall.
+/// lands, and how fast they fall.
 const EYE_BOMBS: usize = 6;
 const BOMB_SPREAD: f32 = 99.56;
-const BOMB_BLAST_RADIUS: f32 = 108.6;
 const BOMB_GRAVITY: f32 = 407.3;
 /// How near an enemy aircraft has to come to an anti-aircraft mine to set it off, and how many rockets
 /// it bursts into.
 const OR_ADP_TRIGGER: f32 = 203.6;
 const OR_ADP_ROCKETS: usize = 6;
 
-/// A Heavy Strider's shells fly faster and lower than an inkvine catapult's, and go off in a tighter blast.
+/// A Heavy Strider's shells fly faster and lower than an inkvine catapult's.
 const BOMBARD_SPEED: f32 = 497.8;
 const BOMBARD_ARC: f32 = 0.2;
-const BOMBARD_BLAST_RADIUS: f32 = 45.25;
 /// How long a Heavy Strider calms down once all four cannons have fired, in seconds.
 const BOMBARD_CALM_SECONDS: f32 = 7.0;
 /// How long a cannon takes to come forward again after it recoils.
@@ -109,8 +103,6 @@ const FLAMELETS_ALIVE_AT_MOST: usize = 400;
 const FLAMELETS_PER_GUSH: usize = 14;
 /// How high a flame turret's fire comes down to at the end of its reach.
 const FLAMELET_FALLS_TO: f32 = 18.1;
-/// How far from where it burst a cistern's own small blast reaches.
-const CISTERN_BLAST_RADIUS: f32 = 27.15;
 /// Radians per second a cistern tumbles through the air.
 const CISTERN_TUMBLE: f32 = 9.0;
 const GAS_CLOUD_RADIUS: f32 = 113.1;
@@ -122,7 +114,6 @@ const GAS_VAPOR_AT_BURST: f32 = 40.0;
 const GAS_VAPOR_PER_SECOND: f32 = 40.0;
 const PARTICLE_SECONDS: f32 = 0.9;
 const PARTICLE_GRAVITY: f32 = 316.8;
-const HEAVY_BLAST_RADIUS: f32 = 67.88;
 /// What each house's palace can fire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Superweapon {
@@ -396,26 +387,29 @@ impl WeaponKind {
         use Warhead::*;
         match self {
             WeaponKind::Bullet => Bullet::new(219, Lmg, 30),
-            WeaponKind::Missile => Bullet::new(425, Heat, 30),
+            WeaponKind::Missile => Bullet::new(425, Heat, 30).flies(28.0, 0.3),
             WeaponKind::Laser => Bullet::new(400, Laser, 40),
-            WeaponKind::Mortar => Bullet::new(750, Howitzer, 100),
-            WeaponKind::Rockets => Bullet::new(425, Heat, 180),
-            WeaponKind::HeavyRockets => Bullet::new(500, HeatAir, 60),
-            WeaponKind::Bombard | WeaponKind::Siege => Bullet::new(600, Howitzer, 120),
+            WeaponKind::Mortar => Bullet::new(750, Howitzer, 100).bursts(64.0).friendly(50),
+            WeaponKind::Rockets => Bullet::new(425, Heat, 180).flies(28.0, 0.3),
+            WeaponKind::HeavyRockets => Bullet::new(500, HeatAir, 60).flies(12.0, 0.3),
+            WeaponKind::Bombard => Bullet::new(600, Howitzer, 120).bursts(96.0).friendly(50),
+            WeaponKind::Siege => Bullet::new(600, Howitzer, 30).bursts(96.0).friendly(50),
             WeaponKind::Sniper => Bullet::new(600, Cal50, 76),
             WeaponKind::Pistol => Bullet::new(100, Lmg, 50),
             WeaponKind::Cannon => Bullet::new(500, Gun80mm, 30),
             WeaponKind::AutoGun => Bullet::new(150, AntiAir, 10),
             WeaponKind::TowerGun => Bullet::new(400, AntiAir, 100),
             WeaponKind::PostGun => Bullet::new(600, Hmg, 25),
-            WeaponKind::Cistern => Bullet::new(500, Flame, 75),
+            WeaponKind::Cistern => Bullet::new(500, Flame, 75).bursts(96.0).even().friendly(50),
             WeaponKind::RapidLaser => Bullet::new(550, PopUp, 60),
-            WeaponKind::Plasma => Bullet::new(813, DevPlasma, 60),
-            WeaponKind::TowerRockets => Bullet::new(250, Heat, 45),
-            WeaponKind::AirMissile => Bullet::new(800, HeatAir, 30),
+            WeaponKind::Plasma => Bullet::new(813, DevPlasma, 60)
+                .flies(20.0, 0.0)
+                .friendly(50),
+            WeaponKind::TowerRockets => Bullet::new(250, Heat, 45).flies(28.0, 0.3),
+            WeaponKind::AirMissile => Bullet::new(800, HeatAir, 30).flies(20.0, 0.3),
             WeaponKind::Flame => Bullet::new(250, Flame, 30),
             WeaponKind::Gas => Bullet::new(250, Flame, 40),
-            WeaponKind::Bomb => Bullet::new(400, Howitzer, 30),
+            WeaponKind::Bomb => Bullet::new(400, Howitzer, 30).bursts(64.0),
             WeaponKind::Repair | WeaponKind::Unarmed => Bullet::new(0, Whole, 30),
         }
     }
@@ -500,13 +494,28 @@ impl Warhead {
     }
 }
 
-/// What a weapon fires, as the original's bullet for it: its `Damage`, its warhead, and the
-/// `ReloadCount` of the turret firing it, in seconds.
+/// What a weapon fires, as the original's bullet for it: its `Damage`, its warhead, the
+/// `ReloadCount` of the turret firing it in seconds, and how it flies and bursts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bullet {
     damage: f32,
     warhead: Warhead,
     reload: f32,
+    /// How fast it flies, in world units a second: its `Speed`, if it has its own.
+    speed: Option<f32>,
+    /// How fast it turns onto what it chases, in radians a second: its `TurnRate` if it is
+    /// `Homing`, and none if it flies straight.
+    turn: f32,
+    /// How long it flies straight before it starts to chase: its `HomingDelay`, in seconds.
+    homing_delay: f32,
+    /// How far its burst reaches, if it bursts: its `BlastRadius`.
+    blast: Option<f32>,
+    /// Whether its burst is weaker the farther out: unless its `ReduceDamageWithDistance` is
+    /// false.
+    falls_off: bool,
+    /// The share of its damage done to the shooter's own side and its friends caught in its
+    /// burst: its `FriendlyDamageAmount`, nothing without one.
+    friendly: f32,
 }
 
 impl Bullet {
@@ -514,7 +523,65 @@ impl Bullet {
         Bullet {
             damage: damage as f32,
             warhead,
-            reload: reload_updates as f32 / crate::units::UPDATES_PER_SECOND,
+            reload: reload_updates as f32 / UPDATES_PER_SECOND,
+            speed: None,
+            turn: 0.0,
+            homing_delay: 0.0,
+            blast: None,
+            falls_off: true,
+            friendly: 0.0,
+        }
+    }
+
+    /// Flying at this `Speed` and turning at this `TurnRate`, both per update as the original
+    /// gives them; a turn of nothing for one that is not `Homing`.
+    const fn flies(self, speed: f32, turn: f32) -> Self {
+        Bullet {
+            speed: Some(speed * UPDATES_PER_SECOND),
+            turn: turn * UPDATES_PER_SECOND,
+            ..self
+        }
+    }
+
+    /// Flying straight for this many updates before it chases.
+    const fn homing_after(self, updates: u32) -> Self {
+        Bullet {
+            homing_delay: updates as f32 / UPDATES_PER_SECOND,
+            ..self
+        }
+    }
+
+    /// Bursting this far round where it goes off.
+    const fn bursts(self, radius: f32) -> Self {
+        Bullet {
+            blast: Some(radius),
+            ..self
+        }
+    }
+
+    /// Its burst as strong at its edge as in its middle.
+    const fn even(self) -> Self {
+        Bullet {
+            falls_off: false,
+            ..self
+        }
+    }
+
+    /// Hurting friends caught in its burst by this many percent of its damage.
+    const fn friendly(self, percent: u32) -> Self {
+        Bullet {
+            friendly: percent as f32 / 100.0,
+            ..self
+        }
+    }
+
+    /// What its burst does to one this far from where it goes off, out of how far it reaches
+    /// that one, as a share of a direct hit: half at the edge if it falls off.
+    fn burst_share(self, away: f32, reach: f32) -> f32 {
+        if self.falls_off {
+            1.0 - away / reach * 0.5
+        } else {
+            1.0
         }
     }
 
@@ -534,24 +601,37 @@ pub fn bullet_of(unit: &Unit) -> Bullet {
         (Role::AtKindjal | Role::Engineer, WeaponKind::Pistol) => Some(Bullet::new(100, Lmg, 50)),
         (Role::OrMortar, WeaponKind::Pistol) => Some(Bullet::new(100, Lmg, 45)),
         (Role::AtKindjal, _) => Some(Bullet::new(500, Gun80mm, 50)),
-        (Role::OrMortar, WeaponKind::Mortar) => Some(Bullet::new(375, Howitzer, 45)),
-        (Role::GuMaker, _) => Some(Bullet::new(600, Howitzer, 30)),
-        (Role::OrKobra, WeaponKind::Cannon) => Some(Bullet::new(300, Howitzer, 30)),
+        (Role::OrMortar, WeaponKind::Mortar) => Some(
+            Bullet::new(375, Howitzer, 45)
+                .bursts(64.0)
+                .even()
+                .friendly(50),
+        ),
+        (Role::GuMaker, _) => Some(Bullet::new(600, Howitzer, 30).bursts(96.0).even()),
+        (Role::OrKobra, WeaponKind::Cannon) => {
+            Some(Bullet::new(300, Howitzer, 30).bursts(64.0).friendly(50))
+        }
         (Role::AtTrike | Role::OrDustScout, _) => Some(Bullet::new(350, Lmg, 50)),
         (Role::HkBuzzsaw, WeaponKind::Bullet) => Some(Bullet::new(350, Lmg, 40)),
         (Role::HkFlame, WeaponKind::Flame) => Some(Bullet::new(125, Flame, 60)),
         (Role::HkFlameTurret, _) => Some(Bullet::new(500, Flame, 30)),
-        (Role::HkDevastator, WeaponKind::Rockets) => Some(Bullet::new(600, DevRocket, 80)),
-        (Role::AtOrni, _) => Some(Bullet::new(200, HeatAir, 30)),
-        (Role::HkTrooper, _) => Some(Bullet::new(375, HeatInf, 100)),
-        (Role::OrApc, _) => Some(Bullet::new(200, Heat, 50)),
-        (Role::AtMongoose, _) => Some(Bullet::new(425, Heat, 30)),
+        (Role::HkDevastator, WeaponKind::Rockets) => {
+            Some(Bullet::new(600, DevRocket, 80).flies(28.0, 0.3))
+        }
+        (Role::AtOrni, _) => Some(Bullet::new(200, HeatAir, 30).flies(28.0, 0.3)),
+        (Role::HkTrooper, _) => Some(Bullet::new(375, HeatInf, 100).flies(20.0, 0.3)),
+        (Role::OrApc, _) => Some(Bullet::new(200, Heat, 50).flies(28.0, 0.3)),
+        (Role::AtMongoose, _) => Some(Bullet::new(425, Heat, 30).flies(28.0, 0.3)),
         (Role::ImSardaukar, _) => Some(Bullet::new(600, Hmg, 20)),
         (Role::TlContaminator, _) => Some(Bullet::new(10, Whole, 30)),
         // Its bombs, the original's EITSBomb_B.
-        (Role::OrEits, _) => Some(Bullet::new(400, Howitzer, 30)),
+        (Role::OrEits, _) => Some(Bullet::new(400, Howitzer, 30).bursts(64.0)),
         // Its six rockets, the original's HEATADP_B.
-        (Role::OrAdp, _) => Some(Bullet::new(480, HeatAir, 30)),
+        (Role::OrAdp, _) => Some(
+            Bullet::new(480, HeatAir, 30)
+                .flies(28.0, 0.9)
+                .homing_after(5),
+        ),
         _ => None,
     };
     own.unwrap_or_else(|| unit.weapon.bullet())
@@ -2459,20 +2539,22 @@ impl Combat {
                 .iter()
                 .position(|u| u.alive && u.id == missile.target_id);
             let heading_for = missile.place.or_else(|| target.map(|t| units[t].center()));
-            if let Some(goal) = heading_for {
+            // Once it is past its homing delay it chases, as fast as its bullet turns: one
+            // that does not home keeps going straight the way it was fired.
+            let bullet = missile.shooter.bullet;
+            let flown = MISSILE_FUEL_SECONDS - missile.fuel;
+            if let Some(goal) = heading_for
+                && (bullet.homing_delay <= 0.0 || flown >= bullet.homing_delay)
+            {
                 missile.direction = turn_towards(
                     missile.direction,
                     direction_to(missile.position, goal),
-                    MISSILE_TURN * dt,
+                    bullet.turn * dt,
                 );
             }
             let (x, y, z) = missile.position;
             let (dx, dy, dz) = missile.direction;
-            let step = if missile.weapon == WeaponKind::Plasma {
-                PLASMA_SPEED * dt
-            } else {
-                MISSILE_SPEED * dt
-            };
+            let step = bullet.speed.unwrap_or(MISSILE_SPEED) * dt;
             missile.position = (x + dx * step, y + dy * step, z + dz * step);
             missile.fuel -= dt;
 
@@ -2497,26 +2579,23 @@ impl Combat {
                 self.explode(missile.position, MISSILE_BLAST_RADIUS);
             } else if let Some(t) = reached {
                 hit(units, t, missile.weapon, missile.shooter, teams);
-                if matches!(
-                    missile.weapon,
-                    WeaponKind::HeavyRockets | WeaponKind::Plasma
-                ) {
-                    // It hurts the shooter's enemies around its target as well, by half.
-                    for index in (0..units.len()).filter(|&index| index != t) {
-                        let damage = missile.shooter.damage_to(units[index].armour()) * 0.5;
-                        let reach = HEAVY_BLAST_RADIUS + units[index].radius();
-                        if units[index].alive
-                            && are_enemies(teams, missile.shooter.owner, units[index].owner)
-                            && distance(missile.position, units[index].center()) <= reach
-                        {
-                            units[index].wound = Wound::BlownUp;
-                            harm(units, index, damage, missile.shooter, teams);
-                        }
-                    }
-                    self.explode(missile.position, HEAVY_BLAST_RADIUS);
-                } else {
-                    self.explode(missile.position, MISSILE_BLAST_RADIUS);
+                let blast = bullet.blast.unwrap_or(MISSILE_BLAST_RADIUS);
+                if bullet.blast.is_some() {
+                    let caught = Caught {
+                        struck: Some(t),
+                        hurts_all: false,
+                        wound: Wound::BlownUp,
+                    };
+                    burst(
+                        units,
+                        missile.position,
+                        blast,
+                        caught,
+                        missile.shooter,
+                        teams,
+                    );
                 }
+                self.explode(missile.position, blast);
             } else if y <= terrain.height_at(x, z) || missile.fuel <= 0.0 || heading_for.is_none() {
                 // A miss: it hits the ground, burns out, or blows itself up where it is once
                 // what it was chasing is gone, harming nobody.
@@ -2533,9 +2612,9 @@ impl Combat {
         for mut shell in std::mem::take(&mut self.shells) {
             shell.elapsed += dt;
             let is_up = shell.elapsed < shell.duration;
-            let burst = shell.weapon == WeaponKind::Cistern
+            let touched = shell.weapon == WeaponKind::Cistern
                 && units.iter().any(|u| shell.bursts_on(u, teams));
-            if is_up && !burst {
+            if is_up && !touched {
                 flying.push(shell);
                 continue;
             }
@@ -2544,29 +2623,14 @@ impl Combat {
             } else {
                 shell.landing
             };
-            let blast_radius = match shell.weapon {
-                WeaponKind::Cistern => CISTERN_BLAST_RADIUS,
-                WeaponKind::Bombard => BOMBARD_BLAST_RADIUS,
-                WeaponKind::Siege => BOMBARD_BLAST_RADIUS * 1.2,
-                WeaponKind::Bomb => BOMB_BLAST_RADIUS,
-                _ => SHELL_BLAST_RADIUS,
+            let blast_radius = shell.shooter.bullet.blast.unwrap_or(SHELL_BLAST_RADIUS);
+            let wound = shell.weapon.wound();
+            let caught = Caught {
+                struck: None,
+                hurts_all: shell.hurts_all,
+                wound,
             };
-            // Only enemies of whoever fired are hurt, so that units can fire freely.
-            for index in 0..units.len() {
-                let unit = units[index];
-                if unit.alive
-                    && (shell.hurts_all || are_enemies(teams, shell.shooter.owner, unit.owner))
-                {
-                    let away = distance(landing, unit.center());
-                    let reach = blast_radius + unit.radius();
-                    if away < reach {
-                        let damage =
-                            shell.shooter.damage_to(unit.armour()) * (1.0 - away / reach * 0.5);
-                        units[index].wound = shell.weapon.wound();
-                        harm(units, index, damage, shell.shooter, teams);
-                    }
-                }
-            }
+            burst(units, landing, blast_radius, caught, shell.shooter, teams);
             if shell.weapon == WeaponKind::Cistern {
                 self.vent_gas(landing, GAS_VAPOR_AT_BURST, 99.56);
                 self.gas_clouds.push(GasCloud {
@@ -2637,6 +2701,43 @@ fn strike(
         let touched = distance(at, unit.center()) <= unit.radius() + PLACE_SHOT_SPREAD;
         if index != firing && unit.alive && touched && weapon.can_target(unit.height_as_target()) {
             hit(units, index, weapon, shooter, teams);
+        }
+    }
+}
+
+/// Who a burst catches and how: not the one it hit straight on, if any; everyone alike if it
+/// was fired by order; and with what wound.
+struct Caught {
+    struck: Option<usize>,
+    hurts_all: bool,
+    wound: Wound,
+}
+
+/// A bullet's burst where it goes off: everyone it reaches is hurt, by less the farther out if
+/// it falls off. The shooter's enemies take all of that, and its own side and friends the
+/// bullet's friendly share, or all of it too if it was fired at them by order.
+fn burst(
+    units: &mut [Unit],
+    at: Point,
+    radius: f32,
+    caught: Caught,
+    shooter: Shooter,
+    teams: &[usize],
+) {
+    for index in (0..units.len()).filter(|&index| Some(index) != caught.struck) {
+        let unit = units[index];
+        let share = if caught.hurts_all || are_enemies(teams, shooter.owner, unit.owner) {
+            1.0
+        } else {
+            shooter.bullet.friendly
+        };
+        let away = distance(at, unit.center());
+        let reach = radius + unit.radius();
+        if unit.alive && share > 0.0 && away < reach {
+            let damage =
+                shooter.damage_to(unit.armour()) * share * shooter.bullet.burst_share(away, reach);
+            units[index].wound = caught.wound;
+            harm(units, index, damage, shooter, teams);
         }
     }
 }
@@ -3301,7 +3402,7 @@ mod tests {
     }
 
     #[test]
-    fn heavy_rockets_hit_far_harder_and_hurt_enemies_around_the_target_but_not_friends() {
+    fn heavy_rockets_hit_harder_and_only_what_they_hit_as_they_have_no_blast() {
         // The original's gunship rocket against its missile tank's.
         assert!(WeaponKind::HeavyRockets.bullet().damage > WeaponKind::Rockets.bullet().damage);
         let mut machine = Unit::for_test(0.0, 2715.0, UnitKind::Aircraft);
@@ -3328,8 +3429,8 @@ mod tests {
                 .max(45250.0 * f32::from(u8::from(!combat.missiles.is_empty())));
         }
         assert!(units[1].health < 1000.0, "the target");
-        assert!(units[2].health < 1000.0, "beside it");
-        assert!(units[1].health < units[2].health, "the target worst");
+        // The original's Gunship_B has no BlastRadius.
+        assert_eq!(units[2].health, 1000.0, "not beside it");
         assert_eq!(units[3].health, friend_health, "not a friend");
     }
 
@@ -4330,7 +4431,9 @@ mod tests {
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         assert_eq!(combat.missiles.len(), 1);
         assert_eq!(units[1].health, 100.0, "not yet");
-        run(&mut combat, &mut units, 0.5);
+        // The original's HEAT_B flies 28 a update: 700 a second.
+        assert_eq!(WeaponKind::Missile.bullet().speed, Some(700.0));
+        run(&mut combat, &mut units, 0.2);
         assert_eq!(units[1].health, 100.0, "still flying");
         units[0].cooldown = 1000.0;
         run(&mut combat, &mut units, 3.0);
@@ -4489,7 +4592,7 @@ mod tests {
     }
 
     #[test]
-    fn mortars_do_not_hurt_their_own_side() {
+    fn mortar_shells_hurt_their_own_side_by_half() {
         let mut friend = Unit::for_test(633.6, 2738.0, UnitKind::Infantry);
         friend.id = 9;
         friend.cooldown = 1000.0;
@@ -4503,7 +4606,9 @@ mod tests {
         units[0].cooldown = 1000.0;
         run(&mut combat, &mut units, 3.0);
         assert!(units[1].health < 100.0);
-        assert_eq!(units[2].health, 100.0);
+        // The original's InkVine_B has FriendlyDamageAmount 50.
+        let lost = [100.0 - units[1].health, 100.0 - units[2].health];
+        assert!(lost[1] > 0.0 && lost[1] <= lost[0] * 0.5 + 0.01, "{lost:?}");
     }
 
     #[test]
@@ -4716,8 +4821,12 @@ mod tests {
         run(&mut combat, &mut units, 0.5);
         assert!(combat.missiles.is_empty(), "still turning");
         assert_ne!(units[0].heading, 0.0);
+        let before = units[1].health;
         run(&mut combat, &mut units, 1.5);
-        assert_eq!(combat.missiles.len(), 1, "now it fires");
+        assert!(
+            !combat.missiles.is_empty() || units[1].health < before,
+            "now it fires"
+        );
         assert!(
             units[0].heading.cos() < -0.9,
             "facing west: {}",
@@ -5883,7 +5992,7 @@ mod tests {
             combat
                 .blasts
                 .iter()
-                .all(|b| b.radius <= BOMBARD_BLAST_RADIUS)
+                .all(|b| b.radius <= WeaponKind::Bombard.bullet().blast.unwrap())
         );
     }
 
@@ -6180,5 +6289,73 @@ mod tests {
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 1.0);
         assert!(combat.beams.is_empty());
+    }
+
+    #[test]
+    fn missiles_fly_and_turn_as_their_bullets_and_some_only_chase_after_a_while() {
+        let missile_at = |shooter: &Unit, target: &Unit| Missile {
+            position: (0.0, 20.0, 2715.0),
+            direction: (1.0, 0.0, 0.0),
+            weapon: shooter.weapon,
+            target_id: target.id,
+            place: None,
+            shooter: Shooter::of(shooter),
+            fuel: MISSILE_FUEL_SECONDS,
+        };
+        // Off to the side of where it points.
+        let mut target = target_at(400.0, 2915.0);
+        target.cooldown = 1000.0;
+        let mut devastator = as_role(Role::HkDevastator, -2000.0, 2715.0);
+        devastator.weapon = WeaponKind::Plasma;
+        devastator.cooldown = 1000.0;
+        let mut mine = as_role(Role::OrAdp, -2000.0, 2715.0);
+        mine.cooldown = 1000.0;
+        let mut mongoose = as_role(Role::AtMongoose, -2000.0, 2715.0);
+        mongoose.cooldown = 1000.0;
+        let way_after = |shooter: Unit, seconds: f32| {
+            let mut units = [shooter, target];
+            let mut combat = Combat::default();
+            combat.missiles.push(missile_at(&shooter, &target));
+            run(&mut combat, &mut units, seconds);
+            combat.missiles.first().map(|m| (m.direction, m.position))
+        };
+        // Plasma is no homing bullet: it keeps going straight.
+        let (way, at) = way_after(devastator, 0.2).unwrap();
+        assert_eq!(way, (1.0, 0.0, 0.0));
+        assert!((at.0 - 0.2 * 500.0).abs() < 1.0, "20 an update: {at:?}");
+        // The mine's rockets fly straight for their first five updates, then chase hard.
+        assert_eq!(way_after(mine, 0.15).unwrap().0, (1.0, 0.0, 0.0));
+        assert!(way_after(mine, 0.3).unwrap().0.2 > 0.3);
+        // Others chase from the start, at the original's 0.3 an update.
+        let (way, _) = way_after(mongoose, 0.1).unwrap();
+        assert!(
+            way.2 > 0.0 && way.2 < (0.1 * 7.5_f32).sin() + 0.01,
+            "{way:?}"
+        );
+    }
+
+    #[test]
+    fn a_burst_falls_off_or_not_as_its_bullet_says_and_a_kobra_reloads_as_its_own_gun() {
+        let gas = WeaponKind::Cistern.bullet();
+        assert_eq!(gas.blast, Some(96.0));
+        assert_eq!(
+            gas.burst_share(90.0, 100.0),
+            1.0,
+            "Gas_B does not reduce with distance"
+        );
+        let ink = WeaponKind::Mortar.bullet();
+        assert_eq!(ink.blast, Some(64.0));
+        assert_eq!(ink.burst_share(0.0, 100.0), 1.0);
+        assert_eq!(ink.burst_share(100.0, 100.0), 0.5);
+        assert_eq!(ink.friendly, 0.5);
+        let mut kobra = as_role(Role::OrKobra, 0.0, 2715.0);
+        assert_eq!(bullet_of(&kobra).reload, 30.0 / UPDATES_PER_SECOND);
+        crate::units::switch_deployed(&mut kobra);
+        assert_eq!(bullet_of(&kobra).reload, 30.0 / UPDATES_PER_SECOND);
+        assert_eq!(bullet_of(&kobra).blast, Some(96.0));
+        assert_eq!(
+            WeaponKind::Bombard.bullet().reload,
+            120.0 / UPDATES_PER_SECOND
+        );
     }
 }

@@ -26,7 +26,8 @@ mod original;
 pub use original::names_icon;
 pub use original::{
     PICTURE_SIDE, icon as original_icon, load as load_original_models, muzzles as original_muzzles,
-    noise_sounds as original_noise_sounds, pictures as original_pictures, wash as original_wash,
+    noise_sounds as original_noise_sounds, pictures as original_pictures,
+    tab_symbol as original_tab_symbol, wash as original_wash,
 };
 
 type Color = [f32; 4];
@@ -4090,6 +4091,14 @@ pub fn making_dim_wedges(
 
 /// Small vector pictures built from the same triangles as everything else.
 fn draw_tab_symbol(canvas: &mut Canvas, tab: BuildTab, cx: f32, cy: f32, size: f32, c: Color) {
+    // The disc's own, once it is read.
+    if let Some(faces) = original_tab_symbol(tab) {
+        let half = size / 2.0;
+        for face in faces {
+            canvas.triangle(face.map(|(x, y)| (cx + x * half, cy + y * half)), c);
+        }
+        return;
+    }
     let u = size / 10.0;
     match tab {
         BuildTab::Infantry => {

@@ -8,7 +8,7 @@ use super::models::{Model, Paint, Place};
 use crate::archive::{self, Archive};
 use crate::battlefield::{self, CELL_SIDE, Terrain, View};
 use crate::fog::Fog;
-use crate::game::Faction;
+use crate::game::{BuildTab, Faction};
 use crate::platform::{NO_PICTURE, WorldVertex};
 use crate::units::{Harvest, Role, Unit, UnitKind, Wound};
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
@@ -401,6 +401,17 @@ const BUILDINGS: &str = "buildings\\";
 /// as it is damaged and then badly.
 const WHOLE: &str = "_h0.";
 const DAMAGED: [&str; 2] = ["_h1.", "_h2."];
+/// The original's sidebar model, in its interface data in the cabinet, and the parts of it that
+/// are the symbols on the build menu's tabs: a rifle, a tank and a building.
+const UI_INDEX: &str = "\\data\\UI0001.RFH";
+const UI_DATA: &str = "\\data\\UI0001.RFD";
+const SIDEBAR: &str = "SIDEBAR\\SIDEBAR1.XBF";
+const TAB_SYMBOLS: [(BuildTab, &str); 3] = [
+    (BuildTab::Infantry, "infantrybody"),
+    (BuildTab::Vehicles, "vehiclebody"),
+    (BuildTab::Buildings, "buildingbody"),
+];
+
 /// What the name of its model as it is destroyed ends with.
 const DESTROYED: &str = "_h3.";
 /// The run of a model's animation as it is destroyed.
@@ -459,6 +470,9 @@ struct Original {
     layers: usize,
     /// Which of the pictures each of `ICONS` is, lit and grey, if the disc has it.
     icons: Vec<Option<(usize, usize)>>,
+    /// The symbol of each of `TAB_SYMBOLS`, as flat triangles in a square from -1 to 1
+    /// across and down, if the disc has it.
+    tab_symbols: Vec<Vec<[(f32, f32); 3]>>,
     archive: Archive,
     spice: Option<Spice>,
 }
@@ -1016,10 +1030,12 @@ fn read_shapes(disc: &Path) -> Option<Original> {
             Some((lit, give(grey).unwrap_or(lit)))
         })
         .collect();
+    let tab_symbols = read_tab_symbols(disc).unwrap_or_default();
     (!shapes.is_empty()).then_some(Original {
         shapes,
         damaged,
         ruins,
+        tab_symbols,
         logos,
         stealth,
         pictures,
@@ -1028,6 +1044,75 @@ fn read_shapes(disc: &Path) -> Option<Original> {
         archive,
         spice,
     })
+}
+
+/// The tabs' symbols out of the sidebar model, each in the order of `TAB_SYMBOLS`. The model
+/// faces along x, its right along y and its up along z.
+fn read_tab_symbols(disc: &Path) -> Option<Vec<Vec<[(f32, f32); 3]>>> {
+    let cabinet = disc.join(CABINET);
+    let index = archive::from_cabinet(&cabinet, UI_INDEX)?;
+    let data = archive::from_cabinet(&cabinet, UI_DATA)?;
+    let model = xbf::parse(&archive::read_in(&index, &data, SIDEBAR)?)?;
+    fn find(object: &Object, above: &[[f32; 4]; 4], name: &str) -> Option<Vec<[[f32; 3]; 3]>> {
+        let world = times(&object.transform, above);
+        if object.name.eq_ignore_ascii_case(name) {
+            let corner = |c: usize| object.vertices.get(c).map(|v| point(&world, v.position));
+            return object
+                .faces
+                .iter()
+                .map(|face| {
+                    Some([
+                        corner(face.corners[0])?,
+                        corner(face.corners[1])?,
+                        corner(face.corners[2])?,
+                    ])
+                })
+                .collect();
+        }
+        object
+            .children
+            .iter()
+            .find_map(|child| find(child, &world, name))
+    }
+    TAB_SYMBOLS
+        .iter()
+        .map(|&(_, name)| {
+            let faces = model
+                .objects
+                .iter()
+                .find_map(|o| find(o, &IDENTITY, name))?;
+            let points = faces.iter().flatten();
+            let (mut low, mut high) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for &[_, y, z] in points {
+                (low, high) = (
+                    [low[0].min(y), low[1].min(z)],
+                    [high[0].max(y), high[1].max(z)],
+                );
+            }
+            let middle = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0];
+            let half = ((high[0] - low[0]).max(high[1] - low[1]) / 2.0).max(f32::EPSILON);
+            Some(
+                faces
+                    .iter()
+                    .map(|face| {
+                        face.map(|[_, y, z]| ((y - middle[0]) / half, (middle[1] - z) / half))
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// The symbol on a build menu's tab, as the original's sidebar has it: flat triangles in a
+/// square from -1 to 1 across and down, once the disc's are read.
+pub fn tab_symbol(tab: BuildTab) -> Option<&'static [[(f32, f32); 3]]> {
+    let at = TAB_SYMBOLS.iter().position(|&(of, _)| of == tab)?;
+    ORIGINAL
+        .get()?
+        .tab_symbols
+        .get(at)
+        .map(Vec::as_slice)
+        .filter(|faces| !faces.is_empty())
 }
 
 /// Whether a picture's pixel is a hole: see-through, or the magenta that stands for it.

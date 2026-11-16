@@ -153,6 +153,11 @@ we are missing is in [units.md](units.md). This list is about everything else.
     many;
   - the "New construction options" line when something new can be made.
 
+- **The build menu's tabs** show the disc's symbols (the sidebar model's `infantrybody`,
+  `vehiclebody` and `buildingbody`) flat, in one colour. The original draws them as glowing
+  3D shapes (`!06%crimsonglow.tga`), with flares over the selected tab. It also has Upgrade
+  and Starport tabs, which we have nothing for.
+
 ## Other platforms
 
 - **Windows and Linux**: their backends (`shim/windows_d3d11.c`, `shim/linux_vulkan.c`) draw

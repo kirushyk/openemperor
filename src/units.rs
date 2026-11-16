@@ -4658,6 +4658,7 @@ pub fn carry(
             continue;
         };
         let spot = (carrier.x, carrier.z);
+        move_to_ground(carrier, terrain);
         let lowering =
             carrier.unloading && !carrier.is_moving() && terrain.can_walk(spot.0, spot.1);
         let vehicle = &mut load.vehicle;
@@ -4679,6 +4680,17 @@ pub fn carry(
     }
     *carried = still_carried;
     work_on_thefts(units, terrain, dt);
+}
+
+/// Sends a carryall that has stopped to put its load down where no machine can stand, on a
+/// cliff or a rock only soldiers can climb, on to the nearest ground that one can.
+fn move_to_ground(carrier: &mut Unit, terrain: &Terrain) {
+    let spot = (carrier.x, carrier.z);
+    if carrier.unloading && !carrier.is_moving() && !terrain.can_walk(spot.0, spot.1) {
+        if let Some(ground) = terrain.nearest_walkable(Going::Driving, spot) {
+            carrier.destination = ground;
+        }
+    }
 }
 
 /// Holds stolen vehicles to their carryalls: fighting at first, both staying where they are,
@@ -4715,6 +4727,7 @@ fn work_on_thefts(units: &mut [Unit], terrain: &Terrain, dt: f32) {
             continue;
         }
         let spot = (units[c].x, units[c].z);
+        move_to_ground(&mut units[c], terrain);
         let lowering =
             units[c].unloading && !units[c].is_moving() && terrain.can_walk(spot.0, spot.1);
         let winch = if lowering { -WINCH_SPEED } else { WINCH_SPEED };
@@ -9724,6 +9737,35 @@ mod tests {
         assert!((x - to.0).hypot(z - to.1) < 22.63, "there: {harvester:?}");
         assert_eq!(units[0].lift, None);
         assert!(units[0].is_moving(), "and the carryall circles again");
+    }
+
+    #[test]
+    fn a_harvester_bound_for_ground_no_machine_can_stand_on_is_put_down_beside_it() {
+        let to = (MAP_MIDDLE_X, 4525.0);
+        let terrain = walled(&[(to.0, to.1, 90.51, 90.51)]);
+        assert!(!terrain.can_walk(to.0, to.1));
+        let mut units = vec![
+            carryall_at(MAP_MIDDLE_X + 226.3, 2715.0, 0),
+            harvester_off_to(MAP_MIDDLE_X, 2715.0, to, 1),
+        ];
+        let mut carried = Vec::new();
+        let mut lifted = false;
+        for _ in 0..(60.0 / 0.05) as usize {
+            advance(&mut units, &terrain, &[0], 0.05);
+            tend_carryalls(&mut units, &terrain);
+            carry(&mut units, &mut carried, &terrain, &[0], 0.05);
+            lifted |= units[1].theft.is_some();
+        }
+        assert!(lifted, "it was taken up");
+        let harvester = units[1];
+        assert_eq!(
+            harvester.theft, None,
+            "and not left hanging: {:?}",
+            units[0]
+        );
+        assert!(terrain.can_walk(harvester.x, harvester.z));
+        assert!((harvester.x - to.0).hypot(harvester.z - to.1) < 271.5);
+        assert!(!units[0].carrying);
     }
 
     #[test]

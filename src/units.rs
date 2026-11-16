@@ -1545,6 +1545,23 @@ const OR_KOBRA_SETS_UP: (f32, f32) = (2.0, 1.6);
 /// frames.
 const AT_KINDJAL_SETS_UP: (f32, f32) = (2.48, 2.96);
 
+/// How far ahead of a Kobra's middle the top of its leg is, which its raised cannon swings
+/// round on.
+pub const OR_KOBRA_SWIVEL: f32 = 0.1;
+/// How fast a deployed Kobra swings its cannon round: the original's 4° each update.
+pub const OR_KOBRA_GUN_TURN: f32 = 4.0 * std::f32::consts::PI / 180.0 * UPDATES_PER_SECOND;
+
+/// Where a point given as (ahead, side) on a Kobra comes to once its cannon has swung this far
+/// round on the top of its leg.
+pub fn or_kobra_swung((ahead, side): (f32, f32), turn: f32) -> (f32, f32) {
+    let (sin, cos) = turn.sin_cos();
+    let ahead = ahead - OR_KOBRA_SWIVEL;
+    (
+        OR_KOBRA_SWIVEL + ahead * cos - side * sin,
+        ahead * sin + side * cos,
+    )
+}
+
 /// Where a Kobra's cannon tip is with the cannon raised this far, from 0 to 1.
 pub fn or_kobra_tip(raised: f32) -> [f32; 2] {
     let ease = raised * raised * (3.0 - 2.0 * raised);
@@ -1661,6 +1678,8 @@ pub struct Unit {
     /// How far a pop-up turret has come up: 0 sunk in the ground, 1 ready to fire. For a
     /// Kobra, how far its cannon is raised: 0 resting on its tracks, 1 high on its leg.
     pub popped: f32,
+    /// How far a deployed Kobra has swung its raised cannon round from its nose, in radians.
+    pub gun_turn: f32,
     /// Seconds left until a building just placed is finished, and works.
     pub constructing: f32,
     /// Which way a building looks.
@@ -2364,7 +2383,8 @@ impl Unit {
         }
         if self.role == Role::OrKobra {
             let [ahead, up] = or_kobra_tip(self.popped);
-            return self.on_body((ahead, up, 0.0));
+            let (ahead, side) = or_kobra_swung((ahead, 0.0), self.gun_turn);
+            return self.on_body((ahead, up, side));
         }
         if self.role == Role::OrLaserTank {
             // The crystal on top of its dome.
@@ -2640,6 +2660,7 @@ impl Unit {
             pace: None,
             revealed: 0.0,
             popped: 0.0,
+            gun_turn: 0.0,
             constructing: 0.0,
             facing: Facing::default(),
             deployment: Deployment::Idle,
@@ -2794,6 +2815,7 @@ fn place_unit(
         pace: None,
         revealed: 0.0,
         popped: 0.0,
+        gun_turn: 0.0,
         constructing: 0.0,
         facing: Facing::default(),
         deployment: Deployment::Idle,
@@ -4974,9 +4996,10 @@ fn set_up_or_pack(unit: &mut Unit, dt: f32) {
         let most = dt / if wanted > unit.popped { up } else { down };
         let was = unit.popped;
         unit.popped += (wanted - unit.popped).clamp(-most, most);
-        // Packing up, what it aimed comes down with it.
+        // Packing up, what it aimed comes down with it, and swings back over its nose.
         if unit.popped < was {
             unit.tube_pitch *= unit.popped / was;
+            unit.gun_turn *= unit.popped / was;
         }
     }
 }
@@ -6067,7 +6090,7 @@ mod tests {
         idle.weapon = WeaponKind::Bullet;
         let mut gunner = unit_at(MAP_MIDDLE_X, 2896.0, UnitKind::Infantry);
         gunner.selected = true;
-        gunner.weapon = WeaponKind::Laser;
+        gunner.weapon = WeaponKind::Missile;
         let mut units = [mortar, idle, gunner, plane];
         order_attack(&mut units, 3, &TWO_SIDES);
         assert_eq!(units[0].target, None, "mortars cannot aim up");
@@ -8949,9 +8972,19 @@ mod tests {
         }
         assert_eq!(units[0].popped, 1.0);
         assert!(!units[0].is_setting_up_or_packing());
+        units[0].gun_turn = 2.0;
         switch_deployed(&mut units[0]);
         advance(&mut units, &open_map(), &[0], 0.5);
         assert!(units[0].popped < 1.0, "on its way down");
+        let swung = units[0].gun_turn;
+        assert!(
+            swung > 0.0 && swung < 2.0,
+            "swinging back over its nose: {swung}"
+        );
+        for _ in 0..40 {
+            advance(&mut units, &open_map(), &[0], 0.1);
+        }
+        assert_eq!(units[0].gun_turn, 0.0, "down on its tracks, facing ahead");
     }
 
     #[test]

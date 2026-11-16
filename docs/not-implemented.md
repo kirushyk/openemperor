@@ -42,8 +42,9 @@ we are missing is in [units.md](units.md). This list is about everything else.
   original probably keeps them where they were.
 - **Firing points** are taken from each model's rest pose, with its aim. The barrel's recoil
   during "Fire" is not taken into account.
-- **A deployed Kobra** turns its whole body to aim, as other vehicles do. It does not turn
-  only its turret.
+- **A deployed Kobra** swings its raised cannon round on the model's `gunpivot` at the
+  original's 4° an update and raises it as other guns do. The original's limits of ±190° round
+  and −90°…30° up (`ORKobraDeployedGun`) are not kept, nor its 4° an update for raising.
 - **Lower-detail models**: only the `_H0` models are read.
 - **Invisible units**: their own side sees them painted with the disc's `hackedstealth0–7`
   shimmer, one frame per update and seen through as much as it shows. The original also draws

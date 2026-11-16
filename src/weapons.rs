@@ -284,6 +284,7 @@ impl WeaponKind {
             | WeaponKind::PostGun
             | WeaponKind::Cistern
             | WeaponKind::Plasma
+            | WeaponKind::Laser
             | WeaponKind::Cannon => altitude <= 0.0,
             WeaponKind::Flame | WeaponKind::Gas => altitude <= SPRAY_CEILING,
             WeaponKind::AirMissile => altitude > 0.0,
@@ -2617,9 +2618,15 @@ fn hurt(unit: &mut Unit, damage: f32) {
 fn must_turn_to_fire(unit: &Unit) -> bool {
     unit.weapon.is_armed()
         && unit.weapon != WeaponKind::Repair
-        && !unit.deployed
+        && (!unit.deployed || swings_gun(unit))
         && unit.role != Role::AtAdp
         && unit.kind != UnitKind::Building
+}
+
+/// Whether it swings its gun round on its own, its body staying put: a deployed Kobra, whose
+/// raised cannon turns all the way round on its leg, as the original's `ORKobraDeployedGun`.
+fn swings_gun(unit: &Unit) -> bool {
+    unit.role == Role::OrKobra && unit.deployed
 }
 
 /// Which ways from its nose a sprayer's nozzles point.
@@ -2698,16 +2705,25 @@ fn turn_to_aim(units: &mut [Unit], index: usize, aim: Option<Aim>, dt: f32) -> b
         }
     };
     let (dx, dz) = (goal.0 - units[index].x, goal.2 - units[index].z);
-    // A flame tank turns whichever of its nozzles is nearer onto its aim.
-    let turn = spray_ways(&units[index])
-        .iter()
-        .map(|&way| turn_between(units[index].heading + way, dz.atan2(dx)))
-        .min_by(|a, b| a.abs().total_cmp(&b.abs()))
-        .unwrap_or(0.0);
-    let most = AIM_TURN * dt;
-    let turned = turn.clamp(-most, most);
-    units[index].heading += turned;
     let unit = &mut units[index];
+    let (turn, turned) = if swings_gun(unit) {
+        let turn = turn_between(unit.heading + unit.gun_turn, dz.atan2(dx));
+        let most = crate::units::OR_KOBRA_GUN_TURN * dt;
+        let turned = turn.clamp(-most, most);
+        unit.gun_turn += turned;
+        (turn, turned)
+    } else {
+        // A flame tank turns whichever of its nozzles is nearer onto its aim.
+        let turn = spray_ways(unit)
+            .iter()
+            .map(|&way| turn_between(unit.heading + way, dz.atan2(dx)))
+            .min_by(|a, b| a.abs().total_cmp(&b.abs()))
+            .unwrap_or(0.0);
+        let most = AIM_TURN * dt;
+        let turned = turn.clamp(-most, most);
+        unit.heading += turned;
+        (turn, turned)
+    };
     let pitched = !pitches(unit) || {
         let height = match unit.role {
             Role::AtMinotaurus => CANNON_HEIGHT * unit.stretch()[1],
@@ -3855,12 +3871,65 @@ mod tests {
             "not while its cannon is still going up"
         );
         units[0].popped = 1.0;
-        run(&mut combat, &mut units, 0.2);
+        // Raising it onto its aim first.
+        run(&mut combat, &mut units, 0.5);
         assert_eq!(combat.shells.len(), 1, "one at a time");
         run(&mut combat, &mut units, 6.0);
         assert!(units[1].health < units[1].max_health(), "from that far");
         crate::units::switch_deployed(&mut units[0]);
         assert_eq!(units[0].weapon, WeaponKind::Cannon, "packed up again");
+    }
+
+    #[test]
+    fn a_deployed_kobra_swings_its_cannon_round_onto_its_aim_and_its_body_stays_put() {
+        let mut kobra = as_role(Role::OrKobra, 0.0, 2715.0);
+        crate::units::switch_deployed(&mut kobra);
+        kobra.popped = 1.0;
+        let heading = kobra.heading;
+        // Behind it, to its left.
+        let behind = WeaponKind::Siege.range() * 0.5;
+        let (sin, cos) = (heading + 2.5).sin_cos();
+        let enemy = target_at(behind * cos, 2715.0 + behind * sin);
+        let mut units = [kobra, enemy];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 0.1);
+        assert!(combat.shells.is_empty(), "not before its cannon is round");
+        assert!(units[0].gun_turn != 0.0, "swinging");
+        run(&mut combat, &mut units, 3.0);
+        assert_eq!(units[0].heading, heading, "its body stays put");
+        assert!(
+            crate::units::turn_between(heading + units[0].gun_turn, heading + 2.5).abs() < 0.05,
+            "its cannon is round onto its aim: {}",
+            units[0].gun_turn
+        );
+        assert!(!combat.shells.is_empty() || units[1].health < units[1].max_health());
+        let (x, _, z) = units[0].muzzle();
+        let towards = (z - units[0].z).atan2(x - units[0].x);
+        assert!(
+            crate::units::turn_between(towards, heading + 2.5).abs() < 0.3,
+            "it fires from the cannon's end, swung round"
+        );
+    }
+
+    #[test]
+    fn a_laser_tank_never_fires_at_aircraft() {
+        let mut units = [
+            as_role(Role::OrLaserTank, 0.0, 2715.0),
+            target_at(135.8, 2715.0),
+        ];
+        units[1].kind = UnitKind::Aircraft;
+        units[1].role = Role::AtOrni;
+        units[1].altitude = 135.8;
+        assert!(!units[0].can_fire_on(&units[1]));
+        let health = units[1].health;
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 3.0);
+        assert_eq!(units[1].health, health);
+        units[1].altitude = 0.0;
+        units[1].kind = UnitKind::Vehicle;
+        units[1].role = Role::HkAssault;
+        run(&mut combat, &mut units, 3.0);
+        assert!(units[1].health < health, "but on the ground it does");
     }
 
     /// An anti-aircraft mine of the player's, and an enemy of the given kind and role a way off it.
@@ -4384,13 +4453,20 @@ mod tests {
     }
 
     #[test]
-    fn mortars_cannot_aim_at_aircraft_but_lasers_and_missiles_can() {
-        let mut units = [shooter(WeaponKind::Mortar), plane_at(226.3, 2715.0)];
-        let mut combat = Combat::default();
-        run(&mut combat, &mut units, 2.0);
-        assert!(combat.shells.is_empty(), "held fire");
+    fn mortars_and_lasers_cannot_aim_at_aircraft_but_missiles_can() {
+        for weapon in [WeaponKind::Mortar, WeaponKind::Laser] {
+            let mut units = [shooter(weapon), plane_at(226.3, 2715.0)];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 2.0);
+            assert!(combat.shells.is_empty(), "{weapon:?} held fire");
+            assert_eq!(
+                units[1].health,
+                UnitKind::Aircraft.max_health(),
+                "{weapon:?}"
+            );
+        }
 
-        for weapon in [WeaponKind::Laser, WeaponKind::Missile] {
+        for weapon in [WeaponKind::Missile] {
             let mut units = [shooter(weapon), plane_at(226.3, 2715.0)];
             let mut combat = Combat::default();
             run(&mut combat, &mut units, 3.0);
@@ -5225,8 +5301,9 @@ mod tests {
     }
 
     #[test]
-    fn invisible_bullets_cannot_reach_the_air_but_the_automatic_gun_lasers_and_missiles_can() {
+    fn invisible_bullets_and_lasers_cannot_reach_the_air_but_the_automatic_gun_and_missiles_can() {
         for weapon in [
+            WeaponKind::Laser,
             WeaponKind::Bullet,
             WeaponKind::Sniper,
             WeaponKind::Pistol,
@@ -5236,7 +5313,7 @@ mod tests {
             assert!(weapon.can_target(0.0), "{weapon:?} landed");
             assert!(weapon.can_target(0.0), "{weapon:?}");
         }
-        for weapon in [WeaponKind::AutoGun, WeaponKind::Laser, WeaponKind::Missile] {
+        for weapon in [WeaponKind::AutoGun, WeaponKind::Missile] {
             assert!(weapon.can_target(181.0), "{weapon:?}");
         }
     }

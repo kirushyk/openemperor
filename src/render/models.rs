@@ -3563,9 +3563,14 @@ fn or_kobra(model: &mut Model, unit: &Unit, team: Paint) {
     }
     let pivot = joints[3];
     let [tip, height] = units::or_kobra_tip(unit.popped);
-    let way = [tip - pivot[0], height - pivot[1], 0.0];
-    let back = [pivot[0] - way[0] * 0.7, pivot[1] - way[1] * 0.7, 0.0];
-    let brake = [pivot[0] + way[0] * 0.9, pivot[1] + way[1] * 0.9, 0.0];
+    let way = [tip - pivot[0], height - pivot[1]];
+    // Swung round on the top of its leg as far as it has turned to aim.
+    let swung = |ahead: f32, up: f32| {
+        let (ahead, side) = units::or_kobra_swung((ahead, 0.0), unit.gun_turn);
+        [ahead, up, side]
+    };
+    let back = swung(pivot[0] - way[0] * 0.7, pivot[1] - way[1] * 0.7);
+    let brake = swung(pivot[0] + way[0] * 0.9, pivot[1] + way[1] * 0.9);
     model.tube(tube(back, brake, 0.065), GUNMETAL);
-    model.tube(tube(brake, [tip, height, 0.0], 0.085), GUNMETAL);
+    model.tube(tube(brake, swung(tip, height), 0.085), GUNMETAL);
 }

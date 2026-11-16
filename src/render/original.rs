@@ -408,6 +408,9 @@ const ICONS: &[(Role, Option<Faction>, &str, &str)] = {
     ]
 };
 
+/// The part of a Kobra's model that swings its raised cannon round.
+const SWIVEL: &str = "gunpivot";
+
 /// The construction yard each house's MCV deploys into.
 const CONSTRUCTION_YARDS: [(Faction, &str); 3] = [
     (Faction::Atreides, "Buildings\\AT_conyard_H0.XbF"),
@@ -655,6 +658,8 @@ struct Part {
     slide: [f32; 2],
     /// Whether it is what lifts the barrel, which tilts up as far as the unit aims its tubes.
     lift: bool,
+    /// Whether it is what swings a gun round on its own, as far as the unit has swung it.
+    swivel: bool,
     /// Which of the model's weapon ends it is, for a part that marks one.
     muzzle: Option<usize>,
     /// The faces drawn over what lies behind them, each corner at `uv` on its picture.
@@ -1359,6 +1364,7 @@ fn gather(
             .find(|slide| slide.part == object.name)
             .map_or([0.0; 2], |slide| slide.step),
         lift: !shape.parts.iter().any(|part| part.lift) && object.name.contains("::1"),
+        swivel: object.name == SWIVEL,
         muzzle: object
             .name
             .strip_prefix(MUZZLE_MARK)
@@ -1727,8 +1733,9 @@ fn places(shape: &Shape, unit: &Unit) -> (Place, Place) {
     }
 }
 
-/// Where each part of the model is within it at a frame, the barrel lifted by `pitch`.
-fn pose(shape: &Shape, pitch: f32, frame: usize) -> Vec<[[f32; 4]; 4]> {
+/// Where each part of the model is within it at a frame, the barrel lifted by `pitch` and a
+/// gun that swings on its own swung round by `swing`.
+fn pose(shape: &Shape, pitch: f32, swing: f32, frame: usize) -> Vec<[[f32; 4]; 4]> {
     let (sin, cos) = pitch.sin_cos();
     // Turned about its own across, so that its front, along -z, comes up.
     let lifted = [
@@ -1737,12 +1744,27 @@ fn pose(shape: &Shape, pitch: f32, frame: usize) -> Vec<[[f32; 4]; 4]> {
         [0.0, -sin, cos, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ];
+    // Turned about the up the way the unit turns, which in the model's axes is the other way.
+    let (sin, cos) = (-swing).sin_cos();
+    let swung = [
+        [cos, 0.0, -sin, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [sin, 0.0, cos, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
     let mut worlds: Vec<[[f32; 4]; 4]> = Vec::with_capacity(shape.parts.len());
     for part in &shape.parts {
         let above = part.parent.map_or(&IDENTITY, |parent| &worlds[parent]);
         let at = part.at(frame);
         let at = if part.lift { times(&lifted, &at) } else { at };
-        worlds.push(times(&at, above));
+        let mut world = times(&at, above);
+        // Swung about the model's up, staying where it is, and what sits in it with it.
+        if part.swivel {
+            let stays = world[3];
+            world = times(&world, &swung);
+            world[3] = stays;
+        }
+        worlds.push(world);
     }
     worlds
 }
@@ -1750,12 +1772,19 @@ fn pose(shape: &Shape, pitch: f32, frame: usize) -> Vec<[[f32; 4]; 4]> {
 /// Where the ends of the weapons of the unit's model are on the battlefield, by their numbers,
 /// if it has a model with any.
 pub fn muzzles(unit: &Unit) -> Vec<(f32, f32, f32)> {
-    let Some(shape) = shape_of(unit) else {
-        return Vec::new();
-    };
+    shape_of(unit).map_or_else(Vec::new, |shape| ends_of(shape, unit))
+}
+
+/// Where the ends of the weapons of this model are on the battlefield, drawn for the unit.
+fn ends_of(shape: &Shape, unit: &Unit) -> Vec<(f32, f32, f32)> {
     let (body, head) = places(shape, unit);
     let pivot = shape.pivot.unwrap_or_default();
-    let worlds = pose(shape, unit.tube_pitch, frame(shape, unit, 0.0));
+    let worlds = pose(
+        shape,
+        unit.tube_pitch,
+        unit.gun_turn,
+        frame(shape, unit, 0.0),
+    );
     let mut ends: Vec<(usize, (f32, f32, f32))> = shape
         .parts
         .iter()
@@ -1793,7 +1822,7 @@ pub(super) fn draw(canvas: &mut Canvas, unit: &Unit, team: [f32; 3], time: f32) 
         head,
         frame,
         slid,
-        worlds: pose(shape, unit.tube_pitch, frame),
+        worlds: pose(shape, unit.tube_pitch, unit.gun_turn, frame),
     };
     draw_posed(canvas, shape, &posed, team);
     true
@@ -1825,7 +1854,7 @@ pub(super) fn draw_body(canvas: &mut Canvas, body: &Body, team: [f32; 3]) -> boo
         head,
         frame,
         slid: 0.0,
-        worlds: pose(shape, unit.tube_pitch, frame),
+        worlds: pose(shape, unit.tube_pitch, unit.gun_turn, frame),
     };
     draw_posed(canvas, shape, &posed, team);
     true
@@ -1889,7 +1918,7 @@ pub(super) fn draw_tornado(canvas: &mut Canvas, tornado: &Tornado, time: f32) ->
         head: body,
         frame,
         slid: time * FRAMES_PER_SECOND,
-        worlds: pose(shape, 0.0, frame),
+        worlds: pose(shape, 0.0, 0.0, frame),
     };
     draw_posed(canvas, shape, &posed, [0.0; 3]);
     true
@@ -2113,7 +2142,7 @@ mod tests {
             head: body,
             frame: 0,
             slid: 0.0,
-            worlds: pose(&shape, 0.0, 0),
+            worlds: pose(&shape, 0.0, 0.0, 0),
         };
         let mut canvas = Canvas::default();
         draw_posed(&mut canvas, &shape, &posed, [0.0; 3]);
@@ -2381,6 +2410,35 @@ mod tests {
             assert!((corner.x - x).hypot(corner.z - z) <= reach);
             assert_eq!(corner.y, SPICE_LIFT);
             assert_eq!(corner.picture[2], 3.0);
+        }
+    }
+
+    #[test]
+    fn a_deployed_kobras_cannon_on_the_disc_swings_round_the_way_it_aims() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(index) = archive::from_cabinet(&disc.join(CABINET), INDEX) else {
+            return;
+        };
+        let archive = Archive::open(&index, &disc.join(DATA)).unwrap();
+        let shape = read_shape(&archive, "Units\\OR_Kobra_H0.XBF", &mut HashMap::new()).unwrap();
+        assert!(shape.parts.iter().any(|part| part.swivel));
+        let mut kobra = Unit::for_test(1000.0, 1000.0, UnitKind::Vehicle);
+        kobra.role = Role::OrKobra;
+        crate::units::switch_deployed(&mut kobra);
+        kobra.popped = 1.0;
+        let swivel = shape.parts.iter().position(|part| part.swivel).unwrap();
+        for turn in [0.0, 1.5, -2.5] {
+            kobra.gun_turn = turn;
+            // Seen from what it swings round on.
+            let worlds = pose(&shape, kobra.tube_pitch, turn, frame(&shape, &kobra, 0.0));
+            let at = worlds[swivel][3];
+            let [px, _, pz] = places(&shape, &kobra)
+                .0
+                .point(to_place([at[0], at[1], at[2]]));
+            let (x, _, z) = ends_of(&shape, &kobra)[1];
+            let way = (z - pz).atan2(x - px);
+            let off = crate::units::turn_between(way, kobra.heading + turn);
+            assert!(off.abs() < 0.2, "swung {turn}: off by {off}");
         }
     }
 }

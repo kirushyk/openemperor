@@ -9,9 +9,9 @@ use crate::game::Faction;
 use std::f32::consts::{PI, TAU};
 
 use crate::units::{
-    BURNS_PAST, CANNON_HEIGHT, CANNON_SIDES, CONSTRUCTION_DOWN, CONSTRUCTION_UP, Point,
-    ROCKET_SIDES, Role, SMOKES_PAST, TUBE_HEIGHT, Target, Unit, UnitKind, Wound, are_enemies,
-    are_friends, distance, substeps, turn_between,
+    Armour, BURNS_PAST, CANNON_HEIGHT, CANNON_SIDES, CONSTRUCTION_DOWN, CONSTRUCTION_UP,
+    HEALTH_SCALE, Point, ROCKET_SIDES, Role, SMOKES_PAST, TUBE_HEIGHT, Target, Unit, UnitKind,
+    Wound, are_enemies, are_friends, distance, substeps, turn_between,
 };
 
 /// A unit with nothing in range looks again this often, in seconds.
@@ -36,7 +36,6 @@ const SHELL_BLAST_RADIUS: f32 = 72.41;
 const EYE_BOMBS: usize = 6;
 const BOMB_SPREAD: f32 = 99.56;
 const BOMB_BLAST_RADIUS: f32 = 108.6;
-const BOMB_ON_BUILDINGS: f32 = 3.0;
 const BOMB_GRAVITY: f32 = 407.3;
 /// How near an enemy aircraft has to come to an anti-aircraft mine to set it off, and how many rockets
 /// it bursts into.
@@ -152,9 +151,12 @@ impl Superweapon {
 
 /// How long an invisible unit stays seen after it fires.
 pub const REVEAL_SECONDS: f32 = 4.0;
-/// How far a saboteur's explosion reaches, and how much it harms whoever it reaches.
+/// How far a saboteur's explosion reaches.
 pub const OR_SABOTEUR_BLAST_RADIUS: f32 = 144.8;
-const OR_SABOTEUR_DAMAGE: f32 = 450.0;
+/// What a saboteur's and an infiltrator's bombs do: the original's SaboteurBomb and
+/// InfiltratorDeath, the same all the way out.
+const OR_SABOTEUR_BOMB: Bullet = Bullet::new(3000, Warhead::Howitzer, 0);
+const IX_INFILTRATOR_BOMB: Bullet = Bullet::new(1500, Warhead::Howitzer, 0);
 /// How far ahead of a buzzsaw's middle its blade spins, how far it reaches from there, and
 /// how much it harms the infantry it cuts each second.
 pub const SAW_AHEAD: f32 = 0.42;
@@ -389,52 +391,39 @@ impl WeaponKind {
         }
     }
 
-    fn damage(self) -> f32 {
+    /// The original's bullet for it, as fired by what carries it most.
+    fn bullet(self) -> Bullet {
+        use Warhead::*;
         match self {
-            WeaponKind::Bullet => 12.0,
-            WeaponKind::Missile => 60.0,
-            WeaponKind::Laser => 25.0,
-            WeaponKind::Mortar => 70.0,
-            WeaponKind::Rockets => 35.0,
-            WeaponKind::HeavyRockets => 130.0,
-            WeaponKind::Bombard | WeaponKind::Siege => 90.0,
-            WeaponKind::Sniper => 90.0,
-            WeaponKind::Pistol => 8.0,
-            WeaponKind::Cannon => 80.0,
-            WeaponKind::AutoGun | WeaponKind::PostGun | WeaponKind::TowerGun => 6.0,
-            WeaponKind::Cistern => 5.0,
-            WeaponKind::RapidLaser => 9.0,
-            WeaponKind::Plasma => 140.0,
-            WeaponKind::TowerRockets => 45.0,
-            WeaponKind::AirMissile => 60.0,
-            WeaponKind::Flame => 10.0,
-            WeaponKind::Gas => 6.0,
-            WeaponKind::Bomb => 150.0,
-            WeaponKind::Repair | WeaponKind::Unarmed => 0.0,
+            WeaponKind::Bullet => Bullet::new(219, Lmg, 30),
+            WeaponKind::Missile => Bullet::new(425, Heat, 30),
+            WeaponKind::Laser => Bullet::new(400, Laser, 40),
+            WeaponKind::Mortar => Bullet::new(750, Howitzer, 100),
+            WeaponKind::Rockets => Bullet::new(425, Heat, 180),
+            WeaponKind::HeavyRockets => Bullet::new(500, HeatAir, 60),
+            WeaponKind::Bombard | WeaponKind::Siege => Bullet::new(600, Howitzer, 120),
+            WeaponKind::Sniper => Bullet::new(600, Cal50, 76),
+            WeaponKind::Pistol => Bullet::new(100, Lmg, 50),
+            WeaponKind::Cannon => Bullet::new(500, Gun80mm, 30),
+            WeaponKind::AutoGun => Bullet::new(150, AntiAir, 10),
+            WeaponKind::TowerGun => Bullet::new(400, AntiAir, 100),
+            WeaponKind::PostGun => Bullet::new(600, Hmg, 25),
+            WeaponKind::Cistern => Bullet::new(500, Flame, 75),
+            WeaponKind::RapidLaser => Bullet::new(550, PopUp, 60),
+            WeaponKind::Plasma => Bullet::new(813, DevPlasma, 60),
+            WeaponKind::TowerRockets => Bullet::new(250, Heat, 45),
+            WeaponKind::AirMissile => Bullet::new(800, HeatAir, 30),
+            WeaponKind::Flame => Bullet::new(250, Flame, 30),
+            WeaponKind::Gas => Bullet::new(250, Flame, 40),
+            WeaponKind::Bomb => Bullet::new(400, Howitzer, 30),
+            WeaponKind::Repair | WeaponKind::Unarmed => Bullet::new(0, Whole, 30),
         }
     }
 
-    /// Small arms barely scratch armor or walls.
-    fn damage_to(self, kind: UnitKind) -> f32 {
-        match (self, kind) {
-            (
-                WeaponKind::Bullet
-                | WeaponKind::Pistol
-                | WeaponKind::Sniper
-                | WeaponKind::AutoGun
-                | WeaponKind::PostGun
-                | WeaponKind::TowerGun
-                | WeaponKind::Gas,
-                UnitKind::Vehicle | UnitKind::Tower | UnitKind::Building,
-            ) => self.damage() * 0.25,
-            (WeaponKind::Flame, UnitKind::Vehicle | UnitKind::Tower | UnitKind::Building) => {
-                self.damage() * 0.5
-            }
-            (WeaponKind::Bomb, UnitKind::Tower | UnitKind::Building) => {
-                self.damage() * BOMB_ON_BUILDINGS
-            }
-            _ => self.damage(),
-        }
+    /// What it does to unarmoured infantry, in our scale of health.
+    #[cfg(test)]
+    fn damage(self) -> f32 {
+        self.bullet().damage_to(Armour::None)
     }
 }
 
@@ -444,6 +433,8 @@ pub struct Shooter {
     id: u32,
     owner: usize,
     power: f32,
+    /// What it fired.
+    bullet: Bullet,
 }
 
 impl Shooter {
@@ -452,8 +443,118 @@ impl Shooter {
             id: unit.id,
             owner: unit.owner,
             power: unit.attack_power(),
+            bullet: bullet_of(unit),
         }
     }
+
+    /// What its shot does to one made of this, in our scale of health.
+    fn damage_to(&self, armour: Armour) -> f32 {
+        self.bullet.damage_to(armour) * self.power
+    }
+}
+
+/// The original's warheads, from its `[WarheadTypes]`: each hurts each armour by its own share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Warhead {
+    Lmg,
+    Hmg,
+    Cal50,
+    Gun80mm,
+    Flame,
+    Howitzer,
+    Heat,
+    AntiAir,
+    HeatAir,
+    HeatInf,
+    Laser,
+    PopUp,
+    DevPlasma,
+    DevRocket,
+    /// What a bullet with no warhead of its own does: all of its damage to anyone.
+    Whole,
+}
+
+impl Warhead {
+    /// The share of a hit's damage it does to what is made of this, as the original's table
+    /// has it in percent for None, Earplugs, BPV, Light, Medium, Heavy, Concrete, Walls,
+    /// Building, CY, Harvester, Invulnerable and Aircraft.
+    pub fn share_against(self, armour: Armour) -> f32 {
+        let percent: [u8; 13] = match self {
+            Warhead::Lmg => [100, 100, 70, 70, 50, 40, 100, 20, 5, 5, 5, 0, 45],
+            Warhead::Hmg => [100, 100, 85, 45, 35, 20, 100, 30, 30, 25, 35, 0, 35],
+            Warhead::Cal50 => [100, 100, 80, 8, 5, 2, 60, 1, 3, 1, 2, 0, 8],
+            Warhead::Gun80mm => [10, 10, 5, 100, 90, 85, 100, 50, 50, 25, 30, 0, 60],
+            Warhead::Flame => [100, 100, 80, 20, 15, 3, 100, 20, 15, 10, 5, 0, 60],
+            Warhead::Howitzer => [100, 100, 80, 70, 50, 30, 60, 50, 70, 25, 30, 0, 40],
+            Warhead::Heat => [20, 20, 10, 65, 90, 100, 100, 75, 60, 30, 50, 0, 85],
+            Warhead::AntiAir => [30, 20, 15, 65, 70, 80, 100, 75, 15, 15, 20, 0, 100],
+            Warhead::HeatAir => [20, 20, 10, 60, 70, 75, 100, 75, 70, 30, 50, 0, 100],
+            Warhead::HeatInf => [10, 10, 5, 65, 90, 100, 100, 75, 60, 30, 50, 0, 85],
+            Warhead::Laser => [10, 10, 10, 65, 90, 100, 100, 75, 40, 25, 50, 0, 65],
+            Warhead::PopUp => [8, 8, 5, 65, 90, 100, 100, 75, 40, 25, 50, 0, 65],
+            Warhead::DevPlasma => [40, 40, 25, 60, 100, 100, 100, 100, 75, 40, 100, 0, 60],
+            Warhead::DevRocket => [10, 10, 8, 50, 80, 100, 100, 70, 40, 20, 50, 0, 80],
+            Warhead::Whole => [100; 13],
+        };
+        f32::from(percent[armour as usize]) / 100.0
+    }
+}
+
+/// What a weapon fires, as the original's bullet for it: its `Damage`, its warhead, and the
+/// `ReloadCount` of the turret firing it, in seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bullet {
+    damage: f32,
+    warhead: Warhead,
+    reload: f32,
+}
+
+impl Bullet {
+    const fn new(damage: u32, warhead: Warhead, reload_updates: u32) -> Self {
+        Bullet {
+            damage: damage as f32,
+            warhead,
+            reload: reload_updates as f32 / crate::units::UPDATES_PER_SECOND,
+        }
+    }
+
+    /// What it does to one made of this, in our scale of health.
+    pub fn damage_to(self, armour: Armour) -> f32 {
+        self.damage * self.warhead.share_against(armour) / HEALTH_SCALE
+    }
+}
+
+/// What a unit fires with the weapon it has now: its own turret's bullet in the original, or
+/// for one we arm otherwise, that weapon's usual one.
+pub fn bullet_of(unit: &Unit) -> Bullet {
+    use Warhead::*;
+    let own = match (unit.role, unit.weapon) {
+        (Role::AtSniper, WeaponKind::Sniper) => Some(Bullet::new(600, Cal50, 76)),
+        (Role::FrFremen, WeaponKind::Sniper) => Some(Bullet::new(600, Cal50, 40)),
+        (Role::AtKindjal | Role::Engineer, WeaponKind::Pistol) => Some(Bullet::new(100, Lmg, 50)),
+        (Role::OrMortar, WeaponKind::Pistol) => Some(Bullet::new(100, Lmg, 45)),
+        (Role::AtKindjal, _) => Some(Bullet::new(500, Gun80mm, 50)),
+        (Role::OrMortar, WeaponKind::Mortar) => Some(Bullet::new(375, Howitzer, 45)),
+        (Role::GuMaker, _) => Some(Bullet::new(600, Howitzer, 30)),
+        (Role::OrKobra, WeaponKind::Cannon) => Some(Bullet::new(300, Howitzer, 30)),
+        (Role::AtTrike | Role::OrDustScout, _) => Some(Bullet::new(350, Lmg, 50)),
+        (Role::HkBuzzsaw, WeaponKind::Bullet) => Some(Bullet::new(350, Lmg, 40)),
+        (Role::HkFlame, WeaponKind::Flame) => Some(Bullet::new(125, Flame, 60)),
+        (Role::HkFlameTurret, _) => Some(Bullet::new(500, Flame, 30)),
+        (Role::HkDevastator, WeaponKind::Rockets) => Some(Bullet::new(600, DevRocket, 80)),
+        (Role::AtOrni, _) => Some(Bullet::new(200, HeatAir, 30)),
+        (Role::HkTrooper, _) => Some(Bullet::new(375, HeatInf, 100)),
+        (Role::OrApc, _) => Some(Bullet::new(200, Heat, 50)),
+        (Role::AtMongoose, _) => Some(Bullet::new(425, Heat, 30)),
+        (Role::ImSardaukar, _) => Some(Bullet::new(600, Hmg, 20)),
+        (Role::TlContaminator, _) => Some(Bullet::new(10, Whole, 30)),
+        // Its bombs, the original's EITSBomb_B.
+        (Role::OrEits, _) => Some(Bullet::new(400, Howitzer, 30)),
+        // Its six rockets, the original's HEATADP_B.
+        (Role::OrAdp, _) => Some(Bullet::new(480, HeatAir, 30)),
+        _ => None,
+    };
+    own.unwrap_or_else(|| unit.weapon.bullet())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1907,7 +2008,13 @@ impl Combat {
             let second = units[i].second_tube;
             self.hear(&units[i], Made::Fired { second });
         }
-        units[i].cooldown = weapon.cooldown();
+        // A salvo or a spray keeps its own rhythm; anything else reloads as the original's
+        // turret does.
+        units[i].cooldown = if weapon.salvo().is_some() || weapon.spray_angle().is_some() {
+            weapon.cooldown()
+        } else {
+            bullet_of(&units[i]).reload
+        };
         // Firing gives an invisible unit away for a while.
         units[i].revealed = REVEAL_SECONDS;
         if units[i].role.rocket_load().is_some() {
@@ -2083,7 +2190,11 @@ impl Combat {
                 let off_center = turn_between(heading, dz.atan2(dx)).abs();
                 let widened = half_angle + (other.radius() / away.max(0.004525)).min(1.0).asin();
                 if away <= reach + other.radius() && off_center <= widened {
-                    hit(units, index, unit.weapon, Shooter::of(&unit), teams);
+                    // A spray hits each time it goes round, so each hit is the share of the
+                    // original's shot that falls in that time.
+                    let mut shooter = Shooter::of(&unit);
+                    shooter.power *= unit.weapon.cooldown() / shooter.bullet.reload;
+                    hit(units, index, unit.weapon, shooter, teams);
                 }
             }
             if unit.role == Role::HkFlameTurret {
@@ -2258,14 +2369,18 @@ impl Combat {
                 continue;
             }
             let center = units[i].center();
-            let shooter = Shooter::of(&units[i]);
+            let mut shooter = Shooter::of(&units[i]);
+            shooter.bullet = if units[i].role == Role::IxInfiltrator {
+                IX_INFILTRATOR_BOMB
+            } else {
+                OR_SABOTEUR_BOMB
+            };
             hurt(&mut units[i], f32::INFINITY);
             for index in (0..units.len()).filter(|&index| index != i) {
                 let away = distance(center, units[index].center()) - units[index].radius();
                 if units[index].alive && away <= OR_SABOTEUR_BLAST_RADIUS {
-                    // Strongest in the middle, half as strong at the edge.
-                    let share = 1.0 - 0.5 * (away / OR_SABOTEUR_BLAST_RADIUS).max(0.0);
-                    harm(units, index, OR_SABOTEUR_DAMAGE * share, shooter, teams);
+                    let damage = shooter.damage_to(units[index].armour());
+                    harm(units, index, damage, shooter, teams);
                 }
             }
             self.explode(center, OR_SABOTEUR_BLAST_RADIUS);
@@ -2387,8 +2502,8 @@ impl Combat {
                     WeaponKind::HeavyRockets | WeaponKind::Plasma
                 ) {
                     // It hurts the shooter's enemies around its target as well, by half.
-                    let damage = missile.weapon.damage() * missile.shooter.power * 0.5;
                     for index in (0..units.len()).filter(|&index| index != t) {
+                        let damage = missile.shooter.damage_to(units[index].armour()) * 0.5;
                         let reach = HEAVY_BLAST_RADIUS + units[index].radius();
                         if units[index].alive
                             && are_enemies(teams, missile.shooter.owner, units[index].owner)
@@ -2445,9 +2560,8 @@ impl Combat {
                     let away = distance(landing, unit.center());
                     let reach = blast_radius + unit.radius();
                     if away < reach {
-                        let damage = shell.weapon.damage_to(unit.kind)
-                            * shell.shooter.power
-                            * (1.0 - away / reach * 0.5);
+                        let damage =
+                            shell.shooter.damage_to(unit.armour()) * (1.0 - away / reach * 0.5);
                         units[index].wound = shell.weapon.wound();
                         harm(units, index, damage, shell.shooter, teams);
                     }
@@ -2528,7 +2642,7 @@ fn strike(
 }
 
 fn hit(units: &mut [Unit], victim: usize, weapon: WeaponKind, shooter: Shooter, teams: &[usize]) {
-    let damage = weapon.damage_to(units[victim].kind) * shooter.power;
+    let damage = shooter.damage_to(units[victim].armour());
     units[victim].wound = weapon.wound();
     harm(units, victim, damage, shooter, teams);
 }
@@ -3188,7 +3302,8 @@ mod tests {
 
     #[test]
     fn heavy_rockets_hit_far_harder_and_hurt_enemies_around_the_target_but_not_friends() {
-        assert!(WeaponKind::HeavyRockets.damage() > WeaponKind::Rockets.damage() * 3.0);
+        // The original's gunship rocket against its missile tank's.
+        assert!(WeaponKind::HeavyRockets.bullet().damage > WeaponKind::Rockets.bullet().damage);
         let mut machine = Unit::for_test(0.0, 2715.0, UnitKind::Aircraft);
         machine.role = Role::HkGunship;
         machine.weapon = WeaponKind::HeavyRockets;
@@ -3677,7 +3792,8 @@ mod tests {
     fn an_enemy_scout_in_range_is_fired_on_unprompted_though_it_cannot_be_ordered_attacked() {
         let mut scout = target_at(90.5, 2715.0);
         scout.role = Role::Scout;
-        scout.health = scout.max_health();
+        // Enough to live through a shot: one of a rifle's kills a whole scout.
+        scout.health = WeaponKind::Bullet.damage() * 2.0;
         let rifle = shooter(WeaponKind::Bullet);
         assert!(
             !rifle.can_attack(&scout, &TEAMS),
@@ -4151,9 +4267,12 @@ mod tests {
         run(&mut combat, &mut units, 0.1);
         let after_one = units[1].health;
         assert_eq!(after_one, 100.0 - WeaponKind::Bullet.damage());
-        run(&mut combat, &mut units, 0.4);
+        // The original's infantry rifle reloads for 30 updates.
+        let reload = WeaponKind::Bullet.bullet().reload;
+        assert_eq!(reload, 1.2);
+        run(&mut combat, &mut units, reload - 0.3);
         assert_eq!(units[1].health, after_one, "still reloading");
-        run(&mut combat, &mut units, 0.3);
+        run(&mut combat, &mut units, 0.4);
         assert!(units[1].health < after_one, "fires again");
     }
 
@@ -4166,12 +4285,29 @@ mod tests {
     }
 
     #[test]
-    fn bullets_barely_hurt_vehicles_and_other_weapons_do() {
-        assert!(WeaponKind::Bullet.damage_to(UnitKind::Vehicle) < WeaponKind::Bullet.damage());
+    fn each_warhead_hurts_each_armour_by_the_originals_share() {
+        let against = |weapon: WeaponKind, armour| weapon.bullet().damage_to(armour);
+        // An infantry rifle's 219, all of it on a soldier, 40% on heavy armour, in our scale.
         assert_eq!(
-            WeaponKind::Mortar.damage_to(UnitKind::Vehicle),
-            WeaponKind::Mortar.damage()
+            against(WeaponKind::Bullet, Armour::None),
+            219.0 / HEALTH_SCALE
         );
+        assert_eq!(
+            against(WeaponKind::Bullet, Armour::Heavy),
+            219.0 * 0.4 / HEALTH_SCALE
+        );
+        // An 80mm gun the other way round.
+        assert!(
+            against(WeaponKind::Cannon, Armour::Heavy)
+                > against(WeaponKind::Cannon, Armour::None) * 8.0
+        );
+        assert_eq!(Warhead::AntiAir.share_against(Armour::Aircraft), 1.0);
+        assert_eq!(Warhead::Cal50.share_against(Armour::Heavy), 0.02);
+        // Three of the rifle's shots kill a soldier, as in the original: 600 health.
+        let soldier = Unit::for_test(0.0, 0.0, UnitKind::Infantry);
+        assert_eq!(soldier.max_health(), 600.0 / HEALTH_SCALE);
+        assert_eq!(soldier.armour(), Armour::None);
+        assert!(against(WeaponKind::Bullet, Armour::None) * 3.0 >= soldier.max_health());
     }
 
     #[test]
@@ -4659,7 +4795,8 @@ mod tests {
 
     #[test]
     fn a_tower_is_destroyed_by_enough_fire_and_bullets_barely_scratch_it() {
-        assert!(WeaponKind::Bullet.damage_to(UnitKind::Tower) < WeaponKind::Bullet.damage());
+        let rifle = WeaponKind::Bullet.bullet();
+        assert!(rifle.damage_to(Armour::Heavy) < rifle.damage_to(Armour::None) / 2.0);
         let mut enemy_tower = tower();
         enemy_tower.owner = 1;
         enemy_tower.cooldown = 100_000.0;
@@ -4723,7 +4860,7 @@ mod tests {
     #[test]
     fn a_sniper_fires_slower_than_a_bullet_but_farther_and_harder() {
         let (sniper, bullet) = (WeaponKind::Sniper, WeaponKind::Bullet);
-        assert!(sniper.cooldown() > bullet.cooldown());
+        assert!(sniper.bullet().reload > bullet.bullet().reload);
         assert!(sniper.range() > bullet.range());
         assert!(sniper.damage() > bullet.damage());
     }
@@ -4731,9 +4868,10 @@ mod tests {
     #[test]
     fn a_pistol_is_weak_and_slow_and_a_cannon_much_stronger_even_against_armor() {
         let (pistol, cannon, bullet) = (WeaponKind::Pistol, WeaponKind::Cannon, WeaponKind::Bullet);
-        assert!(pistol.damage() < bullet.damage() && pistol.cooldown() > bullet.cooldown());
-        assert!(cannon.damage() > bullet.damage() * 4.0);
-        assert_eq!(cannon.damage_to(UnitKind::Vehicle), cannon.damage());
+        assert!(pistol.damage() < bullet.damage());
+        assert!(pistol.bullet().reload > bullet.bullet().reload);
+        let on_heavy = |weapon: WeaponKind| weapon.bullet().damage_to(Armour::Heavy);
+        assert!(on_heavy(cannon) > on_heavy(bullet) * 4.0);
     }
 
     #[test]
@@ -4768,7 +4906,7 @@ mod tests {
             combat.beams.iter().all(|b| b.repair) && !combat.beams.is_empty()
                 || units[1].health > 50.0
         );
-        run(&mut combat, &mut units, 30.0);
+        run(&mut combat, &mut units, 60.0);
         assert_eq!(units[1].health, units[1].max_health());
     }
 
@@ -5152,20 +5290,17 @@ mod tests {
 
     #[test]
     fn a_kill_earns_experience_by_what_was_killed_and_a_hit_alone_earns_none() {
-        for (kind, health) in [
-            (UnitKind::Infantry, 12.0),
-            (UnitKind::Vehicle, 3.0),
-            (UnitKind::Tower, 3.0),
-        ] {
+        for kind in [UnitKind::Infantry, UnitKind::Vehicle, UnitKind::Tower] {
             let mut enemy = target_at(90.5, 2715.0);
             enemy.kind = kind;
-            enemy.health = health * 2.0;
+            // Two shots' worth.
+            enemy.health = WeaponKind::Bullet.bullet().damage_to(enemy.armour()) * 1.5;
             let mut units = [shooter(WeaponKind::Bullet), enemy];
             let mut combat = Combat::default();
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
             assert!(units[1].alive, "{kind:?}");
             assert_eq!(units[0].experience, 0, "{kind:?} only hit");
-            run(&mut combat, &mut units, 1.0);
+            run(&mut combat, &mut units, 1.5);
             assert!(!units[1].alive, "{kind:?}");
             assert_eq!(units[0].experience, kind.kill_value(), "{kind:?}");
         }
@@ -5636,10 +5771,11 @@ mod tests {
                 combat.shells.is_empty() && combat.beams.is_empty(),
                 "{role:?} not up yet"
             );
+            let before = units[1].health;
             run(&mut combat, &mut units, 1.0);
             assert_eq!(units[0].popped, 1.0);
             assert!(
-                !combat.shells.is_empty() || !combat.beams.is_empty(),
+                !combat.shells.is_empty() || !combat.beams.is_empty() || units[1].health < before,
                 "{role:?}"
             );
             assert!(units[0].muzzle().1 > low);
@@ -5713,7 +5849,8 @@ mod tests {
     #[test]
     fn its_shells_are_tracers_hitting_harder_than_an_inkvine_catapults_and_leave_a_path_behind_them()
      {
-        assert!(WeaponKind::Bombard.damage() > WeaponKind::Mortar.damage());
+        // The original's Minotaurus shell, 600, and the Inkvine's, 750.
+        assert!(WeaponKind::Bombard.bullet().damage < WeaponKind::Mortar.bullet().damage);
         assert!(!WeaponKind::Bombard.can_target(181.0));
         assert!(!WeaponKind::Bombard.fires_on_move());
         let mut units = [at_minotaurus_facing_east(), target_at(452.5, 2715.0)];
@@ -5926,7 +6063,15 @@ mod tests {
 
     #[test]
     fn a_rocket_hurts_less_than_a_missile() {
-        assert!(WeaponKind::Rockets.damage() < WeaponKind::Missile.damage());
+        // The original's missile tank and Mongoose fire the same HEAT_B; an ornithopter's
+        // rockets are its weaker TrailMissile_B.
+        assert_eq!(WeaponKind::Rockets.damage(), WeaponKind::Missile.damage());
+        let mut orni = Unit::for_test(0.0, 0.0, UnitKind::Aircraft);
+        (orni.role, orni.weapon) = (Role::AtOrni, WeaponKind::Rockets);
+        assert!(
+            bullet_of(&orni).damage_to(Armour::Heavy)
+                < WeaponKind::Missile.bullet().damage_to(Armour::Heavy)
+        );
         let mut units = [hk_missile_facing_east(), target_at(226.3, 2715.0)];
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);

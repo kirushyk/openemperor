@@ -156,13 +156,16 @@ impl UnitKind {
         if self.flies() { CRUISE_ALTITUDE } else { 0.0 }
     }
 
+    /// What a unit made for a test with nothing but its kind can take: as much as the role
+    /// such a unit has.
+    #[cfg(test)]
     pub fn max_health(self) -> f32 {
         match self {
-            UnitKind::Infantry => 100.0,
-            UnitKind::Vehicle => 300.0,
-            UnitKind::Aircraft => 150.0,
-            UnitKind::Tower => 600.0,
-            UnitKind::Building => 800.0,
+            UnitKind::Infantry => 600.0 / HEALTH_SCALE,
+            UnitKind::Vehicle => 2400.0 / HEALTH_SCALE,
+            UnitKind::Aircraft => 900.0 / HEALTH_SCALE,
+            UnitKind::Tower => 4000.0 / HEALTH_SCALE,
+            UnitKind::Building => 2500.0 / HEALTH_SCALE,
         }
     }
 }
@@ -416,6 +419,30 @@ pub enum Role {
     IxInfiltrator,
     /// The Guild's machine, lobbing a heavy shell far off.
     GuMaker,
+}
+
+/// How many times the original's health and damage are ours: its infantry's 600 are our 100.
+pub const HEALTH_SCALE: f32 = 6.0;
+
+/// What a unit is made of, as the original's `[ArmourTypes]`, in its order: each warhead
+/// hurts each of them by its own share. Concrete, walls and the invulnerable are there for
+/// that order: nothing of ours is made of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum Armour {
+    None,
+    Earplugs,
+    Bpv,
+    Light,
+    Medium,
+    Heavy,
+    Concrete,
+    Walls,
+    Building,
+    Cy,
+    Harvester,
+    Invulnerable,
+    Aircraft,
 }
 
 /// The grid squares a building takes up, lined up with the map's grid: `cols` squares along x
@@ -752,49 +779,78 @@ impl Role {
         }
     }
 
+    /// How much it takes to destroy one: the original's `Health`, in our scale of it. Where
+    /// the original's houses differ, the most of them have: its Harkonnen engineer has 600, and
+    /// its Atreides outpost 100.
     fn max_health(self) -> f32 {
+        let original = match self {
+            Role::Scout => 200.0,
+            Role::Engineer => 400.0,
+            Role::AtInfantry
+            | Role::AtSniper
+            | Role::AtKindjal
+            | Role::HkLightInf
+            | Role::OrSaboteur => 600.0,
+            Role::HkTrooper => 300.0,
+            Role::OrMortar => 700.0,
+            Role::HkFlamer | Role::FrFremen | Role::IxInfiltrator | Role::OrLaserTank => 800.0,
+            Role::OrChemical => 575.0,
+            Role::ImSardaukar => 900.0,
+            Role::TlContaminator | Role::GuMaker | Role::Wall => 1000.0,
+            Role::HkAssault => 2400.0,
+            Role::AtRepairUnit | Role::HkMissile | Role::OrAdp | Role::OrDustScout => 1100.0,
+            Role::Mcv => 4500.0,
+            Role::Harvester => 3500.0,
+            Role::HkInkVine | Role::Helipad | Role::FrCamp => 2000.0,
+            Role::AtMongoose | Role::Carryall | Role::AtOrni => 1600.0,
+            Role::AtMinotaurus | Role::Barracks => 2500.0,
+            Role::AdvCarryall => 900.0,
+            Role::HkAdp | Role::AtAdp | Role::AtTrike | Role::AtApc => 1200.0,
+            Role::HkGunship => 2600.0,
+            Role::OrEits => 1750.0,
+            Role::HkBuzzsaw => 1300.0,
+            Role::HkFlame => 1800.0,
+            Role::HkDevastator | Role::GuPalace => 5000.0,
+            Role::OrKobra | Role::HkGunTurret | Role::OrPopUpTurret | Role::Refinery => 3000.0,
+            Role::Palace(_) => 3000.0,
+            Role::OrApc => 500.0,
+            Role::AtRocketTurret | Role::Factory | Role::TlFleshVat | Role::IxResCentre => 4000.0,
+            Role::HkFlameTurret | Role::AtPillbox | Role::OrGasTurret => 2700.0,
+            Role::Hanger => 3500.0,
+            Role::Outpost => 2500.0,
+            Role::ImBarracks => 3200.0,
+        };
+        original / HEALTH_SCALE
+    }
+
+    /// What one of this house's is made of, which decides how much each warhead hurts it: the
+    /// original's `Armour`.
+    pub fn armour(self) -> Armour {
         match self {
-            Role::Scout => 60.0,
-            Role::AtSniper => 70.0,
-            Role::Engineer => 80.0,
-            Role::AtKindjal | Role::HkLightInf => 120.0,
-            Role::OrSaboteur => 80.0,
-            Role::AtTrike => 160.0,
-            Role::HkBuzzsaw => 340.0,
-            Role::HkFlame => 320.0,
-            Role::HkDevastator => 2400.0,
-            Role::OrDustScout => 150.0,
-            Role::OrLaserTank => 260.0,
-            Role::OrKobra => 380.0,
-            Role::OrApc => 450.0,
-            Role::AtApc => 400.0,
-            Role::AtRepairUnit => 200.0,
-            Role::Mcv => 1200.0,
-            Role::Harvester => 500.0,
-            Role::Refinery => 1000.0,
-            Role::HkInkVine | Role::HkMissile => 180.0,
-            Role::AtMongoose => 220.0,
-            Role::AtMinotaurus => 450.0,
-            Role::HkAdp => 200.0,
-            Role::AtAdp => 80.0,
-            Role::OrAdp => 60.0,
-            Role::OrEits => 300.0,
-            Role::HkGunship => 320.0,
-            Role::Helipad => 400.0,
-            Role::Palace(_) => 1200.0,
-            Role::GuPalace => 2000.0,
-            Role::ImBarracks => 1000.0,
-            Role::FrCamp => 650.0,
-            // The original's 1000, scaled as its other buildings are.
-            Role::Wall => 330.0,
-            Role::FrFremen => 130.0,
-            Role::ImSardaukar => 150.0,
-            Role::TlContaminator => 170.0,
-            Role::IxInfiltrator => 200.0,
-            Role::GuMaker => 250.0,
-            Role::HkFlameTurret => 500.0,
-            Role::AtPillbox | Role::OrGasTurret | Role::OrPopUpTurret => 450.0,
-            _ => self.kind().max_health(),
+            Role::HkFlamer | Role::ImSardaukar => Armour::Bpv,
+            Role::FrFremen => Armour::Earplugs,
+            _ if self.kind() == UnitKind::Infantry => Armour::None,
+            Role::HkAssault
+            | Role::Mcv
+            | Role::HkInkVine
+            | Role::HkMissile
+            | Role::AtMinotaurus
+            | Role::HkDevastator
+            | Role::OrKobra => Armour::Heavy,
+            Role::AtRepairUnit
+            | Role::AtMongoose
+            | Role::AdvCarryall
+            | Role::Carryall
+            | Role::HkFlame
+            | Role::OrLaserTank
+            | Role::AtApc
+            | Role::GuMaker => Armour::Medium,
+            Role::Harvester => Armour::Harvester,
+            Role::HkAdp | Role::AtAdp | Role::AtOrni | Role::HkGunship => Armour::Aircraft,
+            Role::Palace(_) | Role::GuPalace => Armour::Cy,
+            _ if self.kind() == UnitKind::Tower => Armour::Heavy,
+            _ if self.kind() == UnitKind::Building => Armour::Building,
+            _ => Armour::Light,
         }
     }
 
@@ -2012,6 +2068,16 @@ impl Unit {
 
     pub fn max_health(&self) -> f32 {
         self.role.max_health() * (1.0 + RANK_HEALTH * self.rank() as f32)
+    }
+
+    /// What it is made of: a deployed MCV as the original's construction yard. It keeps the
+    /// MCV's health, 4500 against the yard's 4000, so as not to change it on deploying.
+    pub fn armour(&self) -> Armour {
+        if self.role == Role::Mcv && self.deployed {
+            Armour::Cy
+        } else {
+            self.role.armour()
+        }
     }
 
     /// What its damage is multiplied by.

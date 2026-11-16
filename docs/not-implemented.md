@@ -83,6 +83,30 @@ we are missing is in [units.md](units.md). This list is about everything else.
 - **Groups and the stairs**: a group with any vehicle in it is only sent to spots vehicles can
   reach, even its infantry.
 
+## Weapons
+
+Health, armour and damage are the original's `Rules.txt` ones, divided by six so that its
+infantry's 600 are our 100: each unit's `Health` and `Armour`, each turret's bullet `Damage`
+and its warhead's share against each armour from `[WarheadTypes]`, and each turret's
+`ReloadCount` at 25 updates a second. Not done yet:
+
+- **Salvos and sprays** keep our own rhythm: the missile tank's, ornithopter's, gunship's and
+  rocket turret's salvos and the Minotaurus's four cannons, and flame and gas sprays. A spray
+  hit is the share of the original's shot that falls in its time.
+- **Our own numbers** are still used for the gas a cistern leaves, the Tleilaxu's poison, the
+  buzzsaw's saw, the superweapons (`DeathHandBomb`, `Hawk_B` and the Ordos beam), and the
+  falloff of blasts, which the original's bullets switch with `ReduceDamageWithDistance`.
+- **Blast radii, `FriendlyDamageAmount`, projectile `Speed`, `TurnRate`, `HomingDelay` and
+  `MinRange`** are ours, not the bullets'.
+- **Infantry on rock** take less damage in the original: their armour `None, 50, InfRock`
+  halves it there.
+- **Shields**: the laser tank's `ShieldHealth` 300 and its self-repair.
+- **The repair vehicle** heals by our own rate; the original's `RepairRate` is 12.
+- **By house**: the original gives the Harkonnen engineer 600 health (ours 400 for every
+  house) and the Atreides outpost 100 (ours 2500). A deployed MCV keeps the MCV's 4500 rather
+  than the construction yard's 4000, though it is armoured as the yard.
+- **The exe**: none of this was read from `GAME.EXE`; only `Rules.txt`.
+
 ## Walls
 
 Walls are placed as the original's are: a click picks the first square, the route to the

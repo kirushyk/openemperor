@@ -10,6 +10,8 @@ mod game;
 mod hud;
 mod inflate;
 mod maps;
+#[cfg(test)]
+mod mission;
 #[cfg(target_os = "macos")]
 mod music;
 mod planet;

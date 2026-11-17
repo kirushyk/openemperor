@@ -218,11 +218,8 @@ piece for how it joins its owner's walls beside it. Not done yet:
 
 - **Build menus** list what can be made now, packed from the first cell in the order of the
   original's `[UnitTypes]` and `[BuildingTypes]`. Not done yet:
-  - what we have no units for is missing from them: starports, the Ordos AA trooper, the
-    sonic tank and the deviator;
-  - starports: the palace needs one in the original, and the Devastator too. We ask for a
-    hangar in its place for the palace, which a starport needs, and nothing more for the
-    Devastator;
+  - what we have no units for is missing from them: the Ordos AA trooper, the sonic tank
+    and the deviator;
   - tech levels (`TechLevel`): nothing is held back by them;
   - the original's Next and Prev buttons, for a menu of more than 15: none of ours has that
     many;
@@ -231,7 +228,25 @@ piece for how it joins its owner's walls beside it. Not done yet:
 - **The build menu's tabs** show the disc's symbols (the sidebar model's `infantrybody`,
   `vehiclebody` and `buildingbody`) flat, in one colour. The original draws them as glowing
   3D shapes (`!06%crimsonglow.tga`), with flares over the selected tab. The Upgrades tab
-  shows its `upgradebuildings`. It also has a Starport tab, which we have nothing for.
+  shows its `upgradebuildings`. Its Starport tab is our wide Starport button.
+
+## Starport
+
+A starport (1500, needing a hangar; the palace needs it) opens the Starport menu: what the
+original marks `Starportable` among what we have, each at a price that moves every 60
+seconds by up to 40% either way, with a stock that has a 90% chance of one more every 40
+seconds. Up to six go on an order, paid at once, and the frigate brings them 100 seconds
+later, as the original's `[General]` rules say. Not as the original, or not known:
+
+- **The frigate** is not seen: what it brings appears by the starport as from a factory. The
+  original's flies in (`Frigate`), lands and can be shot at; `FrigateTimeout` is unused.
+- **Stock**: how much the merchants start with and the most they hold are ours (up to 3, and
+  6). Units the house could not build yet are sold all the same, as we believe the original
+  does.
+- **Purchase and Cancel** are the menu's last two cells; the original has buttons of its own.
+- **Opponents** never order from a starport, nor build one.
+- **The sonic tank, the deviator, the Imperial and Guild units** on the original's list: we
+  have none.
 
 ## Sidebar buttons
 

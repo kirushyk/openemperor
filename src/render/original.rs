@@ -179,6 +179,17 @@ const MODELS: &[(Role, Option<Faction>, &str)] = {
             "Buildings\\HK_Windtrap_H0.XBF",
         ),
         (Role::Windtrap, Some(Ordos), "Buildings\\or_windtrap_H0.XbF"),
+        (
+            Role::Starport,
+            Some(Atreides),
+            "Buildings\\AT_StarPort_H0.XbF",
+        ),
+        (
+            Role::Starport,
+            Some(Harkonnen),
+            "Buildings\\hk_starport_H0.XBF",
+        ),
+        (Role::Starport, Some(Ordos), "Buildings\\Or_StarPort_H0.XbF"),
         (Role::Palace(Atreides), None, "Buildings\\AT_Palace_H0.XbF"),
         (Role::Palace(Harkonnen), None, "Buildings\\hk_palace_h0.XBF"),
         (Role::Palace(Ordos), None, "Buildings\\OR_Palace_H0.XBF"),
@@ -414,6 +425,24 @@ const ICONS: &[(Role, Option<Faction>, &str, &str)] = {
             Some(Ordos),
             "OR_Windtrap",
             "grey_OR_Windtrap",
+        ),
+        (
+            Role::Starport,
+            Some(Atreides),
+            "AT_StarPort",
+            "grey_AT_StarPort",
+        ),
+        (
+            Role::Starport,
+            Some(Harkonnen),
+            "HK_StarPort",
+            "grey_HK_StarPort",
+        ),
+        (
+            Role::Starport,
+            Some(Ordos),
+            "OR_StarPort",
+            "grey_OR_StarPort",
         ),
         // Every house's, as the original's ArtIni.txt has it.
         (Role::Wall, None, "HK_Wall", "grey_HK_Wall"),

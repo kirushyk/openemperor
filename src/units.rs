@@ -404,6 +404,8 @@ pub enum Role {
     Wall,
     /// Makes the power the other buildings use.
     Windtrap,
+    /// Where what is ordered from off the planet is set down.
+    Starport,
     /// The main building of the Tleilaxu, for a house allied with them.
     TlFleshVat,
     /// The main building of the house of Ix, for a house allied with them.
@@ -655,7 +657,8 @@ impl Role {
             | Role::ImBarracks
             | Role::FrCamp
             | Role::Wall
-            | Role::Windtrap => UnitKind::Building,
+            | Role::Windtrap
+            | Role::Starport => UnitKind::Building,
         }
     }
 
@@ -719,6 +722,7 @@ impl Role {
             Role::FrCamp => "Fremen Camp",
             Role::Wall => "Wall",
             Role::Windtrap => "Windtrap",
+            Role::Starport => "Starport",
             Role::FrFremen => "Fremen Warrior",
             Role::ImSardaukar => "Imperial Sardaukar",
             Role::TlContaminator => "Tleilaxu Contaminator",
@@ -760,6 +764,7 @@ impl Role {
             | Role::FrCamp
             | Role::Wall
             | Role::Windtrap
+            | Role::Starport
             | Role::IxInfiltrator => WeaponKind::Unarmed,
             Role::FrFremen => WeaponKind::Sniper,
             Role::ImSardaukar => WeaponKind::Bullet,
@@ -812,7 +817,7 @@ impl Role {
             Role::Harvester => 3500.0,
             Role::HkInkVine | Role::Helipad | Role::FrCamp => 2000.0,
             Role::AtMongoose | Role::Carryall | Role::AtOrni => 1600.0,
-            Role::AtMinotaurus | Role::Barracks => 2500.0,
+            Role::AtMinotaurus | Role::Barracks | Role::Starport => 2500.0,
             Role::AdvCarryall => 900.0,
             Role::HkAdp | Role::AtAdp | Role::AtTrike | Role::AtApc => 1200.0,
             Role::HkGunship => 2600.0,
@@ -959,6 +964,8 @@ impl Role {
             Role::Wall => 1.5,
             // The original's 240 against a pillbox's 309.
             Role::Windtrap => 6.0,
+            // The original's 720, as the refinery's.
+            Role::Starport => 18.0,
             Role::AtRocketTurret | Role::HkGunTurret | Role::OrPopUpTurret => 12.0,
             Role::AtPillbox | Role::HkFlameTurret | Role::OrGasTurret => 8.0,
         }
@@ -1010,6 +1017,7 @@ impl Role {
             Role::FrCamp => 600,
             Role::Wall => 20,
             Role::Windtrap => 225,
+            Role::Starport => 1500,
             Role::FrFremen => 150,
             Role::ImSardaukar | Role::TlContaminator => 300,
             Role::IxInfiltrator => 500,
@@ -1020,7 +1028,7 @@ impl Role {
     /// What else its builder must have standing besides a construction yard, as the original's
     /// `Rules.txt` has it: armed towers a barracks, a hangar a factory, a landing pad a hangar,
     /// a mini-house's main building a factory, or one that trains soldiers a barracks. A palace
-    /// needs a starport, and a starport a hangar: we have no starport, so it needs the hangar.
+    /// needs a starport, and a starport a hangar.
     pub fn needs(self) -> Option<Role> {
         match self {
             Role::TlFleshVat | Role::IxResCentre | Role::GuPalace | Role::Hanger => {
@@ -1029,7 +1037,8 @@ impl Role {
             Role::ImBarracks | Role::FrCamp => Some(Role::Barracks),
             Role::Barracks | Role::Refinery | Role::Factory | Role::Outpost => Some(Role::Windtrap),
             role if role.kind() == UnitKind::Tower => Some(Role::Barracks),
-            Role::Helipad | Role::Palace(_) => Some(Role::Hanger),
+            Role::Helipad | Role::Starport => Some(Role::Hanger),
+            Role::Palace(_) => Some(Role::Starport),
             _ => None,
         }
     }
@@ -1053,6 +1062,7 @@ impl Role {
             Role::Refinery | Role::Factory => 40,
             Role::Outpost | Role::TlFleshVat | Role::IxResCentre => 60,
             Role::Hanger => 50,
+            Role::Starport => 100,
             Role::Helipad | Role::ImBarracks => 30,
             Role::Palace(_) => 150,
             Role::GuPalace => 180,
@@ -1281,6 +1291,8 @@ impl Role {
             (Role::FrCamp, _) => (6, 6),
             (Role::Helipad, _) => (2, 3),
             (Role::Wall, _) => (1, 1),
+            (Role::Starport, Ordos) => (9, 8),
+            (Role::Starport, _) => (9, 7),
             // Deployed, as big as the original's construction yard.
             (Role::Mcv, Harkonnen) => (5, 8),
             (Role::Mcv, _) => (5, 7),
@@ -1313,7 +1325,7 @@ impl Role {
             ) => 80.0,
             (Role::Helipad, _) => 72.0,
             (Role::Wall, _) => 48.0,
-            (Role::Windtrap, _) => 70.0,
+            (Role::Windtrap | Role::Starport, _) => 70.0,
             (Role::Mcv, _) => 107.0,
             _ => 100.0,
         }
@@ -1392,6 +1404,7 @@ impl Role {
             | Role::FrCamp
             | Role::Wall
             | Role::Windtrap
+            | Role::Starport
             | Role::Helipad
             | Role::AtRocketTurret
             | Role::HkFlameTurret
@@ -1474,6 +1487,8 @@ impl Role {
             Role::OrPopUpTurret => [1.0, 0.63, 1.0],
             Role::Wall => [1.0, 1.0, 1.0],
             Role::Windtrap => [1.0, 1.4, 1.0],
+            // The plain block drawn for a building with no model of its own.
+            Role::Starport => [2.2, 0.86, 1.824],
         }
     }
 
@@ -3455,6 +3470,19 @@ pub fn finish_making(
     Some(units.len() - 1)
 }
 
+/// Sets down a new unit of this role by a building, as one it had made: at its door, sent
+/// on to its gathering point. Returns whether there was room for it.
+pub fn deliver_at(
+    units: &mut Vec<Unit>,
+    terrain: &Terrain,
+    role: Role,
+    building: usize,
+    id: u32,
+) -> bool {
+    let maker = units[building];
+    produce_at(units, terrain, role, &maker, id)
+}
+
 fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit, id: u32) -> bool {
     let owner = maker.owner;
     // Out along the grid, the way the building's door faces.
@@ -3797,8 +3825,12 @@ pub fn new_building(
 #[cfg(test)]
 const WINDTRAPS_BEHIND: f32 = BUILDINGS_BEHIND + 260.0;
 
+/// How far behind a group's middle the starport of its base stands.
+#[cfg(test)]
+const STARPORT_BEHIND: f32 = WINDTRAPS_BEHIND + 280.0;
+
 /// Puts up an owner's three buildings in a row behind a group's middle, a windtrap behind
-/// each, all of them upgraded as far as they go.
+/// each and a starport behind those, all of them upgraded as far as they go.
 #[cfg(test)]
 fn place_base(
     units: &mut Vec<Unit>,
@@ -3838,6 +3870,17 @@ fn place_base(
     place_building(units, terrain, mcv, Role::Mcv, side);
     if let Some(mcv) = units.last_mut() {
         switch_deployed(mcv);
+    }
+    // Behind the windtraps, a starport, with one more windtrap for it.
+    for (role, along) in [
+        (Role::Starport, 0.0),
+        (Role::Windtrap, BUILDING_SPREAD * 1.6),
+    ] {
+        let at = (
+            center.0 + behind.0 * STARPORT_BEHIND + across_x * along,
+            center.1 + behind.1 * STARPORT_BEHIND + across_z * along,
+        );
+        place_building(units, terrain, at, role, side);
     }
     for building in units.iter_mut().filter(|u| u.owner == side.0) {
         building.upgrades = building.role.most_upgrades();

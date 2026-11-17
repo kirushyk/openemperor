@@ -3,7 +3,8 @@
 use crate::battlefield::{self, Camera};
 use crate::fog::{Fog, Sight};
 use crate::hud::{
-    self, GUARD_BUTTON, REPAIR_BUTTON, RETREAT_BUTTON, SELL_BUTTON, UPGRADE_BUTTON, WAYPOINT_BUTTON,
+    self, GUARD_BUTTON, REPAIR_BUTTON, RETREAT_BUTTON, SELL_BUTTON, STARPORT_BUTTON,
+    UPGRADE_BUTTON, WAYPOINT_BUTTON,
 };
 use crate::maps;
 use crate::platform::{Event, Key, Modifier};
@@ -29,6 +30,194 @@ pub enum Entry {
     Superweapon,
     /// An upgrade of the player's building of this role.
     Upgrade(Role),
+    /// One more of this role on the order to the starport.
+    Order(Role),
+    /// Pays for the order, and sends the frigate for it.
+    Purchase,
+    /// Empties the order.
+    CancelOrder,
+}
+
+/// What each house can order through its starport, as the original's `Starportable` among
+/// what we have, in the order of its `[UnitTypes]`.
+fn starportable(house: Faction) -> &'static [Role] {
+    match house {
+        Faction::Atreides => &[
+            Role::AtTrike,
+            Role::AtApc,
+            Role::AtRepairUnit,
+            Role::AtMongoose,
+            Role::AtMinotaurus,
+            Role::AtOrni,
+            Role::AdvCarryall,
+            Role::Harvester,
+            Role::Mcv,
+            Role::Carryall,
+        ],
+        Faction::Harkonnen => &[
+            Role::HkBuzzsaw,
+            Role::HkAssault,
+            Role::HkFlame,
+            Role::HkInkVine,
+            Role::HkMissile,
+            Role::HkDevastator,
+            Role::HkGunship,
+            Role::AdvCarryall,
+            Role::Harvester,
+            Role::Mcv,
+            Role::Carryall,
+        ],
+        Faction::Ordos => &[
+            Role::OrDustScout,
+            Role::OrLaserTank,
+            Role::OrApc,
+            Role::OrKobra,
+            Role::OrEits,
+            Role::AdvCarryall,
+            Role::Harvester,
+            Role::Mcv,
+            Role::Carryall,
+        ],
+    }
+}
+
+/// The original's starport, from its `[General]` rules at 25 updates a second: prices change
+/// every `StarportCostUpdateDelay` by up to `StarportCostVariationPercent` either way; every
+/// `StarportStockIncreaseDelay` each kind has a `StarportStockIncreaseProb` chance of one more
+/// in stock; a delivery is of `StarportMaxDeliverySingle` at most; and the frigate comes
+/// `FrigateCountdown` after the order is paid.
+const STARPORT_PRICE_SECONDS: f32 = 60.0;
+const STARPORT_PRICE_VARIATION: f32 = 0.4;
+const STARPORT_STOCK_SECONDS: f32 = 40.0;
+const STARPORT_STOCK_CHANCE: f32 = 0.9;
+const STARPORT_MOST_IN_A_DELIVERY: usize = 6;
+const FRIGATE_SECONDS: f32 = 100.0;
+/// The most of one kind the starport's merchants ever have, and the most they start with.
+const STARPORT_MOST_STOCK: u8 = 6;
+const STARPORT_STARTING_STOCK: u8 = 3;
+
+/// One kind the starport's merchants sell: what one costs now, and how many they have.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Offer {
+    pub role: Role,
+    pub price: i32,
+    pub stock: u8,
+}
+
+/// The starport's market, the player's order from it, and the frigate bringing what was paid
+/// for with the seconds until it lands.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Market {
+    pub offers: Vec<Offer>,
+    pub order: Vec<Role>,
+    pub frigate: Option<(Vec<Role>, f32)>,
+    price_in: f32,
+    stock_in: f32,
+    random: u32,
+}
+
+impl Market {
+    /// The market as a battle starts, for a house.
+    fn open(house: Faction, random: u32) -> Self {
+        let mut market = Market {
+            offers: starportable(house)
+                .iter()
+                .map(|&role| Offer {
+                    role,
+                    price: role.cost(),
+                    stock: 0,
+                })
+                .collect(),
+            price_in: STARPORT_PRICE_SECONDS,
+            stock_in: STARPORT_STOCK_SECONDS,
+            random: random | 1,
+            ..Market::default()
+        };
+        for offer in &mut market.offers {
+            let share = battlefield::next_random(&mut market.random);
+            offer.stock = (share * f32::from(STARPORT_STARTING_STOCK + 1)) as u8;
+        }
+        market.reprice();
+        market
+    }
+
+    /// Gives each kind a new price, up to the variation either side of what it costs to make.
+    fn reprice(&mut self) {
+        for offer in &mut self.offers {
+            let swing = battlefield::next_random(&mut self.random) * 2.0 - 1.0;
+            let price = offer.role.cost() as f32 * (1.0 + swing * STARPORT_PRICE_VARIATION);
+            offer.price = (price / 10.0).round() as i32 * 10;
+        }
+    }
+
+    /// Lets the market's time go by: its prices change and its stock grows.
+    fn tick(&mut self, dt: f32) {
+        self.price_in -= dt;
+        if self.price_in <= 0.0 {
+            self.price_in += STARPORT_PRICE_SECONDS;
+            self.reprice();
+        }
+        self.stock_in -= dt;
+        if self.stock_in <= 0.0 {
+            self.stock_in += STARPORT_STOCK_SECONDS;
+            for offer in &mut self.offers {
+                let comes = battlefield::next_random(&mut self.random) < STARPORT_STOCK_CHANCE;
+                if comes && offer.stock < STARPORT_MOST_STOCK {
+                    offer.stock += 1;
+                }
+            }
+        }
+    }
+
+    /// How many of a kind are on the order.
+    pub fn ordered(&self, role: Role) -> usize {
+        self.order.iter().filter(|&&r| r == role).count()
+    }
+
+    /// What the order costs at the prices now.
+    pub fn total(&self) -> i32 {
+        self.order
+            .iter()
+            .filter_map(|&role| self.offers.iter().find(|o| o.role == role))
+            .map(|offer| offer.price)
+            .sum()
+    }
+
+    /// Adds one of a kind to the order, if the merchants have another, the delivery has
+    /// room, and no frigate is on its way.
+    fn add(&mut self, role: Role) {
+        let in_stock = self
+            .offers
+            .iter()
+            .any(|o| o.role == role && usize::from(o.stock) > self.ordered(role));
+        if in_stock && self.order.len() < STARPORT_MOST_IN_A_DELIVERY && self.frigate.is_none() {
+            self.order.push(role);
+        }
+    }
+
+    /// Takes one of a kind off the order.
+    fn take_off(&mut self, role: Role) {
+        if let Some(at) = self.order.iter().rposition(|&r| r == role) {
+            self.order.remove(at);
+        }
+    }
+
+    /// Pays for the order out of `money` and sends the frigate for it, if there is one and
+    /// the money for all of it.
+    fn purchase(&mut self, money: &mut i32) -> bool {
+        let total = self.total();
+        if self.order.is_empty() || total > *money || self.frigate.is_some() {
+            return false;
+        }
+        *money -= total;
+        for role in &self.order {
+            if let Some(offer) = self.offers.iter_mut().find(|o| o.role == *role) {
+                offer.stock = offer.stock.saturating_sub(1);
+            }
+        }
+        self.frigate = Some((std::mem::take(&mut self.order), FRIGATE_SECONDS));
+        true
+    }
 }
 
 /// What the Upgrades menu lists before the allies' buildings, in the order of the original's
@@ -122,8 +311,7 @@ fn vehicle_order(house: Faction) -> &'static [Entry] {
 }
 
 /// What each house's Buildings menu lists, in the order of the original's `[BuildingTypes]`.
-/// Ordos have no landing pad. Starports are left out: we have none yet. A refinery's further
-/// pads are among the upgrades.
+/// Ordos have no landing pad. A refinery's further pads are among the upgrades.
 fn building_order(house: Faction) -> impl Iterator<Item = Role> {
     let [lesser, greater] = Role::towers_of(house);
     [
@@ -137,6 +325,7 @@ fn building_order(house: Faction) -> impl Iterator<Item = Role> {
         greater,
         Role::Hanger,
         Role::Helipad,
+        Role::Starport,
         Role::Palace(house),
     ]
     .into_iter()
@@ -346,6 +535,7 @@ pub enum BuildTab {
     Vehicles,
     Buildings,
     Upgrades,
+    Starport,
 }
 
 /// What the player's units answer, out loud, when they are told something.
@@ -1628,6 +1818,8 @@ pub struct Game {
     pub click_mode: Option<ClickMode>,
     /// The routes of waypoints the player's units are on.
     routes: Vec<Route>,
+    /// The starport's market, and the player's order from it.
+    market: Market,
     /// Seconds the retreat button still waits for its second click.
     retreat_armed: f32,
     /// Seconds until the superweapon can fire again.
@@ -1733,6 +1925,7 @@ impl Game {
             aiming_strike: false,
             click_mode: None,
             routes: Vec::new(),
+            market: Market::default(),
             retreat_armed: 0.0,
             strike_recharge: 0.0,
             selection_anchor: None,
@@ -1988,6 +2181,13 @@ impl Game {
                 .chain(allies.iter().filter_map(|ally| ally.main_building()))
                 .map(Entry::Upgrade)
                 .collect(),
+            BuildTab::Starport => self
+                .market
+                .offers
+                .iter()
+                .map(|offer| Entry::Order(offer.role))
+                .chain([Entry::Purchase, Entry::CancelOrder])
+                .collect(),
         };
         listed
             .into_iter()
@@ -1996,6 +2196,7 @@ impl Game {
                 Entry::Upgrade(role) => {
                     self.can_upgrade(role) || self.upgrade_progress(role).is_some()
                 }
+                Entry::Order(_) | Entry::Purchase | Entry::CancelOrder => self.has_starport(),
                 Entry::Make(role) => {
                     self.can_produce(role)
                         || self.making_progress(role).is_some()
@@ -2015,8 +2216,48 @@ impl Game {
     pub fn build_role(&self, tab: BuildTab, cell: usize) -> Option<Role> {
         match self.build_entry(tab, cell)? {
             Entry::Make(role) => Some(role),
-            Entry::Superweapon | Entry::Upgrade(_) => None,
+            _ => None,
         }
+    }
+
+    /// Whether the player has a starport up and standing.
+    pub fn has_starport(&self) -> bool {
+        self.has_standing(Role::Starport)
+    }
+
+    /// The starport's market and the player's order from it.
+    pub fn market(&self) -> &Market {
+        &self.market
+    }
+
+    /// Lets the market's time go by, and lands the frigate when its time comes: what it
+    /// brings is set down by the player's starport, or paid back if there is none left.
+    fn run_market(&mut self, dt: f32) {
+        self.market.tick(dt);
+        let Some((cargo, left)) = &mut self.market.frigate else {
+            return;
+        };
+        *left -= dt;
+        if *left > 0.0 {
+            return;
+        }
+        let cargo = std::mem::take(cargo);
+        self.market.frigate = None;
+        let terrain = battlefield::terrain(self.battle_map);
+        for role in cargo {
+            let starport = self.units.iter().position(|u| {
+                u.alive && u.owner == 0 && u.role == Role::Starport && !u.is_under_construction()
+            });
+            let landed = starport.is_some_and(|starport| {
+                units::deliver_at(&mut self.units, terrain, role, starport, self.next_unit_id)
+            });
+            if landed {
+                self.next_unit_id += 1;
+            } else {
+                self.money[0] += role.cost();
+            }
+        }
+        self.post_chat("Starport delivery arrived".to_string());
     }
 
     /// Whether the player has a building of this role that could be upgraded now.
@@ -3569,6 +3810,7 @@ impl Game {
         self.aiming_strike = false;
         self.click_mode = None;
         self.routes.clear();
+        self.market = Market::open(self.faction_of(0), self.start_random);
         self.retreat_armed = 0.0;
         self.strike_recharge = 0.0;
         self.set_screen(Screen::Loading);
@@ -3900,6 +4142,7 @@ impl Game {
                     }
                     units::settle_power(&mut self.units);
                     units::work_on_repairs(&mut self.units, &mut self.money, dt);
+                    self.run_market(dt);
                     self.follow_routes();
                     self.retreat_armed = (self.retreat_armed - dt).max(0.0);
                     self.work_on_making(dt);
@@ -4034,6 +4277,9 @@ impl Game {
                     // What was paid for it so far comes back.
                     if let Some(Entry::Upgrade(role)) = self.build_entry(self.build_tab, cell) {
                         units::cancel_upgrade(&mut self.units, 0, role, &mut self.money[0]);
+                    }
+                    if let Some(Entry::Order(role)) = self.build_entry(self.build_tab, cell) {
+                        self.market.take_off(role);
                     }
                     if let Some(role) = self.build_role(self.build_tab, cell) {
                         if self.site == Site::Placing(Role::Wall) && role == Role::Wall {
@@ -4271,6 +4517,9 @@ impl Game {
             Action::HudWide(UPGRADE_BUTTON) if self.tab_enabled(BuildTab::Upgrades) => {
                 self.build_tab = BuildTab::Upgrades;
             }
+            Action::HudWide(STARPORT_BUTTON) if self.tab_enabled(BuildTab::Starport) => {
+                self.build_tab = BuildTab::Starport;
+            }
             Action::HudSmall(SELL_BUTTON) if self.in_battle => self.toggle_mode(ClickMode::Sell),
             Action::HudSmall(REPAIR_BUTTON) if self.in_battle => {
                 self.toggle_mode(ClickMode::Repair);
@@ -4307,6 +4556,14 @@ impl Game {
         } else if let Some(Entry::Upgrade(role)) = self.build_entry(self.build_tab, cell) {
             // Paid for while it goes on, as what is made is.
             units::start_upgrade(&mut self.units, 0, role);
+        } else if let Some(Entry::Order(role)) = self.build_entry(self.build_tab, cell) {
+            self.market.add(role);
+        } else if self.build_entry(self.build_tab, cell) == Some(Entry::Purchase) {
+            if self.market.purchase(&mut self.money[0]) {
+                self.post_chat("Starport order placed".to_string());
+            }
+        } else if self.build_entry(self.build_tab, cell) == Some(Entry::CancelOrder) {
+            self.market.order.clear();
         } else if self.build_entry(self.build_tab, cell) == Some(Entry::Superweapon)
             && self.strike_recharge <= 0.0
         {
@@ -6094,7 +6351,7 @@ mod tests {
     }
 
     #[test]
-    fn fake_sidebar_buttons_light_up_and_change_nothing() {
+    fn every_sidebar_button_lights_up_takes_a_click_and_stays_in_the_battle() {
         let mut game = in_battle();
         for b in hud::command_buttons(W, H)
             .into_iter()
@@ -6106,7 +6363,12 @@ mod tests {
             game.handle(Event::MouseUp);
             assert_eq!(game.screen, Screen::InGame);
         }
-        assert_eq!(game.build_tab, BuildTab::Infantry);
+        assert_eq!(
+            game.build_tab,
+            BuildTab::Starport,
+            "the last wide one clicked"
+        );
+        assert_eq!(game.outcome, None, "one click on Retreat only asks");
     }
 
     #[test]
@@ -7473,9 +7735,11 @@ mod tests {
                 Role::Outpost,
                 Role::AtPillbox,
                 Role::AtRocketTurret,
+                Role::Palace(Faction::Atreides),
             ]
             .map(Entry::Make),
-            "towers need the barracks; the hangar, the pad and the palace wait"
+            "towers need the barracks; the hangar, the pad and the starport wait: the palace \
+             needs only the starport, which stands"
         );
         game.units
             .retain(|u| u.owner != 0 || u.role != Role::Barracks);
@@ -7499,6 +7763,7 @@ mod tests {
                 greater,
                 Role::Hanger,
                 Role::Helipad,
+                Role::Starport,
                 Role::Palace(house),
             ];
             if house == Faction::Ordos {
@@ -12820,9 +13085,9 @@ mod tests {
     fn windtraps_make_the_power_buildings_use_and_short_of_it_turrets_stop_and_work_slows() {
         let mut game = in_battle();
         let (made, used) = game.player_power();
-        assert_eq!(made, 300, "three windtraps");
-        // The hangar, the factory, the barracks, the pad and the rocket turret.
-        assert_eq!(used, 50 + 40 + 20 + 30 + 75);
+        assert_eq!(made, 400, "four windtraps");
+        // The hangar, the factory, the barracks, the pad, the starport and the rocket turret.
+        assert_eq!(used, 50 + 40 + 20 + 30 + 100 + 75);
         assert!(game.power_to_spare() > 0.0 && game.power_to_spare() < 1.0);
         game.update(0.1);
         let turret = |game: &Game| {
@@ -12834,8 +13099,8 @@ mod tests {
         };
         assert!(!turret(&game).unpowered);
 
-        // Two windtraps gone: short of power.
-        let mut left = 2;
+        // Three windtraps gone: short of power.
+        let mut left = 3;
         game.units.retain(|u| {
             let goes = u.owner == 0 && u.role == Role::Windtrap && left > 0;
             left -= usize::from(goes);
@@ -13088,5 +13353,93 @@ mod tests {
                 .guard
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_starport_sells_at_moving_prices_what_it_has_and_a_frigate_brings_the_order() {
+        let mut game = in_battle();
+        assert_eq!(Role::Starport.needs(), Some(Role::Hanger));
+        assert_eq!(
+            Role::Palace(Faction::Atreides).needs(),
+            Some(Role::Starport)
+        );
+        assert!(game.has_starport());
+        click_hud(&mut game, Action::HudWide(hud::STARPORT_BUTTON));
+        assert_eq!(game.build_tab, BuildTab::Starport);
+        let menu = game.menu(BuildTab::Starport);
+        assert_eq!(
+            menu[0],
+            Entry::Order(Role::AtTrike),
+            "the house's own, as the original lists"
+        );
+        assert_eq!(
+            menu[menu.len() - 2..],
+            [Entry::Purchase, Entry::CancelOrder]
+        );
+        assert!(!menu.contains(&Entry::Order(Role::HkDevastator)));
+        for offer in &game.market().offers {
+            let cost = offer.role.cost() as f32;
+            let (low, high) = (cost * 0.6 - 10.0, cost * 1.4 + 10.0);
+            assert!((low..=high).contains(&(offer.price as f32)), "{offer:?}");
+            assert!(offer.stock <= STARPORT_STARTING_STOCK);
+        }
+        // Prices move every minute; stock comes in.
+        let before: Vec<i32> = game.market().offers.iter().map(|o| o.price).collect();
+        game.market.offers[0].stock = 2;
+        game.update(STARPORT_PRICE_SECONDS + 1.0);
+        let after: Vec<i32> = game.market().offers.iter().map(|o| o.price).collect();
+        assert_ne!(before, after);
+        assert!(game.market().offers[0].stock >= 2);
+
+        // Only what is in stock goes on the order, and a right click takes one off.
+        game.market.offers[0].stock = 2;
+        for _ in 0..3 {
+            click_hud(&mut game, Action::BuildCell(0));
+        }
+        assert_eq!(game.market().ordered(Role::AtTrike), 2);
+        let cell = hud::grid_cells(W, H)[0];
+        game.handle(Event::MouseMove(cell.x + 1.0, cell.y + 1.0));
+        game.handle(Event::RightDown);
+        assert_eq!(game.market().ordered(Role::AtTrike), 1);
+        let price = game.market().offers[0].price;
+        assert_eq!(game.market().total(), price);
+
+        // Paid at once; the frigate comes after its countdown and sets the trike down.
+        let trikes = |game: &Game| {
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0 && u.role == Role::AtTrike)
+                .count()
+        };
+        let (money, had) = (game.player_money(), trikes(&game));
+        let purchase = menu.len() - 2;
+        click_hud(&mut game, Action::BuildCell(purchase));
+        assert_eq!(game.player_money(), money - price);
+        assert!(game.market().order.is_empty() && game.market().frigate.is_some());
+        assert_eq!(game.market().offers[0].stock, 1);
+        click_hud(&mut game, Action::BuildCell(0));
+        assert_eq!(
+            game.market().ordered(Role::AtTrike),
+            0,
+            "not while a frigate is coming"
+        );
+        game.update(FRIGATE_SECONDS - 5.0);
+        assert_eq!(trikes(&game), had, "not yet");
+        game.update(6.0);
+        assert!(game.market().frigate.is_none());
+        assert_eq!(trikes(&game), had + 1, "set down by the starport");
+
+        // No more than six in a delivery.
+        for offer in &mut game.market.offers {
+            offer.stock = STARPORT_MOST_STOCK;
+        }
+        for cell in [0, 1] {
+            for _ in 0..5 {
+                click_hud(&mut game, Action::BuildCell(cell));
+            }
+        }
+        assert_eq!(game.market().order.len(), STARPORT_MOST_IN_A_DELIVERY);
+        click_hud(&mut game, Action::BuildCell(purchase + 1));
+        assert!(game.market().order.is_empty(), "cancelled");
     }
 }

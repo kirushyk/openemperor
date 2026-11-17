@@ -1129,6 +1129,7 @@ fn draw_button(canvas: &mut Canvas, game: &Game, b: Button) {
     let lit = match b.action {
         Action::HudSmall(button) => game.hud_small_lit(button),
         Action::HudWide(hud::UPGRADE_BUTTON) => game.build_tab == BuildTab::Upgrades,
+        Action::HudWide(hud::STARPORT_BUTTON) => game.build_tab == BuildTab::Starport,
         _ => false,
     };
     let color = if lit { GOLD } else { TEXT };
@@ -3944,6 +3945,7 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
         BuildTab::Vehicles => 'V',
         BuildTab::Buildings => 'B',
         BuildTab::Upgrades => 'U',
+        BuildTab::Starport => 'S',
     };
     for (i, cell) in hud::grid_cells(game.width, game.height)
         .into_iter()
@@ -3968,9 +3970,16 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
             }
             continue;
         }
-        if let Some(Entry::Upgrade(role)) = game.build_entry(game.build_tab, i) {
-            draw_upgrade_cell(canvas, game, cell, role);
-            continue;
+        match game.build_entry(game.build_tab, i) {
+            Some(Entry::Upgrade(role)) => {
+                draw_upgrade_cell(canvas, game, cell, role);
+                continue;
+            }
+            Some(entry @ (Entry::Order(_) | Entry::Purchase | Entry::CancelOrder)) => {
+                draw_starport_cell(canvas, game, cell, entry);
+                continue;
+            }
+            _ => {}
         }
         // Tip text gives the full name of what it makes.
         let makes = game.build_role(game.build_tab, i);
@@ -4095,6 +4104,7 @@ fn short_name(role: Role) -> &'static str {
         Role::FrCamp => "Fremen",
         Role::Wall => "Wall",
         Role::Windtrap => "Windtrap",
+        Role::Starport => "Starport",
         Role::FrFremen => "Warrior",
         Role::ImSardaukar => "Sardaukr",
         Role::TlContaminator => "Contam",
@@ -4198,6 +4208,7 @@ fn draw_tab_symbol(canvas: &mut Canvas, tab: BuildTab, cx: f32, cy: f32, size: f
         BuildTab::Vehicles => Symbol::Vehicles,
         BuildTab::Buildings => Symbol::Buildings,
         BuildTab::Upgrades => Symbol::Upgrades,
+        BuildTab::Starport => Symbol::Starport,
     };
     if draw_symbol(canvas, symbol, (cx, cy), size, c) {
         return;
@@ -4253,6 +4264,14 @@ fn draw_tab_symbol(canvas: &mut Canvas, tab: BuildTab, cx: f32, cy: f32, size: f
             );
             canvas.rect(cx - 1.4 * u, cy - 0.4 * u, 2.8 * u, 4.6 * u, c);
         }
+        BuildTab::Starport => {
+            // A star.
+            for turn in 0..4 {
+                let (sin, cos) = (turn as f32 * FRAC_PI_4).sin_cos();
+                let tip = |r: f32| (cx + cos * r * u, cy + sin * r * u);
+                canvas.line(tip(-4.4), tip(4.4), 1.1 * u, c);
+            }
+        }
     }
 }
 
@@ -4287,6 +4306,53 @@ fn draw_upgrade_cell(canvas: &mut Canvas, game: &Game, cell: Button, role: Role)
         chat_px(game),
         color,
     );
+}
+
+/// A cell of the Starport menu: a kind on offer, with its picture, its price now and how many
+/// of the merchants' stock are on the order; or the cell that pays for the order, with what
+/// it comes to or the seconds until the frigate lands; or the one that empties it.
+fn draw_starport_cell(canvas: &mut Canvas, game: &Game, cell: Button, entry: Entry) {
+    let s = ui_scale(game.height);
+    let (cx, cy) = (cell.x + cell.w / 2.0, cell.y + cell.h / 2.0);
+    let market = game.market();
+    let px = chat_px(game);
+    let low = cell.y + cell.h - 12.0 * s;
+    match entry {
+        Entry::Order(role) => {
+            let offer = market.offers.iter().find(|offer| offer.role == role);
+            let (price, stock) = offer.map_or((0, 0), |offer| (offer.price, offer.stock));
+            let can = stock > 0 && market.frigate.is_none();
+            if let Some(layer) = original_icon(role, game.faction_of(0), !can) {
+                let half = cell.w / 2.0 - border_px(game.height) * 2.0;
+                canvas.picture((cx, cy), half, layer);
+            } else {
+                canvas.text_left(
+                    short_name(role),
+                    cell.x + 6.0 * s,
+                    cell.y + 14.0 * s,
+                    px,
+                    TEXT,
+                );
+            }
+            let affordable = price <= game.player_money();
+            let color = if can && affordable { TEXT } else { QUIET };
+            canvas.text_left(&format!("${price}"), cell.x + 6.0 * s, low, px, color);
+            let count = format!("{}/{stock}", market.ordered(role));
+            let x = cell.x + cell.w - 6.0 * s - font::text_width(&count) * px;
+            canvas.text_left(&count, x, cell.y + 14.0 * s, px, GOLD);
+        }
+        Entry::Purchase => {
+            let (label, below) = match &market.frigate {
+                Some((_, left)) => ("Frigate", format!("{}s", left.ceil() as i32)),
+                None => ("Purchase", format!("${}", market.total())),
+            };
+            let affordable = market.total() <= game.player_money() && !market.order.is_empty();
+            let color = if affordable { GOLD } else { QUIET };
+            canvas.text_centered(label, cx, cy - 8.0 * s, px, color);
+            canvas.text_centered(&below, cx, cy + 12.0 * s, px, TEXT);
+        }
+        _ => canvas.text_centered("Cancel", cx, cy, px, TEXT),
+    }
 }
 
 /// The last few messages, on small dark strips so they read over any terrain.

@@ -111,7 +111,7 @@ Each house has its own model of each of these.
 | Palace | Atreides Palace, Harkonnen Palace, Ordos Palace | Disc | |
 | SmWindtrap | Windtrap | Disc | Makes 100 power. |
 | Wall | Wall | Disc | Each house's six pieces (alone, end, middle, corner, T, cross), turned to join the walls beside it. |
-| Starport | — | — | |
+| Starport | Starport | Disc | Orders units from off the planet at moving prices. |
 | FactoryFrigate | — | — | |
 | Smelter | — | — | Left out of the original's own build list (commented out). |
 

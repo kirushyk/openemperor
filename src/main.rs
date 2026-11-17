@@ -182,6 +182,13 @@ fn main() {
             platform.set_volumes(music, lines, effects);
             volumes = Some(wanted);
         }
+        // What the battlefield tells the player is said over the music.
+        #[cfg(target_os = "macos")]
+        for speech in game.take_speeches() {
+            if let Some(line) = sounds::spoken(speech, game.faction_of(0)) {
+                platform.play_line(&line.samples, line.channels, line.rate);
+            }
+        }
         // What the player's units answer is said over the music.
         #[cfg(target_os = "macos")]
         if let Some((said, speakers)) = game.take_reply() {

@@ -4,7 +4,7 @@
 //! `[ATGroupSelection]` what a group of Atreides says.
 
 use crate::archive;
-use crate::game::{Faction, Said};
+use crate::game::{Faction, Said, Speech};
 use crate::music::{self, Track};
 use crate::units::{self, Role};
 use std::collections::HashMap;
@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 const CABINET: &str = "INSTALL/Game1.cab";
 const BAG: &str = "INSTALL/DATA/SFX/AUDIO.BAG";
+/// The bag of what the battlefield says to the player, on the disc that installs the game.
+const DIALOG_BAG: &str = "INSTALL/DATA/DIALOG/DIALOG.BAG";
 /// The sound tables in the cabinet.
 const TABLES: [&str; 4] = [
     "\\data\\Sfx\\AtreidesSFX.txt",
@@ -77,6 +79,7 @@ struct Sounds {
 }
 
 static SOUNDS_READ: OnceLock<Sounds> = OnceLock::new();
+static DIALOG_READ: OnceLock<Sounds> = OnceLock::new();
 
 /// Reads the sounds and their tables from the disc mounted at `disc`. Without it, nothing
 /// plays.
@@ -102,6 +105,56 @@ pub fn load(disc: &Path) {
         sections,
         read: Mutex::default(),
     });
+    let dialog = disc.join(DIALOG_BAG);
+    if let Some(tracks) = music::list(&dialog) {
+        let _ = DIALOG_READ.set(Sounds {
+            bag: dialog,
+            tracks: tracks
+                .into_iter()
+                .map(|track| (track.name.to_lowercase(), track))
+                .collect(),
+            sections: HashMap::new(),
+            read: Mutex::default(),
+        });
+    }
+}
+
+/// The line of the dialogue bag said for this to a player of this house: the sound the
+/// original's `UI_Comp.txt` gives for it.
+fn spoken_name(speech: Speech, house: Faction) -> &'static str {
+    use Faction::{Atreides, Harkonnen, Ordos};
+    match (speech, house) {
+        (Speech::UnitReady, _) => "ui-g024",
+        (Speech::Training, _) => "ui-g046",
+        (Speech::ConstructionStarted, _) => "ui-g030",
+        (Speech::ReadyToPlace, Atreides) => "ui-g020",
+        (Speech::ReadyToPlace, _) => "ui-g022",
+        (Speech::ConstructionComplete, _) => "ui-g174",
+        (Speech::UnitLost, _) => "ui-g008",
+        (Speech::BuildingLost, _) => "ui-g010",
+        (Speech::BuildingSold, _) => "ui-g018",
+        (Speech::BaseUnderAttack, _) => "ui-g006",
+        (Speech::HarvesterUnderAttack, _) => "ui-g004",
+        (Speech::LowPower, _) => "ui-g316",
+        (Speech::InsufficientFunds, _) => "ui-g162",
+        (Speech::Upgrading, _) => "ui-g106",
+        (Speech::GuardOn, _) => "ui-g110",
+        (Speech::GuardOff, _) => "ui-g416",
+        (Speech::WaypointPlaced, _) => "ui-g124",
+        (Speech::WaypointAdded, _) => "ui-g134",
+        (Speech::Retreat, _) => "ui-g146",
+        (Speech::SuperweaponReady, Atreides) => "ui-g054",
+        (Speech::SuperweaponReady, Harkonnen) => "ui-g056",
+        (Speech::SuperweaponReady, Ordos) => "ui-g058",
+        (Speech::Victory, _) => "ui-g482",
+        (Speech::Defeat, _) => "ui-g484",
+    }
+}
+
+/// What the battlefield says for this to a player of this house, once the disc's dialogue is
+/// read.
+pub fn spoken(speech: Speech, house: Faction) -> Option<Arc<Line>> {
+    cached_line(DIALOG_READ.get()?, spoken_name(speech, house))
 }
 
 /// One of the lines these units say about this, as the disc has them: what the one unit, or
@@ -409,5 +462,46 @@ mod tests {
         // The next block starts afresh.
         let twice = decode(&[block, block].concat(), packed, 6);
         assert_eq!(twice[5..], samples[..]);
+    }
+
+    #[test]
+    fn every_spoken_message_is_on_the_disc_when_it_is_mounted() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(tracks) = music::list(&disc.join(DIALOG_BAG)) else {
+            return;
+        };
+        let names: Vec<String> = tracks.iter().map(|t| t.name.to_lowercase()).collect();
+        let all = [
+            Speech::UnitReady,
+            Speech::Training,
+            Speech::ConstructionStarted,
+            Speech::ReadyToPlace,
+            Speech::ConstructionComplete,
+            Speech::UnitLost,
+            Speech::BuildingLost,
+            Speech::BuildingSold,
+            Speech::BaseUnderAttack,
+            Speech::HarvesterUnderAttack,
+            Speech::LowPower,
+            Speech::InsufficientFunds,
+            Speech::Upgrading,
+            Speech::GuardOn,
+            Speech::GuardOff,
+            Speech::WaypointPlaced,
+            Speech::WaypointAdded,
+            Speech::Retreat,
+            Speech::SuperweaponReady,
+            Speech::Victory,
+            Speech::Defeat,
+        ];
+        for speech in all {
+            for house in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
+                let name = spoken_name(speech, house);
+                assert!(
+                    names.iter().any(|n| n == name),
+                    "{speech:?} {house:?}: {name}"
+                );
+            }
+        }
     }
 }

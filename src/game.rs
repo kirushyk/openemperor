@@ -469,6 +469,43 @@ struct Route {
     ahead: std::collections::VecDeque<(f32, f32)>,
 }
 
+/// What the battlefield tells the player out loud, as the original's spoken messages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Speech {
+    UnitReady,
+    Training,
+    ConstructionStarted,
+    ReadyToPlace,
+    ConstructionComplete,
+    UnitLost,
+    BuildingLost,
+    BuildingSold,
+    BaseUnderAttack,
+    HarvesterUnderAttack,
+    LowPower,
+    InsufficientFunds,
+    Upgrading,
+    GuardOn,
+    GuardOff,
+    WaypointPlaced,
+    WaypointAdded,
+    Retreat,
+    SuperweaponReady,
+    Victory,
+    Defeat,
+}
+
+impl Speech {
+    /// How long after it is said it is not said again, in seconds: a warning of an attack
+    /// longer than anything else, so that a fight does not keep it saying so.
+    fn quiet_for(self) -> f32 {
+        match self {
+            Speech::BaseUnderAttack | Speech::HarvesterUnderAttack | Speech::LowPower => 20.0,
+            _ => 3.0,
+        }
+    }
+}
+
 /// How long the retreat button waits for its second click, in seconds.
 const RETREAT_CONFIRM_SECONDS: f32 = 5.0;
 
@@ -1831,6 +1868,15 @@ pub struct Game {
     routes: Vec<Route>,
     /// The starport's market, and the player's order from it.
     market: Market,
+    /// What is to be said out loud, waiting to be taken; and when each was last said.
+    speeches: Vec<Speech>,
+    last_said: Vec<(Speech, f32)>,
+    /// How hurt each of the player's units was at the last look, by id, to hear of attacks;
+    /// and whether the player was short of power then.
+    health_seen: std::collections::HashMap<u32, f32>,
+    was_short_of_power: bool,
+    /// The player's buildings that were going up at the last look.
+    constructing_seen: Vec<u32>,
     /// Seconds the retreat button still waits for its second click.
     retreat_armed: f32,
     /// Seconds until the superweapon can fire again.
@@ -1937,6 +1983,11 @@ impl Game {
             click_mode: None,
             routes: Vec::new(),
             market: Market::default(),
+            speeches: Vec::new(),
+            last_said: Vec::new(),
+            health_seen: std::collections::HashMap::new(),
+            was_short_of_power: false,
+            constructing_seen: Vec::new(),
             retreat_armed: 0.0,
             strike_recharge: 0.0,
             selection_anchor: None,
@@ -2406,6 +2457,7 @@ impl Game {
             self.next_unit_id += 1;
             if self.units[new].owner == 0 {
                 self.post_chat(format!("{} ready", self.units[new].name()));
+                self.announce(Speech::UnitReady);
             } else {
                 let owner = self.units[new].owner;
                 let rally = self
@@ -2670,6 +2722,7 @@ impl Game {
                 }
             } else {
                 self.post_chat(format!("{} ready to place", role.name()));
+                self.announce(Speech::ReadyToPlace);
                 Site::Ready(role)
             };
         }
@@ -2778,7 +2831,10 @@ impl Game {
                 self.site = Site::Placing(role);
                 self.wall_start = None;
             }
-            Site::Idle => self.site = Site::Building(role, role.build_seconds()),
+            Site::Idle => {
+                self.site = Site::Building(role, role.build_seconds());
+                self.announce(Speech::ConstructionStarted);
+            }
             Site::Ready(ready) if ready == role => {
                 self.aiming_strike = false;
                 self.site = Site::Placing(role);
@@ -3081,6 +3137,7 @@ impl Game {
         if self.retreat_armed > 0.0 {
             self.retreat_armed = 0.0;
             self.outcome = Some(Outcome::Defeat);
+            self.announce(Speech::Retreat);
             self.key_paused = false;
             self.aiming_strike = false;
             self.outcome_elapsed = 0.0;
@@ -3116,7 +3173,10 @@ impl Game {
             return;
         }
         match self.routes.iter_mut().find(|route| route.ids == ids) {
-            Some(route) => route.ahead.push_back(point),
+            Some(route) => {
+                route.ahead.push_back(point);
+                self.speeches.push(Speech::WaypointAdded);
+            }
             None => {
                 // Whoever of them was on another route leaves it.
                 self.leave_routes(&ids);
@@ -3126,6 +3186,7 @@ impl Game {
                     ids,
                     ahead: std::collections::VecDeque::new(),
                 });
+                self.announce(Speech::WaypointPlaced);
                 self.answer(Said::Moving);
             }
         }
@@ -3191,6 +3252,7 @@ impl Game {
         let money = sold.role.cost() / 2;
         self.money[0] += money;
         self.post_chat(format!("{} sold: ${money}", sold.role.name()));
+        self.announce(Speech::BuildingSold);
     }
 
     /// The selected unit under the cursor that a click would deploy or bring back from that.
@@ -3605,6 +3667,7 @@ impl Game {
     /// when no enemy of the player is left, and lost when the player has nothing left.
     fn settle_casualties(&mut self) {
         let mut lost_names = Vec::new();
+        let mut lost_speeches = Vec::new();
         for unit in self.units.iter().filter(|u| !u.alive) {
             // Up in the air and not hit hard, it comes down in one piece. Otherwise it goes up
             // here, the harder it was hit past dead the more so.
@@ -3631,6 +3694,11 @@ impl Game {
                 self.lost.infantry += aboard;
                 if unit.role.counts_for_stats() {
                     lost_names.push(unit.name());
+                    lost_speeches.push(if unit.kind.is_building() {
+                        Speech::BuildingLost
+                    } else {
+                        Speech::UnitLost
+                    });
                 }
             } else if units::are_enemies(&self.teams, 0, unit.owner) {
                 self.killed.count(unit);
@@ -3641,6 +3709,9 @@ impl Game {
         units::join_walls(&mut self.units);
         for name in lost_names {
             self.post_chat(format!("{name} lost"));
+        }
+        for speech in lost_speeches {
+            self.announce(speech);
         }
         self.report_defeats();
         if self.outcome.is_some() {
@@ -3656,6 +3727,11 @@ impl Game {
         } else {
             None
         };
+        match self.outcome {
+            Some(Outcome::Victory) => self.announce(Speech::Victory),
+            Some(Outcome::Defeat) => self.announce(Speech::Defeat),
+            None => {}
+        }
         if self.outcome.is_some() {
             self.key_paused = false;
             self.aiming_strike = false;
@@ -3822,6 +3898,11 @@ impl Game {
         self.click_mode = None;
         self.routes.clear();
         self.market = Market::open(self.faction_of(0), self.start_random);
+        self.speeches.clear();
+        self.last_said.clear();
+        self.health_seen.clear();
+        self.was_short_of_power = false;
+        self.constructing_seen.clear();
         self.retreat_armed = 0.0;
         self.strike_recharge = 0.0;
         self.set_screen(Screen::Loading);
@@ -4152,6 +4233,7 @@ impl Game {
                 self.strike_recharge = (self.strike_recharge - dt).max(0.0);
                 if was_recharging && self.strike_recharge <= 0.0 {
                     self.post_chat("Superweapon ready".to_string());
+                    self.announce(Speech::SuperweaponReady);
                 }
             } else {
                 self.aiming_strike = false;
@@ -4171,6 +4253,7 @@ impl Game {
                         plan.think(&mut self.units, terrain, &self.teams, dt);
                     }
                     units::settle_power(&mut self.units);
+                    self.listen_to_the_base();
                     units::work_on_repairs(&mut self.units, &mut self.money, dt);
                     self.run_market(dt);
                     self.follow_routes();
@@ -4267,6 +4350,82 @@ impl Game {
 
     pub fn take_reply(&mut self) -> Option<(Said, Vec<(Role, Faction)>)> {
         self.reply.take()
+    }
+
+    /// What is to be said out loud now, for the player's house.
+    pub fn take_speeches(&mut self) -> Vec<Speech> {
+        std::mem::take(&mut self.speeches)
+    }
+
+    /// Has this said out loud, unless it was said only a moment ago.
+    fn announce(&mut self, speech: Speech) {
+        let now = self.battle_time;
+        let recent = self
+            .last_said
+            .iter()
+            .any(|&(said, at)| said == speech && now - at < speech.quiet_for());
+        if !recent {
+            self.last_said.retain(|&(said, _)| said != speech);
+            self.last_said.push((speech, now));
+            self.speeches.push(speech);
+        }
+    }
+
+    /// Hears what has happened to the player's side since the last look: an attack on its
+    /// base or a harvester, a building finished, power running short.
+    fn listen_to_the_base(&mut self) {
+        let mut attacked = (false, false);
+        let mut finished = false;
+        for unit in self.units.iter().filter(|u| u.owner == 0 && u.alive) {
+            let Some(&before) = self.health_seen.get(&unit.id) else {
+                continue;
+            };
+            if unit.health < before - 0.01 {
+                if unit.role == Role::Harvester {
+                    attacked.1 = true;
+                } else if unit.kind.is_building() && !unit.repairing {
+                    attacked.0 = true;
+                }
+            }
+        }
+        let built: Vec<u32> = self
+            .units
+            .iter()
+            .filter(|u| u.owner == 0 && u.kind.is_building() && u.is_under_construction())
+            .map(|u| u.id)
+            .collect();
+        for unit in self
+            .units
+            .iter()
+            .filter(|u| u.owner == 0 && u.kind.is_building())
+        {
+            let was_going_up = self.health_seen.get(&unit.id).is_some()
+                && self.constructing_seen.contains(&unit.id);
+            if was_going_up && !unit.is_under_construction() && unit.role != Role::Wall {
+                finished = true;
+            }
+        }
+        self.constructing_seen = built;
+        self.health_seen = self
+            .units
+            .iter()
+            .filter(|u| u.owner == 0 && u.alive)
+            .map(|u| (u.id, u.health))
+            .collect();
+        if attacked.0 {
+            self.announce(Speech::BaseUnderAttack);
+        }
+        if attacked.1 {
+            self.announce(Speech::HarvesterUnderAttack);
+        }
+        if finished {
+            self.announce(Speech::ConstructionComplete);
+        }
+        let short = units::is_short_of_power(&self.units, 0);
+        if short && !self.was_short_of_power {
+            self.announce(Speech::LowPower);
+        }
+        self.was_short_of_power = short;
     }
 
     /// Has the selected units answer this.
@@ -4570,6 +4729,12 @@ impl Game {
             }
             Action::HudSmall(GUARD_BUTTON) if self.in_battle => {
                 units::toggle_guard(&mut self.units);
+                let on = self.hud_small_lit(GUARD_BUTTON);
+                self.announce(if on {
+                    Speech::GuardOn
+                } else {
+                    Speech::GuardOff
+                });
             }
             Action::HudSmall(RETREAT_BUTTON) if self.in_battle && self.outcome.is_none() => {
                 self.retreat();
@@ -4593,10 +4758,17 @@ impl Game {
                 return;
             }
             // It is paid for while it is made. A busy building queues it.
-            units::start_making(&mut self.units, role, 0);
+            if self.player_money() <= 0 {
+                self.announce(Speech::InsufficientFunds);
+            }
+            if units::start_making(&mut self.units, role, 0) {
+                self.announce(Speech::Training);
+            }
         } else if let Some(Entry::Upgrade(role)) = self.build_entry(self.build_tab, cell) {
             // Paid for while it goes on, as what is made is.
-            units::start_upgrade(&mut self.units, 0, role);
+            if units::start_upgrade(&mut self.units, 0, role) {
+                self.announce(Speech::Upgrading);
+            }
         } else if let Some(Entry::Order(role)) = self.build_entry(self.build_tab, cell) {
             self.market.add(role);
         } else if self.build_entry(self.build_tab, cell) == Some(Entry::Purchase) {
@@ -13518,5 +13690,51 @@ mod tests {
         game.update(OPENING_WAIT_SECONDS + 0.05);
         assert_eq!(game.screen, Screen::Loading);
         assert_eq!(game.faction_of(0), Faction::Ordos);
+    }
+
+    #[test]
+    fn the_battlefield_says_what_happens_and_does_not_repeat_itself() {
+        let mut game = in_battle();
+        game.update(0.1);
+        game.take_speeches();
+        let rifleman = cell_of(&game, BuildTab::Infantry, Role::AtInfantry);
+        click_hud(&mut game, Action::BuildCell(rifleman));
+        assert_eq!(game.take_speeches()[0], Speech::Training);
+        game.update(Role::AtInfantry.build_seconds() + 0.5);
+        game.take_speeches();
+
+        // A building hit by the enemy: the base is under attack, once in a while.
+        let barracks = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Barracks)
+            .unwrap();
+        for _ in 0..3 {
+            game.units[barracks].health -= 1.0;
+            game.update(0.1);
+        }
+        let said = game.take_speeches();
+        let warnings = said
+            .iter()
+            .filter(|&&s| s == Speech::BaseUnderAttack)
+            .count();
+        assert_eq!(warnings, 1, "{said:?}");
+        for _ in 0..(Speech::BaseUnderAttack.quiet_for() * 2.0) as usize {
+            game.update(0.5);
+        }
+        game.units[barracks].health -= 1.0;
+        game.update(0.1);
+        assert!(
+            game.take_speeches().contains(&Speech::BaseUnderAttack),
+            "again later"
+        );
+
+        // Losing it, and running short of power.
+        game.units
+            .retain(|u| u.owner != 0 || u.role != Role::Windtrap);
+        game.units[barracks].alive = false;
+        game.update(0.1);
+        let said = game.take_speeches();
+        assert!(said.contains(&Speech::BuildingLost) && said.contains(&Speech::LowPower));
     }
 }

@@ -230,6 +230,26 @@ piece for how it joins its owner's walls beside it. Not done yet:
   3D shapes (`!06%crimsonglow.tga`), with flares over the selected tab. The Upgrades tab
   shows its `upgradebuildings`. Its Starport tab is our wide Starport button.
 
+## What the battlefield says
+
+The player hears the original's spoken messages off the first disc's `DIALOG.BAG`, the lines
+its `UI_Comp.txt` gives: unit ready, training, construction started, ready to place,
+construction complete, unit and building lost, building sold, base and harvester under
+attack, low power, insufficient funds, upgrading, guard on and off, waypoints placed and
+added, retreat, superweapon ready, victory and defeat. The same line is not said again
+within three seconds, an attack or low power within twenty. Not done yet:
+
+- **The house's own voice**: the original's lines differ by house in a few places (the
+  table gives Atreides their own "Structure ready to place"); most of ours are shared.
+- **Priority and interrupting** (`Priority`, `Interrupt`, `TimeOut` in `Dialog.txt`): a new
+  line cuts off the one playing.
+- **Messages we have no event for**: wormsign, worm attack, incoming superweapons, buildings
+  captured or stolen, leech and contamination, carryall under attack, reinforcements, the
+  T-minus countdown, new construction options, "cannot build here", game loaded and saved.
+- **Unit descriptions** (`UI-B…`) said when a unit is first shown.
+- **The Mentat's mission lines** (`ScriptDialog.txt`, a house disc's `DIALOG.BAG`), which
+  need the mission scripts to run.
+
 ## The campaign
 
 Confirming a house plays its opening movie off its own disc (`A00_F00E` for the Atreides,

@@ -137,6 +137,11 @@ done:
 - **The power gauge** round the minimap shows the share of power to spare and the number;
   the original's bar is its own model (`Power%02d`).
 
+- **Windtraps** blow their wind: the glowing streams (`?leftwind`, `?rightwind`, painted with
+  `!%Wind.tga`) flow as their pictures slide, 0.05 a frame. Their turbine does not turn (the
+  models give it no animation), and their ambient sound (`ambient6`, `HKAmbient4`,
+  `ORAmbient3`) is not played.
+
 ## Walls
 
 Walls are placed as the original's are: a click picks the first square, the route to the

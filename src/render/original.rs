@@ -1505,9 +1505,11 @@ fn gather(
             faces.push(face);
         }
     }
-    // A light's glows, and what is seen through, unless it only shows when something has
-    // happened to the unit, as the mark of a leech in it does.
-    let lit = is_light(&object.name);
+    // A light's glows, and a glow whose picture slides over it, as a windtrap's wind does;
+    // and what is seen through, unless it only shows when something has happened to the
+    // unit, as the mark of a leech in it does.
+    let flows = shape.slides.iter().any(|slide| slide.part == object.name);
+    let lit = is_light(&object.name) || flows;
     let shown = !object.name.contains(CONDITION_MARK);
     let veils = object
         .faces
@@ -2678,6 +2680,28 @@ mod tests {
                     "{house:?} side {side}: {off:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_windtrap_on_the_disc_blows_wind_that_flows_across_it() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(index) = archive::from_cabinet(&disc.join(CABINET), INDEX) else {
+            return;
+        };
+        let archive = Archive::open(&index, &disc.join(DATA)).unwrap();
+        for name in [
+            "Buildings\\AT_Windtrap_H0.XbF",
+            "Buildings\\HK_Windtrap_H0.XBF",
+            "Buildings\\or_windtrap_H0.XbF",
+        ] {
+            let shape = read_shape(&archive, name, &mut HashMap::new()).unwrap();
+            let wind: Vec<&Part> = shape
+                .parts
+                .iter()
+                .filter(|part| part.veils.iter().any(|veil| veil.glows) && part.slide[0] > 0.0)
+                .collect();
+            assert!(wind.len() >= 2, "{name}: its two streams of wind");
         }
     }
 }

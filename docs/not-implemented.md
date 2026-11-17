@@ -233,6 +233,25 @@ piece for how it joins its owner's walls beside it. Not done yet:
   3D shapes (`!06%crimsonglow.tga`), with flares over the selected tab. The Upgrades tab
   shows its `upgradebuildings`. It also has a Starport tab, which we have nothing for.
 
+## Sidebar buttons
+
+The five small buttons are the original's, each with its symbol from the sidebar's model:
+Repair, Sell, Waypoint, Retreat and Guard. The two wide ones open the Upgrades and Starport
+menus, as its tabs of those names do. Not as the original, or not known:
+
+- **Repair** mends a building from nothing in 30 seconds for half its price. The original's
+  rate (`RepairRate` 12) and price were not worked out.
+- **Retreat** asks with a line of chat and gives the battle up on a second click within five
+  seconds. The original asks in a pop-up (`RetreatPopUp`), and takes the units off the map in
+  a campaign.
+- **Guard mode** sends a unit after enemies within the original's `GuardTileRange` of 12
+  tiles of where it was put on guard, and back. What else the original's does is not known.
+- **Waypoints** show as flags. The original has its own markers (`Waypoints\WP_*.xbf`) and
+  can close a route into a loop.
+- **The buttons' look**: flat symbols on our buttons; the original's glow and spin
+  (`AnimMesh`), with flares.
+- **Deploy** has no button any more: the D key, or a click on the unit, as before.
+
 ## Menus
 
 The main menu and the single player menu show the original's own scene off the disc,

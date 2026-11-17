@@ -17,10 +17,17 @@ const SMALL_COUNT: usize = 5;
 const WIDE_H: f32 = 44.0;
 const WIDE_COUNT: usize = 2;
 const TAB_W: f32 = 84.0;
-/// Which of the two wide buttons is Deploy.
-pub const DEPLOY_BUTTON: usize = 0;
-/// Which of the small buttons sells buildings.
-pub const SELL_BUTTON: usize = 0;
+/// The two wide buttons, as the original's tabs of those names: the first opens the Upgrades
+/// menu, the second the Starport's.
+pub const UPGRADE_BUTTON: usize = 0;
+pub const STARPORT_BUTTON: usize = 1;
+/// The small buttons, the original's five: repairing and selling buildings, laying a route
+/// of waypoints, retreating from the battle, and guard mode.
+pub const REPAIR_BUTTON: usize = 0;
+pub const SELL_BUTTON: usize = 1;
+pub const WAYPOINT_BUTTON: usize = 2;
+pub const RETREAT_BUTTON: usize = 3;
+pub const GUARD_BUTTON: usize = 4;
 
 pub const GRID_COLUMNS: usize = 3;
 pub const GRID_ROWS: usize = 5;
@@ -83,8 +90,8 @@ pub fn money_anchor(width: f32, height: f32) -> (f32, f32) {
 
 /// The row of small square buttons under the minimap, then the row of two wide ones.
 pub fn command_buttons(width: f32, height: f32) -> Vec<Button> {
-    const SMALL_LABELS: [&str; SMALL_COUNT] = ["$", "2", "3", "4", "5"];
-    const WIDE_LABELS: [&str; WIDE_COUNT] = ["Deploy", "Fake B"];
+    const SMALL_LABELS: [&str; SMALL_COUNT] = ["Fix", "$", "Way", "Out", "Grd"];
+    const WIDE_LABELS: [&str; WIDE_COUNT] = ["Upgrade", "Starport"];
     let s = ui_scale(height);
     let left = panel_x(width, height);
     let small = SMALL_SIZE;
@@ -135,13 +142,13 @@ pub fn grid_cells(width: f32, height: f32) -> Vec<Button> {
     all
 }
 
-/// The four tabs, standing out to the left of the grid.
+/// The three tabs, standing out to the left of the grid: the Upgrades and Starport menus open
+/// from the wide buttons.
 pub fn build_tabs(width: f32, height: f32) -> Vec<Button> {
-    const TABS: [(BuildTab, &str); 4] = [
+    const TABS: [(BuildTab, &str); 3] = [
         (BuildTab::Infantry, "Infantry"),
         (BuildTab::Vehicles, "Vehicles"),
         (BuildTab::Buildings, "Buildings"),
-        (BuildTab::Upgrades, "Upgrades"),
     ];
     let s = ui_scale(height);
     let x = panel_x(width, height) - (GAP + TAB_W) * s;
@@ -290,7 +297,7 @@ mod tests {
     fn tabs_stand_to_the_left_of_the_grid() {
         let cells = grid_cells(W, H);
         let tabs = build_tabs(W, H);
-        assert_eq!(tabs.len(), 4);
+        assert_eq!(tabs.len(), 3);
         for tab in &tabs {
             assert!(tab.x + tab.w <= cells[0].x);
             assert!(tab.y >= cells[0].y);

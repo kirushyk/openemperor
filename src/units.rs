@@ -1884,6 +1884,11 @@ pub struct Unit {
     pub upgrading: Option<f32>,
     /// Whether it is a turret standing idle because its owner is short of power.
     pub unpowered: bool,
+    /// Whether a building is being repaired, paid for as it goes.
+    pub repairing: bool,
+    /// Where it stands guard, if it was put in guard mode: it goes after enemies that come
+    /// near there, and comes back.
+    pub guard: Option<(f32, f32)>,
     /// Seconds left until a building just placed is finished, and works.
     pub constructing: f32,
     /// Which way a building looks.
@@ -2909,6 +2914,8 @@ impl Unit {
             upgrades: 0,
             upgrading: None,
             unpowered: false,
+            repairing: false,
+            guard: None,
             constructing: 0.0,
             facing: Facing::default(),
             deployment: Deployment::Idle,
@@ -3068,6 +3075,8 @@ fn place_unit(
         upgrades: 0,
         upgrading: None,
         unpowered: false,
+        repairing: false,
+        guard: None,
         constructing: 0.0,
         facing: Facing::default(),
         deployment: Deployment::Idle,
@@ -3258,6 +3267,93 @@ pub fn settle_power(units: &mut [Unit]) {
     let short: Vec<bool> = (0..owners).map(|o| is_short_of_power(units, o)).collect();
     for unit in units.iter_mut() {
         unit.unpowered = unit.role.needs_power_to_work() && short[unit.owner];
+    }
+}
+
+/// How many seconds a building takes to be repaired from nothing, and what share of its
+/// price that costs.
+const REPAIR_SECONDS: f32 = 30.0;
+const REPAIR_SHARE_OF_COST: f32 = 0.5;
+
+/// Mends every building being repaired, paid for from each owner's `money` as it goes: it
+/// stops where the money runs out, and is over once the building is whole.
+pub fn work_on_repairs(units: &mut [Unit], money: &mut [i32], dt: f32) {
+    for unit in units.iter_mut().filter(|u| u.alive && u.repairing) {
+        let Some(money) = money.get_mut(unit.owner) else {
+            continue;
+        };
+        let (whole, price) = (
+            unit.max_health(),
+            unit.role.cost() as f32 * REPAIR_SHARE_OF_COST,
+        );
+        let wanted = (whole * dt / REPAIR_SECONDS).min(whole - unit.health);
+        // What each credit mends; a whole credit at a time.
+        let per_credit = whole / price.max(1.0);
+        let cost = (wanted / per_credit).ceil() as i32;
+        let paid = cost.min((*money).max(0));
+        *money -= paid;
+        unit.health = (unit.health + paid as f32 * per_credit).min(whole);
+        if unit.health >= whole {
+            unit.repairing = false;
+        }
+    }
+}
+
+/// How far from where it stands guard a unit goes after an enemy: the original's
+/// `GuardTileRange` of 12 tiles.
+pub const GUARD_RANGE: f32 = 12.0 * CELL_SIDE;
+
+/// Puts every selected unit of the player's that can fight in guard mode where it stands, or
+/// takes them all out of it if they all are in it already.
+pub fn toggle_guard(units: &mut [Unit]) {
+    let guards = |u: &Unit| u.selected && !u.kind.is_building() && u.weapon.is_armed();
+    let all = units
+        .iter()
+        .filter(|u| guards(u))
+        .all(|u| u.guard.is_some());
+    for unit in units.iter_mut().filter(|u| guards(u)) {
+        unit.guard = if all { None } else { Some((unit.x, unit.z)) };
+    }
+}
+
+/// Sends each unit in guard mode with nothing to go after at the nearest enemy it can attack
+/// within its guard range of its post, and back to its post once that one is gone or has
+/// drawn it too far off.
+fn keep_guard(units: &mut [Unit], teams: &[usize]) {
+    for i in 0..units.len() {
+        let unit = units[i];
+        let Some(post) = unit.guard.filter(|_| unit.alive) else {
+            continue;
+        };
+        let from_post = |u: &Unit| (u.x - post.0).hypot(u.z - post.1);
+        match unit.target {
+            Some(Target::Unit(id)) => {
+                let chased = units.iter().find(|u| u.alive && u.id == id);
+                if chased.is_none_or(|u| from_post(u) > GUARD_RANGE) {
+                    units[i].target = None;
+                    units[i].destination = post;
+                }
+            }
+            Some(_) => {}
+            None => {
+                let near = units
+                    .iter()
+                    .filter(|u| {
+                        u.alive
+                            && from_post(u) <= GUARD_RANGE
+                            && !u.hidden_from(unit.owner, teams)
+                            && unit.can_attack(u, teams)
+                    })
+                    .min_by(|a, b| from_post(a).total_cmp(&from_post(b)));
+                match near {
+                    Some(enemy) => units[i].go_after(enemy.id),
+                    None if !unit.is_moving() && from_post(&unit) > CELL_SIDE => {
+                        units[i].destination = post;
+                    }
+                    None => {}
+                }
+            }
+        }
     }
 }
 
@@ -6084,6 +6180,7 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
     tend_pads(units, terrain, dt);
     alert_landers(units, teams);
     rush_to_the_hurt(units, teams);
+    keep_guard(units, teams);
     chase_targets(units, terrain, teams);
     // Spheres only start to overlap when something moves.
     if !units

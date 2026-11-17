@@ -9,7 +9,7 @@ use super::models::{Model, Paint, Place};
 use crate::archive::{self, Archive};
 use crate::battlefield::{self, CELL_SIDE, Terrain, View};
 use crate::fog::Fog;
-use crate::game::{BuildTab, Faction};
+use crate::game::Faction;
 use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
 use crate::units::{Harvest, Role, Unit, UnitKind, WallPiece, Wound};
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
@@ -526,11 +526,33 @@ const DAMAGED: [&str; 2] = ["_h1.", "_h2."];
 const UI_INDEX: &str = "\\data\\UI0001.RFH";
 const UI_DATA: &str = "\\data\\UI0001.RFD";
 const SIDEBAR: &str = "SIDEBAR\\SIDEBAR1.XBF";
-const TAB_SYMBOLS: [(BuildTab, &str); 4] = [
-    (BuildTab::Infantry, "infantrybody"),
-    (BuildTab::Vehicles, "vehiclebody"),
-    (BuildTab::Buildings, "buildingbody"),
-    (BuildTab::Upgrades, "upgradebuildings"),
+/// The symbols on the original's sidebar: those of its tabs and of its command buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Symbol {
+    Infantry,
+    Vehicles,
+    Buildings,
+    Upgrades,
+    Starport,
+    Repair,
+    Sell,
+    Waypoint,
+    Retreat,
+    Guard,
+}
+
+/// The parts of the sidebar's model each symbol is made of.
+const SYMBOLS: [(Symbol, &[&str]); 10] = [
+    (Symbol::Infantry, &["infantrybody"]),
+    (Symbol::Vehicles, &["vehiclebody"]),
+    (Symbol::Buildings, &["buildingbody"]),
+    (Symbol::Upgrades, &["upgradebuildings", "upgradearrow"]),
+    (Symbol::Starport, &["Star01", "rocket"]),
+    (Symbol::Repair, &["spanner"]),
+    (Symbol::Sell, &["dollar"]),
+    (Symbol::Waypoint, &["concreteicon"]),
+    (Symbol::Retreat, &["flagpole", "flag"]),
+    (Symbol::Guard, &["sheild"]),
 ];
 
 /// What the name of its model as it is destroyed ends with.
@@ -595,9 +617,9 @@ struct Original {
     upgrade_icons: Vec<[Option<(usize, usize)>; 2]>,
     /// The main menu's scene, if the disc has it.
     menu: Option<frontend::Scene>,
-    /// The symbol of each of `TAB_SYMBOLS`, as flat triangles in a square from -1 to 1
-    /// across and down, if the disc has it.
-    tab_symbols: Vec<Vec<[(f32, f32); 3]>>,
+    /// The symbol of each of `SYMBOLS`, as flat triangles in a square from -1 to 1 across and
+    /// down: none for one the disc has not.
+    symbols: Vec<Vec<[(f32, f32); 3]>>,
     archive: Archive,
     spice: Option<Spice>,
 }
@@ -1167,14 +1189,14 @@ fn read_shapes(disc: &Path) -> Option<Original> {
             })
         })
         .collect();
-    let tab_symbols = read_tab_symbols(disc).unwrap_or_default();
+    let symbols = read_symbols(disc).unwrap_or_default();
     let menu = read_interface(disc, frontend::SCENE)
         .and_then(|model| frontend::read(&model, &archive, &mut pictures, &mut layers));
     (!shapes.is_empty()).then_some(Original {
         shapes,
         damaged,
         ruins,
-        tab_symbols,
+        symbols,
         logos,
         stealth,
         pictures,
@@ -1205,9 +1227,9 @@ pub(super) fn draw_menu(vertices: &mut Vec<Vertex>, screen: (f32, f32), time: f3
     })
 }
 
-/// The tabs' symbols out of the sidebar model, each in the order of `TAB_SYMBOLS`. The model
-/// faces along x, its right along y and its up along z.
-fn read_tab_symbols(disc: &Path) -> Option<Vec<Vec<[(f32, f32); 3]>>> {
+/// The sidebar's symbols out of its model, each in the order of `SYMBOLS`. The model faces
+/// along x, its right along y and its up along z.
+fn read_symbols(disc: &Path) -> Option<Vec<Vec<[(f32, f32); 3]>>> {
     let model = xbf::parse(&read_interface(disc, SIDEBAR)?)?;
     fn find(object: &Object, above: &[[f32; 4]; 4], name: &str) -> Option<Vec<[[f32; 3]; 3]>> {
         let world = times(&object.transform, above);
@@ -1230,42 +1252,36 @@ fn read_tab_symbols(disc: &Path) -> Option<Vec<Vec<[(f32, f32); 3]>>> {
             .iter()
             .find_map(|child| find(child, &world, name))
     }
-    TAB_SYMBOLS
-        .iter()
-        .map(|&(_, name)| {
-            let faces = model
-                .objects
-                .iter()
-                .find_map(|o| find(o, &IDENTITY, name))?;
-            let points = faces.iter().flatten();
-            let (mut low, mut high) = ([f32::MAX; 2], [f32::MIN; 2]);
-            for &[_, y, z] in points {
-                (low, high) = (
-                    [low[0].min(y), low[1].min(z)],
-                    [high[0].max(y), high[1].max(z)],
-                );
-            }
-            let middle = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0];
-            let half = ((high[0] - low[0]).max(high[1] - low[1]) / 2.0).max(f32::EPSILON);
-            Some(
-                faces
-                    .iter()
-                    .map(|face| {
-                        face.map(|[_, y, z]| ((y - middle[0]) / half, (middle[1] - z) / half))
-                    })
-                    .collect(),
-            )
-        })
-        .collect()
+    let symbols = SYMBOLS.iter().map(|&(_, parts)| {
+        let faces: Vec<[[f32; 3]; 3]> = parts
+            .iter()
+            .filter_map(|part| model.objects.iter().find_map(|o| find(o, &IDENTITY, part)))
+            .flatten()
+            .collect();
+        let (mut low, mut high) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for &[_, y, z] in faces.iter().flatten() {
+            (low, high) = (
+                [low[0].min(y), low[1].min(z)],
+                [high[0].max(y), high[1].max(z)],
+            );
+        }
+        let middle = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0];
+        let half = ((high[0] - low[0]).max(high[1] - low[1]) / 2.0).max(f32::EPSILON);
+        faces
+            .iter()
+            .map(|face| face.map(|[_, y, z]| ((y - middle[0]) / half, (middle[1] - z) / half)))
+            .collect()
+    });
+    Some(symbols.collect())
 }
 
-/// The symbol on a build menu's tab, as the original's sidebar has it: flat triangles in a
-/// square from -1 to 1 across and down, once the disc's are read.
-pub fn tab_symbol(tab: BuildTab) -> Option<&'static [[(f32, f32); 3]]> {
-    let at = TAB_SYMBOLS.iter().position(|&(of, _)| of == tab)?;
+/// A symbol of the original's sidebar: flat triangles in a square from -1 to 1 across and
+/// down, once the disc's are read.
+pub fn symbol(symbol: Symbol) -> Option<&'static [[(f32, f32); 3]]> {
+    let at = SYMBOLS.iter().position(|&(of, _)| of == symbol)?;
     ORIGINAL
         .get()?
-        .tab_symbols
+        .symbols
         .get(at)
         .map(Vec::as_slice)
         .filter(|faces| !faces.is_empty())

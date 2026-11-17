@@ -27,10 +27,10 @@ mod original;
 #[cfg(test)]
 pub use original::names_icon;
 pub use original::{
-    PICTURE_SIDE, icon as original_icon, load as load_original_models, muzzles as original_muzzles,
-    noise_sounds as original_noise_sounds, pictures as original_pictures,
-    tab_symbol as original_tab_symbol, upgrade_icon as original_upgrade_icon,
-    wash as original_wash,
+    PICTURE_SIDE, Symbol, icon as original_icon, load as load_original_models,
+    muzzles as original_muzzles, noise_sounds as original_noise_sounds,
+    pictures as original_pictures, symbol as original_symbol,
+    upgrade_icon as original_upgrade_icon, wash as original_wash,
 };
 
 type Color = [f32; 4];
@@ -1124,7 +1124,26 @@ fn draw_button(canvas: &mut Canvas, game: &Game, b: Button) {
         Action::Tab(_) | Action::HudSmall(_) | Action::HudWide(_) => small_text_px(game.height),
         _ => 4.0 * s,
     };
-    canvas.text_centered(b.label, cx, cy, px, TEXT);
+    // A command button shows the disc's symbol for it, gold while it is on; a wide one beside
+    // its name.
+    let lit = match b.action {
+        Action::HudSmall(button) => game.hud_small_lit(button),
+        Action::HudWide(hud::UPGRADE_BUTTON) => game.build_tab == BuildTab::Upgrades,
+        _ => false,
+    };
+    let color = if lit { GOLD } else { TEXT };
+    if let Some(symbol) = command_symbol(b.action) {
+        let wide = matches!(b.action, Action::HudWide(_));
+        let at = if wide {
+            (b.x + b.h / 2.0, cy)
+        } else {
+            (cx, cy)
+        };
+        if draw_symbol(canvas, symbol, at, b.h * 0.7, color) && !wide {
+            return;
+        }
+    }
+    canvas.text_centered(b.label, cx, cy, px, color);
 }
 
 fn draw_message_box(canvas: &mut Canvas, game: &Game) {
@@ -2493,6 +2512,10 @@ fn draw_order_lines(canvas: &mut Canvas, game: &Game, view: &battlefield::View) 
                 }
             }
         }
+    }
+    // The waypoints still ahead on the selected units' routes, a flag at each.
+    for point in game.waypoints() {
+        draw_gathering_flag(canvas, game, point);
     }
 }
 
@@ -4134,14 +4157,49 @@ pub fn making_dim_wedges(
         .collect()
 }
 
+/// Draws one of the original sidebar's symbols, this big, once the disc's are read. Returns
+/// whether it was drawn.
+fn draw_symbol(
+    canvas: &mut Canvas,
+    symbol: Symbol,
+    (cx, cy): (f32, f32),
+    size: f32,
+    c: Color,
+) -> bool {
+    let Some(faces) = original_symbol(symbol) else {
+        return false;
+    };
+    let half = size / 2.0;
+    for face in faces {
+        canvas.triangle(face.map(|(x, y)| (cx + x * half, cy + y * half)), c);
+    }
+    true
+}
+
+/// The symbol of one of the sidebar's command buttons, as the original's has it.
+fn command_symbol(action: Action) -> Option<Symbol> {
+    match action {
+        Action::HudSmall(hud::REPAIR_BUTTON) => Some(Symbol::Repair),
+        Action::HudSmall(hud::SELL_BUTTON) => Some(Symbol::Sell),
+        Action::HudSmall(hud::WAYPOINT_BUTTON) => Some(Symbol::Waypoint),
+        Action::HudSmall(hud::RETREAT_BUTTON) => Some(Symbol::Retreat),
+        Action::HudSmall(hud::GUARD_BUTTON) => Some(Symbol::Guard),
+        Action::HudWide(hud::UPGRADE_BUTTON) => Some(Symbol::Upgrades),
+        Action::HudWide(hud::STARPORT_BUTTON) => Some(Symbol::Starport),
+        _ => None,
+    }
+}
+
 /// Small vector pictures built from the same triangles as everything else.
 fn draw_tab_symbol(canvas: &mut Canvas, tab: BuildTab, cx: f32, cy: f32, size: f32, c: Color) {
     // The disc's own, once it is read.
-    if let Some(faces) = original_tab_symbol(tab) {
-        let half = size / 2.0;
-        for face in faces {
-            canvas.triangle(face.map(|(x, y)| (cx + x * half, cy + y * half)), c);
-        }
+    let symbol = match tab {
+        BuildTab::Infantry => Symbol::Infantry,
+        BuildTab::Vehicles => Symbol::Vehicles,
+        BuildTab::Buildings => Symbol::Buildings,
+        BuildTab::Upgrades => Symbol::Upgrades,
+    };
+    if draw_symbol(canvas, symbol, (cx, cy), size, c) {
         return;
     }
     let u = size / 10.0;

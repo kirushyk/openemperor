@@ -2,7 +2,9 @@
 
 use crate::battlefield::{self, Camera};
 use crate::fog::{Fog, Sight};
-use crate::hud::{self, DEPLOY_BUTTON, SELL_BUTTON};
+use crate::hud::{
+    self, GUARD_BUTTON, REPAIR_BUTTON, RETREAT_BUTTON, SELL_BUTTON, UPGRADE_BUTTON, WAYPOINT_BUTTON,
+};
 use crate::maps;
 use crate::platform::{Event, Key, Modifier};
 use crate::strategy::Strategy;
@@ -258,7 +260,23 @@ pub enum ClickMode {
     /// Sells the player's building there for half what it cost, with the sell button down,
     /// until it is let go.
     Sell,
+    /// Starts mending the player's building there, or stops, with the repair button down.
+    Repair,
+    /// Adds a waypoint there to the route the selected are sent along, with the waypoint
+    /// button down.
+    Route,
 }
+
+/// Units sent along a route of waypoints: who they are, and the waypoints still ahead of
+/// the one they are on their way to.
+#[derive(Clone, Debug, PartialEq)]
+struct Route {
+    ids: Vec<u32>,
+    ahead: std::collections::VecDeque<(f32, f32)>,
+}
+
+/// How long the retreat button waits for its second click, in seconds.
+const RETREAT_CONFIRM_SECONDS: f32 = 5.0;
 
 /// The new building the player has on the way: one at a time.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1608,6 +1626,10 @@ pub struct Game {
     pub aiming_strike: bool,
     /// What the next click on the map does instead, if anything.
     pub click_mode: Option<ClickMode>,
+    /// The routes of waypoints the player's units are on.
+    routes: Vec<Route>,
+    /// Seconds the retreat button still waits for its second click.
+    retreat_armed: f32,
     /// Seconds until the superweapon can fire again.
     pub strike_recharge: f32,
     /// Where a selection drag started, as a point on the map (x, z), so that it stays put
@@ -1710,6 +1732,8 @@ impl Game {
             combat: Combat::default(),
             aiming_strike: false,
             click_mode: None,
+            routes: Vec::new(),
+            retreat_armed: 0.0,
             strike_recharge: 0.0,
             selection_anchor: None,
             press_point: (0.0, 0.0),
@@ -2737,7 +2761,8 @@ impl Game {
             }
         };
         match self.click_mode {
-            Some(ClickMode::Sell) => return CursorLook::Sell,
+            Some(ClickMode::Sell | ClickMode::Repair) => return CursorLook::Sell,
+            Some(ClickMode::Route) if self.would_go_here() => return CursorLook::March,
             Some(ClickMode::March) if self.would_go_here() => return CursorLook::March,
             _ => {}
         }
@@ -2771,6 +2796,141 @@ impl Game {
     fn sellable_under_cursor(&self) -> Option<usize> {
         self.unit_under_cursor()
             .filter(|&i| self.units[i].owner == 0 && self.units[i].kind.is_building())
+    }
+
+    /// Puts a button's click mode on, or off if it is on.
+    fn toggle_mode(&mut self, mode: ClickMode) {
+        self.click_mode = (self.click_mode != Some(mode)).then_some(mode);
+    }
+
+    /// Whether a sidebar button shows lit: its click mode is on, the retreat is waiting for
+    /// its second click, or everyone selected who can is in guard mode.
+    pub fn hud_small_lit(&self, button: usize) -> bool {
+        match button {
+            SELL_BUTTON => self.click_mode == Some(ClickMode::Sell),
+            REPAIR_BUTTON => self.click_mode == Some(ClickMode::Repair),
+            WAYPOINT_BUTTON => self.click_mode == Some(ClickMode::Route),
+            RETREAT_BUTTON => self.retreat_armed > 0.0,
+            GUARD_BUTTON => {
+                let mut guards = self
+                    .units
+                    .iter()
+                    .filter(|u| u.selected && !u.kind.is_building() && u.weapon.is_armed())
+                    .peekable();
+                guards.peek().is_some() && guards.all(|u| u.guard.is_some())
+            }
+            _ => false,
+        }
+    }
+
+    /// The retreat button: the first click asks, and a second one soon after gives the
+    /// battle up.
+    fn retreat(&mut self) {
+        if self.retreat_armed > 0.0 {
+            self.retreat_armed = 0.0;
+            self.outcome = Some(Outcome::Defeat);
+            self.key_paused = false;
+            self.aiming_strike = false;
+            self.outcome_elapsed = 0.0;
+        } else {
+            self.retreat_armed = RETREAT_CONFIRM_SECONDS;
+            self.post_chat("Retreat all units from the map? Click again to retreat".to_string());
+        }
+    }
+
+    /// A click on the map with the repair button down: the player's building there starts
+    /// being mended if it is hurt, or stops.
+    fn click_repair(&mut self) {
+        if let Some(building) = self.sellable_under_cursor() {
+            let unit = &mut self.units[building];
+            unit.repairing = !unit.repairing && unit.health < unit.max_health();
+        }
+    }
+
+    /// A click on the map with the waypoint button down: the selected who can move go there
+    /// if they are on no route yet, and otherwise once they have been to the waypoints before
+    /// it.
+    fn click_waypoint(&mut self) {
+        let Some(point) = self.land_under_cursor() else {
+            return;
+        };
+        let ids: Vec<u32> = self
+            .units
+            .iter()
+            .filter(|u| u.selected && u.owner == 0 && !u.kind.is_building())
+            .map(|u| u.id)
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        match self.routes.iter_mut().find(|route| route.ids == ids) {
+            Some(route) => route.ahead.push_back(point),
+            None => {
+                // Whoever of them was on another route leaves it.
+                self.leave_routes(&ids);
+                let terrain = battlefield::terrain(self.battle_map);
+                units::order_move(&mut self.units, point, terrain, &self.teams);
+                self.routes.push(Route {
+                    ids,
+                    ahead: std::collections::VecDeque::new(),
+                });
+                self.answer(Said::Moving);
+            }
+        }
+    }
+
+    /// Takes these units off whatever routes they are on.
+    fn leave_routes(&mut self, ids: &[u32]) {
+        for route in &mut self.routes {
+            route.ids.retain(|id| !ids.contains(id));
+        }
+        self.routes.retain(|route| !route.ids.is_empty());
+    }
+
+    /// Sends the units of each route on to its next waypoint once they have all come to the
+    /// one before, and forgets routes that are done or whose units are gone.
+    fn follow_routes(&mut self) {
+        let terrain = battlefield::terrain(self.battle_map);
+        for at in 0..self.routes.len() {
+            let ids = self.routes[at].ids.clone();
+            let on_route = |u: &Unit| u.alive && ids.contains(&u.id);
+            if self.units.iter().any(|u| on_route(u) && u.is_moving()) {
+                continue;
+            }
+            let Some(next) = self.routes[at].ahead.pop_front() else {
+                self.routes[at].ids.clear();
+                continue;
+            };
+            // Sent as a click with only them selected would send them.
+            let selected: Vec<bool> = self.units.iter().map(|u| u.selected).collect();
+            for unit in &mut self.units {
+                unit.selected = on_route(unit);
+            }
+            units::order_move(&mut self.units, next, terrain, &self.teams);
+            for (unit, was) in self.units.iter_mut().zip(selected) {
+                unit.selected = was;
+            }
+        }
+        self.routes.retain(|route| {
+            !route.ids.is_empty()
+                && self
+                    .units
+                    .iter()
+                    .any(|u| u.alive && route.ids.contains(&u.id))
+        });
+    }
+
+    /// The waypoints ahead of the selected units' routes, for drawing.
+    pub fn waypoints(&self) -> Vec<(f32, f32)> {
+        self.routes
+            .iter()
+            .filter(|route| {
+                self.units
+                    .iter()
+                    .any(|u| u.selected && route.ids.contains(&u.id))
+            })
+            .flat_map(|route| route.ahead.iter().copied())
+            .collect()
     }
 
     /// Sells the player's building for half what it cost: it is gone, and the money theirs.
@@ -2933,6 +3093,16 @@ impl Game {
             self.selection_anchor = None;
             return;
         }
+        if self.click_mode == Some(ClickMode::Repair) {
+            self.click_repair();
+            self.selection_anchor = None;
+            return;
+        }
+        if self.click_mode == Some(ClickMode::Route) {
+            self.click_waypoint();
+            self.selection_anchor = None;
+            return;
+        }
         if self.aiming_strike {
             let target = self.land_under_cursor();
             if let (Some(weapon), Some((target_x, target_z))) = (self.superweapon(), target) {
@@ -2990,6 +3160,17 @@ impl Game {
             // Nothing picked, nothing to add.
         } else if let Some(target) = self.land_under_cursor() {
             let terrain = battlefield::terrain(self.battle_map);
+            // Sent somewhere else, they leave the route and the post they were on.
+            let sent: Vec<u32> = self
+                .units
+                .iter()
+                .filter(|u| u.selected)
+                .map(|u| u.id)
+                .collect();
+            self.leave_routes(&sent);
+            for unit in self.units.iter_mut().filter(|u| u.selected) {
+                unit.guard = None;
+            }
             if self.click_mode == Some(ClickMode::March) {
                 units::order_march(&mut self.units, target, terrain, &self.teams);
             } else {
@@ -3387,6 +3568,8 @@ impl Game {
         self.combat = Combat::default();
         self.aiming_strike = false;
         self.click_mode = None;
+        self.routes.clear();
+        self.retreat_armed = 0.0;
         self.strike_recharge = 0.0;
         self.set_screen(Screen::Loading);
     }
@@ -3716,6 +3899,9 @@ impl Game {
                         plan.think(&mut self.units, terrain, &self.teams, dt);
                     }
                     units::settle_power(&mut self.units);
+                    units::work_on_repairs(&mut self.units, &mut self.money, dt);
+                    self.follow_routes();
+                    self.retreat_armed = (self.retreat_armed - dt).max(0.0);
                     self.work_on_making(dt);
                     self.work_on_upgrades(dt);
                     self.work_on_site(dt);
@@ -4082,12 +4268,21 @@ impl Game {
             Action::BuildTab(tab) if self.tab_enabled(tab) => self.build_tab = tab,
             Action::BuildTab(_) => {}
             Action::BuildCell(cell) => self.activate_build_cell(cell),
-            Action::HudWide(DEPLOY_BUTTON) => self.toggle_deploy(),
-            Action::HudSmall(SELL_BUTTON) if self.in_battle => {
-                self.click_mode = match self.click_mode {
-                    Some(ClickMode::Sell) => None,
-                    _ => Some(ClickMode::Sell),
-                };
+            Action::HudWide(UPGRADE_BUTTON) if self.tab_enabled(BuildTab::Upgrades) => {
+                self.build_tab = BuildTab::Upgrades;
+            }
+            Action::HudSmall(SELL_BUTTON) if self.in_battle => self.toggle_mode(ClickMode::Sell),
+            Action::HudSmall(REPAIR_BUTTON) if self.in_battle => {
+                self.toggle_mode(ClickMode::Repair);
+            }
+            Action::HudSmall(WAYPOINT_BUTTON) if self.in_battle => {
+                self.toggle_mode(ClickMode::Route);
+            }
+            Action::HudSmall(GUARD_BUTTON) if self.in_battle => {
+                units::toggle_guard(&mut self.units);
+            }
+            Action::HudSmall(RETREAT_BUTTON) if self.in_battle && self.outcome.is_none() => {
+                self.retreat();
             }
             // Not designed yet: these buttons respond to hover but do nothing.
             Action::Multiplayer
@@ -8687,7 +8882,7 @@ mod tests {
     fn the_deploy_button_and_the_d_key_switch_selected_kindjal_infantry() {
         let mut game = in_battle();
         let k = select_new(&mut game, 4);
-        click_hud(&mut game, Action::HudWide(DEPLOY_BUTTON));
+        game.handle(Event::KeyDown(Key::Char('d')));
         assert!(game.units[k].deployed);
         game.handle(Event::KeyDown(Key::Char('d')));
         assert!(!game.units[k].deployed);
@@ -12700,7 +12895,7 @@ mod tests {
         assert!(!game.can_produce(Role::AtRocketTurret), "the yard's");
         assert!(game.can_produce(Role::AtInfantry) && game.can_produce(Role::AtPillbox));
 
-        click_hud(&mut game, Action::BuildTab(BuildTab::Upgrades));
+        click_hud(&mut game, Action::HudWide(hud::UPGRADE_BUTTON));
         let money = game.player_money();
         click_hud(&mut game, Action::BuildCell(0));
         game.update(Role::Barracks.upgrade_seconds() / 2.0);
@@ -12756,7 +12951,7 @@ mod tests {
         };
         let before = harvesters(&game);
         let (_, used) = game.player_power();
-        click_hud(&mut game, Action::BuildTab(BuildTab::Upgrades));
+        click_hud(&mut game, Action::HudWide(hud::UPGRADE_BUTTON));
         let money = game.player_money();
         for pads in [2, 3] {
             let cell = game
@@ -12777,5 +12972,121 @@ mod tests {
         );
         assert_eq!(game.player_power().1, used + 2 * 20, "and uses its power");
         assert!(!game.can_upgrade(Role::Refinery), "three pads are all");
+    }
+
+    #[test]
+    fn the_five_small_buttons_repair_sell_lay_routes_retreat_and_guard_as_the_originals() {
+        let labels: Vec<&str> = hud::command_buttons(W, H).iter().map(|b| b.label).collect();
+        assert_eq!(
+            labels,
+            ["Fix", "$", "Way", "Out", "Grd", "Upgrade", "Starport"]
+        );
+        let mut game = in_battle();
+
+        // Repair: a click on a hurt building mends it, paid for as it goes.
+        let barracks = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Barracks)
+            .unwrap();
+        let whole = game.units[barracks].max_health();
+        game.units[barracks].health = whole / 2.0;
+        click_hud(&mut game, Action::HudSmall(hud::REPAIR_BUTTON));
+        assert_eq!(game.click_mode, Some(ClickMode::Repair));
+        assert!(game.hud_small_lit(hud::REPAIR_BUTTON));
+        let (x, z, y) = (
+            game.units[barracks].x,
+            game.units[barracks].z,
+            game.units[barracks].y,
+        );
+        game.camera.look_at(x, z);
+        let (sx, sy) = game.view().project(x, y, z).unwrap();
+        let money = game.player_money();
+        click_at(&mut game, sx, sy);
+        assert!(game.units[barracks].repairing);
+        game.update(5.0);
+        let mended = game.units[barracks].health;
+        assert!(mended > whole / 2.0 && mended < whole, "{mended}");
+        assert!(game.player_money() < money, "it costs");
+        for _ in 0..40 {
+            game.update(0.5);
+        }
+        assert_eq!(game.units[barracks].health, whole);
+        assert!(!game.units[barracks].repairing, "done");
+        let cost = money - game.player_money();
+        assert!(
+            (cost - Role::Barracks.cost() / 4).abs() <= 2,
+            "half of half its price: {cost}"
+        );
+        click_hud(&mut game, Action::HudSmall(hud::REPAIR_BUTTON));
+        assert_eq!(game.click_mode, None, "and off again");
+
+        // The wide Upgrade button opens the Upgrades menu, when there is anything in it.
+        for unit in game.units.iter_mut().filter(|u| u.owner == 0) {
+            unit.upgrades = 0;
+        }
+        click_hud(&mut game, Action::HudWide(hud::UPGRADE_BUTTON));
+        assert_eq!(game.build_tab, BuildTab::Upgrades);
+
+        // Retreat asks first, and gives the battle up on the second click.
+        click_hud(&mut game, Action::HudSmall(hud::RETREAT_BUTTON));
+        assert_eq!(game.outcome, None);
+        assert!(game.hud_small_lit(hud::RETREAT_BUTTON));
+        game.update(RETREAT_CONFIRM_SECONDS + 0.5);
+        assert!(!game.hud_small_lit(hud::RETREAT_BUTTON), "it stops waiting");
+        click_hud(&mut game, Action::HudSmall(hud::RETREAT_BUTTON));
+        click_hud(&mut game, Action::HudSmall(hud::RETREAT_BUTTON));
+        assert_eq!(game.outcome, Some(Outcome::Defeat));
+    }
+
+    #[test]
+    fn a_route_of_waypoints_is_followed_one_after_another_and_guards_come_back_to_their_post() {
+        let mut game = in_battle();
+        let rifleman = cell_of(&game, BuildTab::Infantry, Role::AtInfantry);
+        let soldier = select_new(&mut game, rifleman);
+        let id = game.units[soldier].id;
+        let (x, z) = (game.units[soldier].x, game.units[soldier].z);
+        let first = (x + 150.0, z);
+        let second = (x + 150.0, z + 150.0);
+        game.camera.look_at(x + 80.0, z + 80.0);
+        game.update_fog();
+        click_hud(&mut game, Action::HudSmall(hud::WAYPOINT_BUTTON));
+        let terrain = battlefield::terrain(game.battle_map);
+        for (wx, wz) in [first, second] {
+            let (sx, sy) = game
+                .view()
+                .project(wx, terrain.height_at(wx, wz), wz)
+                .unwrap();
+            click_at(&mut game, sx, sy);
+        }
+        assert_eq!(game.click_mode, Some(ClickMode::Route), "it stays down");
+        assert_eq!(game.waypoints().len(), 1, "one still ahead");
+        let near = |game: &Game, (px, pz): (f32, f32)| {
+            let unit = game.units.iter().find(|u| u.id == id).unwrap();
+            (unit.x - px).hypot(unit.z - pz) < 60.0
+        };
+        let mut reached_first = false;
+        for _ in 0..400 {
+            game.update(0.1);
+            reached_first |= near(&game, first);
+        }
+        assert!(reached_first, "by the first waypoint");
+        assert!(near(&game, second), "and on to the second");
+        assert!(game.waypoints().is_empty() && game.routes.is_empty());
+
+        // Guard mode: on for the selected, lit, and off again.
+        click_hud(&mut game, Action::HudSmall(hud::WAYPOINT_BUTTON));
+        click_hud(&mut game, Action::HudSmall(hud::GUARD_BUTTON));
+        let post = game.units.iter().find(|u| u.id == id).unwrap().guard;
+        assert!(post.is_some() && game.hud_small_lit(hud::GUARD_BUTTON));
+        click_hud(&mut game, Action::HudSmall(hud::GUARD_BUTTON));
+        assert!(
+            game.units
+                .iter()
+                .find(|u| u.id == id)
+                .unwrap()
+                .guard
+                .is_none()
+        );
     }
 }

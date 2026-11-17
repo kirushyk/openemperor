@@ -230,6 +230,19 @@ piece for how it joins its owner's walls beside it. Not done yet:
   3D shapes (`!06%crimsonglow.tga`), with flares over the selected tab. The Upgrades tab
   shows its `upgradebuildings`. Its Starport tab is our wide Starport button.
 
+## The other discs
+
+The game looks for its four discs as `/Volumes/EMPEROR1` to `4`. The one that installs it has
+what every house shares; a house's own (the second is the Atreides') has that house's music,
+movies and briefings. Battle music plays the long tracks of every music bag found, one bag
+after another, round and round. Not done yet:
+
+- **A house disc's menu, map and score music** (`AT_Menu1`, `AT_Map1`, `AT_Score1a`) is not
+  used: the menus play the first disc's `IN_Menu`.
+- **Which music a mission asks for**: every long track plays in turn, whatever the house.
+- **A house disc's dialogue bag** (`DIALOG.BAG`, 1163 lines on the Atreides') is not read.
+- **Discs mounted under other names**, or copied to a folder, are not found.
+
 ## Starport
 
 A starport (1500, needing a hangar; the palace needs it) opens the Starport menu: what the

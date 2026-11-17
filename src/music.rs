@@ -75,15 +75,30 @@ pub fn seconds(sound: &[f32]) -> f32 {
     sound.len() as f32 / (crate::video::SOUND_RATE * crate::video::SOUND_CHANNELS) as f32
 }
 
-/// The battle music of the bag at `path`: its tracks longer than `LEAST_BATTLE_SECONDS`, in
-/// the bag's order and round again, each decoded on a thread of its own before it is wanted.
-/// Nothing comes if no track is long enough.
-pub fn battle_tracks(path: &Path) -> Receiver<Vec<f32>> {
-    let tracks = list(path).unwrap_or_default();
-    let path = path.to_owned();
+/// The battle music of the bags at these paths, every disc's that is mounted: their tracks
+/// longer than `LEAST_BATTLE_SECONDS`, bag after bag in each one's order and round again, each
+/// decoded on a thread of its own before it is wanted. Nothing comes if no track is long
+/// enough.
+pub fn battle_tracks(bags: &[std::path::PathBuf]) -> Receiver<Vec<f32>> {
+    let located: Vec<(Track, std::path::PathBuf)> = bags
+        .iter()
+        .flat_map(|bag| {
+            let tracks = list(bag).unwrap_or_default();
+            tracks.into_iter().map(move |track| (track, bag.clone()))
+        })
+        .collect();
+    let tracks = located.iter().map(|(track, _)| track.clone()).collect();
     round_robin(
         tracks,
-        move |track| crate::video::decode_sound(&track.location(&path)),
+        move |track| {
+            let bag = located
+                .iter()
+                .find(|(of, _)| of == track)
+                .map(|(_, bag)| bag);
+            bag.map_or_else(Vec::new, |bag| {
+                crate::video::decode_sound(&track.location(bag))
+            })
+        },
         |sound| seconds(sound) > LEAST_BATTLE_SECONDS,
     )
 }

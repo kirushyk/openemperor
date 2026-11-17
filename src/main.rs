@@ -2,6 +2,8 @@
 
 mod archive;
 mod battlefield;
+#[cfg(target_os = "macos")]
+mod discs;
 mod fog;
 mod font;
 mod game;
@@ -24,8 +26,8 @@ mod xbf;
 
 use std::time::Instant;
 
-/// Where the game's own disc is, once its owner has mounted it; and on it, the intro movie,
-/// the bag of music, and the menus' track in it.
+/// Where the game's first disc is looked for if none of its discs is found mounted; and on
+/// it, the intro movie, the bag of music, and the menus' track in it.
 #[cfg(target_os = "macos")]
 const DISC: &str = "/Volumes/EMPEROR1";
 /// What on the command line lists the campaign's maps after the skirmish ones.
@@ -62,14 +64,21 @@ fn main() {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(1, |since| since.subsec_nanos());
     // The disc's maps are listed before anything asks for one, the campaign's too if asked.
+    // Whichever of the game's discs are mounted: the one that installs it has what every
+    // house shares, the others a house's own music and movies.
     #[cfg(target_os = "macos")]
-    maps::load(
-        std::path::Path::new(DISC),
-        std::env::args_os().any(|arg| arg == CAMPAIGN_MAPS),
-    );
+    let all_discs = discs::mounted();
+    #[cfg(target_os = "macos")]
+    let disc = all_discs
+        .iter()
+        .find(|disc| discs::installs(disc))
+        .cloned()
+        .unwrap_or_else(|| std::path::PathBuf::from(DISC));
+    #[cfg(target_os = "macos")]
+    let disc = disc.as_path();
+    #[cfg(target_os = "macos")]
+    maps::load(disc, std::env::args_os().any(|arg| arg == CAMPAIGN_MAPS));
     let mut game = game::Game::new(width as f32, height as f32).with_start_seed(seed);
-    #[cfg(target_os = "macos")]
-    let disc = std::path::Path::new(DISC);
     #[cfg(target_os = "macos")]
     let mounted = disc.is_dir();
     // The disc's own models, read while the menus show, take the place of ours once read.
@@ -77,7 +86,8 @@ fn main() {
     if mounted {
         render::load_original_models(disc);
         units::fire_from(render::original_muzzles);
-        std::thread::spawn(|| sounds::load(std::path::Path::new(DISC)));
+        let disc = disc.to_path_buf();
+        std::thread::spawn(move || sounds::load(&disc));
     }
     // Which of its lines a unit says, each time another.
     #[cfg(target_os = "macos")]
@@ -108,7 +118,8 @@ fn main() {
         } else {
             Vec::new()
         };
-        let battle_music = mounted.then(|| music::battle_tracks(&bag));
+        // From every disc that is mounted: each house's has its own music.
+        let battle_music = mounted.then(|| music::battle_tracks(&discs::music_bags(&all_discs)));
         (intro, menu_music, battle_music)
     };
     // The screen a movie was last looked for on, so that each faction's plays once per pick.

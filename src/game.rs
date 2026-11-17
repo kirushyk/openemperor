@@ -16,6 +16,11 @@ use crate::weapons::{Combat, Made, Noise, Superweapon};
 pub const INTRO_SECONDS: f32 = 3.0;
 pub const LOADING_SECONDS: f32 = 2.0;
 pub const MOVIE_SECONDS: f32 = 3.0;
+/// How long the opening movie's screen waits for its movie to start before going on without
+/// it.
+const OPENING_WAIT_SECONDS: f32 = 0.2;
+/// What the player starts a campaign with, as the original's first missions give.
+const CAMPAIGN_START_MONEY: i32 = 10_000;
 /// What the player and any opponents start with outside a skirmish, which sets its own.
 const DEFAULT_BATTLE_MONEY: i32 = 10000;
 /// A selection smaller than this each way, at 1080 pixels tall, counts as a click.
@@ -584,6 +589,8 @@ pub enum Screen {
     Credits,
     FactionSelect,
     Movie(Faction),
+    /// The movie a house's campaign opens with, before its first battle.
+    Opening(Faction),
     SkirmishSetup,
     Loading,
     InGame,
@@ -1684,7 +1691,11 @@ pub fn buttons(screen: Screen, width: f32, height: f32) -> Vec<Button> {
     const MARGIN: f32 = 48.0;
 
     let items = match screen {
-        Screen::Intro | Screen::Loading | Screen::Movie(_) | Screen::InGame => return Vec::new(),
+        Screen::Intro
+        | Screen::Loading
+        | Screen::Movie(_)
+        | Screen::Opening(_)
+        | Screen::InGame => return Vec::new(),
         Screen::MainMenu => MAIN_MENU,
         Screen::SinglePlayerMenu => SINGLE_PLAYER_MENU,
         Screen::EscapeMenu => ESCAPE_MENU,
@@ -3823,7 +3834,20 @@ impl Game {
     /// Keeps the intro's or a faction's movie screen up for as long as the movie now starting
     /// on it plays.
     pub fn start_movie(&mut self) {
-        self.movie_playing = matches!(self.screen, Screen::Intro | Screen::Movie(_));
+        self.movie_playing = matches!(
+            self.screen,
+            Screen::Intro | Screen::Movie(_) | Screen::Opening(_)
+        );
+    }
+
+    /// Starts a house's campaign with its first battle, on the original's map for it if the
+    /// disc has it.
+    fn start_campaign(&mut self, house: Faction) {
+        self.campaign_mission = 0;
+        let map = maps::campaign_start(house).unwrap_or(0);
+        self.start_battle(map, Some(house), BattleKind::Campaign);
+        // The original's first mission gives the player 10 000 credits.
+        self.money[0] = CAMPAIGN_START_MONEY;
     }
 
     /// The movie has ended: on to what follows its screen, unless it was skipped already.
@@ -3832,6 +3856,7 @@ impl Game {
             match self.screen {
                 Screen::Intro => self.set_screen(Screen::MainMenu),
                 Screen::Movie(faction) => self.finish_movie(faction),
+                Screen::Opening(house) => self.start_campaign(house),
                 _ => {}
             }
         }
@@ -3842,7 +3867,11 @@ impl Game {
         !self.in_battle
             && !matches!(
                 self.screen,
-                Screen::Intro | Screen::Movie(_) | Screen::Loading | Screen::InGame
+                Screen::Intro
+                    | Screen::Movie(_)
+                    | Screen::Opening(_)
+                    | Screen::Loading
+                    | Screen::InGame
             )
     }
 
@@ -4050,6 +4079,7 @@ impl Game {
             | Screen::MainMenu
             | Screen::Loading
             | Screen::Movie(_)
+            | Screen::Opening(_)
             | Screen::BattleStats => None,
         }
     }
@@ -4165,6 +4195,12 @@ impl Game {
                 if !self.movie_playing && self.screen_elapsed >= MOVIE_SECONDS =>
             {
                 self.finish_movie(faction)
+            }
+            // Without the house's disc there is no movie to wait for.
+            Screen::Opening(house)
+                if !self.movie_playing && self.screen_elapsed >= OPENING_WAIT_SECONDS =>
+            {
+                self.start_campaign(house)
             }
             Screen::InGame
                 if self.outcome.is_some() && self.outcome_elapsed + dt >= OUTCOME_SECONDS =>
@@ -4370,6 +4406,8 @@ impl Game {
                     self.set_screen(Screen::MainMenu);
                 } else if let Screen::Movie(faction) = self.screen {
                     self.finish_movie(faction);
+                } else if let Screen::Opening(house) = self.screen {
+                    self.start_campaign(house);
                 } else if let Some(action) = pressed.filter(|a| Some(*a) == self.hovered()) {
                     self.activate(action);
                 } else {
@@ -4381,6 +4419,7 @@ impl Game {
             Event::KeyDown(key) => match (self.screen, key) {
                 (Screen::Intro, _) => self.set_screen(Screen::MainMenu),
                 (Screen::Movie(faction), _) => self.finish_movie(faction),
+                (Screen::Opening(house), _) => self.start_campaign(house),
                 (Screen::InGame, Key::Pause) if self.pausable && self.outcome.is_none() => {
                     self.key_paused = !self.key_paused;
                     self.selection_anchor = None;
@@ -4468,7 +4507,9 @@ impl Game {
             Action::CancelFaction => self.confirming = None,
             Action::ConfirmFaction => {
                 self.campaign_mission = 0;
-                self.start_battle(0, self.confirming, BattleKind::Campaign);
+                if let Some(house) = self.confirming.take() {
+                    self.set_screen(Screen::Opening(house));
+                }
             }
             Action::SkirmishBattle => self.set_screen(Screen::SkirmishSetup),
             Action::StartBattle => self.start_battle(self.skirmish.map, None, BattleKind::Skirmish),
@@ -5201,6 +5242,7 @@ mod tests {
         let mut game = in_faction_select();
         pick(&mut game, Faction::Ordos);
         click(&mut game, Action::ConfirmFaction);
+        game.update(OPENING_WAIT_SECONDS + 0.05);
         game.update(LOADING_SECONDS);
         let rows = game.stats_rows();
         assert_eq!(rows.len(), 2);
@@ -5214,6 +5256,7 @@ mod tests {
         let mut game = in_faction_select();
         pick(&mut game, Faction::Harkonnen);
         click(&mut game, Action::ConfirmFaction);
+        game.update(OPENING_WAIT_SECONDS + 0.05);
         let rows = game.stats_rows();
         assert_eq!(rows[0].color, TeamColor::Red);
         assert_ne!(rows[1].color, TeamColor::Red);
@@ -5253,6 +5296,7 @@ mod tests {
         let mut game = in_faction_select();
         pick(&mut game, Faction::Atreides);
         click(&mut game, Action::ConfirmFaction);
+        game.update(OPENING_WAIT_SECONDS + 0.05);
         game.update(LOADING_SECONDS);
         assert_eq!(game.screen, Screen::InGame);
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
@@ -5490,6 +5534,7 @@ mod tests {
         click(&mut game, Action::StartCampaign);
         pick(&mut game, Faction::Ordos);
         click(&mut game, Action::ConfirmFaction);
+        game.update(OPENING_WAIT_SECONDS + 0.05);
         assert_eq!(game.campaign_mission, 0);
     }
 
@@ -11135,6 +11180,7 @@ mod tests {
         let mut game = in_faction_select();
         pick(&mut game, Faction::Ordos);
         click(&mut game, Action::ConfirmFaction);
+        game.update(OPENING_WAIT_SECONDS + 0.05);
         assert_eq!(game.screen, Screen::Loading);
         assert_eq!(game.loading_progress(), 0.0);
         game.update(LOADING_SECONDS);
@@ -11162,6 +11208,7 @@ mod tests {
         let mut game = in_faction_select();
         pick(&mut game, Faction::Harkonnen);
         click(&mut game, Action::ConfirmFaction);
+        game.update(OPENING_WAIT_SECONDS + 0.05);
         game.update(LOADING_SECONDS);
         leave_battle(&mut game);
         click(&mut game, Action::SinglePlayer);
@@ -13441,5 +13488,35 @@ mod tests {
         assert_eq!(game.market().order.len(), STARPORT_MOST_IN_A_DELIVERY);
         click_hud(&mut game, Action::BuildCell(purchase + 1));
         assert!(game.market().order.is_empty(), "cancelled");
+    }
+
+    #[test]
+    fn a_campaign_opens_with_its_houses_movie_then_its_first_battle_with_ten_thousand() {
+        let mut game = in_setup();
+        game.set_screen(Screen::FactionSelect);
+        game.confirming = Some(Faction::Atreides);
+        game.activate(Action::ConfirmFaction);
+        assert_eq!(game.screen, Screen::Opening(Faction::Atreides));
+        // The movie plays as long as it lasts, and a key skips it.
+        game.start_movie();
+        game.update(5.0);
+        assert_eq!(game.screen, Screen::Opening(Faction::Atreides));
+        game.handle(Event::KeyDown(Key::Escape));
+        assert_eq!(game.screen, Screen::Loading);
+        assert_eq!(game.battle_kind, BattleKind::Campaign);
+        assert_eq!(game.faction_of(0), Faction::Atreides);
+        assert_eq!(
+            game.faction_of(1),
+            Faction::Harkonnen,
+            "the Atreides' first enemy"
+        );
+        assert_eq!(game.player_money(), CAMPAIGN_START_MONEY);
+        // Without the house's disc it goes straight on.
+        let mut game = in_setup();
+        game.confirming = Some(Faction::Ordos);
+        game.activate(Action::ConfirmFaction);
+        game.update(OPENING_WAIT_SECONDS + 0.05);
+        assert_eq!(game.screen, Screen::Loading);
+        assert_eq!(game.faction_of(0), Faction::Ordos);
     }
 }

@@ -230,6 +230,21 @@ piece for how it joins its owner's walls beside it. Not done yet:
   3D shapes (`!06%crimsonglow.tga`), with flares over the selected tab. The Upgrades tab
   shows its `upgradebuildings`. Its Starport tab is our wide Starport button.
 
+## The campaign
+
+Confirming a house plays its opening movie off its own disc (`A00_F00E` for the Atreides,
+`O00_F00E` for the Ordos, `H01_F00E` for the Harkonnen, as `MOVIES.TXT` names them), or goes
+straight on without the disc, then starts its first battle on the original's map for it
+(`#u1`, `#u2`, `#u3`) with the 10 000 credits its script gives. Not done yet:
+
+- **The mission's script** (`ATStart.tok`, see `tok-format.md`) is not run: the battle starts
+  as a skirmish does, with an MCV a side, not with the script's base, waves and Mentat lines,
+  and it is won by beating every enemy, not the three Harkonnen buildings.
+- **Later missions** go round the skirmish maps as before.
+- **Between missions**: the territory map, choosing where to attack, the new units screen
+  and the question when a territory is attacked are not there (backlog task 33).
+- **The end mission** with the Emperor Worm (task 34).
+
 ## The other discs
 
 The game looks for its four discs as `/Volumes/EMPEROR1` to `4`. The one that installs it has

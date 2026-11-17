@@ -47,6 +47,15 @@ fn faction_movie(faction: game::Faction) -> &'static str {
         game::Faction::Ordos => "INSTALL/DATA/MOVIES/I00_F05E.BIK",
     }
 }
+/// The movie a house's campaign opens with, on the house's disc: the original's `Phase0a`.
+#[cfg(target_os = "macos")]
+fn opening_movie(house: game::Faction) -> &'static str {
+    match house {
+        game::Faction::Atreides => "A00_F00E.BIK",
+        game::Faction::Ordos => "O00_F00E.BIK",
+        game::Faction::Harkonnen => "H01_F00E.BIK",
+    }
+}
 #[cfg(target_os = "macos")]
 const MUSIC_BAG: &str = "INSTALL/DATA/MUSIC/music.bag";
 #[cfg(target_os = "macos")]
@@ -214,10 +223,16 @@ fn main() {
         #[cfg(target_os = "macos")]
         if game.screen != movie_screen {
             movie_screen = game.screen;
-            if let game::Screen::Movie(faction) = game.screen
-                && mounted
-                && let Some(opened) = video::Movie::open(&disc.join(faction_movie(faction)))
-            {
+            let opened = match game.screen {
+                game::Screen::Movie(faction) if mounted => {
+                    video::Movie::open(&disc.join(faction_movie(faction)))
+                }
+                // A house's opening movie is on its own disc.
+                game::Screen::Opening(house) => discs::movie(&all_discs, opening_movie(house))
+                    .and_then(|movie| video::Movie::open(std::path::Path::new(&movie))),
+                _ => None,
+            };
+            if let Some(opened) = opened {
                 game.start_movie();
                 platform.play_sound(
                     opened.sound(),

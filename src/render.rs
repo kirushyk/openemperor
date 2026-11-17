@@ -712,7 +712,12 @@ impl Canvas {
 }
 
 pub fn clear_color(game: &Game) -> [f32; 3] {
-    if game.in_battle || matches!(game.screen, Screen::Intro | Screen::Movie(_)) {
+    if game.in_battle
+        || matches!(
+            game.screen,
+            Screen::Intro | Screen::Movie(_) | Screen::Opening(_)
+        )
+    {
         [INTRO_CLEAR[0], INTRO_CLEAR[1], INTRO_CLEAR[2]]
     } else {
         CLEAR
@@ -871,7 +876,8 @@ fn canvas_of(game: &Game) -> Canvas {
     let cx = game.width / 2.0;
 
     match game.screen {
-        Screen::Intro | Screen::Movie(_) if game.is_playing_movie() => {}
+        Screen::Intro | Screen::Movie(_) | Screen::Opening(_) if game.is_playing_movie() => {}
+        Screen::Opening(_) => {}
         Screen::Intro => {
             canvas.text_centered("INTRO PLACEHOLDER", cx, game.height / 2.0, 6.0 * s, QUIET);
         }

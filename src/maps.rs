@@ -5,6 +5,7 @@
 
 use crate::archive::{self, Archive};
 use crate::battlefield;
+use crate::game::Faction;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -20,6 +21,8 @@ const LIST: &str = "Baseinfo.ini";
 /// What the ids of the skirmish maps start with, and the file each map's ground is in.
 const SKIRMISH: &str = "#m";
 const MAP_FILE: &str = "test.xbf";
+/// What the ids of the houses' first missions' maps start with.
+const START: &str = "#u";
 
 /// One map a skirmish can be fought on.
 pub struct Map {
@@ -74,6 +77,19 @@ pub fn list() -> &'static [Map] {
     maps().map_or(&[], |maps| &maps.list)
 }
 
+/// The map a house's campaign starts on, the original's `#u1` for the Atreides, `#u2` for
+/// the Ordos and `#u3` for the Harkonnen, if the disc has it.
+pub fn campaign_start(house: Faction) -> Option<usize> {
+    let id = match house {
+        Faction::Atreides => "#u1 ",
+        Faction::Ordos => "#u2 ",
+        Faction::Harkonnen => "#u3 ",
+    };
+    list()
+        .iter()
+        .position(|map| map.folder.to_lowercase().starts_with(id))
+}
+
 /// One of a map's files, by its name in the map's folder.
 pub fn file(map: usize, name: &str) -> Option<Vec<u8>> {
     let maps = maps()?;
@@ -110,10 +126,13 @@ fn read_maps(disc: &Path, campaign: bool) -> Option<Maps> {
             })
         })
         .collect();
-    if campaign {
+    // The houses' first missions are always read, for the campaign to start on; the rest of
+    // the campaign's only when asked for.
+    {
         let mut others: Vec<&String> = folders
             .iter()
             .filter(|folder| !folder.starts_with(SKIRMISH))
+            .filter(|folder| campaign || folder.starts_with(START))
             .filter(|folder| list.iter().all(|map| &map.folder != *folder))
             .collect();
         others.sort();

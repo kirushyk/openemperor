@@ -776,8 +776,14 @@ pub fn build_frame(game: &Game) -> Frame {
     }
 }
 
+/// How far above where a searchlight's beam ends its light hangs, how far it reaches, and its
+/// pale white.
+const SEARCHLIGHT_ABOVE: f32 = 18.1;
+const SEARCHLIGHT_REACH: f32 = 90.51;
+pub const SEARCHLIGHT_COLOR: [f32; 3] = [0.55, 0.55, 0.5];
+
 /// What burns on the map right now and lights what is around it: eruptions, flickering, then
-/// explosions, the newest first.
+/// explosions, the newest first; then where searchlights point.
 fn lights_of(game: &Game) -> Vec<PointLight> {
     let seen = |(x, _, z): (f32, f32, f32)| game.sight_at(x, z) == Sight::Visible;
     let eruptions = game
@@ -823,6 +829,38 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
                 unused: 0.0,
             }
         });
+    // Where searchlights point, a pool of their white light on the ground, as the original's
+    // beams light it.
+    let beams = game
+        .units
+        .iter()
+        .filter(|unit| unit.alive && game.shows(unit))
+        .flat_map(|unit| {
+            let mut spots = original::searchlight_spots(unit, game.battle_time());
+            if spots.is_empty() && unit.role == Role::Mcv {
+                let beam = models::mcv_searchlight(unit, unit.house, game.battle_time());
+                let (x, y, z) = beam.lens;
+                spots.push(std::array::from_fn(|i| {
+                    [x, y, z][i] + beam.ahead[i] * beam.reach
+                }));
+            }
+            spots
+        })
+        .filter(|&[x, _, z]| seen((x, 0.0, z)))
+        .collect::<Vec<_>>();
+    // There are more than lights to go round: those nearest where the camera looks first.
+    let (look_x, look_z) = (game.camera.x, game.camera.z);
+    let mut beams = beams;
+    beams.sort_by(|a, b| {
+        let away = |p: &[f32; 3]| (p[0] - look_x).hypot(p[2] - look_z);
+        away(a).total_cmp(&away(b))
+    });
+    let beams = beams.into_iter().map(|[x, y, z]| PointLight {
+        place: [x, y + SEARCHLIGHT_ABOVE, z],
+        radius: SEARCHLIGHT_REACH,
+        color: SEARCHLIGHT_COLOR,
+        unused: 0.0,
+    });
     // Gunfire goes last: it is many and brief, and must not put out what burns on.
     let shots = game
         .combat
@@ -842,6 +880,7 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
     eruptions
         .chain(blasts)
         .chain(fires)
+        .chain(beams)
         .chain(shots)
         .take(MAX_LIGHTS)
         .collect()

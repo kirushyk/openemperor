@@ -495,6 +495,9 @@ const UPGRADE_ICONS: [(Faction, [(&str, &str); 2]); 3] = [
     ),
 ];
 
+/// What the name of a searchlight's beam has in it.
+const SEARCHLIGHT: &str = "spotlight";
+
 /// The part of a Kobra's model that swings its raised cannon round.
 const SWIVEL: &str = "gunpivot";
 
@@ -817,6 +820,8 @@ struct Part {
     muzzle: Option<usize>,
     /// The faces drawn over what lies behind them, each corner at `uv` on its picture.
     veils: Vec<Veil>,
+    /// Whether it is a searchlight's beam, whose far end lights the ground.
+    beam: bool,
 }
 
 /// A face drawn over what lies behind it: a light's glow, adding its picture, or a
@@ -1543,6 +1548,7 @@ fn gather(
             .map_or([0.0; 2], |slide| slide.step),
         lift: !shape.parts.iter().any(|part| part.lift) && object.name.contains("::1"),
         swivel: object.name == SWIVEL,
+        beam: object.name.to_ascii_lowercase().contains(SEARCHLIGHT),
         muzzle: object
             .name
             .strip_prefix(MUZZLE_MARK)
@@ -2007,6 +2013,47 @@ fn ends_of(shape: &Shape, unit: &Unit) -> Vec<(f32, f32, f32)> {
         .collect();
     ends.sort_by_key(|&(n, _)| n);
     ends.into_iter().map(|(_, end)| end).collect()
+}
+
+/// Where the searchlights of the unit's model throw their light, at this time of the battle:
+/// the far end of each beam, as it is posed now. None without the disc's model.
+pub fn searchlight_spots(unit: &Unit, time: f32) -> Vec<[f32; 3]> {
+    let Some(shape) = shape_of(unit) else {
+        return Vec::new();
+    };
+    let (body, head) = places(shape, unit);
+    let pivot = shape.pivot.unwrap_or_default();
+    let worlds = pose(
+        shape,
+        unit.tube_pitch,
+        unit.gun_turn,
+        frame(shape, unit, time),
+    );
+    shape
+        .parts
+        .iter()
+        .zip(&worlds)
+        .filter(|(part, _)| part.beam)
+        .filter_map(|(part, world)| {
+            let (place, from) = if part.head {
+                (head, pivot)
+            } else {
+                (body, [0.0; 3])
+            };
+            // The corner of its beam farthest out from the unit.
+            part.veils
+                .iter()
+                .flat_map(|veil| veil.points)
+                .map(|corner| {
+                    let at = to_place(point(world, corner));
+                    place.point(std::array::from_fn(|i| at[i] - from[i]))
+                })
+                .max_by(|a, b| {
+                    let out = |p: &[f32; 3]| (p[0] - unit.x).hypot(p[2] - unit.z);
+                    out(a).total_cmp(&out(b))
+                })
+        })
+        .collect()
 }
 
 /// Draws the original's model of the unit in its house color, as it is at this time of the
@@ -2702,6 +2749,29 @@ mod tests {
                 .filter(|part| part.veils.iter().any(|veil| veil.glows) && part.slide[0] > 0.0)
                 .collect();
             assert!(wind.len() >= 2, "{name}: its two streams of wind");
+        }
+    }
+
+    #[test]
+    fn a_mongooses_searchlight_on_the_disc_lights_the_ground_ahead_of_it() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        let mut mongoose = Unit::for_test(1000.0, 1000.0, UnitKind::Vehicle);
+        mongoose.role = Role::AtMongoose;
+        for heading in [0.0, FRAC_PI_2] {
+            mongoose.heading = heading;
+            let spots = searchlight_spots(&mongoose, 0.0);
+            assert_eq!(spots.len(), 1);
+            let [x, _, z] = spots[0];
+            let way = (z - mongoose.z).atan2(x - mongoose.x);
+            assert!(
+                crate::units::turn_between(way, heading).abs() < 0.6,
+                "ahead: {way}"
+            );
+            assert!((x - mongoose.x).hypot(z - mongoose.z) > 30.0, "out from it");
         }
     }
 }

@@ -6865,19 +6865,29 @@ mod tests {
         }
     }
 
+    /// The lights of a frame but those of searchlights, which shine on whatever burns.
+    fn burning_lights(frame: &crate::platform::Frame) -> Vec<crate::platform::PointLight> {
+        frame
+            .lights
+            .iter()
+            .filter(|light| light.color != crate::render::SEARCHLIGHT_COLOR)
+            .copied()
+            .collect()
+    }
+
     #[test]
     fn a_blast_gives_the_backend_a_light_and_what_is_in_the_air_casts_a_shadow() {
         let mut game = in_battle();
-        assert!(crate::render::build_frame(&game).lights.is_empty());
+        assert!(burning_lights(&crate::render::build_frame(&game)).is_empty());
         let (x, y, z) = game.units[0].center();
         game.combat.explode((x, y, z), 45.25);
         let frame = crate::render::build_frame(&game);
-        assert_eq!(frame.lights.len(), 1);
-        assert_eq!(frame.lights[0].place[0], x);
+        assert_eq!(burning_lights(&frame).len(), 1);
+        assert_eq!(burning_lights(&frame)[0].place[0], x);
         for _ in 0..crate::platform::MAX_LIGHTS * 2 {
             game.combat.explode((x, y, z), 45.25);
         }
-        let many = crate::render::build_frame(&game).lights.len();
+        let many = burning_lights(&crate::render::build_frame(&game)).len();
         assert_eq!(many, crate::platform::MAX_LIGHTS);
     }
 
@@ -6889,9 +6899,12 @@ mod tests {
             .eruptions
             .push(crate::weapons::Eruption::at_for_test((0.0, 0.0, 1810.0)));
         let frame = crate::render::build_frame(&game);
-        assert_eq!(frame.lights.len(), 1);
-        assert!(frame.lights[0].color[0] > 0.0);
-        assert!(frame.lights[0].color[0] > frame.lights[0].color[2], "fiery");
+        assert_eq!(burning_lights(&frame).len(), 1);
+        assert!(burning_lights(&frame)[0].color[0] > 0.0);
+        assert!(
+            burning_lights(&frame)[0].color[0] > burning_lights(&frame)[0].color[2],
+            "fiery"
+        );
     }
 
     #[test]
@@ -6958,7 +6971,7 @@ mod tests {
         };
         assert_eq!(stained(&game), 0);
         let before = crate::render::build_frame(&game);
-        assert!(before.lights.is_empty());
+        assert!(burning_lights(&before).is_empty());
         let tank = game
             .units
             .iter()
@@ -6967,12 +6980,12 @@ mod tests {
         game.units[tank].health = game.units[tank].max_health() * 0.5;
         assert!(stained(&game) > 0, "black stains");
         assert!(
-            crate::render::build_frame(&game).lights.is_empty(),
+            burning_lights(&crate::render::build_frame(&game)).is_empty(),
             "not burning yet"
         );
         game.units[tank].health = game.units[tank].max_health() * 0.2;
         let burning = crate::render::build_frame(&game);
-        assert_eq!(burning.lights.len(), 1);
+        assert_eq!(burning_lights(&burning).len(), 1);
         assert!(burning.effects.len() > before.effects.len(), "flames");
     }
 
@@ -13736,5 +13749,25 @@ mod tests {
         game.update(0.1);
         let said = game.take_speeches();
         assert!(said.contains(&Speech::BuildingLost) && said.contains(&Speech::LowPower));
+    }
+
+    #[test]
+    fn a_deployed_mcvs_sweeping_searchlight_lights_the_ground_where_it_points() {
+        let mut game = in_battle();
+        game.fog = None;
+        let mcv = *game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.role == Role::Mcv)
+            .unwrap();
+        game.camera.look_at(mcv.x, mcv.z);
+        let frame = crate::render::build_frame(&game);
+        let pale = frame.lights.iter().find(|light| {
+            let [r, g, b] = light.color;
+            (r - g).abs() < 0.01
+                && b > 0.4
+                && (light.place[0] - mcv.x).hypot(light.place[2] - mcv.z) > 30.0
+        });
+        assert!(pale.is_some(), "{:?}", frame.lights);
     }
 }

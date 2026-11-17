@@ -53,6 +53,12 @@ we are missing is in [units.md](units.md). This list is about everything else.
 
 ## Lights
 
+- **Searchlights** light the ground where their beams end: each `?Spotlight` beam of a disc
+  model, as posed that moment, and a deployed MCV's sweeping beam, throw a pale pool of light
+  there. There are more beams than the 16 lights the backends take: those nearest where the
+  camera looks go first, after fire. How bright and wide the original's are is our guess, and
+  whether it lights them by day as well.
+
 - **The glow of the original's lights** is drawn: searchlight beams, the spots they throw,
   lamps and flares. They do not light anything around them. Only explosions, fires, eruptions
   and gunfire do.

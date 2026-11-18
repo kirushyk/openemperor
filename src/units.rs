@@ -2017,6 +2017,27 @@ impl Role {
     }
 
     #[cfg(test)]
+    /// Whether it squashes the enemy's infantry it drives over, as the original's `Crushes`
+    /// has it: not a sand bike, a dust scout, a laser tank or the Ordos' APC.
+    pub fn crushes(self) -> bool {
+        matches!(
+            self,
+            Role::Harvester
+                | Role::Mcv
+                | Role::HkDevastator
+                | Role::HkFlame
+                | Role::HkMissile
+                | Role::HkAssault
+                | Role::HkBuzzsaw
+                | Role::HkInkVine
+                | Role::AtApc
+                | Role::AtRepairUnit
+                | Role::AtMongoose
+                | Role::AtMinotaurus
+                | Role::OrKobra
+        )
+    }
+
     fn for_kind(kind: UnitKind) -> Self {
         match kind {
             UnitKind::Infantry => Role::AtInfantry,
@@ -5029,9 +5050,11 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
     }
 }
 
-/// Whether it could go after this one to drive over it: a heavy unit, enemy infantry.
+/// Whether it could go after this one to drive over it: a heavy unit the rules have crush,
+/// enemy infantry.
 pub fn can_run_over(squasher: &Unit, victim: &Unit, teams: &[usize]) -> bool {
     squasher.heavy
+        && squasher.role.crushes()
         && squasher.alive
         && victim.alive
         && victim.kind == UnitKind::Infantry
@@ -5067,6 +5090,7 @@ fn rush_to_the_hurt(units: &mut [Unit], teams: &[usize]) {
 /// Whether a moving unit would squash another by touching it.
 fn can_squash(squasher: &Unit, victim: &Unit, teams: &[usize]) -> bool {
     squasher.heavy
+        && squasher.role.crushes()
         && squasher.is_moving()
         && victim.kind == UnitKind::Infantry
         && are_enemies(teams, squasher.owner, victim.owner)
@@ -6887,6 +6911,14 @@ mod tests {
         assert!(
             run_into(light, target, &TWO_SIDES),
             "nor a vehicle that is not heavy"
+        );
+        let bike = Unit {
+            role: Role::AtTrike,
+            ..vehicle
+        };
+        assert!(
+            run_into(bike, target, &TWO_SIDES),
+            "nor a sand bike, which the rules do not have crush"
         );
         assert!(
             run_into(

@@ -290,6 +290,71 @@ const AIRCRAFT_SIGHT: f32 = 452.5;
 const TOWER_SIGHT: f32 = 452.5;
 const SCOUT_SIGHT: f32 = 633.6;
 
+/// Every role but the palaces, which are one a house.
+const ALL_ROLES: [Role; 61] = [
+    Role::AtInfantry,
+    Role::Scout,
+    Role::AtSniper,
+    Role::Engineer,
+    Role::AtKindjal,
+    Role::HkAssault,
+    Role::AtRepairUnit,
+    Role::Mcv,
+    Role::Harvester,
+    Role::HkInkVine,
+    Role::HkMissile,
+    Role::AtMongoose,
+    Role::AtMinotaurus,
+    Role::AdvCarryall,
+    Role::Carryall,
+    Role::HkAdp,
+    Role::AtAdp,
+    Role::AtOrni,
+    Role::HkGunship,
+    Role::OrAdp,
+    Role::OrEits,
+    Role::HkLightInf,
+    Role::HkTrooper,
+    Role::OrSaboteur,
+    Role::OrMortar,
+    Role::AtTrike,
+    Role::HkBuzzsaw,
+    Role::HkFlame,
+    Role::HkDevastator,
+    Role::OrDustScout,
+    Role::OrLaserTank,
+    Role::OrKobra,
+    Role::OrApc,
+    Role::AtApc,
+    Role::HkFlamer,
+    Role::OrChemical,
+    Role::AtRocketTurret,
+    Role::HkFlameTurret,
+    Role::HkGunTurret,
+    Role::AtPillbox,
+    Role::OrGasTurret,
+    Role::OrPopUpTurret,
+    Role::Outpost,
+    Role::Barracks,
+    Role::Factory,
+    Role::Hanger,
+    Role::Helipad,
+    Role::Refinery,
+    Role::Wall,
+    Role::Windtrap,
+    Role::Starport,
+    Role::TlFleshVat,
+    Role::IxResCentre,
+    Role::GuPalace,
+    Role::ImBarracks,
+    Role::FrCamp,
+    Role::FrFremen,
+    Role::ImSardaukar,
+    Role::TlContaminator,
+    Role::IxInfiltrator,
+    Role::GuMaker,
+];
+
 /// What a unit is, beyond how it moves: this names it and decides what it starts with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -1341,6 +1406,38 @@ impl Role {
             }
             _ => house_letters(house).to_string() + &name,
         }
+    }
+
+    /// What of ours the original's rules mean by this name, and whose: a construction yard is
+    /// an MCV dug in, and the small windtrap our windtrap. A name with no house's letters in
+    /// front is the Atreides'.
+    pub fn named(name: &str) -> Option<(Role, Faction)> {
+        const HOUSES: [Faction; 3] = [Faction::Atreides, Faction::Harkonnen, Faction::Ordos];
+        let name = name.replace("SmWindtrap", "Windtrap");
+        let house_of = |name: &str| {
+            HOUSES
+                .into_iter()
+                .find(|&house| name.starts_with(house_letters(house)))
+        };
+        if let Some(house) = house_of(&name) {
+            match &name[2..] {
+                "ConYard" => return Some((Role::Mcv, house)),
+                "Palace" => return Some((Role::Palace(house), house)),
+                _ => {}
+            }
+        }
+        ALL_ROLES.into_iter().find_map(|role| {
+            let house = HOUSES
+                .into_iter()
+                .find(|&house| role.rules_name(house).eq_ignore_ascii_case(&name));
+            house
+                .or_else(|| {
+                    format!("{role:?}")
+                        .eq_ignore_ascii_case(&name)
+                        .then_some(Faction::Atreides)
+                })
+                .map(|house| (role, house_of(&name).unwrap_or(house)))
+        })
     }
 
     /// How big the original's model of it is, in its coordinates, as [along, up, across] of a
@@ -3522,6 +3619,34 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
         }
     }
     true
+}
+
+/// Puts a mission script's unit or building on the map for a side, and says its id: a
+/// building where it is put, dug in if it is a construction yard, an MCV dug in; a unit at
+/// the free spot nearest.
+pub fn put(
+    units: &mut Vec<Unit>,
+    terrain: &Terrain,
+    at: (f32, f32),
+    (role, house): (Role, Faction),
+    side: (usize, TeamColor),
+    dug_in: bool,
+    id: u32,
+) -> Option<u32> {
+    let kind = role.kind();
+    let spot = if kind.is_building() || dug_in {
+        at
+    } else {
+        let taken = spots_taken(units, kind.flies());
+        *find_slots(terrain, at, 1, &taken, kind.going_on_the_ground()).first()?
+    };
+    place_unit(units, terrain, spot, role, role.weapon(), side, id);
+    let unit = units.last_mut()?;
+    unit.house = house;
+    if dug_in {
+        switch_deployed(unit);
+    }
+    Some(id)
 }
 
 /// Sends a unit to its own free spot near a point, if there is one.
@@ -10659,5 +10784,41 @@ mod tests {
         walls[0].alive = false;
         join_walls(&mut walls);
         assert_eq!(WallPiece::of(walls[1].wall_joins).0, WallPiece::Single);
+    }
+
+    #[test]
+    fn the_rules_names_of_the_atreides_first_mission_are_our_roles() {
+        use Faction::{Atreides, Harkonnen};
+        let cases = [
+            ("ATConYard", Role::Mcv, Atreides),
+            ("ATSmWindtrap", Role::Windtrap, Atreides),
+            ("ATOutpost", Role::Outpost, Atreides),
+            ("ATBarracks", Role::Barracks, Atreides),
+            ("ATWall", Role::Wall, Atreides),
+            ("ATPillbox", Role::AtPillbox, Atreides),
+            ("ATRocketTurret", Role::AtRocketTurret, Atreides),
+            ("ATMongoose", Role::AtMongoose, Atreides),
+            ("ATSniper", Role::AtSniper, Atreides),
+            ("ATKindjal", Role::AtKindjal, Atreides),
+            ("ATTrike", Role::AtTrike, Atreides),
+            ("MCV", Role::Mcv, Atreides),
+            ("HKPalace", Role::Palace(Harkonnen), Harkonnen),
+            ("HKOutpost", Role::Outpost, Harkonnen),
+            ("HKHanger", Role::Hanger, Harkonnen),
+            ("HKSmWindtrap", Role::Windtrap, Harkonnen),
+            ("HKFlameTurret", Role::HkFlameTurret, Harkonnen),
+            ("HKLightInf", Role::HkLightInf, Harkonnen),
+            ("HKTrooper", Role::HkTrooper, Harkonnen),
+            ("HKBuzzsaw", Role::HkBuzzsaw, Harkonnen),
+            ("HKEngineer", Role::Engineer, Harkonnen),
+        ];
+        for (name, role, house) in cases {
+            assert_eq!(Role::named(name), Some((role, house)), "{name}");
+        }
+        assert_eq!(
+            Role::named("INBarrel1"),
+            None,
+            "fuel barrels are not ours yet"
+        );
     }
 }

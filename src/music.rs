@@ -56,11 +56,6 @@ impl Track {
     }
 }
 
-/// The track of this name in the bag at `path`, if it is there and is a bag.
-pub fn find(path: &Path, name: &str) -> Option<Track> {
-    list(path)?.into_iter().find(|track| track.name == name)
-}
-
 /// Every track in the bag at `path`, if it is there and is a bag.
 pub fn list(path: &Path) -> Option<Vec<Track>> {
     let mut file = File::open(path).ok()?;
@@ -103,6 +98,40 @@ pub fn battle_tracks(bags: &[std::path::PathBuf]) -> Receiver<Vec<f32>> {
             })
         },
         |sound| seconds(sound) > LEAST_BATTLE_SECONDS,
+    )
+}
+
+/// What the menus' music is called in a bag: the main disc's `IN_Menu`, a house disc's
+/// `AT_Menu1` and so on.
+const MENU: &str = "_Menu";
+
+/// The menus' music of the bags at these paths, every disc's that is mounted: each one's
+/// pieces for the menus, bag after bag and round again, each decoded on a thread of its own
+/// before it is wanted.
+pub fn menu_tracks(bags: &[std::path::PathBuf]) -> Receiver<Vec<f32>> {
+    let located: Vec<(Track, std::path::PathBuf)> = bags
+        .iter()
+        .flat_map(|bag| {
+            let tracks = list(bag).unwrap_or_default();
+            tracks
+                .into_iter()
+                .filter(|track| track.name.contains(MENU))
+                .map(move |track| (track, bag.clone()))
+        })
+        .collect();
+    let tracks = located.iter().map(|(track, _)| track.clone()).collect();
+    round_robin(
+        tracks,
+        move |track| {
+            let bag = located
+                .iter()
+                .find(|(of, _)| of == track)
+                .map(|(_, bag)| bag);
+            bag.map_or_else(Vec::new, |bag| {
+                crate::video::decode_sound(&track.location(bag))
+            })
+        },
+        |sound| !sound.is_empty(),
     )
 }
 
@@ -224,15 +253,27 @@ mod tests {
     }
 
     #[test]
-    fn the_menus_music_on_the_disc_decodes_when_it_is_mounted() {
-        let bag = Path::new("/Volumes/EMPEROR1/INSTALL/DATA/MUSIC/music.bag");
-        if !bag.exists() {
+    fn the_menus_music_of_every_mounted_disc_plays_in_turn() {
+        let discs = [
+            Path::new("/Volumes/EMPEROR1"),
+            Path::new("/Volumes/EMPEROR2"),
+        ];
+        if !discs.iter().all(|disc| disc.exists()) {
             return;
         }
-        let track = find(bag, "IN_Menu").unwrap();
-        let sound = crate::video::decode_sound(&track.location(bag));
-        let seconds = sound.len() as f32 / (crate::video::SOUND_RATE * 2) as f32;
-        assert!((seconds - 32.0).abs() < 0.5, "{seconds} seconds");
+        let bags = crate::discs::music_bags(&discs.map(Path::to_path_buf));
+        let tracks = menu_tracks(&bags);
+        let lasting = |sound: Vec<f32>| sound.len() as f32 / (crate::video::SOUND_RATE * 2) as f32;
+        let first = lasting(tracks.recv().unwrap());
+        assert!(
+            (first - 32.0).abs() < 0.5,
+            "the main disc's IN_Menu: {first} seconds"
+        );
+        let second = lasting(tracks.recv().unwrap());
+        assert!(
+            (second - 41.0).abs() < 1.5,
+            "the Atreides disc's AT_Menu1: {second}"
+        );
     }
 
     #[test]

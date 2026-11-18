@@ -56,10 +56,6 @@ fn opening_movie(house: game::Faction) -> &'static str {
         game::Faction::Harkonnen => "H01_F00E.BIK",
     }
 }
-#[cfg(target_os = "macos")]
-const MUSIC_BAG: &str = "INSTALL/DATA/MUSIC/music.bag";
-#[cfg(target_os = "macos")]
-const MENU_TRACK: &str = "IN_Menu";
 
 /// What `--help` prints.
 const USAGE: &str = "\
@@ -150,23 +146,18 @@ fn main() {
                 false,
             );
         }
-        let bag = disc.join(MUSIC_BAG);
-        let menu_music = if mounted {
-            music::find(&bag, MENU_TRACK)
-                .map(|track| video::decode_sound(&track.location(&bag)))
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
         // From every disc that is mounted: each house's has its own music.
-        let battle_music = mounted.then(|| music::battle_tracks(&discs::music_bags(&all_discs)));
+        let bags = discs::music_bags(&all_discs);
+        let menu_music = mounted.then(|| music::menu_tracks(&bags));
+        let battle_music = mounted.then(|| music::battle_tracks(&bags));
         (intro, menu_music, battle_music)
     };
     // The screen a movie was last looked for on, so that each faction's plays once per pick.
     #[cfg(target_os = "macos")]
     let mut movie_screen = game.screen;
+    // When the menus' piece playing now is over, if one is.
     #[cfg(target_os = "macos")]
-    let mut music_playing = false;
+    let mut menu_track_ends: Option<Instant> = None;
     // When the battle track playing now is over, if one is.
     #[cfg(target_os = "macos")]
     let mut battle_track_ends: Option<Instant> = None;
@@ -261,13 +252,21 @@ fn main() {
                 platform.stop_sound();
             }
         }
-        // The menus' music plays over and over in the menus, and only there.
+        // The menus' pieces of every mounted disc play one after another in the menus, and
+        // only there.
         #[cfg(target_os = "macos")]
-        if movie.is_none() && !menu_music.is_empty() && game.is_in_menus() != music_playing {
-            music_playing = !music_playing;
-            if music_playing {
-                platform.play_sound(&menu_music, video::SOUND_CHANNELS, video::SOUND_RATE, true);
-            } else {
+        if let Some(tracks) = &menu_music
+            && movie.is_none()
+        {
+            if game.is_in_menus() {
+                if menu_track_ends.is_none_or(|ends| now >= ends)
+                    && let Ok(sound) = tracks.try_recv()
+                {
+                    let lasts = std::time::Duration::from_secs_f32(music::seconds(&sound));
+                    platform.play_sound(&sound, video::SOUND_CHANNELS, video::SOUND_RATE, false);
+                    menu_track_ends = Some(now + lasts);
+                }
+            } else if menu_track_ends.take().is_some() {
                 platform.stop_sound();
             }
         }
@@ -293,6 +292,8 @@ fn main() {
                     false,
                 );
                 movie = Some(opened);
+                // Its sound takes over from the menus' piece, which starts again after it.
+                menu_track_ends = None;
             }
         }
         // In battle the disc's long tracks play one after another, and stop when it is over.
@@ -306,7 +307,7 @@ fn main() {
                     platform.play_sound(&sound, video::SOUND_CHANNELS, video::SOUND_RATE, false);
                     battle_track_ends = Some(now + lasts);
                 }
-            } else if battle_track_ends.take().is_some() && !music_playing {
+            } else if battle_track_ends.take().is_some() && menu_track_ends.is_none() {
                 platform.stop_sound();
             }
         }

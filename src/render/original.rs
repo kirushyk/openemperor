@@ -189,6 +189,16 @@ const MODELS: &[(Role, Option<Faction>, &str)] = {
         (Role::Prop(Prop::Drum), None, "Buildings\\IN_barrel1_h0.xbf"),
         (
             Role::Prop(Prop::FactoryFrigate),
+            Some(Atreides),
+            "Buildings\\AT_FactoryFrigate_H0.xbf",
+        ),
+        (
+            Role::Prop(Prop::FactoryFrigate),
+            Some(Ordos),
+            "Buildings\\Or_FactoryFrigate_H0.xbf",
+        ),
+        (
+            Role::Prop(Prop::FactoryFrigate),
             None,
             "Buildings\\HK_FactoryFrigate_H0.xbf",
         ),
@@ -585,6 +595,71 @@ const WALLS: [(Faction, [&str; 6]); 3] = [
             "Buildings\\OR_Wall_Cross_H0.xbf",
         ],
     ),
+];
+
+/// The original's model of each kind of scenery, by the rules' name for it.
+#[rustfmt::skip]
+const SCENERY: &[(&str, &str)] = &[
+    ("AKINDrKynes", "Buildings\\AK_IN_DrKynes_H0.xbf"),
+    ("AKINNoddingDonkey", "Buildings\\AK_IN_NoddingDonkey_H0.xbf"),
+    ("AKINhungfigure", "Buildings\\AK_IN_hungfigure_H0.xbf"),
+    ("AKINhungfigure3", "Buildings\\AK_IN_hungfigure3_H0.xbf"),
+    ("AKINhungfigure4", "Buildings\\AK_IN_hungfigure4_H0.xbf"),
+    ("ATINHouse2", "Buildings\\AT_IN_house2_H0.xbf"),
+    ("ATINHouse3", "Buildings\\AT_IN_house3_H0.xbf"),
+    ("ATINHouse4", "Buildings\\AT_IN_house4_H0.xbf"),
+    ("ATINStPauls", "Buildings\\AT_IN_Stpauls_H0.xbf"),
+    ("ATINSultan", "Buildings\\AT_IN_Sultan_H0.xbf"),
+    ("BirdBuilding", "Buildings\\AK_IN_Vultures_H0.xbf"),
+    ("CNINATTree", "Buildings\\CN_IN_ATTree_H0.Xbf"),
+    ("CNINATTree2", "Buildings\\CN_IN_ATTree2_H0.xbf"),
+    ("CNINATTree3", "Buildings\\CN_IN_ATTree3_H0.xbf"),
+    ("CNINATTree4", "Buildings\\CN_IN_ATTree4_H0.xbf"),
+    ("GPSFXGreensmokeNL", "Buildings\\GP_SFX_GreenSmoke_NL_H0.xbf"),
+    ("GPSFXLavasmoke", "Buildings\\GP_SFX_LavaSmoke_H0.xbf"),
+    ("GPSFXLavasmokeNL", "Buildings\\GP_SFX_LavaSmoke_NL_H0.xbf"),
+    ("HKINApartments", "Buildings\\HK_IN_Apartments_H0.xbf"),
+    ("HKINGiediRef", "Buildings\\HK_IN_house_H0.xbf"),
+    ("HKINHouse", "Buildings\\HK_IN_house_H0.xbf"),
+    ("HKINHouse2", "Buildings\\HK_IN_house2_H0.xbf"),
+    ("HKINHouse3", "Buildings\\HK_IN_house3_H0.xbf"),
+    ("HKINHouse5", "Buildings\\HK_IN_house5_H0.xbf"),
+    ("HKINHut", "Buildings\\HK_IN_Hut_H0.XBF"),
+    ("HKINMossPalace", "Buildings\\HK_IN_Mosspalace_H0.xbf"),
+    ("HKINSultan", "Buildings\\HK_IN_Sultan_H0.xbf"),
+    ("HKINTYower", "Buildings\\HK_IN_TYower_H0.xbf"),
+    ("HKINTennament", "Buildings\\HK_IN_Tennament_H0.xbf"),
+    ("HKINTennament2", "Buildings\\HK_IN_Tennament_H0.xbf"),
+    ("HKINTownhall", "Buildings\\HK_IN_Townhall_H0.xbf"),
+    ("HKINTrafford", "Buildings\\HK_IN_Trafford_H0.xbf"),
+    ("HKINTwafford", "Buildings\\HK_IN_Twafford_H0.xbf"),
+    ("HLINElectricVent", "Buildings\\HL_IN_ElectricVent_H0.xbf"),
+    ("HLINLighGate", "Buildings\\HL_IN_LightningGate_H0.xbf"),
+    ("HLINMHut2", "Buildings\\HL_IN_Mhut2_H0.xbf"),
+    ("HLINMhut", "Buildings\\HL_IN_MHut_H0.xbf"),
+    ("HLINOxygen", "Buildings\\HL_IN_Oxygen_H0.xbf"),
+    ("INCrash", "Buildings\\IN_aircrash_h0.xbf"),
+    ("INFRCampFire", "Buildings\\IN_FR_Campfire_H0.xbf"),
+    ("INFRTent", "Buildings\\IN_FR_Tent_H0.xbf"),
+    ("INFRTent2", "Buildings\\IN_FR_Tent2_H0.xbf"),
+    ("INHouse", "Buildings\\IN_House_H0.XBF"),
+    ("INMartHouse", "Buildings\\IN_MartHouse_H0.XBF"),
+    ("INMartHouse2", "Buildings\\IN_MartHouse2_H0.XBF"),
+    ("INMedicalWreck", "Buildings\\IN_MedicalWreck_h0.xbf"),
+    ("INPalace", "Buildings\\IN_palace_H0.xbf"),
+    ("INStore", "Buildings\\IN_Store_H0.XBF"),
+    ("INStore2", "Buildings\\IN_Store2_H0.XBF"),
+    ("INWorkshop", "Buildings\\IN_Workshop_H0.XBF"),
+    ("IXTransport", "Buildings\\IN_IX_Transportwreck_H0.xbf"),
+    ("ORINBubbleHouse", "Buildings\\or_in_bubble_h0.XBF"),
+    ("ORINIndi", "Buildings\\OR_IN_Indi_H0.xbf"),
+    ("ORINTower", "Buildings\\OR_IN_Tower_H0.xbf"),
+    ("ORINTower2", "Buildings\\OR_IN_Tower2_H0.xbf"),
+    ("ORINTownhall", "Buildings\\OR_IN_TownHall_H0.xbf"),
+    ("ORINhall", "Buildings\\Or_IN_Hall_H0.xbf"),
+    ("SMStarport", "Buildings\\SM_StarPort_H0.xbf"),
+    ("Seaguls", "Buildings\\CN_IN_Seaguls_H0.xbf"),
+    ("TLTransport", "Buildings\\IN_TL_Transportwreck_H0.xbf"),
 ];
 
 /// The original's model of each kind of crate.
@@ -1219,6 +1294,7 @@ fn read_shapes(disc: &Path) -> Option<Original> {
     let names = names.chain(CONSTRUCTION_YARDS.iter().map(|&(_, name)| name));
     let names = names.chain(WALLS.iter().flat_map(|(_, pieces)| pieces.iter().copied()));
     let names = names.chain([TORNADO]);
+    let names = names.chain(SCENERY.iter().map(|&(_, name)| name));
     let names = names.chain(CRATES.iter().map(|&(_, name)| name));
     let shapes: HashMap<_, _> = names
         .filter_map(|name| Some((name, read_shape(&archive, name, &mut pictures)?)))
@@ -1814,6 +1890,11 @@ fn model_name(unit: &Unit) -> Option<&'static str> {
         CONSTRUCTION_YARDS
             .iter()
             .find(|&&(house, _)| house == unit.house)
+            .map(|&(_, name)| name)
+    } else if let Role::Prop(Prop::Scenery(scenery)) = unit.role {
+        SCENERY
+            .iter()
+            .find(|&&(rules_name, _)| rules_name == scenery.rules_name())
             .map(|&(_, name)| name)
     } else {
         MODELS
@@ -3003,6 +3084,17 @@ mod tests {
                 .filter(|part| part.veils.iter().any(|veil| veil.glows) && part.slide[0] > 0.0)
                 .collect();
             assert!(wind.len() >= 2, "{name}: its two streams of wind");
+        }
+    }
+
+    #[test]
+    fn each_kind_of_scenery_has_its_model_on_the_disc() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        for &(rules_name, name) in SCENERY {
+            assert!(original.shapes.contains_key(name), "{rules_name}: {name}");
         }
     }
 

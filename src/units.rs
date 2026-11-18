@@ -372,6 +372,104 @@ pub enum Prop {
     HarvesterWreck,
     BuggyWreck,
     HungFigure,
+    /// The rest of what stands about the maps: towns' houses, trees, tents, wrecks, smoke.
+    Scenery(Scenery),
+}
+
+/// One of the kinds of scenery the maps stand about, as the original's rules have it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scenery(u8);
+
+/// What the rules say of a kind of scenery: its name in them, what it is called, its
+/// `Health`, the squares across and deep its `Occupy` has, and its `RoofHeight` where it has
+/// one, else as high as a wreck's.
+struct SceneryKind {
+    rules_name: &'static str,
+    name: &'static str,
+    health: f32,
+    plot: (i32, i32),
+    roof: f32,
+}
+
+#[rustfmt::skip]
+const SCENERY: [SceneryKind; 60] = [
+    SceneryKind { rules_name: "AKINDrKynes", name: "Kynes's Station", health: 1000.0, plot: (3, 4), roof: 80.0 },
+    SceneryKind { rules_name: "AKINNoddingDonkey", name: "Pump", health: 1000.0, plot: (2, 7), roof: 80.0 },
+    SceneryKind { rules_name: "AKINhungfigure", name: "Hanged Figure", health: 1000.0, plot: (1, 1), roof: 80.0 },
+    SceneryKind { rules_name: "AKINhungfigure3", name: "Hanged Figure", health: 1000.0, plot: (1, 1), roof: 80.0 },
+    SceneryKind { rules_name: "AKINhungfigure4", name: "Hanged Figure", health: 1000.0, plot: (2, 3), roof: 80.0 },
+    SceneryKind { rules_name: "ATINHouse2", name: "House", health: 1000.0, plot: (4, 3), roof: 80.0 },
+    SceneryKind { rules_name: "ATINHouse3", name: "House", health: 1000.0, plot: (4, 4), roof: 80.0 },
+    SceneryKind { rules_name: "ATINHouse4", name: "House", health: 1000.0, plot: (6, 2), roof: 80.0 },
+    SceneryKind { rules_name: "ATINStPauls", name: "Cathedral", health: 1000.0, plot: (7, 5), roof: 80.0 },
+    SceneryKind { rules_name: "ATINSultan", name: "Palace", health: 1000.0, plot: (7, 5), roof: 80.0 },
+    SceneryKind { rules_name: "BirdBuilding", name: "Vultures", health: 1000.0, plot: (1, 1), roof: 80.0 },
+    SceneryKind { rules_name: "CNINATTree", name: "Tree", health: 1000.0, plot: (1, 1), roof: 80.0 },
+    SceneryKind { rules_name: "CNINATTree2", name: "Tree", health: 1000.0, plot: (1, 1), roof: 80.0 },
+    SceneryKind { rules_name: "CNINATTree3", name: "Tree", health: 1000.0, plot: (1, 1), roof: 80.0 },
+    SceneryKind { rules_name: "CNINATTree4", name: "Tree", health: 1000.0, plot: (1, 1), roof: 80.0 },
+    SceneryKind { rules_name: "GPSFXGreensmokeNL", name: "Smoke", health: 100000.0, plot: (1, 1), roof: 30.0 },
+    SceneryKind { rules_name: "GPSFXLavasmoke", name: "Smoke", health: 100000.0, plot: (1, 1), roof: 30.0 },
+    SceneryKind { rules_name: "GPSFXLavasmokeNL", name: "Smoke", health: 100000.0, plot: (1, 1), roof: 30.0 },
+    SceneryKind { rules_name: "HKINApartments", name: "Apartments", health: 1000.0, plot: (3, 3), roof: 80.0 },
+    SceneryKind { rules_name: "HKINGiediRef", name: "House", health: 1000.0, plot: (4, 4), roof: 80.0 },
+    SceneryKind { rules_name: "HKINHouse", name: "House", health: 1000.0, plot: (7, 4), roof: 80.0 },
+    SceneryKind { rules_name: "HKINHouse2", name: "House", health: 1000.0, plot: (5, 4), roof: 80.0 },
+    SceneryKind { rules_name: "HKINHouse3", name: "House", health: 1000.0, plot: (5, 3), roof: 80.0 },
+    SceneryKind { rules_name: "HKINHouse5", name: "House", health: 1000.0, plot: (4, 2), roof: 80.0 },
+    SceneryKind { rules_name: "HKINHut", name: "Hut", health: 1000.0, plot: (3, 4), roof: 80.0 },
+    SceneryKind { rules_name: "HKINMossPalace", name: "Palace", health: 1000.0, plot: (3, 3), roof: 80.0 },
+    SceneryKind { rules_name: "HKINSultan", name: "Palace", health: 1000.0, plot: (7, 5), roof: 80.0 },
+    SceneryKind { rules_name: "HKINTYower", name: "Tower", health: 1000.0, plot: (2, 2), roof: 80.0 },
+    SceneryKind { rules_name: "HKINTennament", name: "Tenement", health: 1000.0, plot: (3, 2), roof: 80.0 },
+    SceneryKind { rules_name: "HKINTennament2", name: "Tenement", health: 1000.0, plot: (2, 3), roof: 80.0 },
+    SceneryKind { rules_name: "HKINTownhall", name: "Town Hall", health: 1000.0, plot: (4, 4), roof: 80.0 },
+    SceneryKind { rules_name: "HKINTrafford", name: "Hall", health: 1000.0, plot: (5, 4), roof: 80.0 },
+    SceneryKind { rules_name: "HKINTwafford", name: "Hall", health: 1000.0, plot: (5, 4), roof: 80.0 },
+    SceneryKind { rules_name: "HLINElectricVent", name: "Vent", health: 1000.0, plot: (6, 6), roof: 80.0 },
+    SceneryKind { rules_name: "HLINLighGate", name: "Lightning Gate", health: 1000.0, plot: (5, 1), roof: 80.0 },
+    SceneryKind { rules_name: "HLINMHut2", name: "Hut", health: 1000.0, plot: (3, 2), roof: 80.0 },
+    SceneryKind { rules_name: "HLINMhut", name: "Hut", health: 1000.0, plot: (4, 3), roof: 80.0 },
+    SceneryKind { rules_name: "HLINOxygen", name: "Oxygen Plant", health: 3000.0, plot: (8, 7), roof: 80.0 },
+    SceneryKind { rules_name: "INCrash", name: "Wreck", health: 10.0, plot: (3, 3), roof: 80.0 },
+    SceneryKind { rules_name: "INFRCampFire", name: "Camp Fire", health: 1000.0, plot: (1, 1), roof: 80.0 },
+    SceneryKind { rules_name: "INFRTent", name: "Tent", health: 1000.0, plot: (3, 3), roof: 80.0 },
+    SceneryKind { rules_name: "INFRTent2", name: "Tent", health: 1000.0, plot: (3, 3), roof: 80.0 },
+    SceneryKind { rules_name: "INHouse", name: "House", health: 1000.0, plot: (2, 3), roof: 80.0 },
+    SceneryKind { rules_name: "INMartHouse", name: "House", health: 1000.0, plot: (5, 3), roof: 80.0 },
+    SceneryKind { rules_name: "INMartHouse2", name: "House", health: 1000.0, plot: (5, 3), roof: 80.0 },
+    SceneryKind { rules_name: "INMedicalWreck", name: "Wreck", health: 2000.0, plot: (2, 2), roof: 80.0 },
+    SceneryKind { rules_name: "INPalace", name: "Palace", health: 1000.0, plot: (5, 4), roof: 80.0 },
+    SceneryKind { rules_name: "INStore", name: "Store", health: 1000.0, plot: (2, 2), roof: 80.0 },
+    SceneryKind { rules_name: "INStore2", name: "Store", health: 1000.0, plot: (2, 2), roof: 80.0 },
+    SceneryKind { rules_name: "INWorkshop", name: "Workshop", health: 1000.0, plot: (1, 3), roof: 80.0 },
+    SceneryKind { rules_name: "IXTransport", name: "Wreck", health: 1000.0, plot: (2, 4), roof: 80.0 },
+    SceneryKind { rules_name: "ORINBubbleHouse", name: "House", health: 1000.0, plot: (3, 3), roof: 80.0 },
+    SceneryKind { rules_name: "ORINIndi", name: "Factory", health: 1000.0, plot: (7, 6), roof: 80.0 },
+    SceneryKind { rules_name: "ORINTower", name: "Tower", health: 1000.0, plot: (2, 2), roof: 80.0 },
+    SceneryKind { rules_name: "ORINTower2", name: "Tower", health: 1000.0, plot: (2, 2), roof: 80.0 },
+    SceneryKind { rules_name: "ORINTownhall", name: "Town Hall", health: 1000.0, plot: (5, 4), roof: 80.0 },
+    SceneryKind { rules_name: "ORINhall", name: "Hall", health: 1000.0, plot: (9, 6), roof: 80.0 },
+    SceneryKind { rules_name: "SMStarport", name: "Starport", health: 1000.0, plot: (8, 11), roof: 70.0 },
+    SceneryKind { rules_name: "Seaguls", name: "Seagulls", health: 1000.0, plot: (1, 1), roof: 80.0 },
+    SceneryKind { rules_name: "TLTransport", name: "Wreck", health: 1000.0, plot: (2, 4), roof: 80.0 },
+];
+
+impl Scenery {
+    /// The kind of scenery of this name in the rules, if it is one.
+    fn named(name: &str) -> Option<Self> {
+        let at = SCENERY.iter().position(|kind| kind.rules_name == name)?;
+        Some(Scenery(at as u8))
+    }
+
+    fn kind(self) -> &'static SceneryKind {
+        &SCENERY[usize::from(self.0)]
+    }
+
+    /// What the original's rules call it.
+    pub fn rules_name(self) -> &'static str {
+        self.kind().rules_name
+    }
 }
 
 impl Prop {
@@ -387,9 +485,21 @@ impl Prop {
         Prop::HungFigure,
     ];
 
+    /// The one the original's rules call by this name. Each house has a factory frigate.
+    pub fn named(name: &str) -> Option<Self> {
+        if ["ATFactoryFrigate", "ORFactoryFrigate"].contains(&name) {
+            return Some(Prop::FactoryFrigate);
+        }
+        Self::ALL
+            .into_iter()
+            .find(|prop| prop.rules_name() == name)
+            .or_else(|| Scenery::named(name).map(Prop::Scenery))
+    }
+
     /// What the original's rules call it.
     pub fn rules_name(self) -> &'static str {
         match self {
+            Prop::Scenery(scenery) => scenery.rules_name(),
             Prop::Barrel => "INBarrel1",
             Prop::Drum => "INBarrel2",
             Prop::FactoryFrigate => "HKFactoryFrigate",
@@ -410,6 +520,7 @@ impl Prop {
             Prop::GreenSmoke => "Smoke",
             Prop::CrawlerWreck | Prop::HarvesterWreck | Prop::BuggyWreck => "Wreck",
             Prop::HungFigure => "Hanged Figure",
+            Prop::Scenery(scenery) => scenery.kind().name,
         }
     }
 
@@ -422,13 +533,17 @@ impl Prop {
             Prop::GreenSmoke => 100_000.0,
             Prop::CrawlerWreck | Prop::HarvesterWreck | Prop::BuggyWreck => 2000.0,
             Prop::HungFigure => 1000.0,
+            Prop::Scenery(scenery) => scenery.kind().health,
         }
     }
 
-    /// The squares it stands on across and deep, as the original's `Occupy` has them.
-    fn plot_size(self) -> (i32, i32) {
+    /// The squares it stands on across and deep, as the original's `Occupy` has them: the
+    /// Atreides' and Ordos' frigates are deeper than the Harkonnen's.
+    fn plot_size(self, house: Faction) -> (i32, i32) {
         match self {
-            Prop::FactoryFrigate => (18, 6),
+            Prop::Scenery(scenery) => scenery.kind().plot,
+            Prop::FactoryFrigate if house == Faction::Harkonnen => (18, 6),
+            Prop::FactoryFrigate => (18, 8),
             Prop::Spotlight | Prop::CrawlerWreck | Prop::HarvesterWreck | Prop::BuggyWreck => {
                 (2, 2)
             }
@@ -437,9 +552,14 @@ impl Prop {
     }
 
     /// How tall it is, in the original's coordinates: its `RoofHeight` where it has one.
-    fn roof_height(self) -> f32 {
+    fn roof_height(self, house: Faction) -> f32 {
         match self {
-            Prop::FactoryFrigate => 145.0,
+            Prop::Scenery(scenery) => scenery.kind().roof,
+            Prop::FactoryFrigate => match house {
+                Faction::Atreides => 135.0,
+                Faction::Ordos => 115.0,
+                _ => 145.0,
+            },
             Prop::Spotlight | Prop::CrawlerWreck | Prop::HarvesterWreck | Prop::BuggyWreck => 80.0,
             Prop::HungFigure => 60.0,
             Prop::Barrel | Prop::Drum | Prop::GreenSmoke => 30.0,
@@ -1478,7 +1598,7 @@ impl Role {
             (Role::FrCamp, _) => (6, 6),
             (Role::Helipad, _) => (2, 3),
             (Role::Wall, _) => (1, 1),
-            (Role::Prop(prop), _) => prop.plot_size(),
+            (Role::Prop(prop), house) => prop.plot_size(house),
             (Role::Starport, Ordos) => (9, 8),
             (Role::Starport, _) => (9, 7),
             // Deployed, as big as the original's construction yard.
@@ -1536,7 +1656,7 @@ impl Role {
     /// front is the Atreides'.
     pub fn named(name: &str) -> Option<(Role, Faction)> {
         const HOUSES: [Faction; 3] = [Faction::Atreides, Faction::Harkonnen, Faction::Ordos];
-        if let Some(prop) = Prop::ALL.into_iter().find(|prop| prop.rules_name() == name) {
+        if let Some(prop) = Prop::named(name) {
             let house = HOUSES
                 .into_iter()
                 .find(|&house| name.starts_with(house_letters(house)));
@@ -1576,10 +1696,10 @@ impl Role {
     pub fn original_size(self, house: Faction) -> [f32; 3] {
         match self {
             Role::Prop(prop) => {
-                let (cols, rows) = prop.plot_size();
+                let (cols, rows) = prop.plot_size(house);
                 [
                     cols as f32 * CELL_SIDE,
-                    prop.roof_height(),
+                    prop.roof_height(house),
                     rows as f32 * CELL_SIDE,
                 ]
             }
@@ -10914,6 +11034,30 @@ mod tests {
                 building.role
             );
         }
+    }
+
+    #[test]
+    fn the_maps_scenery_and_every_houses_frigate_are_props_as_the_rules_have_them() {
+        let (role, house) = Role::named("HKINApartments").unwrap();
+        assert!(matches!(role, Role::Prop(Prop::Scenery(_))));
+        assert_eq!(role.plot_size(house), (3, 3));
+        assert_eq!(
+            role.max_health(),
+            Role::Prop(Prop::HungFigure).max_health(),
+            "a Health of 1000 in the rules, as the hanged figure's"
+        );
+        let (role, house) = Role::named("ATFactoryFrigate").unwrap();
+        assert_eq!(
+            (role, house),
+            (Role::Prop(Prop::FactoryFrigate), Faction::Atreides)
+        );
+        assert_eq!(role.plot_size(house), (18, 8));
+        assert_eq!(role.plot_size(Faction::Harkonnen), (18, 6));
+        assert!(
+            SCENERY
+                .iter()
+                .all(|kind| kind.health > 0.0 && kind.plot.0 > 0)
+        );
     }
 
     #[test]

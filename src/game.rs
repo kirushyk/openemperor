@@ -2976,7 +2976,7 @@ impl Game {
             at,
             (role, house),
             side,
-            (false, None),
+            (false, None, units::Anchor::Corner),
             id,
         )
         .is_some()
@@ -4421,7 +4421,7 @@ impl Game {
                 at,
                 (role, house),
                 (owner, color),
-                (dug_in, facing),
+                (dug_in, facing, units::Anchor::Corner),
                 id,
             );
             if placed.is_some() {
@@ -4480,6 +4480,11 @@ impl Game {
         let thing = Role::named(name)?;
         let (owner, color) = self.side_owner(side)?;
         let dug_in = facing.is_some() && name.ends_with(CONSTRUCTION_YARD);
+        let anchor = if dug_in {
+            units::Anchor::Yard
+        } else {
+            units::Anchor::Corner
+        };
         let terrain = battlefield::terrain(self.battle_map);
         let id = self.next_unit_id;
         let placed = units::put(
@@ -4488,7 +4493,7 @@ impl Game {
             at,
             thing,
             (owner, color),
-            (dug_in, facing),
+            (dug_in, facing, anchor),
             id,
         )?;
         self.next_unit_id += 1;

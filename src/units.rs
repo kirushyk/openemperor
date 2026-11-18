@@ -4116,37 +4116,40 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
     true
 }
 
-/// Puts a mission script's unit or building on the map for a side, and says its id: a
-/// building where it is put, dug in if it is a construction yard, an MCV dug in; a unit at
-/// the free spot nearest. Facing a way, a building stands as the original puts one: its back
-/// row on the point, the rest ahead, running to one side of it, a construction yard to both;
-/// a unit looks that way.
+/// Puts a map's or a mission script's unit or building on the map for a side, and says its
+/// id: a building where it is put, dug in if it is a construction yard, an MCV dug in; a unit
+/// at the free spot nearest. A building's squares, as it faces, start at the point's across
+/// and down, as `anchor` has it, or a construction yard a script digs in has its back row's
+/// middle there; a unit looks the way it faces.
 pub fn put(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
     at: (f32, f32),
     (role, house): (Role, Faction),
     side: (usize, TeamColor),
-    (dug_in, facing): (bool, Option<Facing>),
+    (dug_in, facing, anchor): (bool, Option<Facing>, Anchor),
     id: u32,
 ) -> Option<u32> {
     let kind = role.kind();
     let stands = kind.is_building() || dug_in;
-    let spot = if stands {
+    let spot = if stands && anchor == Anchor::Yard {
+        // A construction yard a script digs in, an MCV, has the point in its middle across,
+        // between the walls the first one stands in, its depth running ahead from its back row.
         let (cols, rows) = role.plot_size(house);
-        let facing = facing.unwrap_or_default();
-        // Its middle from the point: its squares run from the point to its left as it faces,
-        // a factory frigate's along its compound; a construction yard, an MCV dug in, has the
-        // point in its middle across, between the walls the first one stands in. Its depth
-        // runs ahead from its back row.
-        let across = if dug_in {
-            (cols / 2) as f32 - (cols - 1) as f32 / 2.0
-        } else {
-            (cols - 1) as f32 / 2.0
-        };
+        let across = (cols / 2) as f32 - (cols - 1) as f32 / 2.0;
         let ahead = (rows - 1) as f32 / 2.0;
-        let (dx, dz) = facing.turned((across * CELL_SIDE, ahead * CELL_SIDE));
+        let (dx, dz) = facing
+            .unwrap_or_default()
+            .turned((across * CELL_SIDE, ahead * CELL_SIDE));
         (at.0 + dx, at.1 + dz)
+    } else if stands {
+        // Its squares as it faces, from the one the point is in across and down.
+        let plot = role.plot_facing(house, (0.0, 0.0), facing.unwrap_or_default());
+        let (u, v) = world_to_grid(at.0, at.1);
+        grid_to_world(
+            u.floor() + plot.cols as f32 / 2.0,
+            v.floor() + plot.rows as f32 / 2.0,
+        )
     } else {
         let taken = spots_taken(units, kind.flies());
         *find_slots(terrain, at, 1, &taken, kind.going_on_the_ground()).first()?
@@ -4163,6 +4166,15 @@ pub fn put(
         switch_deployed(unit);
     }
     Some(id)
+}
+
+/// Which of a building's squares the point it is put at is: as maps and scripts give them,
+/// the first across and down of its squares as it faces; or for a construction yard a script
+/// digs in, the middle of its back row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Anchor {
+    Corner,
+    Yard,
 }
 
 /// Sends a unit to its own free spot near a point, if there is one.
@@ -11624,7 +11636,7 @@ mod tests {
             at,
             yard,
             side,
-            (true, Some(Facing::numbered(1))),
+            (true, Some(Facing::numbered(1)), Anchor::Yard),
             0,
         )
         .unwrap();
@@ -11641,13 +11653,26 @@ mod tests {
             "its pad towards the walls' far side"
         );
         // The factory frigate of its map's compound, at square 87 by 7 facing out along +z, runs
-        // along the compound to square 104 and ahead from its back row.
+        // along the compound to square 104 and ahead from there.
         let at = grid_to_world(87.5, 7.5);
         let frigate = (Role::Prop(Prop::FactoryFrigate), Faction::Harkonnen);
-        let facing = (false, Some(Facing::numbered(2)));
+        let facing = (false, Some(Facing::numbered(2)), Anchor::Corner);
         put(&mut units, &terrain, at, frigate, side, facing, 1).unwrap();
         let plot = units[1].plot().unwrap();
         assert_eq!((plot.u, plot.v, plot.cols, plot.rows), (87, 7, 18, 6));
+        // Facing any other way, a map's object still starts at its square: the Heighliner's
+        // frigate at 5 by 66 facing 0 fills its bay from there, not from 12 squares off the map.
+        for (number, cols, rows) in [(0, 18, 6), (1, 6, 18), (3, 6, 18)] {
+            let at = grid_to_world(5.5, 66.5);
+            let facing = (false, Some(Facing::numbered(number)), Anchor::Corner);
+            put(&mut units, &terrain, at, frigate, side, facing, 2).unwrap();
+            let plot = units.last().unwrap().plot().unwrap();
+            assert_eq!(
+                (plot.u, plot.v, plot.cols, plot.rows),
+                (5, 66, cols, rows),
+                "facing {number}"
+            );
+        }
     }
 
     #[test]

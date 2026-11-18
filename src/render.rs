@@ -1823,6 +1823,7 @@ fn draw_on_threads<T: Sync>(
         canvas.objects.append(&mut share.objects);
         canvas.casters.append(&mut share.casters);
         canvas.effects.append(&mut share.effects);
+        canvas.decals.append(&mut share.decals);
         canvas.vertices.append(&mut share.vertices);
     }
 }
@@ -5243,6 +5244,22 @@ mod thread_tests {
         });
         let drawn: Vec<f32> = canvas.vertices.iter().map(|v| v.x).collect();
         assert_eq!(drawn, things);
+    }
+
+    #[test]
+    fn the_glows_drawn_on_threads_are_kept_as_well_as_what_is_solid() {
+        let things: Vec<f32> = (0..500).map(|i| i as f32).collect();
+        let mut canvas = Canvas::default();
+        draw_on_threads(&mut canvas, &things, |canvas, &thing| {
+            let corner = WorldVertex::solid((thing, 0.0, 0.0), [0.0, 1.0, 0.0], [1.0; 3]);
+            canvas.objects.push(corner);
+            canvas.decals.push(corner);
+        });
+        let drawn: Vec<f32> = canvas.decals.iter().map(|v| v.x).collect();
+        assert_eq!(
+            drawn, things,
+            "a searchlight's beam and a windtrap's wind among them"
+        );
     }
 }
 

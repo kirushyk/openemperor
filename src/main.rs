@@ -154,6 +154,9 @@ fn main() {
     // The battlefield's sounds of firing and dying, waiting their turn and playing.
     #[cfg(target_os = "macos")]
     let mut effects = sounds::Effects::default();
+    // Until when the mission's Mentat speaks, whom nothing else said cuts off.
+    #[cfg(target_os = "macos")]
+    let mut mentat_until = Instant::now();
     // The volumes last given to the backend, to give them again only when they change.
     let mut volumes = None;
     let mut last = Instant::now();
@@ -191,6 +194,9 @@ fn main() {
         // What the battlefield tells the player is said over the music.
         #[cfg(target_os = "macos")]
         for speech in game.take_speeches() {
+            if now < mentat_until {
+                continue;
+            }
             if let Some(line) = sounds::spoken(speech, game.faction_of(0)) {
                 platform.play_line(&line.samples, line.channels, line.rate);
             }
@@ -200,11 +206,14 @@ fn main() {
         for number in game.take_mission_lines() {
             if let Some(line) = sounds::mission_line(number) {
                 platform.play_line(&line.samples, line.channels, line.rate);
+                mentat_until = now + std::time::Duration::from_secs_f32(line.seconds());
             }
         }
         // What the player's units answer is said over the music.
         #[cfg(target_os = "macos")]
-        if let Some((said, speakers)) = game.take_reply() {
+        if let Some((said, speakers)) = game.take_reply()
+            && now >= mentat_until
+        {
             let pick = (battlefield::next_random(&mut line_random) * 1024.0) as usize;
             if let Some(line) = sounds::reply(said, &speakers, pick) {
                 platform.play_line(&line.samples, line.channels, line.rate);

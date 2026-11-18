@@ -62,6 +62,13 @@ pub struct Line {
     pub rate: u32,
 }
 
+impl Line {
+    /// How long it plays.
+    pub fn seconds(&self) -> f32 {
+        self.samples.len() as f32 / (self.channels * self.rate).max(1) as f32
+    }
+}
+
 /// One of the sounds a section lists.
 #[derive(Debug, PartialEq)]
 struct Sound {
@@ -631,8 +638,7 @@ mod tests {
             };
             // Kept as MP3, the welcome lasts seconds, not the blink raw bytes would.
             let line = read_line(&sounds, "kk-m680").unwrap();
-            let seconds = line.samples.len() as f32 / (line.channels * line.rate) as f32;
-            assert!(seconds > 2.0, "{seconds} seconds");
+            assert!(line.seconds() > 2.0, "{} seconds", line.seconds());
         }
     }
 }

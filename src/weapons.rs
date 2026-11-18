@@ -2832,9 +2832,11 @@ fn hurt(unit: &mut Unit, damage: f32) {
 /// towers and what flies alike. Only what cannot turn does not: a building that is not a tower,
 /// something dug in, and the air drone, which fires as it circles past.
 fn must_turn_to_fire(unit: &Unit) -> bool {
+    // Infantry dug in turn round with their gun, whose turret the original's rules give no
+    // way to swing sideways: a Kindjal's `ATKindjalBigGun`, a mortar's `ORMortarInfBigGun`.
     unit.weapon.is_armed()
         && unit.weapon != WeaponKind::Repair
-        && (!unit.deployed || swings_gun(unit))
+        && (!unit.deployed || swings_gun(unit) || unit.kind == UnitKind::Infantry)
         && unit.role != Role::AtAdp
         && unit.kind != UnitKind::Building
 }
@@ -4127,6 +4129,27 @@ mod tests {
             crate::units::turn_between(towards, heading + 2.5).abs() < 0.3,
             "it fires from the cannon's end, swung round"
         );
+    }
+
+    #[test]
+    fn dug_in_infantry_turn_round_to_face_what_they_fire_at() {
+        for role in [Role::AtKindjal, Role::OrMortar] {
+            let mut soldier = as_role(role, 0.0, 2715.0);
+            crate::units::switch_deployed(&mut soldier);
+            soldier.popped = 1.0;
+            let heading = soldier.heading;
+            let away = soldier.range() * 0.5;
+            let (sin, cos) = (heading + 2.0).sin_cos();
+            let mut units = [soldier, target_at(away * cos, 2715.0 + away * sin)];
+            let mut combat = Combat::default();
+            run(&mut combat, &mut units, 3.0);
+            assert!(
+                crate::units::turn_between(units[0].heading, heading + 2.0).abs() < 0.05,
+                "{role:?} faces its aim: {} for {}",
+                units[0].heading,
+                heading + 2.0
+            );
+        }
     }
 
     #[test]

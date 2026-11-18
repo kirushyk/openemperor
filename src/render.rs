@@ -22,6 +22,7 @@ use std::thread;
 
 mod backdrop;
 mod frontend;
+mod lettering;
 mod models;
 mod original;
 
@@ -425,6 +426,46 @@ impl Canvas {
         );
     }
 
+    /// Draws text in the disc's letters, their capitals as tall as ours `px` big and centered
+    /// on `cy`, squeezed if need be into the width ours would take.
+    fn letters(
+        &mut self,
+        lettering: &lettering::Lettering,
+        text: &str,
+        (x, cy): (f32, f32),
+        px: f32,
+        c: Color,
+    ) {
+        let capital = font::CAP_HEIGHT * px;
+        let scale = capital / lettering.capital;
+        let natural = lettering.advances(text).sum::<f32>() * scale;
+        let room = font::text_width(text) * px;
+        let across = scale * (room / natural.max(1.0)).min(1.0);
+        let line = cy + capital / 2.0;
+        let mut at = x;
+        for (ch, advance) in text.chars().zip(lettering.advances(text)) {
+            if let Some(letter) = lettering.letter(ch) {
+                let [u0, v0, u1, v1] = letter.uv;
+                let (left, right) = (at, at + letter.width * across);
+                let (top, bottom) = (line - letter.above * scale, line + letter.below * scale);
+                let corner = |at: (f32, f32), (u, v): (f32, f32)| Vertex {
+                    u,
+                    v,
+                    layer: letter.layer as f32,
+                    ..Vertex::new(at, c)
+                };
+                let [a, b, d, e] = [
+                    corner((left, top), (u0, v0)),
+                    corner((right, top), (u1, v0)),
+                    corner((right, bottom), (u1, v1)),
+                    corner((left, bottom), (u0, v1)),
+                ];
+                self.vertices.extend([a, b, d, a, d, e]);
+            }
+            at += advance * across;
+        }
+    }
+
     /// Draws `text` with its cap height centered on `cy`, one font pixel = `px` screen pixels.
     fn text_centered(&mut self, text: &str, cx: f32, cy: f32, px: f32, c: Color) {
         // Snap to whole pixels so the font stays crisp at any UI scale.
@@ -433,7 +474,12 @@ impl Canvas {
     }
 
     /// Same as `text_centered`, starting at `x`. `px` must already be a whole number.
+    /// With the disc's lettering read, it is drawn in that, as tall and never wider.
     fn text_left(&mut self, text: &str, x: f32, cy: f32, px: f32, c: Color) {
+        if let Some(lettering) = original::lettering() {
+            self.letters(lettering, text, (x, cy), px, c);
+            return;
+        }
         let mut x = x.round();
         let y = (cy - font::CAP_HEIGHT * px / 2.0).round();
         for ch in text.chars() {

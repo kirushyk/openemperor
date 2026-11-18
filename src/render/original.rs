@@ -5,6 +5,7 @@
 
 use super::Canvas;
 use super::frontend;
+use super::lettering::{self, Lettering};
 use super::models::{Model, Paint, Place};
 use crate::archive::{self, Archive};
 use crate::battlefield::{self, CELL_SIDE, Terrain, View};
@@ -559,6 +560,10 @@ const DAMAGED: [&str; 2] = ["_h1.", "_h2."];
 const UI_INDEX: &str = "\\data\\UI0001.RFH";
 const UI_DATA: &str = "\\data\\UI0001.RFD";
 const SIDEBAR: &str = "SIDEBAR\\SIDEBAR1.XBF";
+/// The original's lettering: the picture of its letters among the models' pictures, and the
+/// list of which they are in the interface's data.
+const FONT_PICTURE: &str = "Standard.tga";
+const FONT_LIST: &str = "FONT\\STANDARD.MAP";
 /// The symbols on the original's sidebar: those of its tabs and of its command buttons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Symbol {
@@ -650,6 +655,8 @@ struct Original {
     upgrade_icons: Vec<[Option<(usize, usize)>; 2]>,
     /// The main menu's scene, if the disc has it.
     menu: Option<frontend::Scene>,
+    /// The letters text is drawn with, if the disc has them.
+    lettering: Option<Lettering>,
     /// The symbol of each of `SYMBOLS`, as flat triangles in a square from -1 to 1 across and
     /// down: none for one the disc has not.
     symbols: Vec<Vec<[(f32, f32); 3]>>,
@@ -1227,6 +1234,11 @@ fn read_shapes(disc: &Path) -> Option<Original> {
     let symbols = read_symbols(disc).unwrap_or_default();
     let menu = read_interface(disc, frontend::SCENE)
         .and_then(|model| frontend::read(&model, &archive, &mut pictures, &mut layers));
+    let lettering = archive
+        .read(&format!("{TEXTURES}{FONT_PICTURE}"))
+        .and_then(|bytes| xbf::tga(&bytes))
+        .zip(read_interface(disc, FONT_LIST))
+        .and_then(|(image, listed)| lettering::read(&image, &listed, &mut pictures, &mut layers));
     (!shapes.is_empty()).then_some(Original {
         shapes,
         damaged,
@@ -1239,9 +1251,15 @@ fn read_shapes(disc: &Path) -> Option<Original> {
         icons,
         upgrade_icons,
         menu,
+        lettering,
         archive,
         spice,
     })
+}
+
+/// The original's lettering, once the disc's is read.
+pub(super) fn lettering() -> Option<&'static Lettering> {
+    ORIGINAL.get()?.lettering.as_ref()
 }
 
 /// A file out of the disc's interface archive.
@@ -2765,5 +2783,25 @@ mod tests {
             );
             assert!((x - mongoose.x).hypot(z - mongoose.z) > 30.0, "out from it");
         }
+    }
+
+    #[test]
+    fn the_discs_lettering_has_every_letter_of_its_list() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(listed) = read_interface(disc, FONT_LIST) else {
+            return;
+        };
+        let index = archive::from_cabinet(&disc.join(CABINET), INDEX).unwrap();
+        let archive = Archive::open(&index, &disc.join(DATA)).unwrap();
+        let image = xbf::tga(&archive.read(&format!("{TEXTURES}{FONT_PICTURE}")).unwrap()).unwrap();
+        let (mut pictures, mut layers) = (Vec::new(), 0);
+        let lettering = lettering::read(&image, &listed, &mut pictures, &mut layers).unwrap();
+        for ch in ['A', 'g', '!', '0', '\u{df}', '\u{a9}'] {
+            assert!(lettering.letter(ch).is_some(), "{ch}");
+        }
+        assert!(lettering.capital > 10.0);
+        let g = lettering.letter('g').unwrap();
+        assert!(g.below > 0.0, "a g reaches below the line");
+        assert_eq!(pictures.len(), layers * PICTURE_SIDE * PICTURE_SIDE * 4);
     }
 }

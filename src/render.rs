@@ -823,6 +823,8 @@ pub fn build_frame(game: &Game) -> Frame {
         sun: light.sun,
         ambient: light.ambient,
         sunlight: light.sunlight,
+        model_ambient: light.model_ambient,
+        model_sunlight: light.model_sunlight,
         wash: original::wash_reach(game.battle_map),
         size: (game.width, game.height),
     }
@@ -832,7 +834,7 @@ pub fn build_frame(game: &Game) -> Frame {
 /// pale white.
 const SEARCHLIGHT_ABOVE: f32 = 18.1;
 const SEARCHLIGHT_REACH: f32 = 90.51;
-pub const SEARCHLIGHT_COLOR: [f32; 3] = [0.55, 0.55, 0.5];
+pub const SEARCHLIGHT_COLOR: [f32; 3] = [1.0, 1.0, 0.92];
 
 /// What burns on the map right now and lights what is around it: eruptions, flickering, then
 /// explosions, the newest first; then where searchlights point.

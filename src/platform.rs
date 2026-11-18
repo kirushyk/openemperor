@@ -202,6 +202,9 @@ pub struct Frame {
     /// The light everything gets from all around, and what a face turned to the sun gets.
     pub ambient: [f32; 3],
     pub sunlight: [f32; 3],
+    /// The same two for the models on the map, as against its ground.
+    pub model_ambient: [f32; 3],
+    pub model_sunlight: [f32; 3],
     /// How far along x and z the picture given to `Platform::set_wash` reaches over the
     /// ground; 0 for none.
     pub wash: [f32; 2],
@@ -335,6 +338,8 @@ struct RawWorld {
     sunlight: [f32; 3],
     wash: [f32; 2],
     sea: f32,
+    model_ambient: [f32; 3],
+    model_sunlight: [f32; 3],
 }
 
 unsafe extern "C" {
@@ -449,6 +454,8 @@ impl Platform {
             sunlight: frame.sunlight,
             wash: frame.wash,
             sea: frame.sea,
+            model_ambient: frame.model_ambient,
+            model_sunlight: frame.model_sunlight,
         };
         // SAFETY: the pointers are valid for their counts, and the shim copies them all before
         // returning.
@@ -618,6 +625,8 @@ mod tests {
             sun: [0.0, 1.0, 0.0],
             ambient: [0.5; 3],
             sunlight: [0.5; 3],
+            model_ambient: [0.5; 3],
+            model_sunlight: [0.5; 3],
             wash: [0.0; 2],
             size: (100.0, 100.0),
         };

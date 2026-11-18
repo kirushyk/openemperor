@@ -371,8 +371,9 @@ static NSString *const kShader = @
     "    sum += map.sample_compare(compare, uv + float2(i, j) * texel * 1.5, z);\n"
     "  return sum / 9.0;\n"
     "}\n"
-    "static float3 light_on(float3 color, float3 world, float3 normal, float in_sun, constant Sky &sky) {\n"
-    "  float3 light = sky.air + sky.sunlight * max(dot(normal, sky.sun), 0.0) * in_sun;\n"
+    /* What the lights burning on the map give a point: searchlights, fires, explosions. */
+    "static float3 lights_on(float3 world, float3 normal, constant Sky &sky) {\n"
+    "  float3 light = float3(0.0);\n"
     "  for (int i = 0; i < sky.light_count; i++) {\n"
     "    float3 to = float3(sky.lights[i].place) - world;\n"
     "    float reach = length(to) / sky.lights[i].radius;\n"
@@ -380,7 +381,13 @@ static NSString *const kShader = @
     "    float side = max(dot(normal, normalize(to)) * 0.75 + 0.25, 0.0);\n"
     "    light += float3(sky.lights[i].color) * fall * fall * side;\n"
     "  }\n"
-    "  return color * light;\n"
+    "  return light;\n"
+    "}\n"
+    "static float3 sun_light_on(float3 color, float3 normal, float in_sun, constant Sky &sky) {\n"
+    "  return color * (sky.air + sky.sunlight * max(dot(normal, sky.sun), 0.0) * in_sun);\n"
+    "}\n"
+    "static float3 light_on(float3 color, float3 world, float3 normal, float in_sun, constant Sky &sky) {\n"
+    "  return sun_light_on(color, normal, in_sun, sky) + color * lights_on(world, normal, sky);\n"
     "}\n"
     /* How a machine shines: paint with a soft wide sheen, bare metal with a sharp highlight
      * from the sun and the sky and ground seen in it, stronger at a glancing angle. */
@@ -451,10 +458,12 @@ static NSString *const kShader = @
     "  /* Land still wet from the sea, darker just above it. */\n"
     "  if (sky.material == 1) color *= mix(0.62, 1.0, smoothstep(0.0, 0.12, level));\n"
     "  float3 lit = light_on(color, in.world, normal, in_sun, sky);\n"
-    /* The ground lit, as much under its wash as the wash's alpha says. */
+    /* The ground sunlit, as much under its wash as the wash's alpha says, the sun being in
+     * the wash already; what burns on the map lights it on top of the wash. */
     "  if (sky.material == 0 && sky.wash.x > 0.0) {\n"
     "    float4 over = wash.sample(smooth, in.world.xz / sky.wash);\n"
-    "    lit = mix(lit, over.rgb, over.a);\n"
+    "    lit = mix(sun_light_on(color, normal, in_sun, sky), over.rgb, over.a)\n"
+    "          + color * lights_on(in.world, normal, sky);\n"
     "  }\n"
     /* Objects, drawn as material 8, say how much they shine in their level; soot takes it away. */
     "  if (sky.material == 8 && in.level > 0.0)\n"
@@ -921,6 +930,15 @@ static id<MTLTexture> pictures(void) {
 }
 
 /* What the world's fragments read, in any pass that draws them. */
+/* The sky as the models on the map see it: lit by their own light, not the ground's. */
+static const OeSky *models_lit(const OeSky *sky, const OeWorld *world) {
+    static OeSky models;
+    models = *sky;
+    memcpy(models.air, world->model_ambient, sizeof(world->model_ambient));
+    memcpy(models.sunlight, world->model_sunlight, sizeof(world->model_sunlight));
+    return &models;
+}
+
 static void bind_world(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> mirror, const OeSky *sky,
                        int32_t material) {
     OeSky mine = *sky;
@@ -988,7 +1006,7 @@ static void encode_mirror(id<MTLCommandBuffer> commands, id<MTLBuffer> buffer,
     [encoder setDepthStencilState:g_depth_write];
     bind_world(encoder, empty_texture(), &mirrored, 0);
     draw_list(encoder, buffer, offsets[0], world->ground_count);
-    bind_world(encoder, empty_texture(), &mirrored, MATERIAL_OBJECTS);
+    bind_world(encoder, empty_texture(), models_lit(&mirrored, world), MATERIAL_OBJECTS);
     draw_list(encoder, buffer, offsets[1], world->objects_count);
     [encoder endEncoding];
 }
@@ -1054,7 +1072,7 @@ static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, u
             bind_world(encoder, g_mirror, &sky, MATERIAL_WATER);
             draw_list(encoder, buffer, offsets[6], world->water_count);
         }
-        bind_world(encoder, empty_texture(), &sky, MATERIAL_OBJECTS);
+        bind_world(encoder, empty_texture(), models_lit(&sky, world), MATERIAL_OBJECTS);
         draw_list(encoder, buffer, offsets[1], world->objects_count);
         /* After all that is solid, which hides what lies behind it, and writing no depth. */
         if (world->decals_count) {

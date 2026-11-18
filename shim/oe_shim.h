@@ -119,6 +119,8 @@ typedef struct {
     float sunlight[3]; /* and what a face turned to the sun gets on top */
     float wash[2];     /* how far along x and z the wash reaches over the ground; 0 for none */
     float sea;         /* how high the sea is, which the mirror is at */
+    float model_ambient[3];  /* the light the models on the map get from all around */
+    float model_sunlight[3]; /* and what their faces turned to the sun get on top */
 } OeWorld;
 
 /* Draws a frame and presents: the sun's shadow map, the reflection if there is water, then the

@@ -39,6 +39,8 @@ pub const DAYLIGHT: Light = Light {
     sun: SUN,
     ambient: [0.42, 0.45, 0.52],
     sunlight: [0.62, 0.58, 0.50],
+    model_ambient: [0.42, 0.45, 0.52],
+    model_sunlight: [0.62, 0.58, 0.50],
 };
 /// The sand's color, for the dust thrown up from it.
 pub const SAND: [f32; 3] = [0.78, 0.64, 0.40];
@@ -164,19 +166,24 @@ pub struct Terrain {
     walkable: [OnceLock<Vec<bool>>; 3],
 }
 
-/// How a map is lit: the way to its sun as a unit vector, the light everything gets from all
-/// around, and the light a face turned to the sun gets on top of that.
+/// How a map is lit: the way to its sun as a unit vector, the light its ground gets from all
+/// around, and the light a face turned to the sun gets on top of that; then the same two for
+/// the models standing on it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Light {
     pub sun: [f32; 3],
     pub ambient: [f32; 3],
     pub sunlight: [f32; 3],
+    pub model_ambient: [f32; 3],
+    pub model_sunlight: [f32; 3],
 }
 
 impl Light {
     /// A map's light as its `test.lit` has it: the way to the sun as x, y and z, with z the
     /// other way along from ours, then the ambient light and the sunlight, each as red, green
-    /// and blue from 0 to 255. What comes after those lights something else.
+    /// and blue from 0 to 255; then, darker on every map in the same hue, the two the models
+    /// are lit by, it seems, the ground's being baked into its wash. A map without them lights
+    /// its models as its ground.
     pub fn read(text: &str) -> Option<Self> {
         let mut lines = text.lines().map(|line| {
             line.split_whitespace()
@@ -189,10 +196,17 @@ impl Light {
         let [x, y, z] = lines.next()??;
         let length = (x * x + y * y + z * z).sqrt();
         let mut color = || lines.next().flatten().map(|rgb| rgb.map(|c| c / 255.0));
+        let (ambient, sunlight) = (color()?, color()?);
+        let (model_ambient, model_sunlight) = match (color(), color()) {
+            (Some(model_ambient), Some(model_sunlight)) => (model_ambient, model_sunlight),
+            _ => (ambient, sunlight),
+        };
         (length > 0.0).then_some(Light {
             sun: [x / length, y / length, -z / length],
-            ambient: color()?,
-            sunlight: color()?,
+            ambient,
+            sunlight,
+            model_ambient,
+            model_sunlight,
         })
     }
 }
@@ -1642,6 +1656,16 @@ mod tests {
             light.sunlight,
             [242.0 / 255.0, 178.0 / 255.0, 127.0 / 255.0]
         );
+        assert_eq!(
+            light.model_ambient, light.ambient,
+            "no models' sunlight: as the ground"
+        );
+        let light = Light::read("1 1 1\n30 30 104\n157 150 255\n20 20 70\n124 120 255\n").unwrap();
+        assert_eq!(
+            light.model_ambient,
+            [20.0 / 255.0, 20.0 / 255.0, 70.0 / 255.0]
+        );
+        assert_eq!(light.model_sunlight, [124.0 / 255.0, 120.0 / 255.0, 1.0]);
         assert_eq!(Light::read("1 1\n2 2 2\n3 3 3"), None);
     }
 

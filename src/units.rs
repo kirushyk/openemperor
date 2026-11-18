@@ -283,13 +283,6 @@ const RANK_HEALTH: f32 = 0.25;
 const RANK_ATTACK: f32 = 0.2;
 const RANK_SPEED: f32 = 0.1;
 
-/// How far a unit sees, in world units, by what it is: it always sees as far as it can hit.
-const INFANTRY_SIGHT: f32 = 362.0;
-const VEHICLE_SIGHT: f32 = 407.3;
-const AIRCRAFT_SIGHT: f32 = 452.5;
-const TOWER_SIGHT: f32 = 452.5;
-const SCOUT_SIGHT: f32 = 633.6;
-
 /// Every role but the palaces, which are one a house.
 const ALL_ROLES: [Role; 61] = [
     Role::AtInfantry,
@@ -1090,6 +1083,29 @@ impl Role {
             Role::AtAdp => WeaponKind::AirMissile,
             Role::HkFlamer | Role::HkFlameTurret => WeaponKind::Flame,
             Role::OrChemical => WeaponKind::Gas,
+        }
+    }
+
+    /// How many tiles it sees, as the original's `ViewRange`. A machine's has a second figure
+    /// given with `InfRock`, larger, that it is not known what for; its first is taken.
+    fn view_range(self) -> f32 {
+        match self {
+            Role::Scout => 20.0,
+            Role::AtSniper => 15.0,
+            Role::OrGasTurret => 14.0,
+            Role::HkTrooper
+            | Role::HkFlamer
+            | Role::FrFremen
+            | Role::ImSardaukar
+            | Role::TlContaminator
+            | Role::Mcv
+            | Role::AtRocketTurret => 12.0,
+            Role::AtKindjal | Role::AtAdp | Role::OrAdp => 10.0,
+            Role::OrMortar | Role::OrSaboteur | Role::OrChemical => 8.0,
+            Role::AtInfantry => 7.0,
+            Role::Engineer | Role::HkLightInf => 6.0,
+            role if role.kind().is_building() => 10.0,
+            _ => 4.0,
         }
     }
 
@@ -2500,16 +2516,9 @@ impl Unit {
         }
     }
 
-    /// How far it sees along the ground.
+    /// How far it sees along the ground: its rules' `ViewRange`, and always as far as it can hit.
     pub fn sight(&self) -> f32 {
-        let own = match (self.role, self.kind) {
-            (Role::Scout, _) => SCOUT_SIGHT,
-            (_, UnitKind::Infantry) => INFANTRY_SIGHT,
-            (_, UnitKind::Vehicle) => VEHICLE_SIGHT,
-            (_, UnitKind::Aircraft) => AIRCRAFT_SIGHT,
-            (_, UnitKind::Tower | UnitKind::Building) => TOWER_SIGHT,
-        };
-        own.max(self.range() + 45.25)
+        (self.role.view_range() * CELL_SIDE).max(self.range() + 45.25)
     }
 
     /// The way a landing pad's deck lies lengthwise, from its front to its back, as a heading.
@@ -7781,6 +7790,23 @@ mod tests {
         assert!(unit.max_health() > health);
         assert!(unit.attack_power() > power);
         assert!(unit.speed() > speed);
+    }
+
+    #[test]
+    fn units_see_as_far_as_the_rules_view_range_or_their_reach() {
+        let mut scout = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Infantry);
+        scout.role = Role::Scout;
+        assert_eq!(scout.sight(), 20.0 * CELL_SIDE);
+        let mut yard = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Building);
+        yard.role = Role::Refinery;
+        assert_eq!(yard.sight(), 10.0 * CELL_SIDE);
+        let mut mortar = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Infantry);
+        mortar.role = Role::OrMortar;
+        mortar.weapon = WeaponKind::Mortar;
+        assert!(
+            mortar.sight() > 8.0 * CELL_SIDE,
+            "it sees as far as it shells"
+        );
     }
 
     #[test]

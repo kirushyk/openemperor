@@ -611,6 +611,60 @@ const WALLS: [(Faction, [&str; 6]); 3] = [
 
 /// The original's model of each kind of scenery, by the rules' name for it.
 #[rustfmt::skip]
+/// The disc's models of the rules' extra kinds, by their rules' names.
+const EXTRAS: &[(&str, &str)] = &[
+    ("INYak", "Units\\in_yak_h0.xbf"),
+    ("INYakHauder", "Units\\in_yakhauder_h0.xbf"),
+    ("INYakRider", "Units\\in_yakrider_h0.xbf"),
+    ("ATGeneral", "Units\\at_general_h0.xbf"),
+    ("ATMilitia", "Units\\at_militia_h0.xbf"),
+    ("ATSonicTank", "Units\\at_sonictank_h0.xbf"),
+    ("ATINBrancastle", "Buildings\\at_in_brancastle_h0.xbf"),
+    ("BeaconFlare", "Buildings\\beaconflare_h0.xbf"),
+    ("FakeHarvester", "Units\\g_harvester_h0.xbf"),
+    ("GUNIABTank", "Units\\gu_niabtank_h0.xbf"),
+    ("GURefinery", "Buildings\\gu_refinery_h0.xbf"),
+    ("GUWormhead", "Buildings\\gu_wormhead_h0.xbf"),
+    ("GUbubble", "Buildings\\gu_bubble_h0.xbf"),
+    ("Guglasstank", "Buildings\\gu_glasstank_h0.xbf"),
+    ("GUMegaCannon", "Buildings\\in_gu_megacannon_h0.xbf"),
+    ("GUNIAP", "Units\\gu_in_niap_h0.xbf"),
+    ("GUpyramid", "Buildings\\gu_pyramid_h0.xbf"),
+    ("IMADVSardaukar", "Units\\im_advsardaukar_h0.xbf"),
+    ("IMGeneral", "Units\\im_general_h0.xbf"),
+    ("IMMonument", "Buildings\\im_monument_h0.xbf"),
+    ("INBuggy", "Units\\in_buggy_h0.xbf"),
+    ("INFRBiker", "Units\\in_fr_biker_h0.xbf"),
+    ("INGUJackelHouse", "Buildings\\in_gu_jackelhouse_h0.xbf"),
+    ("INIMShed", "Buildings\\in_im_shed_h0.xbf"),
+    ("INIMShed2", "Buildings\\in_im_shed2_h0.xbf"),
+    ("INIXDome", "Buildings\\in_ix_dome_h0.xbf"),
+    ("INIXTower", "Buildings\\in_ix_tower_h0.xbf"),
+    ("INIXTower2", "Buildings\\in_ix_tower2_h0.xbf"),
+    ("INIXTransport", "Units\\in_ix_transport_h0.xbf"),
+    ("INMedicalVehicle", "Units\\in_medical_h0.xbf"),
+    ("INSandCrawler", "Units\\in_sandcrawler_h0.xbf"),
+    ("INTLTransport", "Units\\in_tl_transport_h0.xbf"),
+    ("INTLWalker", "Units\\in_tl_walker_h0.xbf"),
+    ("INTLWindtrap", "Buildings\\in_tl_windtrap_h0.xbf"),
+    ("IXMegaCannon", "Buildings\\in_ix_megacannon_h0.xbf"),
+    ("IXWall", "Buildings\\ix_wall_h0.xbf"),
+    ("IXProjector", "Units\\ix_radar_h0.xbf"),
+    ("IXRefinery", "Buildings\\ix_refinery_h0.xbf"),
+    ("IXScientist", "Units\\ix_scientist_h0.xbf"),
+    ("IXSlave", "Units\\ix_slave_h0.xbf"),
+    ("IXWindtrap", "Buildings\\ix_windtrap_h0.xbf"),
+    ("ORAATrooper", "Units\\or_aatrooper_h0.xbf"),
+    ("ORDeviator", "Units\\or_deviator_h0.xbf"),
+    ("SMQuad", "Units\\sm_quad_h0.xbf"),
+    ("StuntATADVCarryall", "Units\\at_carryall_h0.xbf"),
+    ("TLINGreenhouse", "Buildings\\tl_in_greenhouse_h0.xbf"),
+    ("TLLeech", "Units\\tl_leech_h0.xbf"),
+    ("TLScientist", "Units\\tl_scientist_h0.xbf"),
+    ("TLTurret", "Buildings\\tl_turret_h0.xbf"),
+    ("Whale", "Buildings\\cn_in_whale_h0.xbf"),
+];
+
 const SCENERY: &[(&str, &str)] = &[
     ("AKINDrKynes", "Buildings\\AK_IN_DrKynes_H0.xbf"),
     ("AKINNoddingDonkey", "Buildings\\AK_IN_NoddingDonkey_H0.xbf"),
@@ -627,7 +681,10 @@ const SCENERY: &[(&str, &str)] = &[
     ("CNINATTree2", "Buildings\\CN_IN_ATTree2_H0.xbf"),
     ("CNINATTree3", "Buildings\\CN_IN_ATTree3_H0.xbf"),
     ("CNINATTree4", "Buildings\\CN_IN_ATTree4_H0.xbf"),
-    ("GPSFXGreensmokeNL", "Buildings\\GP_SFX_GreenSmoke_NL_H0.xbf"),
+    (
+        "GPSFXGreensmokeNL",
+        "Buildings\\GP_SFX_GreenSmoke_NL_H0.xbf",
+    ),
     ("GPSFXLavasmoke", "Buildings\\GP_SFX_LavaSmoke_H0.xbf"),
     ("GPSFXLavasmokeNL", "Buildings\\GP_SFX_LavaSmoke_NL_H0.xbf"),
     ("HKINApartments", "Buildings\\HK_IN_Apartments_H0.xbf"),
@@ -1312,6 +1369,7 @@ fn read_shapes(disc: &Path) -> Option<Original> {
     let names = names.chain(WALLS.iter().flat_map(|(_, pieces)| pieces.iter().copied()));
     let names = names.chain([TORNADO]);
     let names = names.chain(SCENERY.iter().map(|&(_, name)| name));
+    let names = names.chain(EXTRAS.iter().map(|&(_, name)| name));
     let names = names.chain(CRATES.iter().map(|&(_, name)| name));
     let shapes: HashMap<_, _> = names
         .filter_map(|name| Some((name, read_shape(&archive, name, &mut pictures)?)))
@@ -1938,6 +1996,11 @@ fn model_name(unit: &Unit) -> Option<&'static str> {
         CONSTRUCTION_YARDS
             .iter()
             .find(|&&(house, _)| house == unit.house)
+            .map(|&(_, name)| name)
+    } else if let Role::Extra(extra) = unit.role {
+        EXTRAS
+            .iter()
+            .find(|&&(rules_name, _)| rules_name == extra.rules_name())
             .map(|&(_, name)| name)
     } else if let Role::Prop(Prop::Scenery(scenery)) = unit.role {
         SCENERY
@@ -3155,6 +3218,21 @@ mod tests {
         };
         for &(rules_name, name) in SCENERY {
             assert!(original.shapes.contains_key(name), "{rules_name}: {name}");
+        }
+    }
+
+    #[test]
+    fn each_extra_kind_has_its_model_on_the_disc_and_is_drawn_with_it() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        for &(rules_name, name) in EXTRAS {
+            assert!(original.shapes.contains_key(name), "{rules_name}: {name}");
+            let (role, _) = Role::named(rules_name).unwrap();
+            let mut unit = Unit::for_test(0.0, 0.0, role.kind());
+            unit.role = role;
+            assert_eq!(model_name(&unit), Some(name), "{rules_name}");
         }
     }
 

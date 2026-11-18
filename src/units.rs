@@ -476,6 +476,115 @@ impl Scenery {
     }
 }
 
+/// A kind of the rules' that the maps and the missions' scripts put down and that has no
+/// part of its own here: the incidental vehicles, folk, beasts and buildings, the sub-houses'
+/// units and buildings, and the like; by its entry in `EXTRAS`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Extra(u8);
+
+/// An extra kind as the original's rules have it, its speed and turn per update as they give
+/// them, and how many cells it covers across and down as its `Occupy` rows do. A great house's
+/// is that house's, a sub-house's none's; an incidental one is nobody's. The rules give the
+/// Fremen biker and the Tleilaxu walker no `Health`: they have the other incidental
+/// vehicles' 1500.
+struct ExtraKind {
+    rules_name: &'static str,
+    name: &'static str,
+    kind: UnitKind,
+    house: Option<Faction>,
+    incidental: bool,
+    health: f32,
+    speed: f32,
+    turn: f32,
+    armour: Armour,
+    view: f32,
+    crushes: bool,
+    weapon: WeaponKind,
+    plot: (i32, i32),
+    roof: f32,
+}
+
+#[rustfmt::skip]
+const EXTRAS: [ExtraKind; 50] = [
+    ExtraKind { rules_name: "INYak", name: "Yak", kind: UnitKind::Vehicle, house: None, incidental: true, health: 500.0, speed: 2.0, turn: 0.05, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "INYakHauder", name: "Yak Hauler", kind: UnitKind::Vehicle, house: None, incidental: true, health: 500.0, speed: 2.0, turn: 0.05, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "INYakRider", name: "Yak Rider", kind: UnitKind::Vehicle, house: None, incidental: true, health: 500.0, speed: 2.0, turn: 0.05, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "ATGeneral", name: "Atreides General", kind: UnitKind::Infantry, house: Some(Faction::Atreides), incidental: false, health: 1000.0, speed: 6.0, turn: 0.2, armour: Armour::Earplugs, view: 7.0, crushes: false, weapon: WeaponKind::Bullet, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "ATMilitia", name: "Militia", kind: UnitKind::Infantry, house: Some(Faction::Atreides), incidental: false, health: 300.0, speed: 6.0, turn: 0.2, armour: Armour::None, view: 7.0, crushes: false, weapon: WeaponKind::Bullet, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "ATSonicTank", name: "Sonic Tank", kind: UnitKind::Vehicle, house: Some(Faction::Atreides), incidental: false, health: 2000.0, speed: 4.0, turn: 0.1, armour: Armour::Medium, view: 4.0, crushes: true, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "ATINBrancastle", name: "Bran Castle", kind: UnitKind::Building, house: None, incidental: true, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (6, 6), roof: 80.0 },
+    ExtraKind { rules_name: "BeaconFlare", name: "Beacon Flare", kind: UnitKind::Building, house: None, incidental: true, health: 3200.0, speed: 0.0, turn: 0.0, armour: Armour::Heavy, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "FakeHarvester", name: "Harvester", kind: UnitKind::Vehicle, house: None, incidental: false, health: 4500.0, speed: 4.0, turn: 0.15, armour: Armour::Harvester, view: 4.0, crushes: true, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "GUNIABTank", name: "NIAB Tank", kind: UnitKind::Vehicle, house: None, incidental: false, health: 3000.0, speed: 12.0, turn: 0.3, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "GURefinery", name: "Guild Refinery", kind: UnitKind::Building, house: None, incidental: false, health: 3000.0, speed: 0.0, turn: 0.0, armour: Armour::Heavy, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (7, 9), roof: 80.0 },
+    ExtraKind { rules_name: "GUWormhead", name: "Worm Head", kind: UnitKind::Building, house: None, incidental: false, health: 50000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (7, 19), roof: 80.0 },
+    ExtraKind { rules_name: "GUbubble", name: "Guild Bubble", kind: UnitKind::Building, house: None, incidental: false, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (3, 5), roof: 80.0 },
+    ExtraKind { rules_name: "Guglasstank", name: "Glass Tank", kind: UnitKind::Building, house: None, incidental: false, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (3, 6), roof: 80.0 },
+    ExtraKind { rules_name: "GUMegaCannon", name: "Mega Cannon", kind: UnitKind::Tower, house: None, incidental: false, health: 2700.0, speed: 0.0, turn: 0.0, armour: Armour::Heavy, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (4, 4), roof: 20.0 },
+    ExtraKind { rules_name: "GUNIAP", name: "NIAP", kind: UnitKind::Aircraft, house: None, incidental: false, health: 1200.0, speed: 6.0, turn: 0.05, armour: Armour::Aircraft, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "GUpyramid", name: "Guild Pyramid", kind: UnitKind::Building, house: None, incidental: false, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (6, 6), roof: 80.0 },
+    ExtraKind { rules_name: "IMADVSardaukar", name: "Elite Sardaukar", kind: UnitKind::Infantry, house: None, incidental: false, health: 1800.0, speed: 7.0, turn: 0.2, armour: Armour::Bpv, view: 12.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "IMGeneral", name: "Imperial General", kind: UnitKind::Infantry, house: None, incidental: false, health: 750.0, speed: 4.0, turn: 0.2, armour: Armour::None, view: 7.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "IMMonument", name: "Monument", kind: UnitKind::Building, house: None, incidental: true, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (4, 4), roof: 80.0 },
+    ExtraKind { rules_name: "INBuggy", name: "Buggy", kind: UnitKind::Vehicle, house: None, incidental: true, health: 1500.0, speed: 3.0, turn: 0.05, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "INFRBiker", name: "Fremen Biker", kind: UnitKind::Vehicle, house: None, incidental: true, health: 1500.0, speed: 12.0, turn: 0.3, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "INGUJackelHouse", name: "Jackal House", kind: UnitKind::Building, house: None, incidental: true, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (3, 2), roof: 80.0 },
+    ExtraKind { rules_name: "INIMShed", name: "Shed", kind: UnitKind::Building, house: None, incidental: true, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (3, 3), roof: 80.0 },
+    ExtraKind { rules_name: "INIMShed2", name: "Shed", kind: UnitKind::Building, house: None, incidental: true, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (3, 3), roof: 80.0 },
+    ExtraKind { rules_name: "INIXDome", name: "Dome", kind: UnitKind::Building, house: None, incidental: true, health: 100.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (3, 3), roof: 80.0 },
+    ExtraKind { rules_name: "INIXTower", name: "Tower", kind: UnitKind::Building, house: None, incidental: true, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (3, 3), roof: 80.0 },
+    ExtraKind { rules_name: "INIXTower2", name: "Tower", kind: UnitKind::Building, house: None, incidental: true, health: 100.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (2, 2), roof: 80.0 },
+    ExtraKind { rules_name: "INIXTransport", name: "Ix Transport", kind: UnitKind::Vehicle, house: None, incidental: true, health: 1500.0, speed: 3.0, turn: 0.05, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "INMedicalVehicle", name: "Medical Vehicle", kind: UnitKind::Vehicle, house: None, incidental: true, health: 1500.0, speed: 4.0, turn: 0.05, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "INSandCrawler", name: "Sand Crawler", kind: UnitKind::Vehicle, house: None, incidental: true, health: 1500.0, speed: 3.0, turn: 0.05, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "INTLTransport", name: "Tleilaxu Transport", kind: UnitKind::Vehicle, house: None, incidental: true, health: 1500.0, speed: 3.0, turn: 0.05, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "INTLWalker", name: "Tleilaxu Walker", kind: UnitKind::Vehicle, house: None, incidental: true, health: 1500.0, speed: 3.0, turn: 0.05, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "INTLWindtrap", name: "Windtrap", kind: UnitKind::Building, house: None, incidental: true, health: 1500.0, speed: 0.0, turn: 0.0, armour: Armour::Building, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (2, 2), roof: 70.0 },
+    ExtraKind { rules_name: "IXMegaCannon", name: "Mega Cannon", kind: UnitKind::Tower, house: None, incidental: false, health: 2700.0, speed: 0.0, turn: 0.0, armour: Armour::Heavy, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (4, 4), roof: 20.0 },
+    ExtraKind { rules_name: "IXWall", name: "Wall", kind: UnitKind::Building, house: None, incidental: false, health: 2000.0, speed: 0.0, turn: 0.0, armour: Armour::Building, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "IXProjector", name: "Projector", kind: UnitKind::Vehicle, house: None, incidental: false, health: 1000.0, speed: 14.0, turn: 0.1, armour: Armour::Light, view: 4.0, crushes: false, weapon: WeaponKind::Bullet, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "IXRefinery", name: "Ix Refinery", kind: UnitKind::Building, house: None, incidental: false, health: 3000.0, speed: 0.0, turn: 0.0, armour: Armour::Building, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (11, 10), roof: 80.0 },
+    ExtraKind { rules_name: "IXScientist", name: "Ix Scientist", kind: UnitKind::Infantry, house: None, incidental: false, health: 700.0, speed: 2.0, turn: 0.2, armour: Armour::None, view: 7.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "IXSlave", name: "Slave", kind: UnitKind::Infantry, house: None, incidental: false, health: 300.0, speed: 2.0, turn: 0.2, armour: Armour::None, view: 7.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "IXWindtrap", name: "Windtrap", kind: UnitKind::Building, house: None, incidental: false, health: 3000.0, speed: 0.0, turn: 0.0, armour: Armour::Building, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (2, 2), roof: 70.0 },
+    ExtraKind { rules_name: "ORAATrooper", name: "AA Trooper", kind: UnitKind::Infantry, house: Some(Faction::Ordos), incidental: false, health: 300.0, speed: 4.0, turn: 0.2, armour: Armour::None, view: 8.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "ORDeviator", name: "Deviator", kind: UnitKind::Vehicle, house: Some(Faction::Ordos), incidental: false, health: 1300.0, speed: 8.0, turn: 0.05, armour: Armour::Light, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "SMQuad", name: "Quad", kind: UnitKind::Vehicle, house: None, incidental: true, health: 1000.0, speed: 6.0, turn: 0.175, armour: Armour::Light, view: 4.0, crushes: false, weapon: WeaponKind::TowerRockets, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "StuntATADVCarryall", name: "Carryall", kind: UnitKind::Vehicle, house: Some(Faction::Atreides), incidental: false, health: 900.0, speed: 17.0, turn: 0.1, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "TLINGreenhouse", name: "Greenhouse", kind: UnitKind::Building, house: None, incidental: true, health: 10.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 0.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (4, 4), roof: 80.0 },
+    ExtraKind { rules_name: "TLLeech", name: "Leech", kind: UnitKind::Vehicle, house: None, incidental: false, health: 1000.0, speed: 14.0, turn: 0.3, armour: Armour::Light, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "TLScientist", name: "Tleilaxu Scientist", kind: UnitKind::Infantry, house: None, incidental: false, health: 700.0, speed: 2.0, turn: 0.2, armour: Armour::None, view: 7.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "TLTurret", name: "Tleilaxu Turret", kind: UnitKind::Tower, house: None, incidental: false, health: 3000.0, speed: 0.0, turn: 0.0, armour: Armour::Heavy, view: 10.0, crushes: false, weapon: WeaponKind::TowerGun, plot: (2, 2), roof: 80.0 },
+    ExtraKind { rules_name: "Whale", name: "Whale", kind: UnitKind::Building, house: None, incidental: true, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+];
+
+impl Extra {
+    /// The extra kind of this name in the rules, if it is one.
+    fn named(name: &str) -> Option<Self> {
+        let at = EXTRAS.iter().position(|kind| kind.rules_name == name)?;
+        Some(Extra(at as u8))
+    }
+
+    fn kind(self) -> &'static ExtraKind {
+        &EXTRAS[usize::from(self.0)]
+    }
+
+    /// What the original's rules call it.
+    pub fn rules_name(self) -> &'static str {
+        self.kind().rules_name
+    }
+
+    /// Whether it is nobody's, as the rules' `Incidental` house is.
+    pub fn is_incidental(self) -> bool {
+        self.kind().incidental
+    }
+
+    /// The great house it is of, if it is one's.
+    pub fn house(self) -> Option<Faction> {
+        self.kind().house
+    }
+}
+
 impl Prop {
     pub const ALL: [Prop; 9] = [
         Prop::Barrel,
@@ -718,6 +827,8 @@ pub enum Role {
     Civilian(Gender),
     /// A Harkonnen officer, unarmed, who guards prisoners.
     HkGeneral,
+    /// One of the rules' other kinds, as the maps and scripts put them down.
+    Extra(Extra),
     /// The Emperor's own soldier, with a heavy machine gun.
     ImSardaukar,
     /// The Tleilaxu's slow walker, that stabs infantry up close.
@@ -905,6 +1016,7 @@ impl Plot {
 impl Role {
     pub fn kind(self) -> UnitKind {
         match self {
+            Role::Extra(extra) => extra.kind().kind,
             Role::AtInfantry
             | Role::Scout
             | Role::AtSniper
@@ -976,6 +1088,7 @@ impl Role {
 
     pub fn name(self) -> &'static str {
         match self {
+            Role::Extra(extra) => extra.kind().name,
             Role::AtInfantry => "Infantry",
             Role::Scout => "Scout",
             Role::AtSniper => "Sniper",
@@ -1049,6 +1162,7 @@ impl Role {
 
     fn weapon(self) -> WeaponKind {
         match self {
+            Role::Extra(extra) => extra.kind().weapon,
             Role::AtInfantry
             | Role::HkLightInf
             | Role::AtTrike
@@ -1114,6 +1228,7 @@ impl Role {
     /// given with `InfRock`, larger, that it is not known what for; its first is taken.
     fn view_range(self) -> f32 {
         match self {
+            Role::Extra(extra) => extra.kind().view,
             Role::Scout => 20.0,
             Role::AtSniper => 15.0,
             Role::OrGasTurret => 14.0,
@@ -1140,6 +1255,7 @@ impl Role {
     /// its Atreides outpost 100.
     fn max_health(self) -> f32 {
         match self {
+            Role::Extra(extra) => extra.kind().health,
             Role::Scout => 200.0,
             Role::Engineer => 400.0,
             Role::AtInfantry
@@ -1187,6 +1303,7 @@ impl Role {
     /// original's `Armour`.
     pub fn armour(self) -> Armour {
         match self {
+            Role::Extra(extra) => extra.kind().armour,
             Role::HkFlamer | Role::ImSardaukar => Armour::Bpv,
             Role::FrFremen | Role::FrAdvFremen => Armour::Earplugs,
             _ if self.kind() == UnitKind::Infantry => Armour::None,
@@ -1256,6 +1373,7 @@ impl Role {
             Role::OrEits => 7.0,
             Role::OrAdp => 6.0,
             Role::HkAdp => 2.0,
+            Role::Extra(extra) => extra.kind().speed,
             _ => 0.0,
         };
         per_update * UPDATES_PER_SECOND
@@ -1270,6 +1388,7 @@ impl Role {
             Role::HkDevastator | Role::AtMinotaurus | Role::Harvester => 0.15,
             Role::OrLaserTank | Role::Carryall | Role::AdvCarryall => 0.1,
             Role::OrApc | Role::AtOrni | Role::AtAdp | Role::HkGunship => 0.05,
+            Role::Extra(extra) => extra.kind().turn,
             _ => 0.175,
         };
         per_update * UPDATES_PER_SECOND
@@ -1278,6 +1397,8 @@ impl Role {
     /// How long it takes its building to make it, in seconds.
     pub fn build_seconds(self) -> f32 {
         match self {
+            // Nobody makes one.
+            Role::Extra(_) => 0.0,
             Role::Scout => 3.0,
             Role::AtInfantry | Role::Engineer => 4.0,
             Role::HkFlamer | Role::OrChemical | Role::HkLightInf | Role::OrSaboteur => 5.0,
@@ -1325,6 +1446,7 @@ impl Role {
     /// What it costs to make, in credits, paid bit by bit while it is being made.
     pub fn cost(self) -> i32 {
         match self {
+            Role::Extra(_) => 0,
             Role::Scout => 40,
             Role::AtInfantry | Role::HkLightInf => 50,
             Role::HkFlamer | Role::OrChemical => 80,
@@ -1400,7 +1522,16 @@ impl Role {
     /// Whether a side with nothing else left still stands while it has one: not so a wall, as
     /// the original's `ExcludeFromSkirmishLose`.
     pub fn counts_for_losing(self) -> bool {
-        !matches!(self, Role::Wall | Role::Windtrap | Role::Prop(_))
+        !matches!(self, Role::Wall | Role::Windtrap | Role::Prop(_)) && !self.is_incidental()
+    }
+
+    /// Whether it is nobody's: a prop or an extra kind of no side's, as a map puts it down.
+    pub fn is_incidental(self) -> bool {
+        match self {
+            Role::Prop(prop) => prop.is_incidental(),
+            Role::Extra(extra) => extra.is_incidental(),
+            _ => false,
+        }
     }
 
     /// How much power one makes, as the original's `PowerGenerated`.
@@ -1653,6 +1784,7 @@ impl Role {
             (Role::Helipad, _) => (2, 3),
             (Role::Wall, _) => (1, 1),
             (Role::Prop(prop), house) => prop.plot_size(house),
+            (Role::Extra(extra), _) => extra.kind().plot,
             (Role::Starport, Ordos) => (9, 8),
             (Role::Starport, _) => (9, 7),
             // Deployed, as big as the original's construction yard.
@@ -1689,6 +1821,7 @@ impl Role {
             (Role::Wall, _) => 48.0,
             (Role::Windtrap | Role::Starport, _) => 70.0,
             (Role::Mcv, _) => 107.0,
+            (Role::Extra(extra), _) => extra.kind().roof,
             _ => 100.0,
         }
     }
@@ -1715,6 +1848,12 @@ impl Role {
                 .into_iter()
                 .find(|&house| name.starts_with(house_letters(house)));
             return Some((Role::Prop(prop), house.unwrap_or(Faction::Harkonnen)));
+        }
+        if let Some(extra) = Extra::named(name) {
+            return Some((
+                Role::Extra(extra),
+                extra.house().unwrap_or(Faction::Harkonnen),
+            ));
         }
         // A mission's own of a kind, such as its `StoryFRFremen`, is that kind.
         let name = name.strip_prefix("Story").unwrap_or(name);
@@ -1756,6 +1895,15 @@ impl Role {
     /// it is. Infantry with no such box have their figure's height and a usual breadth.
     pub fn original_size(self, house: Faction) -> [f32; 3] {
         match self {
+            Role::Extra(extra) if self.kind().is_building() => {
+                let (cols, rows) = extra.kind().plot;
+                [
+                    cols as f32 * CELL_SIDE,
+                    extra.kind().roof,
+                    rows as f32 * CELL_SIDE,
+                ]
+            }
+            Role::Extra(_) => [1.0, 1.0, 1.0],
             Role::Prop(prop) => {
                 let (cols, rows) = prop.plot_size(house);
                 [
@@ -1905,7 +2053,7 @@ impl Role {
             // Risen, with its gun out.
             Role::OrGasTurret => [1.0, 0.645, 1.0],
             Role::OrPopUpTurret => [1.0, 0.63, 1.0],
-            Role::Wall | Role::Prop(_) => [1.0, 1.0, 1.0],
+            Role::Wall | Role::Prop(_) | Role::Extra(_) => [1.0, 1.0, 1.0],
             Role::Windtrap => [1.0, 1.4, 1.0],
             // The plain block drawn for a building with no model of its own.
             Role::Starport => [2.2, 0.86, 1.824],
@@ -2088,7 +2236,7 @@ impl Role {
                 | Role::AtMongoose
                 | Role::AtMinotaurus
                 | Role::OrKobra
-        )
+        ) || matches!(self, Role::Extra(extra) if extra.kind().crushes)
     }
 
     #[cfg(test)]
@@ -11424,6 +11572,41 @@ mod tests {
             "nobody's enemy"
         );
         assert!(!barrel.role.counts_for_losing());
+    }
+
+    #[test]
+    fn the_rules_other_kinds_are_known_by_their_names_with_the_rules_values() {
+        let role = |name: &str| Role::named(name).unwrap().0;
+        let yak = role("INYak");
+        assert_eq!(yak.name(), "Yak");
+        assert_eq!(yak.kind(), UnitKind::Vehicle);
+        assert!(yak.is_incidental() && !yak.counts_for_losing());
+        assert_eq!(yak.max_health(), 500.0);
+        assert_eq!(yak.speed(Faction::Harkonnen), 2.0 * UPDATES_PER_SECOND);
+        assert_eq!(yak.armour(), Armour::Medium);
+        assert_eq!(yak.weapon(), WeaponKind::Unarmed);
+        assert_eq!(role("INYakHauder").name(), "Yak Hauler");
+
+        let sonic = role("ATSonicTank");
+        assert_eq!(Role::named("ATSonicTank").unwrap().1, Faction::Atreides);
+        assert!(sonic.crushes() && !sonic.is_incidental() && sonic.counts_for_losing());
+        assert_eq!(sonic.max_health(), 2000.0);
+        assert_eq!(role("ORAATrooper").kind(), UnitKind::Infantry);
+        assert_eq!(role("GUNIAP").kind(), UnitKind::Aircraft);
+        assert_eq!(role("TLTurret").kind(), UnitKind::Tower);
+        assert_eq!(role("TLTurret").weapon(), WeaponKind::TowerGun);
+        assert_eq!(role("ATMilitia").weapon(), WeaponKind::Bullet);
+
+        let refinery = role("IXRefinery");
+        assert_eq!(refinery.kind(), UnitKind::Building);
+        assert_eq!(refinery.plot_size(Faction::Harkonnen), (11, 10));
+        assert!(!refinery.is_incidental(), "the Ix's");
+        assert_eq!(role("INTLWindtrap").roof_height(Faction::Harkonnen), 70.0);
+        assert_eq!(role("INFRBiker").max_health(), 1500.0, "none in the rules");
+        assert_eq!(
+            Role::named("INMaleCiv").unwrap().0,
+            Role::Civilian(Gender::Male)
+        );
     }
 
     #[test]

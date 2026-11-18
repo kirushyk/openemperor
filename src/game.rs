@@ -4394,8 +4394,10 @@ impl Game {
             let Some((role, house)) = Role::named(&object.name) else {
                 continue;
             };
+            // A sub-house's, of no great house, is the enemy's.
             let owner = match role {
-                Role::Prop(prop) if prop.is_incidental() => units::NEUTRAL,
+                _ if role.is_incidental() => units::NEUTRAL,
+                Role::Extra(extra) if extra.house().is_none() => 1,
                 _ => usize::from(house != player),
             };
             let color = match self.stats_rows().get(owner) {

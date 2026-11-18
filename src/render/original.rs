@@ -12,7 +12,7 @@ use crate::battlefield::{self, CELL_SIDE, Terrain, View};
 use crate::fog::Fog;
 use crate::game::{CursorLook, Faction};
 use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
-use crate::units::{Harvest, Role, Unit, UnitKind, WallPiece, Wound};
+use crate::units::{Harvest, Prop, Role, Unit, UnitKind, WallPiece, Wound};
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
 pub(super) use crate::xbf::{point, times};
@@ -181,6 +181,47 @@ const MODELS: &[(Role, Option<Faction>, &str)] = {
             "Buildings\\HK_Windtrap_H0.XBF",
         ),
         (Role::Windtrap, Some(Ordos), "Buildings\\or_windtrap_H0.XbF"),
+        (
+            Role::Prop(Prop::Barrel),
+            None,
+            "Buildings\\IN_barrel_h0.xbf",
+        ),
+        (Role::Prop(Prop::Drum), None, "Buildings\\IN_barrel1_h0.xbf"),
+        (
+            Role::Prop(Prop::FactoryFrigate),
+            None,
+            "Buildings\\HK_FactoryFrigate_H0.xbf",
+        ),
+        (
+            Role::Prop(Prop::Spotlight),
+            None,
+            "Buildings\\GP_IN_Spotlight_H0.xbf",
+        ),
+        (
+            Role::Prop(Prop::GreenSmoke),
+            None,
+            "Buildings\\GP_SFX_GreenSmoke_H0.xbf",
+        ),
+        (
+            Role::Prop(Prop::CrawlerWreck),
+            None,
+            "Buildings\\IN_SandCrawlerWreck_h0.xbf",
+        ),
+        (
+            Role::Prop(Prop::HarvesterWreck),
+            None,
+            "Buildings\\IN_HarvesterWreck_h0.xbf",
+        ),
+        (
+            Role::Prop(Prop::BuggyWreck),
+            None,
+            "Buildings\\IN_BuggyWreck_h0.xbf",
+        ),
+        (
+            Role::Prop(Prop::HungFigure),
+            None,
+            "Buildings\\AK_IN_hungfigure2_H0.xbf",
+        ),
         (
             Role::Starport,
             Some(Atreides),

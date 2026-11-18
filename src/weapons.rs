@@ -148,6 +148,10 @@ pub const OR_SABOTEUR_BLAST_RADIUS: f32 = 144.8;
 /// InfiltratorDeath, the same all the way out.
 const OR_SABOTEUR_BOMB: Bullet = Bullet::new(3000, Warhead::Howitzer, 0);
 const IX_INFILTRATOR_BOMB: Bullet = Bullet::new(1500, Warhead::Howitzer, 0);
+/// What a barrel does when it goes up: the original's `BarrelBomb`, whose warhead hurts
+/// everything alike, as far out as its `BlastRadius` of 128 of the original's units.
+const BARREL_BOMB: Bullet = Bullet::new(5000, Warhead::Whole, 0);
+const BARREL_BLAST_RADIUS: f32 = 193.1;
 /// How far ahead of a buzzsaw's middle its blade spins, how far it reaches from there, and
 /// how much it harms the infantry it cuts each second.
 pub const SAW_AHEAD: f32 = 0.42;
@@ -1645,6 +1649,7 @@ impl Combat {
         for _ in 0..steps {
             self.step(units, teams, terrain, step_seconds);
         }
+        self.set_off_barrels(units, teams);
         self.work_eruptions(dt);
         self.show_wear(units, dt);
         self.fall_wrecks(terrain, dt);
@@ -2439,6 +2444,30 @@ impl Combat {
             z,
             life: POISON_SECONDS,
         });
+    }
+
+    /// Every barrel destroyed blows up, harming whatever stands around it, friend or foe, and
+    /// setting off the barrels next to it in turn. Units killed are not cleared away till
+    /// after, so each one dead now died since it was last called.
+    fn set_off_barrels(&mut self, units: &mut [Unit], teams: &[usize]) {
+        let is_barrel = |unit: &Unit| matches!(unit.role, Role::Prop(prop) if prop.blows_up());
+        let mut blown = vec![false; units.len()];
+        while let Some(i) =
+            (0..units.len()).find(|&i| !blown[i] && !units[i].alive && is_barrel(&units[i]))
+        {
+            blown[i] = true;
+            let center = units[i].center();
+            let mut shooter = Shooter::of(&units[i]);
+            shooter.bullet = BARREL_BOMB;
+            for index in 0..units.len() {
+                let away = distance(center, units[index].center()) - units[index].radius();
+                if units[index].alive && away <= BARREL_BLAST_RADIUS {
+                    let damage = shooter.damage_to(units[index].armour());
+                    harm(units, index, damage, shooter, teams);
+                }
+            }
+            self.explode(center, BARREL_BLAST_RADIUS);
+        }
     }
 
     /// A deployed saboteur, or an Ixian infiltrator with the same bomb, blows up, harming
@@ -4129,6 +4158,42 @@ mod tests {
             crate::units::turn_between(towards, heading + 2.5).abs() < 0.3,
             "it fires from the cannon's end, swung round"
         );
+    }
+
+    #[test]
+    fn a_barrel_shot_to_pieces_blows_up_setting_off_the_next_and_hurting_what_is_near() {
+        let barrel = |x: f32, id: u32| {
+            let mut barrel = as_role(Role::Prop(crate::units::Prop::Barrel), x, 2715.0);
+            barrel.health = barrel.max_health();
+            barrel.owner = crate::units::NEUTRAL;
+            barrel.id = id;
+            barrel
+        };
+        let mut tank = target_at(150.0, 2715.0);
+        tank.role = Role::HkAssault;
+        tank.kind = UnitKind::Vehicle;
+        tank.health = tank.max_health();
+        let far = target_at(2000.0, 2715.0);
+        let mut units = [barrel(0.0, 10), barrel(100.0, 11), tank, far];
+        hurt(&mut units[0], f32::INFINITY);
+        let mut combat = Combat::default();
+        combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        assert!(!units[1].alive, "the barrel beside it went up too");
+        assert!(
+            units[2].health < units[2].max_health(),
+            "the tank near them is hurt"
+        );
+        assert_eq!(
+            units[3].health,
+            units[3].max_health(),
+            "what is far off is not"
+        );
+        assert!(!combat.blasts.is_empty());
+        // As the game does, the dead are cleared away before the next.
+        let mut left: Vec<Unit> = units.into_iter().filter(|u| u.alive).collect();
+        let before = combat.blasts.len();
+        combat.advance(&mut left, &TEAMS, flat(), 0.05);
+        assert!(combat.blasts.len() <= before, "each goes up once");
     }
 
     #[test]

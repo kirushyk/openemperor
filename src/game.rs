@@ -4179,7 +4179,7 @@ impl Game {
 
     /// Puts down what the battle's map has standing on it from the start, of what we know: its
     /// walls, buildings and units, each the player's if of the player's house and the enemy's
-    /// if not, and its crates of money.
+    /// if not; its barrels, wrecks and such, which are nobody's; and its crates of money.
     fn place_map_objects(&mut self) {
         let terrain = battlefield::terrain(self.battle_map);
         let player = self.faction_of(0);
@@ -4198,9 +4198,14 @@ impl Game {
             let Some((role, house)) = Role::named(&object.name) else {
                 continue;
             };
-            let owner = usize::from(house != player);
-            let Some(color) = self.stats_rows().get(owner).map(|row| row.color) else {
-                continue;
+            let owner = match role {
+                Role::Prop(prop) if prop.is_incidental() => units::NEUTRAL,
+                _ => usize::from(house != player),
+            };
+            let color = match self.stats_rows().get(owner) {
+                Some(row) => row.color,
+                None if owner == units::NEUTRAL => TeamColor::Yellow,
+                None => continue,
             };
             let dug_in = object.name.ends_with(CONSTRUCTION_YARD);
             let facing = Some(Facing::numbered(object.facing));

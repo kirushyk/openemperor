@@ -355,6 +355,109 @@ const ALL_ROLES: [Role; 61] = [
     Role::GuMaker,
 ];
 
+/// Who owns what is no side's, as a map's barrels and wrecks: no side's index, so nobody's
+/// friend or enemy. It is attacked only when ordered to.
+pub const NEUTRAL: usize = 15;
+
+/// What a map has standing on it besides the sides' bases: the original's incidentals, which
+/// are no side's, and the factory frigates that have come down on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prop {
+    Barrel,
+    Drum,
+    FactoryFrigate,
+    Spotlight,
+    GreenSmoke,
+    CrawlerWreck,
+    HarvesterWreck,
+    BuggyWreck,
+    HungFigure,
+}
+
+impl Prop {
+    pub const ALL: [Prop; 9] = [
+        Prop::Barrel,
+        Prop::Drum,
+        Prop::FactoryFrigate,
+        Prop::Spotlight,
+        Prop::GreenSmoke,
+        Prop::CrawlerWreck,
+        Prop::HarvesterWreck,
+        Prop::BuggyWreck,
+        Prop::HungFigure,
+    ];
+
+    /// What the original's rules call it.
+    pub fn rules_name(self) -> &'static str {
+        match self {
+            Prop::Barrel => "INBarrel1",
+            Prop::Drum => "INBarrel2",
+            Prop::FactoryFrigate => "HKFactoryFrigate",
+            Prop::Spotlight => "GPINSpotlight",
+            Prop::GreenSmoke => "GPSFXGreensmoke",
+            Prop::CrawlerWreck => "INSandCrawlerWreck",
+            Prop::HarvesterWreck => "INHarvesterWreck",
+            Prop::BuggyWreck => "INBuggyWreck",
+            Prop::HungFigure => "AKINhungfigure2",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Prop::Barrel | Prop::Drum => "Barrel",
+            Prop::FactoryFrigate => "Factory Frigate",
+            Prop::Spotlight => "Spotlight",
+            Prop::GreenSmoke => "Smoke",
+            Prop::CrawlerWreck | Prop::HarvesterWreck | Prop::BuggyWreck => "Wreck",
+            Prop::HungFigure => "Hanged Figure",
+        }
+    }
+
+    /// The original's `Health` for it.
+    fn health(self) -> f32 {
+        match self {
+            Prop::Barrel | Prop::Drum => 10.0,
+            Prop::FactoryFrigate => 1500.0,
+            Prop::Spotlight => 3000.0,
+            Prop::GreenSmoke => 100_000.0,
+            Prop::CrawlerWreck | Prop::HarvesterWreck | Prop::BuggyWreck => 2000.0,
+            Prop::HungFigure => 1000.0,
+        }
+    }
+
+    /// The squares it stands on across and deep, as the original's `Occupy` has them.
+    fn plot_size(self) -> (i32, i32) {
+        match self {
+            Prop::FactoryFrigate => (18, 6),
+            Prop::Spotlight | Prop::CrawlerWreck | Prop::HarvesterWreck | Prop::BuggyWreck => {
+                (2, 2)
+            }
+            Prop::Barrel | Prop::Drum | Prop::GreenSmoke | Prop::HungFigure => (1, 1),
+        }
+    }
+
+    /// How tall it is, in the original's coordinates: its `RoofHeight` where it has one.
+    fn roof_height(self) -> f32 {
+        match self {
+            Prop::FactoryFrigate => 145.0,
+            Prop::Spotlight | Prop::CrawlerWreck | Prop::HarvesterWreck | Prop::BuggyWreck => 80.0,
+            Prop::HungFigure => 60.0,
+            Prop::Barrel | Prop::Drum | Prop::GreenSmoke => 30.0,
+        }
+    }
+
+    /// Whether it blows up when destroyed, as the original's barrels do with their
+    /// `BarrelBomb`.
+    pub fn blows_up(self) -> bool {
+        matches!(self, Prop::Barrel | Prop::Drum)
+    }
+
+    /// Whether it is no side's: all but a frigate, which is its house's.
+    pub fn is_incidental(self) -> bool {
+        self != Prop::FactoryFrigate
+    }
+}
+
 /// What a unit is, beyond how it moves: this names it and decides what it starts with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -467,6 +570,8 @@ pub enum Role {
     Palace(Faction),
     /// One square of wall, joined to the walls beside it.
     Wall,
+    /// Something standing on a map that nobody builds.
+    Prop(Prop),
     /// Makes the power the other buildings use.
     Windtrap,
     /// Where what is ordered from off the planet is set down.
@@ -733,6 +838,7 @@ impl Role {
             | Role::ImBarracks
             | Role::FrCamp
             | Role::Wall
+            | Role::Prop(_)
             | Role::Windtrap
             | Role::Starport => UnitKind::Building,
         }
@@ -797,6 +903,7 @@ impl Role {
             Role::ImBarracks => "Sardaukar Barracks",
             Role::FrCamp => "Fremen Camp",
             Role::Wall => "Wall",
+            Role::Prop(prop) => prop.name(),
             Role::Windtrap => "Windtrap",
             Role::Starport => "Starport",
             Role::FrFremen => "Fremen Warrior",
@@ -839,6 +946,7 @@ impl Role {
             | Role::ImBarracks
             | Role::FrCamp
             | Role::Wall
+            | Role::Prop(_)
             | Role::Windtrap
             | Role::Starport
             | Role::IxInfiltrator => WeaponKind::Unarmed,
@@ -886,6 +994,7 @@ impl Role {
             Role::OrChemical => 575.0,
             Role::ImSardaukar => 900.0,
             Role::TlContaminator | Role::GuMaker | Role::Wall => 1000.0,
+            Role::Prop(prop) => prop.health(),
             Role::Windtrap => 1500.0,
             Role::HkAssault => 2400.0,
             Role::AtRepairUnit | Role::HkMissile | Role::OrAdp | Role::OrDustScout => 1100.0,
@@ -1038,6 +1147,7 @@ impl Role {
             Role::Factory | Role::Hanger => 20.0,
             // A square at a time: the original's 60 against a pillbox's 309.
             Role::Wall => 1.5,
+            Role::Prop(_) => 0.0,
             // The original's 240 against a pillbox's 309.
             Role::Windtrap => 6.0,
             // The original's 720, as the refinery's.
@@ -1092,6 +1202,7 @@ impl Role {
             Role::ImBarracks => 700,
             Role::FrCamp => 600,
             Role::Wall => 20,
+            Role::Prop(_) => 0,
             Role::Windtrap => 225,
             Role::Starport => 1500,
             Role::FrFremen => 150,
@@ -1122,7 +1233,7 @@ impl Role {
     /// Whether a side with nothing else left still stands while it has one: not so a wall, as
     /// the original's `ExcludeFromSkirmishLose`.
     pub fn counts_for_losing(self) -> bool {
-        !matches!(self, Role::Wall | Role::Windtrap)
+        !matches!(self, Role::Wall | Role::Windtrap | Role::Prop(_))
     }
 
     /// How much power one makes, as the original's `PowerGenerated`.
@@ -1367,6 +1478,7 @@ impl Role {
             (Role::FrCamp, _) => (6, 6),
             (Role::Helipad, _) => (2, 3),
             (Role::Wall, _) => (1, 1),
+            (Role::Prop(prop), _) => prop.plot_size(),
             (Role::Starport, Ordos) => (9, 8),
             (Role::Starport, _) => (9, 7),
             // Deployed, as big as the original's construction yard.
@@ -1424,6 +1536,12 @@ impl Role {
     /// front is the Atreides'.
     pub fn named(name: &str) -> Option<(Role, Faction)> {
         const HOUSES: [Faction; 3] = [Faction::Atreides, Faction::Harkonnen, Faction::Ordos];
+        if let Some(prop) = Prop::ALL.into_iter().find(|prop| prop.rules_name() == name) {
+            let house = HOUSES
+                .into_iter()
+                .find(|&house| name.starts_with(house_letters(house)));
+            return Some((Role::Prop(prop), house.unwrap_or(Faction::Harkonnen)));
+        }
         let name = name.replace("SmWindtrap", "Windtrap");
         let house_of = |name: &str| {
             HOUSES
@@ -1457,6 +1575,14 @@ impl Role {
     /// it is. Infantry with no such box have their figure's height and a usual breadth.
     pub fn original_size(self, house: Faction) -> [f32; 3] {
         match self {
+            Role::Prop(prop) => {
+                let (cols, rows) = prop.plot_size();
+                [
+                    cols as f32 * CELL_SIDE,
+                    prop.roof_height(),
+                    rows as f32 * CELL_SIDE,
+                ]
+            }
             Role::AtInfantry => [14.0, 35.0, 14.0],
             Role::Scout => [14.0, 36.3, 14.0],
             Role::AtSniper => [14.0, 32.4, 14.0],
@@ -1593,7 +1719,7 @@ impl Role {
             // Risen, with its gun out.
             Role::OrGasTurret => [1.0, 0.645, 1.0],
             Role::OrPopUpTurret => [1.0, 0.63, 1.0],
-            Role::Wall => [1.0, 1.0, 1.0],
+            Role::Wall | Role::Prop(_) => [1.0, 1.0, 1.0],
             Role::Windtrap => [1.0, 1.4, 1.0],
             // The plain block drawn for a building with no model of its own.
             Role::Starport => [2.2, 0.86, 1.824],
@@ -2687,7 +2813,7 @@ impl Unit {
             && other.alive
             && !other.hidden_from(self.owner, teams)
             && self.has_rockets()
-            && are_enemies(teams, self.owner, other.owner)
+            && (are_enemies(teams, self.owner, other.owner) || other.owner == NEUTRAL)
             && self.weapon.goes_for(other.kind)
             && self.can_aim_at(other.height_as_target())
     }
@@ -3634,8 +3760,9 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
 
 /// Puts a mission script's unit or building on the map for a side, and says its id: a
 /// building where it is put, dug in if it is a construction yard, an MCV dug in; a unit at
-/// the free spot nearest. Facing a way, a building stands as the original puts one: across,
-/// its middle at the point, and its front row on it, the rest behind; a unit looks that way.
+/// the free spot nearest. Facing a way, a building stands as the original puts one: its front
+/// row on the point, the rest behind, running to one side of it, a construction yard to both;
+/// a unit looks that way.
 pub fn put(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
@@ -3650,9 +3777,15 @@ pub fn put(
     let spot = if stands {
         let (cols, rows) = role.plot_size(house);
         let facing = facing.unwrap_or_default();
-        // Its middle from the point: half a square off across for an even width, and half
-        // its depth back from its front row.
-        let across = (cols - 1) as f32 / 2.0 - (cols / 2) as f32;
+        // Its middle from the point: its squares run from the point to its right as it faces,
+        // a factory frigate's along its compound; a construction yard, an MCV dug in, has the
+        // point in its middle across, between the walls the first one stands in. Its depth
+        // runs back from its front row.
+        let across = if dug_in {
+            (cols - 1) as f32 / 2.0 - (cols / 2) as f32
+        } else {
+            -(cols - 1) as f32 / 2.0
+        };
         let back = (rows - 1) as f32 / 2.0;
         let (dx, dz) = facing.turned((across * CELL_SIDE, -back * CELL_SIDE));
         (at.0 + dx, at.1 + dz)
@@ -10812,6 +10945,37 @@ mod tests {
     }
 
     #[test]
+    fn a_maps_props_are_known_by_the_rules_names_and_are_attacked_only_when_ordered() {
+        assert_eq!(
+            Role::named("INBarrel1"),
+            Some((Role::Prop(Prop::Barrel), Faction::Harkonnen))
+        );
+        assert_eq!(
+            Role::named("HKFactoryFrigate"),
+            Some((Role::Prop(Prop::FactoryFrigate), Faction::Harkonnen))
+        );
+        assert!(Prop::Barrel.blows_up() && !Prop::BuggyWreck.blows_up());
+        assert!(!Prop::FactoryFrigate.is_incidental(), "its house's");
+        assert_eq!(
+            Role::Prop(Prop::FactoryFrigate).plot_size(Faction::Harkonnen),
+            (18, 6)
+        );
+        let teams = [0, 1];
+        let mut rifle = Unit::for_test(0.0, 0.0, UnitKind::Infantry);
+        rifle.role = Role::AtInfantry;
+        rifle.weapon = WeaponKind::Pistol;
+        let mut barrel = Unit::for_test(30.0, 0.0, UnitKind::Building);
+        barrel.role = Role::Prop(Prop::Barrel);
+        barrel.owner = NEUTRAL;
+        assert!(rifle.can_attack(&barrel, &teams), "when ordered to");
+        assert!(
+            !are_enemies(&teams, rifle.owner, barrel.owner),
+            "nobody's enemy"
+        );
+        assert!(!barrel.role.counts_for_losing());
+    }
+
+    #[test]
     fn a_scripted_building_stands_with_its_front_row_on_its_point_and_faces_its_way() {
         // The Atreides' first construction yard: at its base's point, facing the way out along
         // -x, inside walls that close it in from tile 1 to 7 along x and -3 to 3 along z.
@@ -10842,6 +11006,14 @@ mod tests {
             (x + 1.0).abs() < 1e-6 && z.abs() < 1e-6,
             "out of the open side"
         );
+        // The factory frigate of its map's compound, at square 87 by 7 facing out along -z, runs
+        // along the compound to square 104 and back from its front row.
+        let at = grid_to_world(87.5, 7.5);
+        let frigate = (Role::Prop(Prop::FactoryFrigate), Faction::Harkonnen);
+        let facing = (false, Some(Facing::numbered(2)));
+        put(&mut units, &terrain, at, frigate, side, facing, 1).unwrap();
+        let plot = units[1].plot().unwrap();
+        assert_eq!((plot.u, plot.v, plot.cols, plot.rows), (87, 7, 18, 6));
     }
 
     #[test]
@@ -10873,10 +11045,5 @@ mod tests {
         for (name, role, house) in cases {
             assert_eq!(Role::named(name), Some((role, house)), "{name}");
         }
-        assert_eq!(
-            Role::named("INBarrel1"),
-            None,
-            "fuel barrels are not ours yet"
-        );
     }
 }

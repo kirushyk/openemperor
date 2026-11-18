@@ -270,10 +270,21 @@ straight on without the disc, then starts its first battle on the original's map
 
 - **The first battle's script** (`ATStart.tok`, see `tok-format.md`) runs: both bases as it
   builds them, its reinforcements and attack waves when it brings them, the Mentat's lines,
-  and its victory once the palace, outpost and hangar are destroyed. Not yet: the fuel
-  barrels (there are none of ours), what its unknown functions do (the camera pointing at a
-  wave, the attack orders of the waves, the veterancy it gives units), its sides as sides of
-  their own (they all fight as one enemy), and how long an update is (taken as 0.1 s).
+  and its victory once the palace, outpost and hangar are destroyed. Its barrels blow up
+  when shot (the original's `BarrelBomb`). Not yet: what its unknown functions do (the camera
+  pointing at a wave, the attack orders of the waves, the veterancy it gives units), its sides
+  as sides of their own (they all fight as one enemy), and how long an update is (taken as
+  0.1 s).
+- **What a map has standing on it**, listed in part `0xa0000007` of its `test.xbf` (name,
+  square, facing), is put down for a scripted battle: walls, buildings and units of the
+  sides by house, money crates, and of the rest the barrels, wrecks, spotlights, green smoke,
+  a hanged figure and the Harkonnen factory frigate of the first battle. The rest of the
+  campaign maps' kinds (towns, trees, the Fremen camps' tents, other crates such as the
+  Sardaukar's, which hold a unit) are left out, and battles without a script get none. The
+  two bytes after a square's column are not known; they run 0 to 3. A building stands with
+  its front row on its point and its squares running to one side, a construction yard to
+  both; worked out from the first battle's yard and frigate and their walls, not from the
+  original's code.
 - **Mission scripts** of later battles are not run either: each is fought on the
   original's map for it as a skirmish is, against the house it is against.
 

@@ -26,9 +26,6 @@ const SLIVER: f32 = 1e-3;
 const STANDING: f32 = 2.0;
 /// What starts the name of an object that only marks a place.
 const MARKER: char = '#';
-/// The storm clouds over Arrakis, which come out as blocks with what is read of them: left
-/// out until that is understood.
-const CLOUDS: &str = "cloud";
 /// What in front of a picture's name says it is light, added to what is behind it.
 const LIGHT: [char; 2] = ['%', '!'];
 
@@ -47,6 +44,11 @@ struct Face {
     corners: [[f32; 3]; 3],
     uv: [[f32; 2]; 3],
     picture: usize,
+    /// How far its picture slides over it each frame, as the model's slides have its part's:
+    /// the script on the bands, the clouds and Arrakis turning.
+    slide: [f32; 2],
+    /// The middle of the round shell it is part of, if it is, as Arrakis and its clouds are.
+    shell: Option<[f32; 3]>,
 }
 
 /// A part of the scene that moves: its faces as it is made, how it stands at each frame, and
@@ -144,7 +146,7 @@ fn build(
         }));
     }
     for (object, above) in roots {
-        gather(object, &above, &mut scene);
+        gather(object, &above, &model.slides, &mut scene);
     }
     (!scene.still.is_empty() || !scene.moving.is_empty()).then_some(scene)
 }
@@ -165,9 +167,14 @@ fn tile(image: &Image, tiles: usize, (across, down): (usize, usize)) -> Vec<u8> 
 
 /// Adds an object's faces to the scene, and those of what sits in it: where they stand if
 /// nothing moves them, or else as a moving part of their own.
-fn gather(object: &Object, above: &[[f32; 4]; 4], scene: &mut Scene) {
+fn gather(object: &Object, above: &[[f32; 4]; 4], slides: &[xbf::Slide], scene: &mut Scene) {
     let world = times(&affine(&object.transform), above);
-    if !object.name.starts_with(MARKER) && object.name != CLOUDS {
+    let slide = slides
+        .iter()
+        .find(|slide| slide.part == object.name)
+        .map_or([0.0; 2], |slide| slide.step);
+    if !object.name.starts_with(MARKER) {
+        let shell = shell_middle(object);
         let faces = object.faces.iter().filter_map(|face| {
             let picture = face.texture?;
             scene.pictures.get(picture)?.as_ref()?;
@@ -176,6 +183,8 @@ fn gather(object: &Object, above: &[[f32; 4]; 4], scene: &mut Scene) {
                 corners: [corner(0)?, corner(1)?, corner(2)?],
                 uv: face.uv,
                 picture,
+                slide,
+                shell,
             })
         });
         match &object.animation {
@@ -186,13 +195,66 @@ fn gather(object: &Object, above: &[[f32; 4]; 4], scene: &mut Scene) {
             }),
             _ => scene.still.extend(faces.map(|face| Face {
                 corners: face.corners.map(|corner| point(&world, corner)),
+                shell: face.shell.map(|middle| point(&world, middle)),
                 ..face
             })),
         }
     }
     for child in &object.children {
-        gather(child, &world, scene);
+        gather(child, &world, slides, scene);
     }
+}
+
+/// The middle of the sphere a part lies on, if it is a round shell or a piece of one, all its
+/// corners about as far from it: Arrakis, and the cap of clouds just over it.
+fn shell_middle(object: &Object) -> Option<[f32; 3]> {
+    /// The fewest corners a shell has, and how much nearer or farther any may be, as a share.
+    const LEAST: usize = 20;
+    const ROUND: f64 = 0.03;
+    if object.vertices.len() < LEAST {
+        return None;
+    }
+    // The sphere that fits best: where x² + y² + z² = 2ax + 2by + 2cz + d over the corners,
+    // solved for its middle (a, b, c) by least squares.
+    let mut sums = [[0.0f64; 5]; 4];
+    for vertex in &object.vertices {
+        let [x, y, z] = vertex.position.map(f64::from);
+        let row = [2.0 * x, 2.0 * y, 2.0 * z, 1.0];
+        for i in 0..4 {
+            for j in 0..4 {
+                sums[i][j] += row[i] * row[j];
+            }
+            sums[i][4] += row[i] * (x * x + y * y + z * z);
+        }
+    }
+    for column in 0..4 {
+        let pivot =
+            (column..4).max_by(|&a, &b| sums[a][column].abs().total_cmp(&sums[b][column].abs()))?;
+        sums.swap(column, pivot);
+        if sums[column][column].abs() < f64::EPSILON {
+            return None;
+        }
+        for row in (0..4).filter(|&row| row != column) {
+            let share = sums[row][column] / sums[column][column];
+            for k in column..5 {
+                sums[row][k] -= share * sums[column][k];
+            }
+        }
+    }
+    let middle: [f64; 3] = std::array::from_fn(|i| sums[i][4] / sums[i][i]);
+    let (near, far) = object
+        .vertices
+        .iter()
+        .map(|vertex| {
+            (0..3)
+                .map(|i| (f64::from(vertex.position[i]) - middle[i]).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        })
+        .fold((f64::MAX, 0.0f64), |(near, far), away| {
+            (near.min(away), far.max(away))
+        });
+    (far > 0.0 && (far - near) / far < ROUND).then(|| middle.map(|c| c as f32))
 }
 
 /// A transform as the affine one it is: some of the original's models, its cursors among
@@ -214,7 +276,16 @@ impl Scene {
     pub(super) fn draw(&self, vertices: &mut Vec<Vertex>, (width, height): (f32, f32), time: f32) {
         let mut faces = self.posed(time);
         faces.retain(|face| face.corners.iter().all(|corner| corner[2] > NEAREST));
-        let depth = |face: &Face| face.corners.iter().map(|c| c[2]).fold(0.0, f32::max);
+        // Far to near: a face by its middle, and a shell's all by its nearest point, so that
+        // the clouds lie over Arrakis rather than in among its faces.
+        let depth = |face: &Face| match face.shell {
+            Some(middle) => {
+                let corner = face.corners[0];
+                let radius = (0..3).map(|i| (corner[i] - middle[i]).powi(2)).sum::<f32>();
+                middle[2] - radius.sqrt()
+            }
+            None => face.corners.iter().map(|c| c[2]).sum::<f32>() / 3.0,
+        };
         faces.sort_by(|a, b| depth(b).total_cmp(&depth(a)));
         let scale = height / 2.0 / HALF_DOWN;
         let on_screen =
@@ -251,8 +322,15 @@ impl Scene {
 impl Scene {
     /// Its faces where they stand this many seconds on.
     fn posed(&self, time: f32) -> Vec<Face> {
-        let frame = (time * FRAMES_PER_SECOND) as usize;
-        self.posed_at(|frames| frame % frames.max(1))
+        let frames = time * FRAMES_PER_SECOND;
+        let frame = frames as usize;
+        let mut faces = self.posed_at(|count| frame % count.max(1));
+        // Only how far into its picture it has slid: a whole picture on looks the same.
+        for face in &mut faces {
+            let by = face.slide.map(|step| (step * frames).fract());
+            face.uv = face.uv.map(|[u, v]| [u + by[0], v + by[1]]);
+        }
+        faces
     }
 
     /// Its faces where they stand at the frame `frame` picks of each part's frames.
@@ -263,6 +341,7 @@ impl Scene {
             let world = times(&pose, &part.above);
             part.faces.iter().map(move |face| Face {
                 corners: face.corners.map(|corner| point(&world, corner)),
+                shell: face.shell.map(|middle| point(&world, middle)),
                 ..*face
             })
         });
@@ -501,6 +580,57 @@ mod tests {
         assert_eq!(vertices.len(), 3);
         assert!(vertices.iter().all(|v| v.a == 0.0 && v.layer == 3.0));
         assert_eq!((vertices[0].u, vertices[0].v), (0.25, 0.0));
+    }
+
+    #[test]
+    fn a_parts_picture_slides_over_it_by_its_step_each_frame() {
+        let face = Face {
+            corners: [[0.0, 0.0, 10.0], [1.0, 0.0, 10.0], [0.0, 1.0, 10.0]],
+            uv: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            picture: 0,
+            slide: [0.004, 0.0],
+            shell: None,
+        };
+        let scene = Scene {
+            still: vec![face],
+            ..Scene::default()
+        };
+        let at = |seconds: f32| scene.posed(seconds)[0].uv[0][0];
+        assert_eq!(at(0.0), 0.0);
+        assert!((at(2.0) - 0.004 * 2.0 * FRAMES_PER_SECOND).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_cap_lying_on_a_sphere_is_found_round_about_the_spheres_middle() {
+        // A cap of corners on a sphere of 320 about (0, 0, 2600), only on its near side.
+        let mut object = Object {
+            name: "cloud".into(),
+            transform: IDENTITY,
+            animation: None,
+            bending: None,
+            vertices: Vec::new(),
+            faces: Vec::new(),
+            children: Vec::new(),
+        };
+        for ring in 0..6 {
+            let down = 0.2 + ring as f32 * 0.2;
+            for step in 0..8 {
+                let round = step as f32 * std::f32::consts::TAU / 8.0;
+                let position = [
+                    320.0 * down.sin() * round.cos(),
+                    320.0 * down.sin() * round.sin(),
+                    2600.0 - 320.0 * down.cos(),
+                ];
+                object.vertices.push(xbf::Vertex {
+                    position,
+                    normal: [0.0, 0.0, -1.0],
+                });
+            }
+        }
+        let middle = shell_middle(&object).unwrap();
+        assert!((middle[2] - 2600.0).abs() < 1.0, "{middle:?}");
+        object.vertices[0].position[2] -= 100.0;
+        assert_eq!(shell_middle(&object), None, "no longer round");
     }
 
     #[test]

@@ -268,9 +268,12 @@ Confirming a house plays its opening movie off its own disc (`A00_F00E` for the 
 straight on without the disc, then starts its first battle on the original's map for it
 (`#u1`, `#u2`, `#u3`) with the 10 000 credits its script gives. Not done yet:
 
-- **The mission's script** (`ATStart.tok`, see `tok-format.md`) is not run: the battle starts
-  as a skirmish does, with an MCV a side, not with the script's base, waves and Mentat lines,
-  and it is won by beating every enemy, not the three Harkonnen buildings.
+- **The first battle's script** (`ATStart.tok`, see `tok-format.md`) runs: both bases as it
+  builds them, its reinforcements and attack waves when it brings them, the Mentat's lines,
+  and its victory once the palace, outpost and hangar are destroyed. Not yet: the fuel
+  barrels (there are none of ours), what its unknown functions do (the camera pointing at a
+  wave, the attack orders of the waves, the veterancy it gives units), its sides as sides of
+  their own (they all fight as one enemy), and how long an update is (taken as 0.1 s).
 - **Mission scripts** of later battles are not run either: each is fought on the
   original's map for it as a skirmish is, against the house it is against.
 

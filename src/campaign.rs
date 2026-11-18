@@ -17,6 +17,7 @@ use crate::archive;
 use crate::battlefield::next_random;
 use crate::game::Faction;
 use crate::maps;
+use crate::mission::{self, Token};
 use crate::xbf;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -32,6 +33,19 @@ const CONNECTIONS: &str = "arrakis connections.txt";
 const PHASE_RULES: &str = "PhaseRules.txt";
 const FORCED_MISSIONS: &str = "Forced Missions.txt";
 const SCENE: &str = "FRONTEND\\CAMPAIGN.XBF";
+/// The missions' scripts, and the rules whose lists of kinds the scripts' kinds count in.
+const MISSIONS_INDEX: &str = "\\data\\MISSIONS0001.RFH";
+const MISSIONS_DATA: &str = "\\data\\MISSIONS0001.RFD";
+const MODEL_INDEX: &str = "\\data\\MODEL0001.RFH";
+const MODEL_DATA: &str = "\\data\\MODEL0001.RFD";
+const RULES: &str = "Rules.txt";
+const KIND_LISTS: [&str; 2] = ["[BuildingTypes]", "[UnitTypes]"];
+/// The script of each house's first battle.
+const START_SCRIPTS: [(Faction, &str); 3] = [
+    (Faction::Atreides, "ATStart.tok"),
+    (Faction::Harkonnen, "HKStart.tok"),
+    (Faction::Ordos, "ORStart.tok"),
+];
 const NEW_UNITS: &str = "NEWUNITS.INI";
 /// The game's text: the newer table first, whose names win, then the older one; and the
 /// table of what is spoken, which says what each unit is.
@@ -136,6 +150,10 @@ pub struct Data {
     phases: Vec<(u32, Phase)>,
     tech: Vec<Rule>,
     new_units: Vec<NewUnit>,
+    /// The script of each house's first battle, as lines of tokens.
+    start_scripts: Vec<(Faction, Vec<Vec<Token>>)>,
+    /// The names of the kinds the scripts count, in the rules' order.
+    kinds: Vec<String>,
 }
 
 impl Data {
@@ -202,13 +220,53 @@ fn read(disc: &Path) -> Option<Data> {
             })
         })
         .unwrap_or_default();
+    let start_scripts = START_SCRIPTS
+        .iter()
+        .filter_map(|&(house, name)| {
+            let script = from(MISSIONS_INDEX, MISSIONS_DATA, name)?;
+            Some((house, mission::read(&script)?))
+        })
+        .collect();
+    let kinds = from(MODEL_INDEX, MODEL_DATA, RULES)
+        .map(|rules| kinds(&String::from_utf8_lossy(&rules)))
+        .unwrap_or_default();
     Some(Data {
         territories,
         jump_points,
         phases,
         tech,
         new_units,
+        start_scripts,
+        kinds,
     })
+}
+
+/// The script of a house's first battle, if the disc has it.
+pub fn start_script(house: Faction) -> Option<&'static [Vec<Token>]> {
+    let data = data()?;
+    let (_, script) = data.start_scripts.iter().find(|(of, _)| *of == house)?;
+    Some(script)
+}
+
+/// What the rules call the kind a script counts as this, if they have it.
+pub fn kind_name(kind: u16) -> Option<&'static str> {
+    data()?.kinds.get(usize::from(kind)).map(String::as_str)
+}
+
+/// The kinds of the rules' lists of buildings and units, in the order of the file: the lists
+/// come several times, each adding to its own.
+fn kinds(rules: &str) -> Vec<String> {
+    let mut listing = false;
+    let mut kinds = Vec::new();
+    for line in rules.lines() {
+        let line = line.split("//").next().unwrap_or("").trim();
+        if line.starts_with('[') {
+            listing = KIND_LISTS.contains(&line);
+        } else if listing && let Some(kind) = line.split_whitespace().next() {
+            kinds.push(kind.to_string());
+        }
+    }
+    kinds
 }
 
 /// The territories out of their connections, a line for each listing the numbers, from 1, of
@@ -865,12 +923,66 @@ pub(crate) mod tests {
             "1\nAT_scout.XBF\tATScout\nHK_scout.XBF\tHKScout\n\n2\nG_mcv.XBF\tMCV\n",
             |id| (Some(format!("{id} name")), Some(format!("What {id} is"))),
         );
+        // A first battle for the Atreides: their yard at their base, the enemy's palace at
+        // theirs, an MCV at the first point at update 3, money and a line of speech.
+        let start = {
+            use Token::{Function as F, Keyword as K, Kind, Speech, Variable as V};
+            let text = |t: &str| Token::Text(t.to_string());
+            vec![
+                vec![K(165), text("("), F(0), text("()"), K(168), text("0)")],
+                vec![V(1), K(180), F(18), text("()")],
+                vec![
+                    K(139),
+                    text("("),
+                    F(14),
+                    text("(),"),
+                    Kind(0),
+                    text(","),
+                    F(4),
+                    text("("),
+                    F(14),
+                    text("()),0,0,1)"),
+                ],
+                vec![
+                    V(2),
+                    K(180),
+                    K(139),
+                    text("("),
+                    V(1),
+                    text(","),
+                    Kind(1),
+                    text(","),
+                    F(3),
+                    text("(),0,0,1)"),
+                ],
+                vec![F(62), text("("), F(14), text("(),10000)")],
+                vec![F(45), text("("), Speech(642), text(")")],
+                vec![K(167)],
+                vec![K(165), text("("), F(0), text("()"), K(168), text("3)")],
+                vec![
+                    F(21),
+                    text("("),
+                    F(14),
+                    text("(),"),
+                    Kind(2),
+                    text(","),
+                    F(5),
+                    text("(2))"),
+                ],
+                vec![K(167)],
+                vec![K(165), text("("), F(23), text("("), V(2), text("))")],
+                vec![F(83), text("("), K(177), text(")")],
+                vec![K(167)],
+            ]
+        };
         Data {
             territories,
             jump_points,
             phases,
             tech,
             new_units,
+            start_scripts: vec![(Faction::Atreides, start)],
+            kinds: ["ATConYard", "HKPalace", "MCV"].map(String::from).to_vec(),
         }
     }
 
@@ -1098,6 +1210,72 @@ pub(crate) mod tests {
         let scout = data.new_units.iter().find(|u| u.level == 1).unwrap();
         assert_eq!(scout.house, Some(Faction::Atreides));
         assert!(!scout.about.is_empty(), "{scout:?}");
+        let script = &data
+            .start_scripts
+            .iter()
+            .find(|(h, _)| *h == Faction::Atreides)
+            .unwrap()
+            .1;
+        assert_eq!(script.len(), 754);
+        assert_eq!(data.kinds[27], "ATConYard");
+        assert_eq!(
+            kinds("[UnitTypes]\nA\n[Other]\nB\n[UnitTypes]\nC // c\n"),
+            ["A", "C"]
+        );
+        // Run on its own, the script puts down both bases at once, the reinforcements at its
+        // 49th update, and the Mentat speaks first.
+        struct Written(i32, Vec<String>, Vec<String>, Vec<u16>, i32, Vec<String>);
+        impl mission::Battle for Written {
+            fn now(&self) -> i32 {
+                self.0
+            }
+            fn new_side(&mut self) -> i32 {
+                self.4 += 1;
+                self.4
+            }
+            fn base(&self, _: i32) -> (f32, f32) {
+                (0.0, 0.0)
+            }
+            fn enemy_base(&self) -> (f32, f32) {
+                (0.0, 0.0)
+            }
+            fn script_point(&self, _: i32) -> (f32, f32) {
+                (0.0, 0.0)
+            }
+            fn place(&mut self, _: i32, kind: u16, _: (f32, f32), _: i32) -> Option<u32> {
+                self.1.push(self.5[usize::from(kind)].clone());
+                Some(self.1.len() as u32)
+            }
+            fn bring(&mut self, _: i32, kind: u16, _: (f32, f32)) -> Option<u32> {
+                self.2.push(self.5[usize::from(kind)].clone());
+                None
+            }
+            fn left(&self, _: i32) -> i32 {
+                10
+            }
+            fn destroyed(&self, _: Option<u32>) -> bool {
+                false
+            }
+            fn say(&mut self, line: u16) {
+                self.3.push(line);
+            }
+            fn pay(&mut self, _: i32, _: i32) {}
+            fn win(&mut self) {}
+        }
+        let mut script = mission::Script::new(script);
+        let mut written = Written(0, Vec::new(), Vec::new(), Vec::new(), 0, data.kinds.clone());
+        script.run(&mut written);
+        assert!(written.1.iter().any(|k| k == "ATConYard"));
+        assert!(written.1.iter().any(|k| k == "HKPalace"));
+        assert!(written.1.len() > 60, "{}", written.1.len());
+        assert_eq!(written.3, [642]);
+        let brought = written.2.len();
+        written.0 = 49;
+        script.run(&mut written);
+        assert_eq!(
+            &written.2[brought..],
+            ["MCV", "ATTrike", "ATTrike", "ATMongoose"]
+        );
         // The Atreides start next to the Harkonnen, in the south-west of the map.
         let ((left, bottom), (right, top)) = data.bounds().unwrap();
         assert!(left < right && bottom < top);

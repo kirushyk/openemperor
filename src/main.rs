@@ -195,6 +195,13 @@ fn main() {
                 platform.play_line(&line.samples, line.channels, line.rate);
             }
         }
+        // What the mission's Mentat says, off whichever disc has it.
+        #[cfg(target_os = "macos")]
+        for number in game.take_mission_lines() {
+            if let Some(line) = sounds::mission_line(number) {
+                platform.play_line(&line.samples, line.channels, line.rate);
+            }
+        }
         // What the player's units answer is said over the music.
         #[cfg(target_os = "macos")]
         if let Some((said, speakers)) = game.take_reply() {

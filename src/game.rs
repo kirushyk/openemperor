@@ -8,6 +8,7 @@ use crate::hud::{
     UPGRADE_BUTTON, WAYPOINT_BUTTON,
 };
 use crate::maps;
+use crate::mission::{self, Script, Token};
 use crate::platform::{Event, Key, Modifier};
 use crate::strategy::Strategy;
 use crate::units::{self, Role, Unit, UnitKind};
@@ -1946,6 +1947,86 @@ fn territory_buttons(width: f32, height: f32) -> Vec<Button> {
         .collect()
 }
 
+/// How many of a mission script's updates go by in a second of battle: a guess, which puts
+/// the Atreides' first reinforcements in at five seconds and the Mentat's call to prepare at
+/// forty-three.
+const SCRIPT_UPDATES_PER_SECOND: f32 = 10.0;
+/// The points of a map where the player's base and the enemy's main base stand.
+const PLAYER_BASE_POINT: &str = "Default";
+const ENEMY_BASE_POINT: &str = "Primary";
+/// What the rules' name of a construction yard ends with: an MCV dug in.
+const CONSTRUCTION_YARD: &str = "ConYard";
+
+/// A battle as its mission's script sees it: its sides are 0 for the player, then each one it
+/// makes, all of them the player's enemy.
+impl mission::Battle for Game {
+    fn now(&self) -> i32 {
+        self.script_updates
+    }
+
+    fn new_side(&mut self) -> i32 {
+        self.script_sides += 1;
+        self.script_sides
+    }
+
+    fn base(&self, side: i32) -> (f32, f32) {
+        self.map_point(if side == 0 {
+            PLAYER_BASE_POINT
+        } else {
+            ENEMY_BASE_POINT
+        })
+    }
+
+    fn enemy_base(&self) -> (f32, f32) {
+        self.map_point(ENEMY_BASE_POINT)
+    }
+
+    fn script_point(&self, number: i32) -> (f32, f32) {
+        self.map_point(&format!("Script{number}"))
+    }
+
+    fn place(&mut self, side: i32, kind: u16, at: (f32, f32), _facing: i32) -> Option<u32> {
+        self.put_scripted(side, kind, at, true)
+    }
+
+    fn bring(&mut self, side: i32, kind: u16, at: (f32, f32)) -> Option<u32> {
+        self.put_scripted(side, kind, at, false)
+    }
+
+    fn left(&self, side: i32) -> i32 {
+        let of_side = |unit: &Unit| {
+            if side == 0 {
+                unit.owner == 0
+            } else {
+                self.script_side_of.contains(&(unit.id, side))
+            }
+        };
+        let left = self
+            .units
+            .iter()
+            .filter(|u| u.alive && !u.kind.is_building() && of_side(u));
+        left.count() as i32
+    }
+
+    fn destroyed(&self, thing: Option<u32>) -> bool {
+        thing.is_some_and(|id| !self.units.iter().any(|u| u.id == id && u.alive))
+    }
+
+    fn say(&mut self, line: u16) {
+        self.mission_lines.push(line);
+    }
+
+    fn pay(&mut self, side: i32, money: i32) {
+        if let Some(held) = self.money.get_mut(usize::from(side != 0)) {
+            *held = money;
+        }
+    }
+
+    fn win(&mut self) {
+        self.decide(Outcome::Victory);
+    }
+}
+
 /// Whether a point is inside a triangle, whichever way round its corners go.
 fn is_in_triangle([a, b, c]: [(f32, f32); 3], (x, y): (f32, f32)) -> bool {
     let side =
@@ -2003,6 +2084,15 @@ pub struct Game {
     pub picked: Option<usize>,
     /// The tech level whose new units were last shown.
     pub units_shown: u32,
+    /// The mission's script the battle runs, if it has one; how many of its updates have gone
+    /// by and how far into the next; how many sides it has made; the script's side of each
+    /// thing it made, by id; and the lines of speech it has asked for, not yet played.
+    script: Option<Script>,
+    script_updates: i32,
+    script_clock: f32,
+    script_sides: i32,
+    script_side_of: Vec<(u32, i32)>,
+    mission_lines: Vec<u16>,
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
     pub units: Vec<Unit>,
@@ -2138,6 +2228,12 @@ impl Game {
             briefing: None,
             picked: None,
             units_shown: 0,
+            script: None,
+            script_updates: 0,
+            script_clock: 0.0,
+            script_sides: 0,
+            script_side_of: Vec::new(),
+            mission_lines: Vec::new(),
             minimap_dragging: false,
             units: Vec::new(),
             carried: Vec::new(),
@@ -3900,23 +3996,26 @@ impl Game {
         let standing = || self.units.iter().filter(|u| u.role.counts_for_losing());
         let player_left = standing().any(|u| u.owner == 0);
         let enemies_left = standing().any(|u| units::are_enemies(&self.teams, 0, u.owner));
-        self.outcome = if !player_left {
-            Some(Outcome::Defeat)
+        if !player_left {
+            self.decide(Outcome::Defeat);
         } else if !enemies_left {
-            Some(Outcome::Victory)
-        } else {
-            None
-        };
-        match self.outcome {
-            Some(Outcome::Victory) => self.announce(Speech::Victory),
-            Some(Outcome::Defeat) => self.announce(Speech::Defeat),
-            None => {}
+            self.decide(Outcome::Victory);
         }
+    }
+
+    /// The battle is decided, unless it already was.
+    fn decide(&mut self, outcome: Outcome) {
         if self.outcome.is_some() {
-            self.key_paused = false;
-            self.aiming_strike = false;
-            self.outcome_elapsed = 0.0;
+            return;
         }
+        self.outcome = Some(outcome);
+        self.announce(match outcome {
+            Outcome::Victory => Speech::Victory,
+            Outcome::Defeat => Speech::Defeat,
+        });
+        self.key_paused = false;
+        self.aiming_strike = false;
+        self.outcome_elapsed = 0.0;
     }
 
     /// Whether this side has lost everything, the player being owner 0.
@@ -4042,7 +4141,90 @@ impl Game {
         // The original's first mission gives the player 10 000 credits.
         if mission == Mission::Start {
             self.money[0] = CAMPAIGN_START_MONEY;
+            if let Some(lines) = campaign::start_script(house) {
+                self.start_script(lines);
+            }
         }
+    }
+
+    /// Starts the battle as its mission's script has it, in place of a base a side: the
+    /// script puts down what each side has.
+    fn start_script(&mut self, lines: &[Vec<Token>]) {
+        self.units.clear();
+        self.next_unit_id = 0;
+        self.script_updates = 0;
+        self.script_clock = 0.0;
+        self.script_sides = 0;
+        self.script_side_of.clear();
+        let mut script = Script::new(lines);
+        script.run(self);
+        self.script = Some(script);
+        units::join_walls(&mut self.units);
+        if let Some(&Unit { x, z, .. }) = self.units.iter().find(|u| u.owner == 0) {
+            self.home = (x, z);
+            self.camera.look_at(x, z);
+        }
+        self.update_fog();
+    }
+
+    /// Runs the battle's script for each of its updates `dt` seconds bring, until the battle
+    /// is decided.
+    fn run_script(&mut self, dt: f32) {
+        let Some(mut script) = self.script.take() else {
+            return;
+        };
+        self.script_clock += dt * SCRIPT_UPDATES_PER_SECOND;
+        while self.script_clock >= 1.0 && self.outcome.is_none() {
+            self.script_clock -= 1.0;
+            self.script_updates += 1;
+            script.run(self);
+        }
+        self.script = Some(script);
+    }
+
+    /// The lines of speech the battle's script has asked for since last asked.
+    pub fn take_mission_lines(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.mission_lines)
+    }
+
+    /// The point of the battle's map of this name, or where it would be on a map without it:
+    /// a base at a start, anything else in the middle.
+    fn map_point(&self, name: &str) -> (f32, f32) {
+        let terrain = battlefield::terrain(self.battle_map);
+        let start = |n: usize| terrain.starts().get(n).copied();
+        let (right, bottom) = terrain.extent();
+        terrain
+            .point(name)
+            .or(match name {
+                PLAYER_BASE_POINT => start(0),
+                ENEMY_BASE_POINT => start(1),
+                _ => None,
+            })
+            .unwrap_or((right / 2.0, bottom / 2.0))
+    }
+
+    /// Puts what the script asks for on the map for one of its sides: the player's own, any
+    /// other the enemy's. Exactly where, or else at the free spot nearest.
+    fn put_scripted(&mut self, side: i32, kind: u16, at: (f32, f32), exact: bool) -> Option<u32> {
+        let name = campaign::kind_name(kind)?;
+        let thing = Role::named(name)?;
+        let owner = usize::from(side != 0);
+        let color = self.stats_rows().get(owner)?.color;
+        let dug_in = exact && name.ends_with(CONSTRUCTION_YARD);
+        let terrain = battlefield::terrain(self.battle_map);
+        let id = self.next_unit_id;
+        let placed = units::put(
+            &mut self.units,
+            terrain,
+            at,
+            thing,
+            (owner, color),
+            dug_in,
+            id,
+        )?;
+        self.next_unit_id += 1;
+        self.script_side_of.push((placed, side));
+        Some(placed)
     }
 
     fn leave_battle(&mut self) {
@@ -4166,6 +4348,8 @@ impl Game {
         self.constructing_seen.clear();
         self.retreat_armed = 0.0;
         self.strike_recharge = 0.0;
+        self.script = None;
+        self.mission_lines.clear();
         self.set_screen(Screen::Loading);
     }
 
@@ -4481,6 +4665,7 @@ impl Game {
         if self.in_battle && !self.is_paused() {
             let dt = dt * self.settings.battle_pace();
             self.battle_time += dt;
+            self.run_script(dt);
             let battle_time = self.battle_time;
             self.chat
                 .retain(|line| battle_time - line.posted_at < CHAT_SECONDS);
@@ -5990,6 +6175,36 @@ mod tests {
         win_and_leave(&mut game);
         assert_eq!(game.screen, Screen::CampaignMap);
         assert_eq!(game.campaign.as_ref().unwrap().next(), Next::Pick);
+    }
+
+    #[test]
+    fn a_houses_first_battle_starts_as_its_script_has_it_and_goes_on_by_it() {
+        let mut game = campaign_battle();
+        let yard = game.units.iter().find(|u| u.owner == 0).unwrap();
+        assert_eq!(
+            (yard.role, yard.deployed),
+            (Role::Mcv, true),
+            "a construction yard"
+        );
+        let palace = game.units.iter().find(|u| u.owner == 1).unwrap();
+        assert_eq!(palace.role, Role::Palace(Faction::Harkonnen));
+        assert_eq!(game.units.len(), 2, "nothing but what the script puts down");
+        assert_eq!(game.player_money(), 10_000);
+        assert_eq!(game.take_mission_lines(), [642], "the Mentat's welcome");
+        assert!(game.take_mission_lines().is_empty(), "once");
+        // Its third update brings an MCV in for the player.
+        game.update(0.35);
+        assert!(
+            game.units
+                .iter()
+                .any(|u| u.owner == 0 && u.role == Role::Mcv && !u.deployed)
+        );
+        // The palace destroyed, the script declares the battle won.
+        let palace = game.units.iter().position(|u| u.owner == 1).unwrap();
+        game.units[palace].alive = false;
+        game.units.remove(palace);
+        game.update(0.15);
+        assert_eq!(game.outcome, Some(Outcome::Victory));
     }
 
     #[test]

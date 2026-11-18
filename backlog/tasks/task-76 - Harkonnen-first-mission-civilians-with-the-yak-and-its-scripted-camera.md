@@ -1,9 +1,10 @@
 ---
 id: TASK-76
 title: 'Harkonnen first mission: civilians with the yak, and its scripted camera'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-18T18:28:00Z'
+updated_date: '2026-11-18T18:33:00Z'
 labels: []
 dependencies: []
 ordinal: 76000

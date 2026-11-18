@@ -4314,10 +4314,12 @@ impl Game {
                 self.start_script(lines);
             }
         }
-        // A battle for a territory runs its own script, where the disc has one for the phase.
+        // A battle for a territory runs its own script, where the disc has one for the phase,
+        // and the Heighliner's its own.
         let script = match mission {
             Mission::Attack(at) => campaign::mission_script(house, phase, false, at),
             Mission::Defend(at, _) => campaign::mission_script(house, phase, true, at),
+            Mission::Heighliner => campaign::heighliner_script(house),
             _ => None,
         };
         if let Some(lines) = script {

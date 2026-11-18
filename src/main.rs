@@ -70,6 +70,7 @@ Options:
   --mission <NAME>   Go straight into a campaign territory's battle, by its script's name
                      on the disc (ATP1M7FR: Atreides, phase 1, attack (M) or defence (D),
                      territory 7, with the Fremen)
+                     or a Heighliner's, as AtreidesHeighlinerMission
   --missions         List the battles --mission can go into, and quit
   -h, --help         Print this help and quit
 ";
@@ -159,8 +160,16 @@ fn main() {
         list_missions();
         return;
     }
+    // Known by the battle it names, so a Heighliner's name may be given without its spaces.
+    let on_disc = |name: &str| {
+        let battle = campaign::named_mission(name);
+        battle.is_some()
+            && campaign::mission_names()
+                .iter()
+                .any(|listed| campaign::named_mission(listed) == battle)
+    };
     if let Some(name) = &options.mission
-        && !campaign::mission_names().contains(&name.as_str())
+        && !on_disc(name)
     {
         eprintln!("No mission {name} on the disc; --missions lists them");
         std::process::exit(2);

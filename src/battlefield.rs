@@ -134,6 +134,7 @@ const HEIGHTS: u32 = 0xa000_0001;
 const GROUNDS: u32 = 0xa000_0003;
 const SPICE: u32 = 0xa000_0004;
 const AREAS: u32 = 0xa000_0005;
+const OBJECTS: u32 = 0xa000_0007;
 /// How long an area's or a list's name is, and one of its points: a number, then x and z.
 const AREA_NAME: usize = 20;
 const AREA_POINT: usize = 20;
@@ -158,6 +159,8 @@ pub struct Terrain {
     /// The first point of each of the map's named lists of points, such as `Primary` and
     /// `Default` where bases stand, or `Script1` where a mission's script places something.
     points: Vec<(String, (f32, f32))>,
+    /// What the map has standing on it from the start.
+    objects: Vec<MapObject>,
     /// The color of each cell on the radar, row by row.
     radar: Vec<[f32; 3]>,
     light: Light,
@@ -248,6 +251,48 @@ fn parts(file: &[u8]) -> Option<Vec<(u32, &[u8])>> {
         at += 8 + size;
     }
     Some(parts)
+}
+
+/// Something a map has standing on it from the start, as its `test.xbf` lists it: by the
+/// rules' name for it, the square it stands on, and which of four ways it faces, as a
+/// mission's script gives one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapObject {
+    pub name: String,
+    pub cell: (usize, usize),
+    pub facing: i32,
+}
+
+/// The objects a map's part lists: how many, then each one's name ending in a 0, its column
+/// in two bytes, two more not known, its row and its facing in four each.
+fn map_objects(part: &[u8]) -> Vec<MapObject> {
+    let mut objects = Vec::new();
+    let mut at = 4;
+    for _ in 0..u32_at(part, 0).unwrap_or(0) {
+        let Some(length) = part
+            .get(at..)
+            .and_then(|rest| rest.iter().position(|&b| b == 0))
+        else {
+            break;
+        };
+        let name = String::from_utf8_lossy(&part[at..at + length]).into_owned();
+        at += length + 1;
+        let (Some(column), Some(row), Some(facing)) = (
+            part.get(at..at + 2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]])),
+            u32_at(part, at + 4),
+            u32_at(part, at + 8),
+        ) else {
+            break;
+        };
+        at += 12;
+        objects.push(MapObject {
+            name,
+            cell: (usize::from(column), row as usize),
+            facing: facing as i32,
+        });
+    }
+    objects
 }
 
 /// The points of the lists in the area of this name, one list after another.
@@ -364,6 +409,7 @@ impl Terrain {
             spice,
             starts,
             points,
+            objects: part(OBJECTS).map(map_objects).unwrap_or_default(),
             radar,
             light: DAYLIGHT,
             walkable: Default::default(),
@@ -395,6 +441,7 @@ impl Terrain {
                 (inset, bottom - inset),
             ],
             points: Vec::new(),
+            objects: Vec::new(),
             radar: vec![SAND; width * height],
             light: DAYLIGHT,
             walkable: Default::default(),
@@ -493,6 +540,11 @@ impl Terrain {
     /// Where the sides may start, as world points.
     pub fn starts(&self) -> &[(f32, f32)] {
         &self.starts
+    }
+
+    /// What the map has standing on it from the start.
+    pub fn objects(&self) -> &[MapObject] {
+        &self.objects
     }
 
     /// The map's point of this name, such as `Script1`, if it has it.
@@ -1644,6 +1696,30 @@ mod tests {
         assert!(next.1 > 29.0 * CELL_SIDE, "around the end: {next:?}");
         let (x, z) = (20.5 * CELL_SIDE, 10.0 * CELL_SIDE);
         assert!(terrain.can_go(Going::OnFoot, x, z) && !terrain.can_walk(x, z));
+    }
+
+    #[test]
+    fn a_maps_objects_are_read_by_name_square_and_facing() {
+        let mut part = 2u32.to_le_bytes().to_vec();
+        for (name, column, row, facing) in
+            [("HKWall", 89u16, 27u32, 0u32), ("INBarrel2", 85, 15, 3)]
+        {
+            part.extend(name.as_bytes());
+            part.push(0);
+            part.extend(column.to_le_bytes());
+            part.extend(1u16.to_le_bytes());
+            part.extend(row.to_le_bytes());
+            part.extend(facing.to_le_bytes());
+        }
+        let objects = map_objects(&part);
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[1].name, "INBarrel2");
+        assert_eq!((objects[1].cell, objects[1].facing), ((85, 15), 3));
+        assert_eq!(
+            map_objects(&part[..part.len() - 3]).len(),
+            1,
+            "a cut-off one is left out"
+        );
     }
 
     #[test]

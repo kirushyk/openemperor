@@ -349,6 +349,11 @@ const CRATE_SECONDS: f32 = 40.0;
 const CRATE_LASTS: f32 = 60.0;
 const CRATES_AT_MOST: usize = 6;
 const CRATE_MONEY: (i32, i32) = (250, 1500);
+/// The money in a crate a map lies on it, by the rules' name for it: a `MoneyCrate` holds
+/// their `CASH2000`.
+fn crate_money(name: &str) -> Option<i32> {
+    (name == "MoneyCrate").then_some(2000)
+}
 
 /// What opponents make before anything else, while they have fewer than this many of each for
 /// each of their refineries: harvesters to bring in money, and carryalls to help them.
@@ -2785,12 +2790,22 @@ impl Game {
     }
 
     /// With crates on in a skirmish, drops one now and then somewhere on the ground nobody
-    /// stands on, and pays whoever reaches one what is in it.
+    /// stands on; and in any battle pays whoever reaches one what is in it.
     fn drop_crates(&mut self, dt: f32) {
-        const CLEAR: f32 = 113.1;
-        if self.battle_kind != BattleKind::Skirmish || !self.skirmish.crates {
-            return;
+        if self.battle_kind == BattleKind::Skirmish && self.skirmish.crates {
+            self.drop_crate(dt);
         }
+        let opened = units::open_crates(&self.units, &mut self.crates, &mut self.money, dt);
+        for (owner, money) in opened {
+            if owner == 0 {
+                self.post_chat(format!("Crate: ${money}"));
+            }
+        }
+    }
+
+    /// Drops a crate now and then somewhere on the ground nobody stands on.
+    fn drop_crate(&mut self, dt: f32) {
+        const CLEAR: f32 = 113.1;
         let terrain = battlefield::terrain(self.battle_map);
         self.crate_wait -= dt;
         if self.crate_wait <= 0.0 {
@@ -2810,12 +2825,6 @@ impl Game {
                     money: least * (1 + steps),
                     left: CRATE_LASTS,
                 });
-            }
-        }
-        let opened = units::open_crates(&self.units, &mut self.crates, &mut self.money, dt);
-        for (owner, money) in opened {
-            if owner == 0 {
-                self.post_chat(format!("Crate: ${money}"));
             }
         }
     }
@@ -4159,12 +4168,56 @@ impl Game {
         let mut script = Script::new(lines);
         script.run(self);
         self.script = Some(script);
+        self.place_map_objects();
         units::join_walls(&mut self.units);
         if let Some(&Unit { x, z, .. }) = self.units.iter().find(|u| u.owner == 0) {
             self.home = (x, z);
             self.camera.look_at(x, z);
         }
         self.update_fog();
+    }
+
+    /// Puts down what the battle's map has standing on it from the start, of what we know: its
+    /// walls, buildings and units, each the player's if of the player's house and the enemy's
+    /// if not, and its crates of money.
+    fn place_map_objects(&mut self) {
+        let terrain = battlefield::terrain(self.battle_map);
+        let player = self.faction_of(0);
+        for object in terrain.objects() {
+            let (column, row) = object.cell;
+            let at = battlefield::grid_to_world(column as f32 + 0.5, row as f32 + 0.5);
+            if let Some(money) = crate_money(&object.name) {
+                self.crates.push(units::Crate {
+                    x: at.0,
+                    z: at.1,
+                    money,
+                    left: f32::INFINITY,
+                });
+                continue;
+            }
+            let Some((role, house)) = Role::named(&object.name) else {
+                continue;
+            };
+            let owner = usize::from(house != player);
+            let Some(color) = self.stats_rows().get(owner).map(|row| row.color) else {
+                continue;
+            };
+            let dug_in = object.name.ends_with(CONSTRUCTION_YARD);
+            let facing = Some(Facing::numbered(object.facing));
+            let id = self.next_unit_id;
+            let placed = units::put(
+                &mut self.units,
+                terrain,
+                at,
+                (role, house),
+                (owner, color),
+                (dug_in, facing),
+                id,
+            );
+            if placed.is_some() {
+                self.next_unit_id += 1;
+            }
+        }
     }
 
     /// Runs the battle's script for each of its updates `dt` seconds bring, until the battle

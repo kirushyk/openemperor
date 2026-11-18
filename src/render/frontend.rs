@@ -341,13 +341,19 @@ impl Scene {
         };
         faces.sort_by(|a, b| nearness(a).total_cmp(&nearness(b)));
         let down = if deep == 1 { -1.0 } else { 1.0 };
+        // Lying down, it is seen from above in the disc's left-handed space, its x running
+        // to the left on the screen; standing, from its front, its x to the right.
+        let across = if deep == 1 { 1.0 } else { -1.0 };
         for face in faces {
             let Some(Some(picture)) = self.pictures.get(face.picture) else {
                 continue;
             };
             let corners: [Corner; 3] = std::array::from_fn(|n| {
                 let corner = face.corners[n];
-                let at = (x + corner[0] * scale, y + corner[deep] * scale * down);
+                let at = (
+                    x + corner[0] * scale * across,
+                    y + corner[deep] * scale * down,
+                );
                 (at, face.uv[n])
             });
             lay(vertices, &corners, *picture);

@@ -2851,6 +2851,27 @@ mod tests {
     }
 
     #[test]
+    fn the_discs_pointer_hangs_right_of_and_below_its_tip_as_on_the_screen() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        let mut vertices = Vec::new();
+        assert!(draw_cursor(
+            &mut vertices,
+            CursorLook::Arrow,
+            (0.0, 0.0),
+            10.0,
+            0.0
+        ));
+        let mean =
+            |at: fn(&Vertex) -> f32| vertices.iter().map(at).sum::<f32>() / vertices.len() as f32;
+        let (x, y) = (mean(|v| v.x), mean(|v| v.y));
+        assert!(x > 0.0 && y > 0.0, "it lies at ({x}, {y}) from its tip");
+    }
+
+    #[test]
     fn the_discs_lettering_has_every_letter_of_its_list() {
         let disc = Path::new("/Volumes/EMPEROR1");
         let Some(listed) = read_interface(disc, FONT_LIST) else {

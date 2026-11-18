@@ -578,6 +578,8 @@ const CURSORS: [(CursorLook, &str); 13] = [
     (CursorLook::Repair, "CU_Repair_H0"),
 ];
 const CURSOR_FOLDER: &str = "CURSORS\\";
+/// The parts of the sidebar's model that are its frame: its back, then its glowing rims.
+const SIDEBAR_FRAME: [&str; 2] = ["sidebar", "sidebar01"];
 
 /// The original's lettering: the picture of its letters among the models' pictures, and the
 /// list of which they are in the interface's data.
@@ -678,6 +680,8 @@ struct Original {
     lettering: Option<Lettering>,
     /// The cursor of each of `CURSORS`, if the disc has it.
     cursors: Vec<Option<frontend::Scene>>,
+    /// The sidebar's frame, if the disc has it.
+    sidebar_frame: Option<frontend::Scene>,
     /// The symbol of each of `SYMBOLS`, as flat triangles in a square from -1 to 1 across and
     /// down: none for one the disc has not.
     symbols: Vec<Vec<[(f32, f32); 3]>>,
@@ -1267,6 +1271,9 @@ fn read_shapes(disc: &Path) -> Option<Original> {
             frontend::read(&model, &archive, &mut pictures, &mut layers)
         })
         .collect();
+    let sidebar_frame = read_interface(disc, SIDEBAR).and_then(|model| {
+        frontend::read_parts(&model, &SIDEBAR_FRAME, &archive, &mut pictures, &mut layers)
+    });
     (!shapes.is_empty()).then_some(Original {
         shapes,
         damaged,
@@ -1281,6 +1288,7 @@ fn read_shapes(disc: &Path) -> Option<Original> {
         menu,
         lettering,
         cursors,
+        sidebar_frame,
         archive,
         spice,
     })
@@ -1304,6 +1312,14 @@ pub(super) fn draw_cursor(
     };
     cursor.draw_flat(vertices, at, scale, time);
     true
+}
+
+/// Draws the original's sidebar frame stretched over a box (x, y, w, h), once the disc's is
+/// read.
+pub(super) fn draw_sidebar_frame(vertices: &mut Vec<Vertex>, rect: (f32, f32, f32, f32)) {
+    if let Some(frame) = ORIGINAL.get().and_then(|o| o.sidebar_frame.as_ref()) {
+        frame.draw_fitted(vertices, rect);
+    }
 }
 
 /// The original's lettering, once the disc's is read.

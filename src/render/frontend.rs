@@ -76,6 +76,54 @@ pub(super) fn read(
     layers: &mut usize,
 ) -> Option<Scene> {
     let model = xbf::parse(model)?;
+    let roots = model
+        .objects
+        .iter()
+        .map(|object| (object, IDENTITY))
+        .collect();
+    build(&model, roots, textures, pictures, layers)
+}
+
+/// Reads only the parts of a model of these names, and what sits in them, as a scene, the
+/// parts in the order of their names, each where its own transform puts it.
+pub(super) fn read_parts(
+    model: &[u8],
+    parts: &[&str],
+    textures: &Archive,
+    pictures: &mut Vec<u8>,
+    layers: &mut usize,
+) -> Option<Scene> {
+    fn find<'a>(
+        object: &'a Object,
+        above: [[f32; 4]; 4],
+        name: &str,
+    ) -> Option<(&'a Object, [[f32; 4]; 4])> {
+        // A part stands as its own transform has it: what it sits in may hide it.
+        if object.name.eq_ignore_ascii_case(name) {
+            return Some((object, IDENTITY));
+        }
+        let world = times(&affine(&object.transform), &above);
+        object
+            .children
+            .iter()
+            .find_map(|child| find(child, world, name))
+    }
+    let model = xbf::parse(model)?;
+    let roots = parts
+        .iter()
+        .filter_map(|name| model.objects.iter().find_map(|o| find(o, IDENTITY, name)))
+        .collect();
+    build(&model, roots, textures, pictures, layers)
+}
+
+/// A scene of these parts of a model, each with where what it sits in stands.
+fn build(
+    model: &xbf::Model,
+    roots: Vec<(&Object, [[f32; 4]; 4])>,
+    textures: &Archive,
+    pictures: &mut Vec<u8>,
+    layers: &mut usize,
+) -> Option<Scene> {
     let mut scene = Scene::default();
     for name in &model.textures {
         let image = textures
@@ -95,8 +143,8 @@ pub(super) fn read(
             picture
         }));
     }
-    for object in &model.objects {
-        gather(object, &IDENTITY, &mut scene);
+    for (object, above) in roots {
+        gather(object, &above, &mut scene);
     }
     (!scene.still.is_empty() || !scene.moving.is_empty()).then_some(scene)
 }
@@ -204,8 +252,13 @@ impl Scene {
     /// Its faces where they stand this many seconds on.
     fn posed(&self, time: f32) -> Vec<Face> {
         let frame = (time * FRAMES_PER_SECOND) as usize;
+        self.posed_at(|frames| frame % frames.max(1))
+    }
+
+    /// Its faces where they stand at the frame `frame` picks of each part's frames.
+    fn posed_at(&self, frame: impl Fn(usize) -> usize) -> Vec<Face> {
         let moved = self.moving.iter().flat_map(|part| {
-            let cycle = frame % part.animation.frames.len().max(1);
+            let cycle = frame(part.animation.frames.len());
             let pose = part.animation.at(cycle).map_or(IDENTITY, affine);
             let world = times(&pose, &part.above);
             part.faces.iter().map(move |face| Face {
@@ -214,6 +267,48 @@ impl Scene {
             })
         });
         self.still.iter().copied().chain(moved).collect()
+    }
+
+    /// Draws the scene as its front shows it, stretched over a box (x, y, w, h), as it is once
+    /// its animation is over: seen along the axis it is flattest along, the first of the
+    /// others going right and the second up.
+    pub(super) fn draw_fitted(
+        &self,
+        vertices: &mut Vec<Vertex>,
+        (x, y, w, h): (f32, f32, f32, f32),
+    ) {
+        // Where it has come to at the end of its animation: the sidebar slides in.
+        let faces = self.posed_at(|frames| frames.saturating_sub(1));
+        let (mut low, mut high) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for corner in faces.iter().flat_map(|face| face.corners) {
+            for axis in 0..3 {
+                low[axis] = low[axis].min(corner[axis]);
+                high[axis] = high[axis].max(corner[axis]);
+            }
+        }
+        let span = |axis: usize| (high[axis] - low[axis]).max(SLIVER);
+        let flattest = (0..3)
+            .min_by(|&a, &b| span(a).total_cmp(&span(b)))
+            .unwrap_or(0);
+        let [right, up] = match flattest {
+            0 => [1, 2],
+            1 => [0, 2],
+            _ => [0, 1],
+        };
+        for face in faces {
+            let Some(Some(picture)) = self.pictures.get(face.picture) else {
+                continue;
+            };
+            let corners: [Corner; 3] = std::array::from_fn(|n| {
+                let corner = face.corners[n];
+                let at = (
+                    x + (corner[right] - low[right]) / span(right) * w,
+                    y + (high[up] - corner[up]) / span(up) * h,
+                );
+                (at, face.uv[n])
+            });
+            lay(vertices, &corners, *picture);
+        }
     }
 
     /// Draws the scene flat, its middle at `at` and `scale` pixels to its unit, as it is this

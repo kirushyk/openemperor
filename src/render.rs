@@ -130,6 +130,8 @@ const CURSOR_EDGE: Color = [0.0, 0.0, 0.0, 1.0];
 
 /// How many pixels the original's cursors are drawn to their unit, on a screen 1080 tall.
 const CURSOR_SCALE: f32 = 1.6;
+/// How far the sidebar's frame reaches past its buttons, on a screen 1080 tall.
+const SIDEBAR_FRAME_MARGIN: f32 = 16.0;
 
 pub const TITLE: &str = "OpenEmperor";
 pub const VERSION: &str = "v2.00";
@@ -4245,6 +4247,22 @@ fn draw_energy_gauge(canvas: &mut Canvas, game: &Game) {
 /// The fake buttons, the tabs with their symbols, and the active tab's grid.
 fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
     let s = ui_scale(game.height);
+    // The disc's frame behind all of the sidebar's buttons, a little round them.
+    let buttons = hud::all_buttons(game.width, game.height);
+    let around = buttons.iter().fold(None, |around, b| {
+        let (l, t, r, d) = around.unwrap_or((b.x, b.y, b.x + b.w, b.y + b.h));
+        Some((l.min(b.x), t.min(b.y), r.max(b.x + b.w), d.max(b.y + b.h)))
+    });
+    if let Some((left, top, right, bottom)) = around {
+        let margin = SIDEBAR_FRAME_MARGIN * s;
+        let rect = (
+            left - margin,
+            top - margin,
+            right - left + margin * 2.0,
+            bottom - top + margin * 2.0,
+        );
+        original::draw_sidebar_frame(&mut canvas.vertices, rect);
+    }
     for b in hud::command_buttons(game.width, game.height) {
         draw_button(canvas, game, b);
     }

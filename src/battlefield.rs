@@ -153,6 +153,9 @@ pub struct Terrain {
     spice: Vec<u8>,
     /// Where each side may start, as world points.
     starts: Vec<(f32, f32)>,
+    /// The first point of each of the map's named lists of points, such as `Primary` and
+    /// `Default` where bases stand, or `Script1` where a mission's script places something.
+    points: Vec<(String, (f32, f32))>,
     /// The color of each cell on the radar, row by row.
     radar: Vec<[f32; 3]>,
     light: Light,
@@ -233,34 +236,61 @@ fn parts(file: &[u8]) -> Option<Vec<(u32, &[u8])>> {
     Some(parts)
 }
 
-/// The points of the lists in the area of this name, one list after another. The areas are a
-/// count of them, then each: its name, a count of its lists, and each list: its name, a count
-/// of its points, and the points.
+/// The points of the lists in the area of this name, one list after another.
 fn area_points(areas: &[u8], wanted: &[u8]) -> Option<Vec<(f32, f32)>> {
+    area_lists(areas)?
+        .into_iter()
+        .find(|(area, _, _)| area.as_bytes() == wanted)
+        .map(|(_, _, points)| points)
+}
+
+/// Each area's lists, as (area, list, points): the areas are a count of them, then each: its
+/// name, a count of its lists, and each list: its name, a count of its points, and the
+/// points. An area's points are all its lists' together, one after another.
+fn area_lists(areas: &[u8]) -> Option<Vec<(String, String, Vec<(f32, f32)>)>> {
+    let named = |bytes: &[u8]| {
+        let name = bytes.split(|&byte| byte == 0).next().unwrap_or_default();
+        String::from_utf8_lossy(name).into_owned()
+    };
+    let mut lists: Vec<(String, String, Vec<(f32, f32)>)> = Vec::new();
+    let mut whole: Vec<(String, String, Vec<(f32, f32)>)> = Vec::new();
     let mut at = 4;
     for _ in 0..u32_at(areas, 0)? {
-        let name = areas.get(at..at + AREA_NAME)?;
-        let is_wanted = name.split(|&byte| byte == 0).next() == Some(wanted);
-        let lists = u32_at(areas, at + AREA_NAME)?;
+        let area = named(areas.get(at..at + AREA_NAME)?);
+        let count = u32_at(areas, at + AREA_NAME)?;
         at += AREA_NAME + 4;
-        let mut points = Vec::new();
-        for _ in 0..lists {
-            let count = u32_at(areas, at + AREA_NAME)? as usize;
+        let mut all = Vec::new();
+        for _ in 0..count {
+            let list = named(areas.get(at..at + AREA_NAME)?);
+            let points = u32_at(areas, at + AREA_NAME)? as usize;
             at += AREA_NAME + 4;
-            for point in 0..count {
+            let mut these = Vec::new();
+            for point in 0..points {
                 let start = at + point * AREA_POINT + 4;
-                points.push((
+                these.push((
                     f64_at(areas, start)? as f32,
                     f64_at(areas, start + 8)? as f32,
                 ));
             }
-            at += count * AREA_POINT;
+            at += points * AREA_POINT;
+            all.extend(&these);
+            lists.push((area.clone(), list, these));
         }
-        if is_wanted {
-            return Some(points);
-        }
+        whole.push((area, String::new(), all));
     }
-    None
+    // The whole areas first, for `area_points`; then their lists, for the named points.
+    whole.extend(lists);
+    Some(whole)
+}
+
+/// The first point of each named list of the map's areas.
+fn named_points(areas: &[u8]) -> Vec<(String, (f32, f32))> {
+    area_lists(areas)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, list, _)| !list.is_empty())
+        .filter_map(|(_, list, points)| Some((list, *points.first()?)))
+        .collect()
 }
 
 /// How many places to start from a map's `test.xbf` has.
@@ -300,6 +330,7 @@ impl Terrain {
         let starts = part(AREAS)
             .and_then(|areas| area_points(areas, BASES))
             .unwrap_or_default();
+        let points = part(AREAS).map(named_points).unwrap_or_default();
         let radar = (0..cells)
             .map(|cell| {
                 let (u, v) = (cell % width, cell / width);
@@ -318,6 +349,7 @@ impl Terrain {
             grounds,
             spice,
             starts,
+            points,
             radar,
             light: DAYLIGHT,
             walkable: Default::default(),
@@ -348,6 +380,7 @@ impl Terrain {
                 (right - inset, inset),
                 (inset, bottom - inset),
             ],
+            points: Vec::new(),
             radar: vec![SAND; width * height],
             light: DAYLIGHT,
             walkable: Default::default(),
@@ -446,6 +479,14 @@ impl Terrain {
     /// Where the sides may start, as world points.
     pub fn starts(&self) -> &[(f32, f32)] {
         &self.starts
+    }
+
+    /// The map's point of this name, such as `Script1`, if it has it.
+    pub fn point(&self, name: &str) -> Option<(f32, f32)> {
+        self.points
+            .iter()
+            .find(|(named, _)| named.eq_ignore_ascii_case(name))
+            .map(|&(_, at)| at)
     }
 
     /// What the ground shader makes of this map: only its pictures.

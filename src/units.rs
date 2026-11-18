@@ -3009,8 +3009,14 @@ impl Unit {
             && are_enemies(teams, self.owner, other.owner)
     }
 
-    /// Whether its weapon can be turned on another unit.
+    /// Whether its weapon can be turned on another unit of its own accord: an enemy's.
     pub fn can_attack(&self, other: &Unit, teams: &[usize]) -> bool {
+        other.owner != NEUTRAL && self.can_attack_when_told(other, teams)
+    }
+
+    /// Whether it can be told to attack another unit: an enemy's, or one that is nobody's,
+    /// as a barrel or a prisoner.
+    pub fn can_attack_when_told(&self, other: &Unit, teams: &[usize]) -> bool {
         self.alive
             && other.alive
             && !other.hidden_from(self.owner, teams)
@@ -5018,7 +5024,7 @@ fn set_target(unit: &mut Unit, target: Target) {
 pub fn order_attack(units: &mut [Unit], chosen: usize, teams: &[usize]) {
     let chosen = units[chosen];
     for unit in units.iter_mut().filter(|u| u.selected) {
-        if unit.can_attack(&chosen, teams) || unit.can_tend(&chosen, teams) {
+        if unit.can_attack_when_told(&chosen, teams) || unit.can_tend(&chosen, teams) {
             set_target(unit, Target::Unit(chosen.id));
         }
     }
@@ -5028,7 +5034,7 @@ pub fn order_attack(units: &mut [Unit], chosen: usize, teams: &[usize]) {
 pub fn order_force_attack(units: &mut [Unit], chosen: usize, teams: &[usize]) {
     let chosen = units[chosen];
     for unit in units.iter_mut().filter(|u| u.selected) {
-        if unit.can_attack(&chosen, teams) || unit.can_tend(&chosen, teams) {
+        if unit.can_attack_when_told(&chosen, teams) || unit.can_tend(&chosen, teams) {
             set_target(unit, Target::Unit(chosen.id));
         } else if unit.can_fire_on(&chosen) {
             set_target(unit, Target::Forced(chosen.id));
@@ -5067,7 +5073,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                     Target::Forced(_) => units[i].can_fire_on(u),
                     Target::Rescue(_) => units[i].can_fix(u, teams) && u.health < u.max_health(),
                     Target::RunOver(_) => can_run_over(&units[i], u, teams),
-                    _ => units[i].can_attack(u, teams) || units[i].can_tend(u, teams),
+                    _ => units[i].can_attack_when_told(u, teams) || units[i].can_tend(u, teams),
                 };
                 let Some(other_index) = units.iter().position(|u| u.alive && u.id == id && fit(u))
                 else {
@@ -11405,7 +11411,14 @@ mod tests {
         let mut barrel = Unit::for_test(30.0, 0.0, UnitKind::Building);
         barrel.role = Role::Prop(Prop::Barrel);
         barrel.owner = NEUTRAL;
-        assert!(rifle.can_attack(&barrel, &teams), "when ordered to");
+        assert!(
+            rifle.can_attack_when_told(&barrel, &teams),
+            "when ordered to"
+        );
+        assert!(
+            !rifle.can_attack(&barrel, &teams),
+            "but not of its own accord"
+        );
         assert!(
             !are_enemies(&teams, rifle.owner, barrel.owner),
             "nobody's enemy"

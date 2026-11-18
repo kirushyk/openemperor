@@ -2608,7 +2608,7 @@ impl Game {
         let able = |u: &Unit| {
             selected
                 .iter()
-                .any(|s| s.can_attack(u, &self.teams) || s.can_tend(u, &self.teams))
+                .any(|s| s.can_attack_when_told(u, &self.teams) || s.can_tend(u, &self.teams))
         };
         let (chosen, distance) = self.unit_near_cursor(able)?;
         let own = self.unit_near_cursor(Unit::is_selectable);
@@ -3474,7 +3474,9 @@ impl Game {
         let selected = self.selected_units();
         let able = |u: &Unit| {
             selected.iter().any(|s| {
-                s.can_fire_on(u) || s.can_attack(u, &self.teams) || s.can_tend(u, &self.teams)
+                s.can_fire_on(u)
+                    || s.can_attack_when_told(u, &self.teams)
+                    || s.can_tend(u, &self.teams)
             })
         };
         if let Some((unit, _)) = self.unit_near_cursor(able) {
@@ -3490,8 +3492,9 @@ impl Game {
     pub fn cursor_look(&self) -> CursorLook {
         let selected = self.selected_units();
         let look_at = |u: &Unit| {
-            let armed =
-                |s: &&Unit| s.can_attack(u, &self.teams) || (self.control_held && s.can_fire_on(u));
+            let armed = |s: &&Unit| {
+                s.can_attack_when_told(u, &self.teams) || (self.control_held && s.can_fire_on(u))
+            };
             if selected.iter().any(armed) {
                 CursorLook::Attack
             } else if selected.iter().any(|s| s.can_fix(u, &self.teams)) {

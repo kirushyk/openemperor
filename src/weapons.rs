@@ -3040,7 +3040,7 @@ fn choose_target(units: &[Unit], shooter: usize, teams: &[usize]) -> Option<usiz
             let fit = if forced {
                 unit.can_fire_on(&units[t])
             } else {
-                unit.can_attack(&units[t], teams)
+                unit.can_attack_when_told(&units[t], teams)
             };
             fit && distance(unit.center(), units[t].center()) <= unit.range_down_to(units[t].y)
         })
@@ -6465,5 +6465,21 @@ mod tests {
             WeaponKind::Bombard.bullet().reload,
             120.0 / UPDATES_PER_SECOND
         );
+    }
+
+    #[test]
+    fn nobodys_prisoner_is_fired_on_only_when_told() {
+        let mut guard = Unit::for_test(0.0, 0.0, UnitKind::Infantry);
+        guard.role = Role::HkLightInf;
+        guard.weapon = WeaponKind::Pistol;
+        guard.owner = 1;
+        let mut prisoner = Unit::for_test(40.0, 0.0, UnitKind::Infantry);
+        prisoner.role = Role::Civilian(crate::units::Gender::Female);
+        prisoner.owner = crate::units::NEUTRAL;
+        prisoner.id = 7;
+        let mut units = [guard, prisoner];
+        assert_eq!(choose_target(&units, 0, &TEAMS), None, "left alone");
+        units[0].target = Some(Target::Unit(7));
+        assert_eq!(choose_target(&units, 0, &TEAMS), Some(1), "unless told");
     }
 }

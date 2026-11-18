@@ -2023,7 +2023,6 @@ impl Role {
         }
     }
 
-    #[cfg(test)]
     /// Whether it squashes the enemy's infantry it drives over, as the original's `Crushes`
     /// has it: not a sand bike, a dust scout, a laser tank or the Ordos' APC.
     pub fn crushes(self) -> bool {
@@ -2045,6 +2044,7 @@ impl Role {
         )
     }
 
+    #[cfg(test)]
     fn for_kind(kind: UnitKind) -> Self {
         match kind {
             UnitKind::Infantry => Role::AtInfantry,

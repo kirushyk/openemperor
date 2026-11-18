@@ -164,6 +164,20 @@ const STANDS: u16 = 22;
 const HURT_BY: u16 = 27;
 /// Whether a thing is destroyed, as `DESTROYED`.
 const GONE: u16 = 44;
+/// The camera's part in a scene: begun and ended by these keywords, kept, sent to look at a
+/// place, glided to one over so many updates, circled about it at so many degrees an update
+/// one way or the other, stopped circling, glided back to where it was kept.
+const SCENE_BEGINS: u16 = 131;
+const SCENE_ENDS: u16 = 132;
+const LOOK_AT: u16 = 100;
+const GLIDE_TO: u16 = 101;
+const CIRCLE: u16 = 105;
+const STOP_CIRCLING: u16 = 106;
+const KEEP_VIEW: u16 = 112;
+const GLIDE_BACK: u16 = 113;
+/// The same in the midst of the battle.
+const LOOK_AT_TOO: u16 = 114;
+const GLIDE_TO_TOO: u16 = 115;
 /// What `SOMEONE` is as a side.
 pub const SOMEONE_SIDE: i32 = -1;
 
@@ -198,6 +212,18 @@ impl Value {
             _ => None,
         }
     }
+}
+
+/// What a script has the camera do, its times in the script's updates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Shot {
+    Keep,
+    LookAt((f32, f32)),
+    GlideTo((f32, f32), i32),
+    /// Degrees an update, and which way: 1 one, 2 the other.
+    Circle(i32, i32),
+    StopCircling,
+    GlideBack(i32),
 }
 
 /// What a script asks of the battle it runs in. Its sides are numbers: the player's 0, and
@@ -247,6 +273,9 @@ pub trait Battle {
     fn hurt_by(&self, _thing: Option<u32>, _side: i32) -> bool {
         false
     }
+    /// A scene begins, which the player watches, or ends.
+    fn scene(&mut self, _playing: bool) {}
+    fn camera(&mut self, _shot: Shot) {}
 }
 
 /// A piece of a line as the script reads it.
@@ -370,6 +399,11 @@ impl Script {
                     _ => None,
                 };
                 let place = |(x, z): (f32, f32)| Value::Place(x, z);
+                // A place the camera is sent to, if what it is of is still there.
+                let spot = |n: usize| match at(n) {
+                    Value::Place(x, z) => Some((x, z)),
+                    _ => None,
+                };
                 match *callee {
                     Piece::Keyword(NEGATIVE) => Value::Number(-number(0)),
                     Piece::Keyword(PLACE) => {
@@ -439,6 +473,22 @@ impl Script {
                         }
                         None => Value::Thing(None),
                     },
+                    Piece::Keyword(SCENE_BEGINS | SCENE_ENDS) => {
+                        battle.scene(*callee == Piece::Keyword(SCENE_BEGINS));
+                        Value::Number(0)
+                    }
+                    Piece::Function(LOOK_AT | LOOK_AT_TOO) => {
+                        film(battle, spot(0).map(Shot::LookAt))
+                    }
+                    Piece::Function(GLIDE_TO | GLIDE_TO_TOO) => {
+                        film(battle, spot(0).map(|to| Shot::GlideTo(to, number(1))))
+                    }
+                    Piece::Function(CIRCLE) => {
+                        film(battle, Some(Shot::Circle(number(0), number(1))))
+                    }
+                    Piece::Function(STOP_CIRCLING) => film(battle, Some(Shot::StopCircling)),
+                    Piece::Function(KEEP_VIEW) => film(battle, Some(Shot::Keep)),
+                    Piece::Function(GLIDE_BACK) => film(battle, Some(Shot::GlideBack(number(0)))),
                     Piece::Function(FRIENDS | ENEMIES) => {
                         battle.relate(number(0), number(1), *callee == Piece::Function(ENEMIES));
                         Value::Number(0)
@@ -448,6 +498,14 @@ impl Script {
             }
         }
     }
+}
+
+/// Has the camera do this, if there is anything to do.
+fn film(battle: &mut impl Battle, shot: Option<Shot>) -> Value {
+    if let Some(shot) = shot {
+        battle.camera(shot);
+    }
+    Value::Number(0)
 }
 
 /// A line's tokens as the pieces the script reads: its text cut into numbers, brackets and
@@ -664,6 +722,8 @@ mod tests {
         related: Vec<(i32, i32, bool)>,
         turned: Vec<(Option<u32>, u16, i32)>,
         health: Vec<(Option<u32>, i32)>,
+        scenes: Vec<bool>,
+        shots: Vec<Shot>,
     }
 
     impl Battle for Written {
@@ -719,10 +779,53 @@ mod tests {
         fn sees(&self, seen: i32, by: i32) -> bool {
             (seen, by) == (1, 0)
         }
+        fn scene(&mut self, playing: bool) {
+            self.scenes.push(playing);
+        }
+        fn camera(&mut self, shot: Shot) {
+            self.shots.push(shot);
+        }
     }
 
     fn text(text: &str) -> Token {
         Token::Text(text.to_string())
+    }
+
+    #[test]
+    fn a_first_battles_opening_scene_has_the_camera_look_glide_circle_and_come_back() {
+        use Token::{Function as F, Keyword as K, Variable as V};
+        // As the houses' first battles have it: K131(); F100(v13); F112(); F101(v16,50);
+        // F105(2,1); F113(60); K132(); and the camera sent to a thing gone does nothing.
+        let point = |n: &str| vec![F(SCRIPT_POINT), text(&format!("({n})"))];
+        let lines = vec![
+            [vec![V(13), K(SET)], point("13")].concat(),
+            [vec![V(16), K(SET)], point("16")].concat(),
+            vec![K(SCENE_BEGINS), text("()")],
+            vec![F(LOOK_AT), text("("), V(13), text(")")],
+            vec![F(KEEP_VIEW), text("()")],
+            vec![F(GLIDE_TO), text("("), V(16), text(",50)")],
+            vec![F(CIRCLE), text("(2,1)")],
+            vec![F(STOP_CIRCLING), text("()")],
+            vec![F(GLIDE_BACK), text("(60)")],
+            vec![K(SCENE_ENDS), text("()")],
+            vec![F(LOOK_AT_TOO), text("("), V(20), text(")")],
+            vec![F(GLIDE_TO_TOO), text("("), V(13), text(",80)")],
+        ];
+        let mut battle = Written::default();
+        Script::new(&lines).run(&mut battle);
+        assert_eq!(battle.scenes, [true, false]);
+        assert_eq!(
+            battle.shots,
+            [
+                Shot::LookAt((13.0, 0.0)),
+                Shot::Keep,
+                Shot::GlideTo((16.0, 0.0), 50),
+                Shot::Circle(2, 1),
+                Shot::StopCircling,
+                Shot::GlideBack(60),
+                Shot::GlideTo((13.0, 0.0), 80),
+            ]
+        );
     }
 
     #[test]

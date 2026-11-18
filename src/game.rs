@@ -2037,6 +2037,26 @@ impl mission::Battle for Game {
         self.decide(Outcome::Victory);
     }
 
+    fn scene(&mut self, playing: bool) {
+        self.scene_playing = playing;
+    }
+
+    fn camera(&mut self, shot: mission::Shot) {
+        let seconds = |updates: i32| updates as f32 / SCRIPT_UPDATES_PER_SECOND;
+        match shot {
+            mission::Shot::Keep => self.camera.keep(),
+            mission::Shot::LookAt((x, z)) => self.camera.look_at(x, z),
+            mission::Shot::GlideTo(to, updates) => self.camera.glide_to(to, seconds(updates)),
+            mission::Shot::Circle(degrees, way) => {
+                let way = if way == 2 { -1.0 } else { 1.0 };
+                let per_second = degrees as f32 * SCRIPT_UPDATES_PER_SECOND;
+                self.camera.circle(way * per_second.to_radians());
+            }
+            mission::Shot::StopCircling => self.camera.circle(0.0),
+            mission::Shot::GlideBack(updates) => self.camera.glide_back(seconds(updates)),
+        }
+    }
+
     fn place_of(&self, thing: Option<u32>) -> Option<(f32, f32)> {
         let unit = self.units.iter().find(|u| Some(u.id) == thing && u.alive)?;
         Some((unit.x, unit.z))
@@ -2212,6 +2232,8 @@ pub struct Game {
     /// thing it made, by id; and the lines of speech it has asked for, not yet played.
     script: Option<Script>,
     script_updates: i32,
+    /// Whether a scene of the mission's script is playing, the camera its own.
+    scene_playing: bool,
     script_clock: f32,
     script_sides: i32,
     script_side_of: Vec<(u32, i32)>,
@@ -2355,6 +2377,7 @@ impl Game {
             units_shown: 0,
             script: None,
             script_updates: 0,
+            scene_playing: false,
             script_clock: 0.0,
             script_sides: 0,
             script_side_of: Vec::new(),
@@ -4522,6 +4545,7 @@ impl Game {
         self.killed = Casualties::default();
         self.lost = Casualties::default();
         self.camera = Camera::centered_on(battlefield::terrain(map).extent());
+        self.scene_playing = false;
         self.camera.open();
         self.in_battle = true;
         self.pausable = true;
@@ -4998,8 +5022,11 @@ impl Game {
                     self.outcome_elapsed += dt;
                 }
                 self.camera.ease_zoom(dt);
+                self.camera.play(dt);
                 self.follow_with_camera();
+                // A scene a mission's script plays is watched, not scrolled away from.
                 if self.following.is_none()
+                    && !self.scene_playing
                     && self.focused
                     && !self.key_paused
                     && !self.minimap_dragging

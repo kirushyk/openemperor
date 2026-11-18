@@ -71,7 +71,8 @@ Their names are not on the disc. These are what their use in `ATStart.tok` shows
 | `K143` | A negative number | `K143(10)` |
 | `K139` | Puts a new object on the map and gives it: side, kind, place, tiles across, tiles down, facing | `K139(v0,<ATConYard>,v13,0,0,1)` |
 | `K150` | Sets something of a side | `K150(v2,1)` |
-| `K128`, `K131`, `K132`, `K133`, `K156` | Not known | |
+| `K131`, `K132` | A scene begins and ends: the camera is the script's, not scrolled | around the first battles' opening |
+| `K128`, `K129`, `K130`, `K133`, `K156` | Not known | |
 | `F0()` | The battle's time, in updates | compared with 49, 50, 100, 150 … |
 | `F14()` | The player's side | `v0 K180 F14()` |
 | `F18()` | A new side | four of them, the enemy and others |
@@ -99,6 +100,12 @@ Their names are not on the disc. These are what their use in `ATStart.tok` shows
 | `F54(thing, n)` | Sets a thing's health | a camp's windtraps at 90 to 320 |
 | `F57(thing, kind, side)` | Turns a thing into a kind, for a side | prisoners freed as Fremen |
 | `F59(a, b)` | Makes side `a` a friend of `b` | given both ways |
+| `F100(place)`, `F114(place)` | The camera looks at a place; the second in the midst of the battle | `F100(v13)`: the player's base |
+| `F101(place, n)`, `F115(place, n)` | The camera glides to a place over `n` updates | `F101(v16,50)`: to the enemy's base |
+| `F105(degrees, way)` | The camera circles where it looks, so many degrees an update, `1` one way and `2` the other | `F105(2,1)`: once round in the 180 updates before `F113` |
+| `F106()` | The camera stops circling | |
+| `F112()` | The camera's view is kept | before it glides away |
+| `F113(n)` | The camera stops circling and glides back to the view kept over `n` updates | `F113(60)` |
 
 ## The Atreides' first mission
 

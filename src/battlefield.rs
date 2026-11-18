@@ -1018,6 +1018,21 @@ pub struct Camera {
     opening: f32,
     /// How far the map it is kept on reaches along x and along z.
     extent: (f32, f32),
+    /// What a mission's script has it do: glide somewhere, circle round at so many radians a
+    /// second, and come back to where it was kept.
+    glide: Option<Glide>,
+    circling: f32,
+    kept: Option<(f32, f32, f32)>,
+}
+
+/// A glide of the camera, as a mission's script asks for one: from where it looks and how it
+/// is turned to where and how, over so many seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Glide {
+    from: (f32, f32, f32),
+    to: (f32, f32, f32),
+    seconds: f32,
+    gone: f32,
 }
 
 impl Camera {
@@ -1040,6 +1055,9 @@ impl Camera {
             yaw_target: yaw,
             opening: 0.0,
             extent,
+            glide: None,
+            circling: 0.0,
+            kept: None,
         }
     }
 
@@ -1106,6 +1124,69 @@ impl Camera {
             self.zoom = self.zoom_target;
         }
         if (self.yaw_target - self.yaw).abs() < 0.0005 {
+            self.yaw = self.yaw_target;
+        }
+    }
+
+    /// Keeps where it looks and how it is turned, to glide back to.
+    pub fn keep(&mut self) {
+        self.kept = Some((self.x, self.z, self.yaw_target));
+    }
+
+    /// Glides to look at a place over so many seconds, turned as it is.
+    pub fn glide_to(&mut self, (x, z): (f32, f32), seconds: f32) {
+        self.glide((x, z, self.yaw_target), seconds);
+    }
+
+    /// Stops circling and glides back to where it was kept over so many seconds, turning back
+    /// the short way round.
+    pub fn glide_back(&mut self, seconds: f32) {
+        self.circling = 0.0;
+        if let Some((x, z, yaw)) = self.kept {
+            let turns = ((self.yaw_target - yaw) / TAU).round();
+            self.glide((x, z, yaw + turns * TAU), seconds);
+        }
+    }
+
+    fn glide(&mut self, to: (f32, f32, f32), seconds: f32) {
+        self.opening = 0.0;
+        self.zoom = self.zoom_target;
+        self.yaw = self.yaw_target;
+        let from = (self.x, self.z, self.yaw_target);
+        self.glide = Some(Glide {
+            from,
+            to,
+            seconds,
+            gone: 0.0,
+        });
+    }
+
+    /// Circles round the point it looks at, this many radians a second; none stops it.
+    pub fn circle(&mut self, radians_per_second: f32) {
+        self.circling = radians_per_second;
+    }
+
+    /// One frame of what a mission's script has the camera do.
+    pub fn play(&mut self, dt: f32) {
+        if let Some(mut glide) = self.glide.take() {
+            glide.gone += dt;
+            let done = if glide.seconds > 0.0 {
+                (glide.gone / glide.seconds).min(1.0)
+            } else {
+                1.0
+            };
+            let eased = done * done * (3.0 - 2.0 * done);
+            let between = |from: f32, to: f32| from + (to - from) * eased;
+            let (from, to) = (glide.from, glide.to);
+            self.look_at(between(from.0, to.0), between(from.1, to.1));
+            self.yaw_target = between(from.2, to.2);
+            self.yaw = self.yaw_target;
+            if done < 1.0 {
+                self.glide = Some(glide);
+            }
+        }
+        if self.circling != 0.0 {
+            self.yaw_target += self.circling * dt;
             self.yaw = self.yaw_target;
         }
     }
@@ -2040,5 +2121,36 @@ mod tests {
                 "{mouse:?} gave {got:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_scripts_camera_glides_there_circles_and_glides_back_the_short_way() {
+        let mut camera = Camera::centered_on((4000.0, 4000.0));
+        let (home, usual) = ((camera.x, camera.z), camera.yaw);
+        camera.keep();
+        camera.glide_to((3000.0, 1000.0), 5.0);
+        camera.play(2.5);
+        assert!(
+            (camera.x - (home.0 + 3000.0) / 2.0).abs() < 1.0,
+            "halfway at half time"
+        );
+        camera.play(2.5);
+        assert_eq!((camera.x, camera.z, camera.yaw), (3000.0, 1000.0, usual));
+        camera.circle(20f32.to_radians());
+        for _ in 0..18 {
+            camera.play(1.0);
+        }
+        assert!(
+            (camera.yaw - usual - TAU).abs() < 1e-3,
+            "once round in 18 seconds"
+        );
+        camera.glide_back(6.0);
+        camera.play(6.0);
+        camera.play(1.0);
+        assert_eq!((camera.x, camera.z), home);
+        assert!(
+            (camera.yaw - usual - TAU).abs() < 1e-3,
+            "not turned back round"
+        );
     }
 }

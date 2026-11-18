@@ -314,7 +314,8 @@ fn names_whom(rest: &str) -> bool {
 
 /// The house, the phase and the battle of a script, by its name: `ATP1M7FR` is the
 /// Atreides' attack on territory 7 in phase 1, one of a defence fought against who held the
-/// territory at first; `Atreides Heighliner Mission` is theirs on the Heighliner.
+/// territory at first; `Atreides Heighliner Mission` is theirs on the Heighliner, and
+/// `ATStart` their first battle.
 pub fn named_mission(name: &str) -> Option<(Faction, u32, Mission)> {
     // The Heighliner's names have spaces, which may be left out on a command line.
     let squeezed = |name: &str| name.replace(' ', "").to_lowercase();
@@ -323,6 +324,13 @@ pub fn named_mission(name: &str) -> Option<(Faction, u32, Mission)> {
         .find(|(_, script)| squeezed(script) == squeezed(name))
     {
         return Some((house, HEIGHLINER_PHASE, Mission::Heighliner));
+    }
+    if let Some(&(house, _)) = START_SCRIPTS.iter().find(|(_, script)| {
+        script
+            .strip_suffix(".tok")
+            .is_some_and(|start| start == name)
+    }) {
+        return Some((house, START_PHASE, Mission::Start));
     }
     let house = [Faction::Atreides, Faction::Harkonnen, Faction::Ordos]
         .into_iter()
@@ -355,8 +363,8 @@ pub fn named_mission(name: &str) -> Option<(Faction, u32, Mission)> {
     Some((house, phase, Mission::Defend(at, by)))
 }
 
-/// The names of the battles' scripts on the disc that `named_mission` knows: the
-/// territories' and the Heighliner's.
+/// The names of the battles' scripts on the disc that `named_mission` knows: the houses'
+/// first battles', the territories' and the Heighliner's.
 pub fn mission_names() -> Vec<&'static str> {
     data().map_or_else(Vec::new, |data| {
         data.mission_scripts
@@ -1167,6 +1175,10 @@ pub(crate) mod tests {
                 Some((Faction::Atreides, HEIGHLINER_PHASE, Mission::Heighliner))
             );
         }
+        assert_eq!(
+            named_mission("HKStart"),
+            Some((Faction::Harkonnen, START_PHASE, Mission::Start))
+        );
         assert_eq!(
             named_mission("hhkheighlinermission"),
             Some((Faction::Harkonnen, HEIGHLINER_PHASE, Mission::Heighliner))

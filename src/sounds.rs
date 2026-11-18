@@ -17,6 +17,17 @@ const CABINET: &str = "INSTALL/Game1.cab";
 const BAG: &str = "INSTALL/DATA/SFX/AUDIO.BAG";
 /// The bag of what the battlefield says to the player, on the disc that installs the game.
 const DIALOG_BAG: &str = "INSTALL/DATA/DIALOG/DIALOG.BAG";
+/// The table of what is spoken, in the game's text: a mission's script names a line by the
+/// place of its line in it, the first being `FIRST_SPOKEN`. Its names are those of the
+/// recordings of `sounds.txt`, whose names in the bags leave off the language's letter.
+const TEXT_INDEX: &str = "\\data\\STRINGS0001.RFH";
+const TEXT_DATA: &str = "\\data\\STRINGS0001.RFD";
+const SPOKEN: &str = "E_Output_Pickup.txt";
+const FIRST_SPOKEN: u16 = 429;
+const RECORDINGS: &str = "\\data\\Sounds\\sounds.txt";
+const LANGUAGE: char = 'E';
+/// A house disc's bag of what is said in its missions.
+const HOUSE_DIALOG_BAG: &str = "DIALOG.BAG";
 /// The sound tables in the cabinet.
 const TABLES: [&str; 4] = [
     "\\data\\Sfx\\AtreidesSFX.txt",
@@ -80,6 +91,11 @@ struct Sounds {
 
 static SOUNDS_READ: OnceLock<Sounds> = OnceLock::new();
 static DIALOG_READ: OnceLock<Sounds> = OnceLock::new();
+/// The house discs' dialogue, read once they are found.
+static HOUSE_DIALOG: OnceLock<Vec<Sounds>> = OnceLock::new();
+/// The recording of each line of what is spoken, by the line's place in its table: none for
+/// a line that names none.
+static SPOKEN_LINES: OnceLock<Vec<Option<String>>> = OnceLock::new();
 
 /// Reads the sounds and their tables from the disc mounted at `disc`. Without it, nothing
 /// plays.
@@ -105,6 +121,7 @@ pub fn load(disc: &Path) {
         sections,
         read: Mutex::default(),
     });
+    let _ = SPOKEN_LINES.set(spoken_lines(&cabinet).unwrap_or_default());
     let dialog = disc.join(DIALOG_BAG);
     if let Some(tracks) = music::list(&dialog) {
         let _ = DIALOG_READ.set(Sounds {
@@ -117,6 +134,70 @@ pub fn load(disc: &Path) {
             read: Mutex::default(),
         });
     }
+}
+
+/// Reads the dialogue bags of these house discs.
+pub fn load_house_dialog(discs: &[PathBuf]) {
+    let bags = discs
+        .iter()
+        .map(|disc| disc.join(HOUSE_DIALOG_BAG))
+        .filter_map(|bag| {
+            let tracks = music::list(&bag)?;
+            Some(Sounds {
+                bag,
+                tracks: tracks
+                    .into_iter()
+                    .map(|track| (track.name.to_lowercase(), track))
+                    .collect(),
+                sections: HashMap::new(),
+                read: Mutex::default(),
+            })
+        })
+        .collect();
+    let _ = HOUSE_DIALOG.set(bags);
+}
+
+/// The recording of each line of the table of what is spoken, as the cabinet has them.
+fn spoken_lines(cabinet: &Path) -> Option<Vec<Option<String>>> {
+    let index = archive::from_cabinet(cabinet, TEXT_INDEX)?;
+    let data = archive::from_cabinet(cabinet, TEXT_DATA)?;
+    let spoken = crate::maps::utf16(&archive::read_in(&index, &data, SPOKEN)?);
+    let recordings = archive::from_cabinet(cabinet, RECORDINGS)?;
+    Some(recorded(&spoken, &String::from_utf8_lossy(&recordings)))
+}
+
+/// The recording of each line of a table of what is spoken, by its name in `sounds.txt`'s
+/// list of names and recordings, without the language's letter.
+fn recorded(spoken: &str, recordings: &str) -> Vec<Option<String>> {
+    let recording = |id: &str| {
+        recordings.lines().find_map(|line| {
+            let (name, file) = line.split_once('\t')?;
+            name.trim().eq_ignore_ascii_case(id).then(|| {
+                let file = file.trim();
+                file.strip_suffix(LANGUAGE).unwrap_or(file).to_string()
+            })
+        })
+    };
+    spoken
+        .lines()
+        .map(|line| {
+            let (id, _) = line.split_once('\t')?;
+            let id = id.trim();
+            if id.is_empty() { None } else { recording(id) }
+        })
+        .collect()
+}
+
+/// The line of speech a mission's script names by this number, from whichever disc has it.
+pub fn mission_line(number: u16) -> Option<Arc<Line>> {
+    let at = usize::from(number.checked_sub(FIRST_SPOKEN)?);
+    let name = SPOKEN_LINES.get()?.get(at)?.as_ref()?.to_lowercase();
+    let first = DIALOG_READ.get().into_iter();
+    let houses = HOUSE_DIALOG.get().into_iter().flatten();
+    first
+        .chain(houses)
+        .find(|sounds| sounds.tracks.contains_key(&name))
+        .and_then(|sounds| cached_line(sounds, &name))
 }
 
 /// The line of the dialogue bag said for this to a player of this house: the sound the
@@ -502,6 +583,39 @@ mod tests {
                     "{speech:?} {house:?}: {name}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_scripts_line_of_speech_is_the_recording_of_its_line_of_the_spoken_table() {
+        let spoken =
+            "\u{feff};Atreides\t\n[END]\t\nATstart1\t\"{Mentat : Welcome}\"\n\nATstart2\t{x}\n";
+        let recordings = "Debriefing\t\nATstart2\tKK-M682E\nATstart1\tKK-M680E\n";
+        let lines = recorded(spoken, recordings);
+        assert_eq!(lines[2].as_deref(), Some("KK-M680"));
+        assert_eq!(lines[3], None, "a blank line");
+        assert_eq!(lines[4].as_deref(), Some("KK-M682"));
+        let disc = Path::new("/Volumes/EMPEROR1");
+        if !disc.is_dir() {
+            return;
+        }
+        let lines = spoken_lines(&disc.join(CABINET)).unwrap();
+        // The two lines the Atreides' first mission says first, its Mentat's welcome.
+        assert_eq!(
+            lines[usize::from(642 - FIRST_SPOKEN)].as_deref(),
+            Some("KK-M680")
+        );
+        assert_eq!(
+            lines[usize::from(643 - FIRST_SPOKEN)].as_deref(),
+            Some("KK-M682")
+        );
+        let house = Path::new("/Volumes/EMPEROR2").join(HOUSE_DIALOG_BAG);
+        if let Some(tracks) = music::list(&house) {
+            assert!(
+                tracks
+                    .iter()
+                    .any(|t| t.name.eq_ignore_ascii_case("KK-M680"))
+            );
         }
     }
 }

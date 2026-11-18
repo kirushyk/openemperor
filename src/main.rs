@@ -100,7 +100,11 @@ fn main() {
         render::load_original_models(disc);
         units::fire_from(render::original_muzzles);
         let disc = disc.to_path_buf();
-        std::thread::spawn(move || sounds::load(&disc));
+        let houses = all_discs.clone();
+        std::thread::spawn(move || {
+            sounds::load(&disc);
+            sounds::load_house_dialog(&houses);
+        });
     }
     // Which of its lines a unit says, each time another.
     #[cfg(target_os = "macos")]

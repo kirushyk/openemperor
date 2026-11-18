@@ -660,7 +660,9 @@ impl Terrain {
         self.radar[v * self.width + u]
     }
 
-    /// Which grid points a route may go through: those all of whose cells can be gone over.
+    /// Which grid points a route may go through: those all of whose cells can be gone over,
+    /// or on foot, those beside two cells side by side that can, so that a soldier may take a
+    /// passage or a bridge only a cell wide.
     fn route_grid(&self, going: Going) -> &[bool] {
         self.walkable[going as usize].get_or_init(|| {
             let mut grid = vec![false; GRID_POINTS];
@@ -674,9 +676,13 @@ impl Terrain {
                         (column(u.saturating_sub(1)), row(v)),
                         (column(u), row(v)),
                     ];
-                    grid[grid_index(u, v)] = cells
-                        .iter()
-                        .all(|&(c, r)| self.grounds[r * self.width + c].lets(going));
+                    let [up_left, up_right, down_left, down_right] =
+                        cells.map(|(c, r)| self.grounds[r * self.width + c].lets(going));
+                    grid[grid_index(u, v)] = if going == Going::OnFoot {
+                        up_left && (up_right || down_left) || down_right && (up_right || down_left)
+                    } else {
+                        up_left && up_right && down_left && down_right
+                    };
                 }
             }
             grid
@@ -696,6 +702,25 @@ impl Terrain {
                 let (px, pz) = grid_to_world(point_u as f32, point_v as f32);
                 visit(grid_index(point_u, point_v), px, pz);
             }
+        }
+    }
+
+    /// Whether a step from one grid point to the next runs beside a cell that can be gone
+    /// over, or across one, diagonally: not along a cliff a cell thick from one side of it
+    /// to the other.
+    fn step_is_open(&self, going: Going, (u, v): (i32, i32), (du, dv): (i32, i32)) -> bool {
+        let open = |c: i32, r: i32| {
+            c >= 0
+                && r >= 0
+                && (c as usize) < self.width
+                && (r as usize) < self.height
+                && self.grounds[r as usize * self.width + c as usize].lets(going)
+        };
+        let (c, r) = (u.min(u + du), v.min(v + dv));
+        match (du, dv) {
+            (0, _) => open(u - 1, r) || open(u, r),
+            (_, 0) => open(c, v - 1) || open(c, v),
+            _ => open(c, r),
         }
     }
 
@@ -869,6 +894,7 @@ impl Terrain {
                     || diagonal
                         && (!walkable(grid_index(nu as usize, v as usize))
                             || !walkable(grid_index(u as usize, nv as usize)))
+                    || going == Going::OnFoot && !self.step_is_open(going, (u, v), (du, dv))
                 {
                     continue;
                 }
@@ -891,9 +917,27 @@ impl Terrain {
                 earlier => route.push(earlier),
             }
         }
+        // On foot, the middle of the open cells about it, where all four are not: a point at
+        // a passage's side lies on its cliff.
         let point = |index: usize| {
             let (u, v) = grid(index);
-            grid_to_world(u as f32, v as f32)
+            let corner = grid_to_world(u as f32, v as f32);
+            if going != Going::OnFoot {
+                return corner;
+            }
+            let open: Vec<(f32, f32)> = [(-1, -1), (0, -1), (-1, 0), (0, 0)]
+                .into_iter()
+                .map(|(du, dv)| (u + du, v + dv))
+                .filter(|&(c, r)| c >= 0 && r >= 0 && c < last_u && r < last_v)
+                .map(|(c, r)| grid_to_world(c as f32 + 0.5, r as f32 + 0.5))
+                .filter(|&(x, z)| self.can_go(going, x, z))
+                .collect();
+            if open.is_empty() || open.len() == 4 {
+                return corner;
+            }
+            let share = open.len() as f32;
+            let (x, z) = open.iter().fold((0.0, 0.0), |(x, z), p| (x + p.0, z + p.1));
+            (x / share, z / share)
         };
         // The route runs from the goal back to here, so the first clear point is the farthest.
         route
@@ -2224,5 +2268,40 @@ mod tests {
             }
         }
         assert!(on_deck > 0);
+    }
+
+    #[test]
+    fn a_soldier_takes_a_bridge_a_cell_wide_that_a_machine_cannot_but_not_a_thin_cliff() {
+        // Two rooms of rock in cliffs, joined by a bridge one cell wide; a third below the
+        // first, behind a cliff one cell thick.
+        let terrain = Terrain::open()
+            .with_ground(Ground::Cliff, (0, 0), (MOST_CELLS, MOST_CELLS))
+            .with_ground(Ground::Rock, (10, 10), (10, 10))
+            .with_ground(Ground::Rock, (30, 10), (10, 10))
+            .with_ground(Ground::NbRock, (20, 15), (10, 1))
+            .with_ground(Ground::Rock, (10, 21), (10, 10));
+        let walk = |going: Going, from: (f32, f32), to: (f32, f32)| {
+            let mut at = from;
+            for _ in 0..200 {
+                let Some(next) = terrain.next_on_route(going, at, to) else {
+                    return None;
+                };
+                if next == at {
+                    break;
+                }
+                assert!(terrain.can_go(going, next.0, next.1), "{next:?}");
+                at = next;
+            }
+            Some(at)
+        };
+        let (from, to) = (grid_to_world(15.0, 15.0), grid_to_world(35.0, 15.0));
+        let reached = walk(Going::OnFoot, from, to).unwrap();
+        assert!((reached.0 - to.0).hypot(reached.1 - to.1) < CELL_SIDE);
+        assert_eq!(walk(Going::Driving, from, to), None, "too narrow to drive");
+        assert_eq!(
+            walk(Going::OnFoot, from, grid_to_world(15.0, 25.0)),
+            None,
+            "not through the cliff"
+        );
     }
 }

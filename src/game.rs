@@ -2548,9 +2548,11 @@ impl Game {
             .collect()
     }
 
-    /// Whether the drag in progress would select this unit. An aircraft counts both by the
-    /// spot below it and by the spot it appears over on screen, since a box drawn around
-    /// what the player sees should catch it.
+    /// Whether the drag in progress would select this unit: by where its feet appear on
+    /// screen, the box lying on the sand plane as drawn, so that one up on a plateau or the
+    /// Heighliner's deck is caught where it shows. An aircraft counts both by the spot below
+    /// it and by the spot it appears over, since a box drawn around what the player sees
+    /// should catch it.
     pub fn in_selection_drag(&self, unit: &Unit) -> bool {
         let Some(rectangle) = self
             .selection_ground()
@@ -2558,16 +2560,21 @@ impl Game {
         else {
             return false;
         };
-        units::in_rectangle(rectangle, self.camera.across_and_down(unit.x, unit.z))
-            || self.appears_in_selection(rectangle, unit)
+        let terrain = battlefield::terrain(self.battle_map);
+        let feet = (unit.x, terrain.height_at(unit.x, unit.z), unit.z);
+        self.appears_in_selection(rectangle, feet)
+            || (unit.kind.flies()
+                && (units::in_rectangle(rectangle, self.camera.across_and_down(unit.x, unit.z))
+                    || self.appears_in_selection(rectangle, unit.center())))
     }
 
-    fn appears_in_selection(&self, rectangle: (f32, f32, f32, f32), unit: &Unit) -> bool {
-        if !unit.kind.flies() {
-            return false;
-        }
+    /// Whether a point appears on screen over the sand plane inside the selection.
+    fn appears_in_selection(
+        &self,
+        rectangle: (f32, f32, f32, f32),
+        (x, y, z): (f32, f32, f32),
+    ) -> bool {
         let view = self.view();
-        let (x, y, z) = unit.center();
         let appears_over = view
             .project(x, y, z)
             .and_then(|(px, py)| view.ground_at(px, py));

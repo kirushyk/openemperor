@@ -3217,6 +3217,44 @@ mod tests {
     }
 
     #[test]
+    fn a_landing_pads_deck_on_the_disc_lies_where_machines_sit_on_it() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(index) = archive::from_cabinet(&disc.join(CABINET), INDEX) else {
+            return;
+        };
+        let archive = Archive::open(&index, &disc.join(DATA)).unwrap();
+        for name in [
+            "Buildings\\at_helipad_H0.XbF",
+            "Buildings\\hk_helipad_H0.XbF",
+        ] {
+            let model = xbf::parse(&archive.read(name).unwrap()).unwrap();
+            // The heights of its level faces, the deck's the most of them near the top.
+            fn level(object: &Object, above: &[[f32; 4]; 4], heights: &mut Vec<f32>) {
+                let world = times(&object.transform, above);
+                for face in &object.faces {
+                    let y = face
+                        .corners
+                        .map(|c| to_place(point(&world, object.vertices[c].position))[1]);
+                    if (y[0] - y[1]).abs() < 0.5 && (y[0] - y[2]).abs() < 0.5 {
+                        heights.push(y[0]);
+                    }
+                }
+                for child in &object.children {
+                    level(child, &world, heights);
+                }
+            }
+            let mut heights = Vec::new();
+            for object in &model.objects {
+                level(object, &IDENTITY, &mut heights);
+            }
+            let deck = heights
+                .iter()
+                .filter(|&&y| (y - crate::units::pad_top()).abs() < 1.0);
+            assert!(deck.count() >= 4, "{name}: {heights:?}");
+        }
+    }
+
+    #[test]
     fn a_mongooses_searchlight_on_the_disc_lights_the_ground_ahead_of_it() {
         let disc = Path::new("/Volumes/EMPEROR1");
         let Some(original) = read_shapes(disc) else {

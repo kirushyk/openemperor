@@ -207,12 +207,14 @@ const REFINERY_WAITS: f32 = 294.2;
 /// high they end.
 pub const REFINERY_STACKS: [(f32, f32); 2] = [(-1.9, -2.0), (1.9, -2.0)];
 pub const REFINERY_STACK_TOP: f32 = 4.0;
-/// How high the deck of a landing pad is, which is where a machine on it sits.
+/// How high the deck of our own drawing of a landing pad is, in its units.
 pub const PAD_TOP: f32 = 1.1;
-/// How high a landing pad's deck stands, as it is drawn.
+/// How high a landing pad's deck stands, where a machine on it sits: its `RoofHeight` in the
+/// rules, where the original's models of it have their decks.
 pub fn pad_top() -> f32 {
-    PAD_TOP * Role::Helipad.stretch(Faction::Atreides)[1]
+    PAD_ROOF
 }
+const PAD_ROOF: f32 = 72.0;
 /// How far a landing pad's deck reaches each way from its middle, across and ahead: it is
 /// longer from front to back, as the original's two squares by three.
 pub const PAD_DECK: (f32, f32) = (0.68, 1.0);

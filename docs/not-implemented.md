@@ -271,9 +271,28 @@ straight on without the disc, then starts its first battle on the original's map
 - **The mission's script** (`ATStart.tok`, see `tok-format.md`) is not run: the battle starts
   as a skirmish does, with an MCV a side, not with the script's base, waves and Mentat lines,
   and it is won by beating every enemy, not the three Harkonnen buildings.
-- **Later missions** go round the skirmish maps as before.
-- **Between missions**: the territory map, choosing where to attack, the new units screen
-  and the question when a territory is attacked are not there (backlog task 33).
+- **Mission scripts** of later battles are not run either: each is fought on the
+  original's map for it as a skirmish is, against the house it is against.
+
+Between battles there is the strategic battle map: Arrakis's 33 territories with the
+shapes, neighbours and first owners of the original's `campaign.xbf` and campaign data, its
+homeworlds, the phases and tech levels of `PhaseRules.txt`, the Heighliner, homeworld
+defence (or the Harkonnen's Copec or Gunseng side), homeworld attack and last missions they
+jump to, the other houses' attacks with the question to defend or give up, the Mentat's
+briefing and the new units screen of `NEWUNITS.INI`. Not like the original yet:
+
+- **The map is drawn flat** in the houses' colours, not as the original's 3D scene with its
+  planet, zoom, rings and Heighliners, and without its music.
+- **The other houses' turns** are by chance: each attacks half the time, and between
+  themselves wins half the time. The original works it out of the armies' reserves
+  (`Difficulty.txt`, reserves and reinforcements), which are not kept.
+- **Reserves**, moving them and retreated units, are not there.
+- **Which script and briefing text** goes with a territory is not known: the briefing shows
+  the battle, the enemy and the map, not the Mentat's words.
+- **Which side's mission is which** for the Harkonnen (`#v1` for Copec, `#c1` for Gunseng)
+  is a guess, as are the enemies of the missions off Arrakis (the house holding most).
+- **The tech level** does not yet limit what can be built in battle.
+- **Saving the campaign**: leaving it for the main menu ends it.
 - **The end mission** with the Emperor Worm (task 34).
 
 ## The other discs

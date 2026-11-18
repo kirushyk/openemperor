@@ -14,6 +14,7 @@ use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
 use crate::units::{Harvest, Role, Unit, UnitKind, WallPiece, Wound};
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
+pub(super) use crate::xbf::{point, times};
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::path::Path;
@@ -1576,15 +1577,6 @@ fn winding_normal([a, b, c]: &[[f32; 3]; 3]) -> [f32; 3] {
         u[2] * v[0] - u[0] * v[2],
         u[0] * v[1] - u[1] * v[0],
     ]
-}
-
-/// One transform after another, for row vectors: `first`, then `then`.
-pub(super) fn times(first: &[[f32; 4]; 4], then: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
-    std::array::from_fn(|r| std::array::from_fn(|c| (0..4).map(|k| first[r][k] * then[k][c]).sum()))
-}
-
-pub(super) fn point(world: &[[f32; 4]; 4], [x, y, z]: [f32; 3]) -> [f32; 3] {
-    std::array::from_fn(|c| x * world[0][c] + y * world[1][c] + z * world[2][c] + world[3][c])
 }
 
 fn normal(world: &[[f32; 4]; 4], [x, y, z]: [f32; 3]) -> [f32; 3] {

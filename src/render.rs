@@ -1,10 +1,11 @@
 //! Turns game state into a triangle list. Backends only ever see colored triangles.
 
 use crate::battlefield;
+use crate::campaign::{self, Next};
 use crate::fog::{Fog, Sight};
 use crate::font;
 use crate::game::{
-    Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Entry, Faction, Game,
+    self, Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Entry, Faction, Game,
     OPPONENT_SLOTS, Outcome, PlaceSquare, STATS_ROW_STEP, STATS_ROW_TOP, Screen, TeamColor,
     buttons, checkbox_size, color_slots, map_items, minimap_rect, modal_rect, opponent_row,
     opponent_widgets, options_panel, setup_checkboxes, setup_widgets, small_text_px, stats_rect,
@@ -939,6 +940,9 @@ fn canvas_of(game: &Game) -> Canvas {
         | Screen::SkirmishSetup
         | Screen::EscapeMenu
         | Screen::BattleStats
+        | Screen::CampaignMap
+        | Screen::Briefing
+        | Screen::NewUnits
         | Screen::InGame => {
             if game.in_battle {
                 draw_battle(&mut canvas, game);
@@ -975,7 +979,10 @@ fn canvas_of(game: &Game) -> Canvas {
                 Screen::InGame
                 | Screen::SkirmishSetup
                 | Screen::EscapeMenu
-                | Screen::BattleStats => None,
+                | Screen::BattleStats
+                | Screen::CampaignMap
+                | Screen::Briefing
+                | Screen::NewUnits => None,
                 _ if scene => None,
                 _ => Some(TITLE),
             };
@@ -1015,8 +1022,20 @@ fn canvas_of(game: &Game) -> Canvas {
             if game.screen == Screen::Credits {
                 canvas.text_centered("Credits placeholder", cx, game.height / 2.0, 4.0 * s, QUIET);
             }
+            match game.screen {
+                Screen::CampaignMap => draw_campaign_map(&mut canvas, game),
+                Screen::Briefing => draw_briefing(&mut canvas, game),
+                Screen::NewUnits => draw_new_units(&mut canvas, game),
+                _ => {}
+            }
             for b in buttons(game.screen, game.width, game.height) {
-                draw_button(&mut canvas, game, b);
+                // The marks of the campaign map's territories are drawn with the map.
+                if !(matches!(b.action, Action::Territory(_)) && b.label.is_empty()) {
+                    draw_button(&mut canvas, game, b);
+                }
+            }
+            if game.question().is_some() {
+                draw_question(&mut canvas, game);
             }
             if game.confirming.is_some() {
                 draw_message_box(&mut canvas, game);
@@ -1210,6 +1229,192 @@ fn draw_message_box(canvas: &mut Canvas, game: &Game) {
     }
 }
 
+/// The colours the original's campaign map paints each house's territories in.
+fn territory_color(house: Faction) -> [f32; 3] {
+    match house {
+        Faction::Atreides => [0.25, 0.45, 0.95],
+        Faction::Harkonnen => [0.9, 0.22, 0.18],
+        Faction::Ordos => [0.25, 0.8, 0.35],
+    }
+}
+
+/// The campaign's map of Arrakis: each territory in the colour of who holds it, the ones that
+/// can be attacked rimmed in gold, the one picked lit; and beside it what is picked and what
+/// the campaign waits for.
+fn draw_campaign_map(canvas: &mut Canvas, game: &Game) {
+    let s = ui_scale(game.height);
+    let px = small_text_px(game.height);
+    let border = border_px(game.height);
+    canvas.text_centered(
+        "Strategic Battle Map",
+        game.width / 2.0,
+        80.0 * s,
+        8.0 * s,
+        GOLD,
+    );
+    let (Some(data), Some(campaign)) = (campaign::data(), &game.campaign) else {
+        return;
+    };
+    let (mx, my, mw, mh) = game::campaign_map_rect(game.width, game.height);
+    canvas.bordered_rect((mx, my, mw, mh), border, BORDER, WINDOW);
+    let place = game::campaign_place(game.width, game.height);
+    let targets = campaign.targets();
+    let hovered = match game.hovered() {
+        Some(Action::Territory(at)) => Some(at),
+        _ => None,
+    };
+    for (at, territory) in data.territories.iter().enumerate() {
+        let Some(&owner) = campaign.owners.get(at) else {
+            continue;
+        };
+        let color = territory_color(owner);
+        let lit = game.picked == Some(at) || hovered == Some(at);
+        let fill = with_alpha(color, if lit { 0.85 } else { 0.5 });
+        for triangle in &territory.fill {
+            canvas.triangle(triangle.map(&place), fill);
+        }
+        let rim = if targets.contains(&at) {
+            GOLD
+        } else {
+            with_alpha(color, 1.0)
+        };
+        for triangle in &territory.rim {
+            canvas.triangle(triangle.map(&place), rim);
+        }
+        if let Some(centre) = territory.centre {
+            let (cx, cy) = place(centre);
+            let r = 10.0 * s;
+            canvas.circle(cx, cy, r + border, rim);
+            canvas.circle(cx, cy, r, with_alpha(color, 1.0));
+        }
+    }
+    let (px0, py0, pw, ph) = game::campaign_panel(game.width, game.height);
+    canvas.bordered_rect((px0, py0, pw, ph), border, BORDER, WINDOW);
+    let left = px0 + 24.0 * s;
+    let mut y = py0 + 40.0 * s;
+    let mut line = |canvas: &mut Canvas, text: &str, color: Color| {
+        for row in wrapped(text, pw - 48.0 * s, px) {
+            canvas.text_left(&row, left, y, px, color);
+            y += 40.0 * s;
+        }
+    };
+    line(canvas, "COMMANDER : ISSUE ORDERS", GOLD);
+    line(
+        canvas,
+        &format!("Phase {}   Tech level {}", campaign.phase, campaign.tech),
+        QUIET,
+    );
+    let shown = hovered.or(game.picked);
+    if let Some(territory) = shown.and_then(|at| data.territories.get(at)) {
+        let at = shown.unwrap_or(0);
+        line(canvas, &territory.name, TEXT);
+        line(canvas, campaign.owners[at].label(), QUIET);
+    }
+    let waiting = match campaign.next() {
+        Next::Won => "The campaign is won.".to_string(),
+        Next::Lost => "The campaign is lost.".to_string(),
+        Next::Pick => match game.next_battle() {
+            Some(mission) => campaign.title(mission),
+            None => "Pick a territory to attack.".to_string(),
+        },
+        Next::Fight(mission) => campaign.title(mission),
+        Next::Defend(..) | Next::Side => String::new(),
+    };
+    line(canvas, &waiting, TEXT);
+    if campaign.warned {
+        line(
+            canvas,
+            "Take ground soon, or the campaign is lost.",
+            DEFEAT_RED,
+        );
+    }
+}
+
+/// The question the campaign's map asks, in the message box with its answers.
+fn draw_question(canvas: &mut Canvas, game: &Game) {
+    let s = ui_scale(game.height);
+    let border = border_px(game.height);
+    let (x, y, w, h) = modal_rect(game.width, game.height);
+    canvas.rect(0.0, 0.0, game.width, game.height, DIM);
+    canvas.bordered_rect((x, y, w, h), border, GOLD, PANEL);
+    let text = game.question_text().unwrap_or_default();
+    let px = small_text_px(game.height);
+    for (n, row) in wrapped(&text, w - 60.0 * s, px).iter().enumerate() {
+        let row_y = y + (70.0 + n as f32 * 40.0) * s;
+        canvas.text_centered(row, x + w / 2.0, row_y, px, TEXT);
+    }
+    for b in game.buttons() {
+        draw_button(canvas, game, b);
+    }
+}
+
+/// The Mentat's briefing: the battle, whom it is against and where.
+fn draw_briefing(canvas: &mut Canvas, game: &Game) {
+    let s = ui_scale(game.height);
+    let cx = game.width / 2.0;
+    canvas.text_centered("Mentat's Briefing", cx, 150.0 * s, 8.0 * s, GOLD);
+    let (Some(campaign), Some(mission)) = (&game.campaign, game.briefing) else {
+        return;
+    };
+    let map = crate::maps::by_id(&campaign.map_id(mission))
+        .and_then(|map| crate::maps::list().get(map))
+        .map_or("", |map| map.name.as_str());
+    let rows = [
+        (campaign.title(mission), 6.0 * s, TEXT),
+        (
+            format!("Against {}", campaign.enemy(mission).label()),
+            4.0 * s,
+            TEXT,
+        ),
+        (format!("On {map}"), 4.0 * s, QUIET),
+        (format!("Tech level {}", campaign.tech), 4.0 * s, QUIET),
+    ];
+    for (n, (text, px, color)) in rows.iter().enumerate() {
+        canvas.text_centered(text, cx, (320.0 + n as f32 * 90.0) * s, *px, *color);
+    }
+}
+
+/// The units the tech level just reached brings, each with what it is.
+fn draw_new_units(canvas: &mut Canvas, game: &Game) {
+    let s = ui_scale(game.height);
+    let px = small_text_px(game.height);
+    let cx = game.width / 2.0;
+    canvas.text_centered("New Units", cx, 120.0 * s, 8.0 * s, GOLD);
+    let Some(campaign) = &game.campaign else {
+        return;
+    };
+    let (left, width) = (cx - 760.0 * s, 1520.0 * s);
+    let mut y = 220.0 * s;
+    let units = campaign.new_units(game.units_shown);
+    if units.is_empty() {
+        canvas.text_centered("No new units.", cx, y, px, QUIET);
+    }
+    for unit in units {
+        canvas.text_left(&unit.name, left, y, px, GOLD);
+        y += 40.0 * s;
+        for row in wrapped(&unit.about, width, px) {
+            canvas.text_left(&row, left, y, px, TEXT);
+            y += 34.0 * s;
+        }
+        y += 20.0 * s;
+    }
+}
+
+/// Text broken into rows at its spaces, none wider than `width` in letters `px` big.
+fn wrapped(text: &str, width: f32, px: f32) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match rows.last_mut() {
+            Some(row) if font::text_width(&format!("{row} {word}")) * px <= width => {
+                row.push(' ');
+                row.push_str(word);
+            }
+            _ => rows.push(word.to_string()),
+        }
+    }
+    rows
+}
+
 fn draw_options_panel(canvas: &mut Canvas, game: &Game) {
     let px = small_text_px(game.height);
     let border = border_px(game.height);
@@ -1345,12 +1550,10 @@ fn draw_battle(canvas: &mut Canvas, game: &Game) {
     if !game.aiming_strike {
         draw_selection_box(canvas, game);
     }
-    if let Some(faction) = game.faction {
-        let label = format!(
-            "{} - Mission {}",
-            faction.label(),
-            game.campaign_mission + 1
-        );
+    if let (Some(faction), Some(campaign), Some(mission)) =
+        (game.faction, &game.campaign, game.mission)
+    {
+        let label = format!("{} - {}", faction.label(), campaign.title(mission));
         canvas.text_centered(&label, game.width / 2.0, 40.0 * s, 4.0 * s, TEXT);
     }
     draw_energy_gauge(canvas, game);

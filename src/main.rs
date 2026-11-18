@@ -2,6 +2,7 @@
 
 mod archive;
 mod battlefield;
+mod campaign;
 #[cfg(target_os = "macos")]
 mod discs;
 mod fog;
@@ -32,7 +33,7 @@ use std::time::Instant;
 /// it, the intro movie, the bag of music, and the menus' track in it.
 #[cfg(target_os = "macos")]
 const DISC: &str = "/Volumes/EMPEROR1";
-/// What on the command line lists the campaign's maps after the skirmish ones.
+/// What on the command line lists the campaign's maps among the skirmish's.
 #[cfg(target_os = "macos")]
 const CAMPAIGN_MAPS: &str = "--campaign-maps";
 #[cfg(target_os = "macos")]
@@ -89,6 +90,8 @@ fn main() {
     let disc = disc.as_path();
     #[cfg(target_os = "macos")]
     maps::load(disc, std::env::args_os().any(|arg| arg == CAMPAIGN_MAPS));
+    #[cfg(target_os = "macos")]
+    campaign::load(disc);
     let mut game = game::Game::new(width as f32, height as f32).with_start_seed(seed);
     #[cfg(target_os = "macos")]
     let mounted = disc.is_dir();

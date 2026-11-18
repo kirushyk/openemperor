@@ -1,6 +1,7 @@
 //! Game flow and menu logic. No OS or GPU code, so it runs under `cargo test`.
 
 use crate::battlefield::{self, Camera};
+use crate::campaign::{self, Campaign, Mission, Next, Side};
 use crate::fog::{Fog, Sight};
 use crate::hud::{
     self, GUARD_BUTTON, REPAIR_BUTTON, RETREAT_BUTTON, SELL_BUTTON, STARPORT_BUTTON,
@@ -608,7 +609,7 @@ impl Faction {
         }
     }
 
-    fn next(self) -> Self {
+    pub fn next(self) -> Self {
         match self {
             Faction::Atreides => Faction::Harkonnen,
             Faction::Harkonnen => Faction::Ordos,
@@ -636,6 +637,13 @@ pub enum Screen {
     EscapeMenu,
     /// What was killed and lost, after the Victory or Defeat message.
     BattleStats,
+    /// The campaign's map of Arrakis between its battles, the original's strategic battle
+    /// map: where the player picks what to attack, and is asked to defend.
+    CampaignMap,
+    /// The Mentat's briefing before a campaign battle.
+    Briefing,
+    /// The units a new tech level brings.
+    NewUnits,
 }
 
 /// One line of the diplomacy window.
@@ -693,7 +701,7 @@ impl Ally {
         }
     }
 
-    fn next(self) -> Self {
+    pub fn next(self) -> Self {
         match self {
             Ally::None => Ally::Tleilaxu,
             Ally::Tleilaxu => Ally::Ix,
@@ -755,7 +763,7 @@ impl OpponentKind {
         }
     }
 
-    fn next(self) -> Self {
+    pub fn next(self) -> Self {
         match self {
             OpponentKind::Defensive => OpponentKind::Competent,
             OpponentKind::Competent => OpponentKind::Attacker,
@@ -1010,6 +1018,17 @@ pub enum Action {
     Tutorial,
     SkirmishBattle,
     LoadGame,
+    /// A territory on the campaign's map, by its place.
+    Territory(usize),
+    CampaignAttack,
+    /// Leaves the campaign for the main menu.
+    CampaignMenu,
+    /// The answers to the question when a territory is attacked.
+    Defend,
+    GiveUp,
+    TakeSide(Side),
+    AcceptBriefing,
+    ShowNewUnits,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1082,6 +1101,18 @@ const BACK_ONLY: &[(Action, &str, Anchor)] = &[(Action::Back, "Back", Anchor::Bo
 
 const BATTLE_STATS: &[(Action, &str, Anchor)] =
     &[(Action::LeaveBattleStats, "Continue", Anchor::BottomRight)];
+
+const CAMPAIGN_MAP: &[(Action, &str, Anchor)] = &[
+    (Action::CampaignMenu, "Main Menu", Anchor::BottomLeft),
+    (Action::CampaignAttack, "Attack", Anchor::BottomRight),
+];
+
+const BRIEFING: &[(Action, &str, Anchor)] = &[
+    (Action::Back, "Back", Anchor::BottomLeft),
+    (Action::AcceptBriefing, "Accept", Anchor::BottomRight),
+];
+
+const NEW_UNITS: &[(Action, &str, Anchor)] = &[(Action::Back, "Continue", Anchor::BottomRight)];
 
 const ESCAPE_MENU: &[(Action, &str, Anchor)] = &[
     (Action::LoadGame, "Load Game", Anchor::Center),
@@ -1483,7 +1514,7 @@ impl MapFolder {
 /// The open dropdown's entries, directly below it: a tab for each folder if there is more
 /// than one, then the maps of the folder shown, scrolled on by `scroll` columns.
 pub fn map_items(folder: MapFolder, scroll: usize, width: f32, height: f32) -> Vec<Button> {
-    let folders = maps::list().iter().any(|map| map.campaign);
+    let folders = maps::list().iter().any(|map| map.campaign && !map.hidden);
     let entries = folder_entries(folder);
     let mut items = Vec::new();
     if folders {
@@ -1513,7 +1544,7 @@ fn folder_entries(folder: MapFolder) -> impl Iterator<Item = (usize, &'static st
     maps::list()
         .iter()
         .enumerate()
-        .filter(move |(_, map)| MapFolder::of(map) == folder)
+        .filter(move |(_, map)| !map.hidden && MapFolder::of(map) == folder)
         .map(|(i, map)| (i, map.name.as_str()))
 }
 
@@ -1678,6 +1709,39 @@ pub fn modal_rect(width: f32, height: f32) -> (f32, f32, f32, f32) {
 }
 
 pub fn modal_buttons(width: f32, height: f32) -> Vec<Button> {
+    modal_pair(
+        (Action::ConfirmFaction, "OK"),
+        (Action::CancelFaction, "Cancel"),
+        width,
+        height,
+    )
+}
+
+/// The answers to a question of the campaign's map, in the message box.
+fn question_buttons(question: Next, width: f32, height: f32) -> Vec<Button> {
+    match question {
+        Next::Side => modal_pair(
+            (Action::TakeSide(Side::Copec), "Copec"),
+            (Action::TakeSide(Side::Gunseng), "Gunseng"),
+            width,
+            height,
+        ),
+        _ => modal_pair(
+            (Action::Defend, "Defend"),
+            (Action::GiveUp, "Give Up"),
+            width,
+            height,
+        ),
+    }
+}
+
+/// Two buttons side by side at the foot of the message box.
+fn modal_pair(
+    (first, first_label): (Action, &'static str),
+    (second, second_label): (Action, &'static str),
+    width: f32,
+    height: f32,
+) -> Vec<Button> {
     const W: f32 = 240.0;
     const H: f32 = 72.0;
     const GAP: f32 = 40.0;
@@ -1686,16 +1750,16 @@ pub fn modal_buttons(width: f32, height: f32) -> Vec<Button> {
     let y = my + mh - (H + 40.0) * s;
     vec![
         Button {
-            action: Action::ConfirmFaction,
-            label: "OK",
+            action: first,
+            label: first_label,
             x: width / 2.0 - (W + GAP / 2.0) * s,
             y,
             w: W * s,
             h: H * s,
         },
         Button {
-            action: Action::CancelFaction,
-            label: "Cancel",
+            action: second,
+            label: second_label,
             x: width / 2.0 + GAP / 2.0 * s,
             y,
             w: W * s,
@@ -1737,6 +1801,9 @@ pub fn buttons(screen: Screen, width: f32, height: f32) -> Vec<Button> {
         Screen::SinglePlayerMenu => SINGLE_PLAYER_MENU,
         Screen::EscapeMenu => ESCAPE_MENU,
         Screen::BattleStats => BATTLE_STATS,
+        Screen::CampaignMap => CAMPAIGN_MAP,
+        Screen::Briefing => BRIEFING,
+        Screen::NewUnits => NEW_UNITS,
         Screen::Options | Screen::Credits | Screen::FactionSelect | Screen::SkirmishSetup => {
             BACK_ONLY
         }
@@ -1787,7 +1854,102 @@ pub fn buttons(screen: Screen, width: f32, height: f32) -> Vec<Button> {
     if screen == Screen::FactionSelect {
         all.extend(faction_buttons(width, height));
     }
+    if screen == Screen::CampaignMap {
+        all.extend(territory_buttons(width, height));
+    }
+    if screen == Screen::Briefing {
+        let s = ui_scale(height);
+        all.push(Button {
+            action: Action::ShowNewUnits,
+            label: "New Units",
+            x: (width - CORNER_W * s) / 2.0,
+            y: (1080.0 - MARGIN - BUTTON_H) * s,
+            w: CORNER_W * s,
+            h: BUTTON_H * s,
+        });
+    }
     all
+}
+
+/// Where the campaign's map of Arrakis is drawn, as (x, y, w, h): on the left, with the
+/// panel of what is picked on it to its right.
+pub fn campaign_map_rect(width: f32, height: f32) -> (f32, f32, f32, f32) {
+    let s = ui_scale(height);
+    (width / 2.0 - 920.0 * s, 150.0 * s, 1220.0 * s, 780.0 * s)
+}
+
+pub fn campaign_panel(width: f32, height: f32) -> (f32, f32, f32, f32) {
+    let s = ui_scale(height);
+    (width / 2.0 + 360.0 * s, 150.0 * s, 560.0 * s, 780.0 * s)
+}
+
+/// Where a point of the original's map, up being up, lands on the screen: the whole map
+/// fitted into its box, the same way across as down.
+pub fn campaign_place(width: f32, height: f32) -> impl Fn((f32, f32)) -> (f32, f32) {
+    let (x, y, w, h) = campaign_map_rect(width, height);
+    let ((left, bottom), (right, top)) = campaign::data()
+        .and_then(campaign::Data::bounds)
+        .unwrap_or(((0.0, 0.0), (1.0, 1.0)));
+    let (across, down) = ((right - left).max(1.0), (top - bottom).max(1.0));
+    let scale = (w / across).min(h / down);
+    let (from_x, from_y) = (x + (w - across * scale) / 2.0, y + (h - down * scale) / 2.0);
+    move |(px, py)| (from_x + (px - left) * scale, from_y + (top - py) * scale)
+}
+
+/// How wide the mark in the middle of each territory is, unscaled, and how tall a row of
+/// the panel's homeworlds.
+const TOKEN: f32 = 44.0;
+const HOMEWORLD_ROW: f32 = 64.0;
+/// How far down the panel its homeworlds start.
+const HOMEWORLDS_TOP: f32 = 500.0;
+
+/// A mark in the middle of each territory of Arrakis, and a row in the panel for each
+/// homeworld, off the map.
+fn territory_buttons(width: f32, height: f32) -> Vec<Button> {
+    let Some(data) = campaign::data() else {
+        return Vec::new();
+    };
+    let s = ui_scale(height);
+    let place = campaign_place(width, height);
+    let (px, py, pw, _) = campaign_panel(width, height);
+    let mut homeworlds = 0.0;
+    data.territories
+        .iter()
+        .enumerate()
+        .map(|(at, territory)| match territory.centre {
+            Some(centre) => {
+                let (cx, cy) = place(centre);
+                Button {
+                    action: Action::Territory(at),
+                    label: "",
+                    x: cx - TOKEN * s / 2.0,
+                    y: cy - TOKEN * s / 2.0,
+                    w: TOKEN * s,
+                    h: TOKEN * s,
+                }
+            }
+            None => {
+                let y = py + (HOMEWORLDS_TOP + homeworlds * HOMEWORLD_ROW) * s;
+                homeworlds += 1.0;
+                Button {
+                    action: Action::Territory(at),
+                    label: &territory.name,
+                    x: px,
+                    y,
+                    w: pw,
+                    h: (HOMEWORLD_ROW - 8.0) * s,
+                }
+            }
+        })
+        .collect()
+}
+
+/// Whether a point is inside a triangle, whichever way round its corners go.
+fn is_in_triangle([a, b, c]: [(f32, f32); 3], (x, y): (f32, f32)) -> bool {
+    let side =
+        |(ax, ay): (f32, f32), (bx, by): (f32, f32)| (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+    let sides = [side(a, b), side(b, c), side(c, a)];
+    sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0)
 }
 
 pub struct Game {
@@ -1831,8 +1993,14 @@ pub struct Game {
     outcome_elapsed: f32,
     pub killed: Casualties,
     pub lost: Casualties,
-    /// Counts up from 0 through a campaign.
-    pub campaign_mission: usize,
+    /// The campaign under way, and the battle of it being fought or briefed.
+    pub campaign: Option<Campaign>,
+    pub mission: Option<Mission>,
+    pub briefing: Option<Mission>,
+    /// The territory picked on the campaign's map.
+    pub picked: Option<usize>,
+    /// The tech level whose new units were last shown.
+    pub units_shown: u32,
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
     pub units: Vec<Unit>,
@@ -1963,7 +2131,11 @@ impl Game {
             outcome_elapsed: 0.0,
             killed: Casualties::default(),
             lost: Casualties::default(),
-            campaign_mission: 0,
+            campaign: None,
+            mission: None,
+            briefing: None,
+            picked: None,
+            units_shown: 0,
             minimap_dragging: false,
             units: Vec::new(),
             carried: Vec::new(),
@@ -3603,9 +3775,14 @@ impl Game {
             BattleKind::Skirmish => self.skirmish.faction,
             _ => self.faction.unwrap_or(Faction::Atreides),
         };
+        let campaign_enemy = || {
+            let mission = self.mission?;
+            Some(self.campaign.as_ref()?.enemy(mission))
+        };
         match (self.battle_kind, owner) {
             (_, 0) => player,
             (BattleKind::Skirmish, _) => self.skirmish.opponents[owner - 1].faction,
+            (BattleKind::Campaign, _) => campaign_enemy().unwrap_or(player.next()),
             _ => player.next(),
         }
     }
@@ -3765,22 +3942,103 @@ impl Game {
         self.set_screen(Screen::BattleStats);
     }
 
-    /// Past the statistics, each kind of battle returns to where it belongs. A campaign
-    /// moves on after a victory and replays the mission after a defeat.
+    /// Past the statistics, each kind of battle returns to where it belongs. A campaign goes
+    /// back to its map with what the battle won or lost, or straight into its first battle
+    /// again if that was lost.
     fn leave_battle_stats(&mut self) {
         match self.battle_kind {
             BattleKind::Skirmish => self.set_screen(Screen::SkirmishSetup),
             BattleKind::Tutorial => self.set_screen(Screen::SinglePlayerMenu),
             BattleKind::Campaign => {
-                if self.outcome == Some(Outcome::Victory) {
-                    self.campaign_mission += 1;
+                let won = self.outcome == Some(Outcome::Victory);
+                if let (Some(campaign), Some(mission)) = (&mut self.campaign, self.mission.take()) {
+                    campaign.finish(mission, won);
                 }
-                self.start_battle(
-                    self.campaign_mission % maps::list().len().max(1),
-                    self.faction,
-                    BattleKind::Campaign,
-                );
+                self.picked = None;
+                match self.campaign.as_ref().map(Campaign::next) {
+                    Some(Next::Fight(Mission::Start)) => self.fight(Mission::Start),
+                    _ => self.set_screen(Screen::CampaignMap),
+                }
             }
+        }
+    }
+
+    /// The question the campaign's map asks now, if any: whether to defend a territory, or
+    /// which side to take.
+    pub fn question(&self) -> Option<Next> {
+        (self.screen == Screen::CampaignMap).then_some(())?;
+        let next = self.campaign.as_ref()?.next();
+        matches!(next, Next::Defend(..) | Next::Side).then_some(next)
+    }
+
+    /// What the question says.
+    pub fn question_text(&self) -> Option<String> {
+        let data = campaign::data();
+        match self.question()? {
+            Next::Defend(at, by) => {
+                let name = data?.territories.get(at)?.name.as_str();
+                Some(format!("{} attacks {name}. Defend it?", by.label()))
+            }
+            // The original's own words for it.
+            _ => Some("Choose Side".to_string()),
+        }
+    }
+
+    /// The territory of the campaign's map under this point of the screen, by its shape.
+    fn territory_at(&self, point: (f32, f32)) -> Option<usize> {
+        let place = campaign_place(self.width, self.height);
+        campaign::data()?.territories.iter().position(|territory| {
+            territory
+                .fill
+                .iter()
+                .any(|&triangle| is_in_triangle(triangle.map(&place), point))
+        })
+    }
+
+    /// The battle that follows the campaign map's Attack: the territory picked, if it can be
+    /// attacked, or the mission the campaign has come to.
+    pub fn next_battle(&self) -> Option<Mission> {
+        let campaign = self.campaign.as_ref()?;
+        match campaign.next() {
+            Next::Pick => campaign.attack(self.picked?),
+            Next::Fight(mission) => Some(mission),
+            _ => None,
+        }
+    }
+
+    /// Opens the briefing of a battle, after the units of a tech level not yet shown.
+    fn brief(&mut self, mission: Mission) {
+        self.briefing = Some(mission);
+        self.set_screen(Screen::Briefing);
+        if self
+            .campaign
+            .as_ref()
+            .is_some_and(|c| c.tech > self.units_shown)
+        {
+            self.show_new_units();
+        }
+    }
+
+    fn show_new_units(&mut self) {
+        if let Some(campaign) = &self.campaign {
+            self.units_shown = campaign.tech;
+            self.set_screen(Screen::NewUnits);
+        }
+    }
+
+    /// Fights a battle of the campaign, on the original's map for it if the disc has it.
+    fn fight(&mut self, mission: Mission) {
+        let Some(campaign) = &self.campaign else {
+            return;
+        };
+        let house = campaign.house;
+        let map = maps::by_id(&campaign.map_id(mission)).unwrap_or(0);
+        self.mission = Some(mission);
+        self.briefing = None;
+        self.start_battle(map, Some(house), BattleKind::Campaign);
+        // The original's first mission gives the player 10 000 credits.
+        if mission == Mission::Start {
+            self.money[0] = CAMPAIGN_START_MONEY;
         }
     }
 
@@ -3921,14 +4179,12 @@ impl Game {
         );
     }
 
-    /// Starts a house's campaign with its first battle, on the original's map for it if the
-    /// disc has it.
+    /// Starts a house's campaign with its first battle.
     fn start_campaign(&mut self, house: Faction) {
-        self.campaign_mission = 0;
-        let map = maps::campaign_start(house).unwrap_or(0);
-        self.start_battle(map, Some(house), BattleKind::Campaign);
-        // The original's first mission gives the player 10 000 credits.
-        self.money[0] = CAMPAIGN_START_MONEY;
+        self.campaign = Some(Campaign::new(house, self.start_random));
+        self.units_shown = 0;
+        self.picked = None;
+        self.fight(Mission::Start);
     }
 
     /// The movie has ended: on to what follows its screen, unless it was skipped already.
@@ -4062,6 +4318,8 @@ impl Game {
     pub fn buttons(&self) -> Vec<Button> {
         if self.confirming.is_some() {
             modal_buttons(self.width, self.height)
+        } else if let Some(question) = self.question() {
+            question_buttons(question, self.width, self.height)
         } else if self.dropdown_open {
             map_items(self.map_folder, self.map_scroll, self.width, self.height)
         } else if self.color_open {
@@ -4121,11 +4379,15 @@ impl Game {
                 self.height,
             ));
         }
-        buttons
+        let found = buttons
             .chain(self.checkboxes())
             .chain(widgets)
             .find(|b| b.contains(x, y))
-            .map(|b| b.action)
+            .map(|b| b.action);
+        if found.is_none() && self.screen == Screen::CampaignMap && self.question().is_none() {
+            return self.territory_at((x, y)).map(Action::Territory);
+        }
+        found
     }
 
     pub fn hovered_slider(&self) -> Option<SliderId> {
@@ -4156,12 +4418,15 @@ impl Game {
             Screen::InGame => Some(Screen::EscapeMenu),
             Screen::EscapeMenu => Some(Screen::InGame),
             Screen::FactionSelect | Screen::SkirmishSetup => Some(Screen::SinglePlayerMenu),
+            Screen::Briefing => Some(Screen::CampaignMap),
+            Screen::NewUnits => Some(Screen::Briefing),
             Screen::Intro
             | Screen::MainMenu
             | Screen::Loading
             | Screen::Movie(_)
             | Screen::Opening(_)
-            | Screen::BattleStats => None,
+            | Screen::BattleStats
+            | Screen::CampaignMap => None,
         }
     }
 
@@ -4665,11 +4930,45 @@ impl Game {
             Action::Faction(faction) => self.set_screen(Screen::Movie(faction)),
             Action::CancelFaction => self.confirming = None,
             Action::ConfirmFaction => {
-                self.campaign_mission = 0;
                 if let Some(house) = self.confirming.take() {
                     self.set_screen(Screen::Opening(house));
                 }
             }
+            Action::Territory(at) => {
+                if self.campaign.as_ref().map(Campaign::next) == Some(Next::Pick) {
+                    self.picked = Some(at);
+                }
+            }
+            Action::CampaignAttack => {
+                if let Some(mission) = self.next_battle() {
+                    self.brief(mission);
+                }
+            }
+            Action::CampaignMenu => {
+                self.campaign = None;
+                self.set_screen(Screen::MainMenu);
+            }
+            Action::Defend => {
+                if let Some(Next::Defend(at, by)) = self.question() {
+                    self.brief(Mission::Defend(at, by));
+                }
+            }
+            Action::GiveUp => {
+                if let Some(campaign) = &mut self.campaign {
+                    campaign.give_up();
+                }
+            }
+            Action::TakeSide(side) => {
+                if let Some(campaign) = &mut self.campaign {
+                    campaign.take_side(side);
+                }
+            }
+            Action::AcceptBriefing => {
+                if let Some(mission) = self.briefing {
+                    self.fight(mission);
+                }
+            }
+            Action::ShowNewUnits => self.show_new_units(),
             Action::SkirmishBattle => self.set_screen(Screen::SkirmishSetup),
             Action::StartBattle => self.start_battle(self.skirmish.map, None, BattleKind::Skirmish),
             Action::NameField => self.name_focused = true,
@@ -4787,7 +5086,7 @@ impl Game {
     /// Scrolls the open dropdown's maps a column back for each notch the wheel turns up, on
     /// for each down, as far as there are columns.
     fn scroll_maps(&mut self, notches: f32) {
-        let tabs = maps::list().iter().any(|map| map.campaign);
+        let tabs = maps::list().iter().any(|map| map.campaign && !map.hidden);
         let labels = folder_entries(self.map_folder).map(|(_, label)| label);
         let most = ListLayout::new(labels, tabs, self.width, self.height).most_scroll();
         let columns = notches.abs().ceil() as usize;
@@ -5668,58 +5967,151 @@ mod tests {
         assert!(actions(&game).contains(&Action::Tutorial));
     }
 
-    #[test]
-    fn a_campaign_moves_to_the_next_mission_after_a_victory_and_replays_after_a_defeat() {
-        let mut game = campaign_battle();
-        assert_eq!(game.campaign_mission, 0);
-        win(&mut game);
+    /// Wins the battle and goes past its statistics.
+    fn win_and_leave(game: &mut Game) {
+        win(game);
         game.handle(Event::KeyDown(Key::Escape));
-        click(&mut game, Action::LeaveBattleStats);
-        assert_eq!(game.screen, Screen::Loading);
-        assert_eq!(game.campaign_mission, 1);
-        assert_eq!(game.battle_map, 1, "on another map");
-        assert_eq!(
-            game.faction,
-            Some(Faction::Atreides),
-            "for the same faction"
-        );
-        game.update(LOADING_SECONDS);
-        assert_eq!(game.outcome, None, "a fresh start");
-        assert_eq!(game.killed, Casualties::default());
+        click(game, Action::LeaveBattleStats);
+    }
 
+    #[test]
+    fn a_campaign_opens_its_map_after_its_first_victory_and_replays_it_after_a_defeat() {
+        let mut game = campaign_battle();
+        assert_eq!(game.mission, Some(Mission::Start));
         kill_owners(&mut game, &[0]);
-        assert_eq!(game.outcome, Some(Outcome::Defeat));
         game.handle(Event::KeyDown(Key::Escape));
         click(&mut game, Action::LeaveBattleStats);
-        assert_eq!(game.campaign_mission, 1, "the same mission again");
-    }
-
-    #[test]
-    fn a_new_campaign_starts_at_the_first_mission() {
-        let mut game = campaign_battle();
-        win(&mut game);
-        game.handle(Event::KeyDown(Key::Escape));
-        click(&mut game, Action::LeaveBattleStats);
+        assert_eq!(game.screen, Screen::Loading, "the first battle again");
+        assert_eq!(game.mission, Some(Mission::Start));
         game.update(LOADING_SECONDS);
-        leave_battle(&mut game);
-        click(&mut game, Action::SinglePlayer);
-        click(&mut game, Action::StartCampaign);
-        pick(&mut game, Faction::Ordos);
-        click(&mut game, Action::ConfirmFaction);
-        game.update(OPENING_WAIT_SECONDS + 0.05);
-        assert_eq!(game.campaign_mission, 0);
+        win_and_leave(&mut game);
+        assert_eq!(game.screen, Screen::CampaignMap);
+        assert_eq!(game.campaign.as_ref().unwrap().next(), Next::Pick);
     }
 
     #[test]
-    fn campaign_missions_keep_working_past_the_last_map() {
+    fn a_territory_picked_on_the_map_is_briefed_after_the_new_units_and_then_fought() {
         let mut game = campaign_battle();
-        for _ in 0..maps::list().len() + 2 {
-            win(&mut game);
+        game.update(LOADING_SECONDS);
+        win_and_leave(&mut game);
+        click(&mut game, Action::CampaignAttack);
+        assert_eq!(game.screen, Screen::CampaignMap, "nothing picked yet");
+        let target = game.campaign.as_ref().unwrap().targets()[0];
+        click(&mut game, Action::Territory(target));
+        assert_eq!(game.picked, Some(target));
+        click(&mut game, Action::CampaignAttack);
+        assert_eq!(
+            game.screen,
+            Screen::NewUnits,
+            "the first tech level's units first"
+        );
+        assert_eq!(game.units_shown, 1);
+        click(&mut game, Action::Back);
+        assert_eq!(game.screen, Screen::Briefing);
+        assert_eq!(game.briefing, Some(Mission::Attack(target)));
+        click(&mut game, Action::ShowNewUnits);
+        assert_eq!(game.screen, Screen::NewUnits, "again, if asked for");
+        click(&mut game, Action::Back);
+        click(&mut game, Action::AcceptBriefing);
+        assert_eq!(game.screen, Screen::Loading);
+        assert_eq!(game.mission, Some(Mission::Attack(target)));
+        let owner = game.campaign.as_ref().unwrap().owners[target];
+        assert_eq!(game.faction_of(1), owner, "against who holds it");
+        game.update(LOADING_SECONDS);
+        win_and_leave(&mut game);
+        let campaign = game.campaign.as_ref().unwrap();
+        assert_eq!(campaign.owners[target], Faction::Atreides, "taken");
+        assert_eq!(game.screen, Screen::CampaignMap);
+    }
+
+    #[test]
+    fn an_attacked_territory_is_defended_in_battle_or_given_up() {
+        let mut game = campaign_battle();
+        game.update(LOADING_SECONDS);
+        win_and_leave(&mut game);
+        // Attacks until another house attacks back.
+        for _ in 0..30 {
+            if game.question().is_some() {
+                break;
+            }
+            let target = game.campaign.as_ref().unwrap().targets()[0];
+            click(&mut game, Action::Territory(target));
+            click(&mut game, Action::CampaignAttack);
+            while game.screen != Screen::Briefing {
+                click(&mut game, Action::Back);
+            }
+            click(&mut game, Action::AcceptBriefing);
+            game.update(LOADING_SECONDS);
+            kill_owners(&mut game, &[0]);
             game.handle(Event::KeyDown(Key::Escape));
             click(&mut game, Action::LeaveBattleStats);
-            game.update(LOADING_SECONDS);
-            assert_eq!(game.screen, Screen::InGame);
+            if game.campaign.as_ref().unwrap().next() == Next::Fight(Mission::Heighliner) {
+                game.campaign
+                    .as_mut()
+                    .unwrap()
+                    .finish(Mission::Heighliner, true);
+            }
         }
+        let Some(Next::Defend(at, by)) = game.question() else {
+            panic!("never attacked");
+        };
+        assert!(game.question_text().unwrap().contains("Defend it?"));
+        assert!(actions(&game).contains(&Action::GiveUp));
+        click(&mut game, Action::Defend);
+        assert_eq!(game.briefing, Some(Mission::Defend(at, by)));
+        click(&mut game, Action::Back);
+        assert_eq!(game.question(), Some(Next::Defend(at, by)), "asked again");
+        click(&mut game, Action::GiveUp);
+        assert_eq!(game.campaign.as_ref().unwrap().owners[at], by);
+    }
+
+    #[test]
+    fn the_harkonnen_are_asked_which_side_to_take() {
+        let mut game = in_faction_select();
+        pick(&mut game, Faction::Harkonnen);
+        click(&mut game, Action::ConfirmFaction);
+        game.update(OPENING_WAIT_SECONDS + 0.05);
+        let mut campaign = crate::campaign::tests::on_the_map(Faction::Harkonnen);
+        campaign.finish(Mission::Attack(campaign.targets()[0]), true);
+        while let Next::Defend(..) = campaign.next() {
+            campaign.give_up();
+        }
+        campaign.finish(Mission::Attack(campaign.targets()[0]), true);
+        campaign.finish(Mission::Heighliner, true);
+        for _ in 0..2 {
+            while let Next::Defend(..) = campaign.next() {
+                campaign.give_up();
+            }
+            campaign.finish(Mission::Attack(campaign.targets()[0]), true);
+        }
+        game.campaign = Some(campaign);
+        game.set_screen(Screen::CampaignMap);
+        assert_eq!(game.question(), Some(Next::Side));
+        assert_eq!(game.question_text().as_deref(), Some("Choose Side"));
+        click(&mut game, Action::TakeSide(Side::Copec));
+        assert_eq!(game.question(), None);
+        click(&mut game, Action::CampaignAttack);
+        while game.screen != Screen::Briefing {
+            click(&mut game, Action::Back);
+        }
+        assert_eq!(game.briefing, Some(Mission::CivilWar(Side::Copec)));
+    }
+
+    #[test]
+    fn a_territory_is_picked_by_its_shape_on_the_map_too() {
+        let mut game = campaign_battle();
+        game.update(LOADING_SECONDS);
+        win_and_leave(&mut game);
+        let b = *game
+            .buttons()
+            .iter()
+            .find(|b| b.action == Action::Territory(3))
+            .unwrap();
+        game.handle(Event::MouseMove(b.x + b.w / 2.0, b.y + b.h / 2.0));
+        assert_eq!(game.hovered(), Some(Action::Territory(3)));
+        click(&mut game, Action::CampaignMenu);
+        assert_eq!(game.screen, Screen::MainMenu);
+        assert!(game.campaign.is_none());
     }
 
     /// Gives the player a palace of their house.

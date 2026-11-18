@@ -32,10 +32,11 @@ fn string_at(data: &[u8], at: usize) -> Option<(&[u8], usize)> {
 
 /// A file out of the Microsoft cabinet at `path`, by its name in there, any case.
 pub fn from_cabinet(path: &Path, name: &str) -> Option<Vec<u8>> {
-    file_in_cabinet(&std::fs::read(path).ok()?, name)
+    in_cabinet(&std::fs::read(path).ok()?, name)
 }
 
-fn file_in_cabinet(cabinet: &[u8], name: &str) -> Option<Vec<u8>> {
+/// A file out of a Microsoft cabinet already read, by its name in there, any case.
+pub fn in_cabinet(cabinet: &[u8], name: &str) -> Option<Vec<u8>> {
     if cabinet.get(..4)? != CABINET_MAGIC {
         return None;
     }
@@ -237,9 +238,9 @@ mod tests {
             ("\\data\\two.rfh", b"second"),
         ]);
         assert_eq!(
-            file_in_cabinet(&packed, "\\DATA\\TWO.RFH").as_deref(),
+            in_cabinet(&packed, "\\DATA\\TWO.RFH").as_deref(),
             Some(&b"second"[..])
         );
-        assert_eq!(file_in_cabinet(&packed, "\\data\\three.rfh"), None);
+        assert_eq!(in_cabinet(&packed, "\\data\\three.rfh"), None);
     }
 }

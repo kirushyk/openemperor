@@ -1,11 +1,10 @@
 //! The original's maps on its disc: which of them a skirmish is fought on, as its `Baseinfo.ini`
 //! lists them with how many players each takes, what each is called, and the files each is
-//! made of, in its own folder of the maps' data file. The campaign's maps may be listed after
-//! them.
+//! made of, in its own folder of the maps' data file. The campaign's maps come after them,
+//! for its battles, and show among the skirmish's only when asked for.
 
 use crate::archive::{self, Archive};
 use crate::battlefield;
-use crate::game::Faction;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -21,8 +20,6 @@ const LIST: &str = "Baseinfo.ini";
 /// What the ids of the skirmish maps start with, and the file each map's ground is in.
 const SKIRMISH: &str = "#m";
 const MAP_FILE: &str = "test.xbf";
-/// What the ids of the houses' first missions' maps start with.
-const START: &str = "#u";
 
 /// One map a skirmish can be fought on.
 pub struct Map {
@@ -32,6 +29,8 @@ pub struct Map {
     pub players: usize,
     /// Whether it is one of the campaign's, not made for a skirmish.
     pub campaign: bool,
+    /// Whether a skirmish's list leaves it out: a campaign's map, unless asked for.
+    pub hidden: bool,
     /// Its folder in the maps' data file.
     folder: String,
 }
@@ -55,6 +54,7 @@ fn maps() -> Option<&'static Maps> {
                     name: format!("Test Map {n}"),
                     players: 8,
                     campaign: false,
+                    hidden: false,
                     folder: String::new(),
                 })
                 .collect(),
@@ -64,8 +64,8 @@ fn maps() -> Option<&'static Maps> {
     MAPS.get()
 }
 
-/// Reads which maps the disc mounted at `disc` has, the campaign's too if `campaign`. Without
-/// it, there are none.
+/// Reads which maps the disc mounted at `disc` has, the campaign's among the skirmish's if
+/// `campaign`. Without it, there are none.
 pub fn load(disc: &Path, campaign: bool) {
     if let Some(maps) = read_maps(disc, campaign) {
         let _ = MAPS.set(maps);
@@ -77,17 +77,9 @@ pub fn list() -> &'static [Map] {
     maps().map_or(&[], |maps| &maps.list)
 }
 
-/// The map a house's campaign starts on, the original's `#u1` for the Atreides, `#u2` for
-/// the Ordos and `#u3` for the Harkonnen, if the disc has it.
-pub fn campaign_start(house: Faction) -> Option<usize> {
-    let id = match house {
-        Faction::Atreides => "#u1 ",
-        Faction::Ordos => "#u2 ",
-        Faction::Harkonnen => "#u3 ",
-    };
-    list()
-        .iter()
-        .position(|map| map.folder.to_lowercase().starts_with(id))
+/// The map of this id, such as `#t12`, if the disc has it.
+pub fn by_id(id: &str) -> Option<usize> {
+    list().iter().position(|map| is_folder_of(&map.folder, id))
 }
 
 /// One of a map's files, by its name in the map's folder.
@@ -122,17 +114,16 @@ fn read_maps(disc: &Path, campaign: bool) -> Option<Maps> {
                 name: name_of(&names, id).unwrap_or_else(|| id.to_string()),
                 players,
                 campaign: false,
+                hidden: false,
                 folder: folder.clone(),
             })
         })
         .collect();
-    // The houses' first missions are always read, for the campaign to start on; the rest of
-    // the campaign's only when asked for.
+    // The campaign's maps are always read, for its battles.
     {
         let mut others: Vec<&String> = folders
             .iter()
             .filter(|folder| !folder.starts_with(SKIRMISH))
-            .filter(|folder| campaign || folder.starts_with(START))
             .filter(|folder| list.iter().all(|map| &map.folder != *folder))
             .collect();
         others.sort();
@@ -148,6 +139,7 @@ fn read_maps(disc: &Path, campaign: bool) -> Option<Maps> {
                     name: name_of(&names, &id.to_uppercase()).unwrap_or_else(|| title(folder)),
                     players,
                     campaign: true,
+                    hidden: !campaign,
                     folder: folder.clone(),
                 });
             }
@@ -205,17 +197,23 @@ fn is_folder_of(folder: &str, id: &str) -> bool {
         && !folder.as_bytes()[id.len()].is_ascii_digit()
 }
 
-/// What the game's text calls the map of this id: the words in braces on its line.
-fn name_of(text: &str, id: &str) -> Option<String> {
+/// What the game's text calls the thing of this id: the words in braces on its line, quoted
+/// or not.
+pub fn name_of(text: &str, id: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let (key, rest) = line.split_once('\t')?;
-        let name = rest.trim_start().strip_prefix('{')?.split_once('}')?.0;
+        let name = rest
+            .trim_start()
+            .trim_start_matches('"')
+            .strip_prefix('{')?
+            .split_once('}')?
+            .0;
         (key == id).then(|| name.trim().to_string())
     })
 }
 
 /// Text written as UTF-16 with its low bytes first, as the game's text files are.
-fn utf16(bytes: &[u8]) -> String {
+pub fn utf16(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
         .chunks_exact(2)
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))

@@ -138,6 +138,16 @@ impl Reader<'_> {
     }
 }
 
+/// One transform after another, for row vectors: `first`, then `then`.
+pub fn times(first: &[[f32; 4]; 4], then: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    std::array::from_fn(|r| std::array::from_fn(|c| (0..4).map(|k| first[r][k] * then[k][c]).sum()))
+}
+
+/// Where a point lands under a transform.
+pub fn point(world: &[[f32; 4]; 4], [x, y, z]: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|c| x * world[0][c] + y * world[1][c] + z * world[2][c] + world[3][c])
+}
+
 /// The model in an XBF file, if it is one.
 pub fn parse(data: &[u8]) -> Option<Model> {
     let reader = &mut Reader { data, at: 0 };

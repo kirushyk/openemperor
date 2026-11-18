@@ -12,7 +12,7 @@ use crate::battlefield::{self, CELL_SIDE, Terrain, View};
 use crate::fog::Fog;
 use crate::game::{CursorLook, Faction};
 use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
-use crate::units::{CrateKind, Harvest, Prop, Role, Unit, UnitKind, WallPiece, Wound};
+use crate::units::{CrateKind, Gender, Harvest, Prop, Role, Unit, UnitKind, WallPiece, Wound};
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
 pub(super) use crate::xbf::{point, times};
@@ -252,6 +252,18 @@ const MODELS: &[(Role, Option<Faction>, &str)] = {
         (Role::ImBarracks, None, "Buildings\\IM_Barracks_H0.xbf"),
         (Role::FrCamp, None, "Buildings\\FR_Camp_H0.xbf"),
         (Role::FrFremen, None, "Units\\FR_Fremen_H0.xbf"),
+        (Role::FrAdvFremen, None, "Units\\FR_ADVFremen_H0.xbf"),
+        (Role::HkGeneral, None, "Units\\HK_General_H0.XBF"),
+        (
+            Role::Civilian(Gender::Male),
+            None,
+            "Units\\IN_MaleCiv_H0.xbf",
+        ),
+        (
+            Role::Civilian(Gender::Female),
+            None,
+            "Units\\IN_FemaleCiv_H0.xbf",
+        ),
         (Role::ImSardaukar, None, "Units\\IM_Sardaukar_H0.xbf"),
         (Role::TlContaminator, None, "Units\\TL_Contaminator_H0.xbf"),
         (Role::IxInfiltrator, None, "Units\\IX_Infiltrator_H0.xbf"),

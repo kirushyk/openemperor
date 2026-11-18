@@ -286,7 +286,7 @@ const RANK_ATTACK: f32 = 0.2;
 const RANK_SPEED: f32 = 0.1;
 
 /// Every role but the palaces, which are one a house.
-const ALL_ROLES: [Role; 61] = [
+const ALL_ROLES: [Role; 63] = [
     Role::AtInfantry,
     Role::Scout,
     Role::AtSniper,
@@ -344,6 +344,8 @@ const ALL_ROLES: [Role; 61] = [
     Role::ImBarracks,
     Role::FrCamp,
     Role::FrFremen,
+    Role::FrAdvFremen,
+    Role::HkGeneral,
     Role::ImSardaukar,
     Role::TlContaminator,
     Role::IxInfiltrator,
@@ -353,6 +355,13 @@ const ALL_ROLES: [Role; 61] = [
 /// Who owns what is no side's, as a map's barrels and wrecks: no side's index, so nobody's
 /// friend or enemy. It is attacked only when ordered to.
 pub const NEUTRAL: usize = 15;
+
+/// Whether a townsperson is a man or a woman, as the original has a model of each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gender {
+    Male,
+    Female,
+}
 
 /// What a map has standing on it besides the sides' bases: the original's incidentals, which
 /// are no side's, and the factory frigates that have come down on it.
@@ -703,6 +712,12 @@ pub enum Role {
     FrCamp,
     /// The Fremen's warrior: nobody sees it until it fires its long rifle.
     FrFremen,
+    /// The Fremen's better armed fighters, who see further.
+    FrAdvFremen,
+    /// Townsfolk, men or women, unarmed: the prisoners of the Harkonnen camp on Bilar Slopes.
+    Civilian(Gender),
+    /// A Harkonnen officer, unarmed, who guards prisoners.
+    HkGeneral,
     /// The Emperor's own soldier, with a heavy machine gun.
     ImSardaukar,
     /// The Tleilaxu's slow walker, that stabs infantry up close.
@@ -902,6 +917,9 @@ impl Role {
             | Role::OrSaboteur
             | Role::OrMortar
             | Role::FrFremen
+            | Role::FrAdvFremen
+            | Role::Civilian(_)
+            | Role::HkGeneral
             | Role::ImSardaukar
             | Role::TlContaminator => UnitKind::Infantry,
             Role::HkAssault
@@ -1019,6 +1037,9 @@ impl Role {
             Role::Windtrap => "Windtrap",
             Role::Starport => "Starport",
             Role::FrFremen => "Fremen Warrior",
+            Role::FrAdvFremen => "Fremen Fedaykin",
+            Role::Civilian(_) => "Civilian",
+            Role::HkGeneral => "Harkonnen General",
             Role::ImSardaukar => "Imperial Sardaukar",
             Role::TlContaminator => "Tleilaxu Contaminator",
             Role::IxInfiltrator => "Ixian Infiltrator",
@@ -1062,7 +1083,8 @@ impl Role {
             | Role::Windtrap
             | Role::Starport
             | Role::IxInfiltrator => WeaponKind::Unarmed,
-            Role::FrFremen => WeaponKind::Sniper,
+            Role::FrFremen | Role::FrAdvFremen => WeaponKind::Sniper,
+            Role::Civilian(_) | Role::HkGeneral => WeaponKind::Unarmed,
             Role::ImSardaukar => WeaponKind::Bullet,
             Role::TlContaminator => WeaponKind::Pistol,
             Role::GuMaker => WeaponKind::Mortar,
@@ -1098,13 +1120,15 @@ impl Role {
             Role::HkTrooper
             | Role::HkFlamer
             | Role::FrFremen
+            | Role::FrAdvFremen
+            | Role::Civilian(_)
             | Role::ImSardaukar
             | Role::TlContaminator
             | Role::Mcv
             | Role::AtRocketTurret => 12.0,
             Role::AtKindjal | Role::AtAdp | Role::OrAdp => 10.0,
             Role::OrMortar | Role::OrSaboteur | Role::OrChemical => 8.0,
-            Role::AtInfantry => 7.0,
+            Role::AtInfantry | Role::HkGeneral => 7.0,
             Role::Engineer | Role::HkLightInf => 6.0,
             role if role.kind().is_building() => 10.0,
             _ => 4.0,
@@ -1126,6 +1150,9 @@ impl Role {
             Role::HkTrooper => 300.0,
             Role::OrMortar => 700.0,
             Role::HkFlamer | Role::FrFremen | Role::IxInfiltrator | Role::OrLaserTank => 800.0,
+            Role::FrAdvFremen => 1000.0,
+            Role::Civilian(_) => 400.0,
+            Role::HkGeneral => 700.0,
             Role::OrChemical => 575.0,
             Role::ImSardaukar => 900.0,
             Role::TlContaminator | Role::GuMaker | Role::Wall => 1000.0,
@@ -1161,7 +1188,7 @@ impl Role {
     pub fn armour(self) -> Armour {
         match self {
             Role::HkFlamer | Role::ImSardaukar => Armour::Bpv,
-            Role::FrFremen => Armour::Earplugs,
+            Role::FrFremen | Role::FrAdvFremen => Armour::Earplugs,
             _ if self.kind() == UnitKind::Infantry => Armour::None,
             Role::HkAssault
             | Role::Mcv
@@ -1201,7 +1228,9 @@ impl Role {
             | Role::OrChemical
             | Role::OrSaboteur
             | Role::FrFremen
+            | Role::FrAdvFremen
             | Role::ImSardaukar => 6.0,
+            Role::Civilian(_) | Role::HkGeneral => 2.0,
             Role::TlContaminator => 3.5,
             Role::IxInfiltrator => 7.0,
             Role::GuMaker => 4.0,
@@ -1275,6 +1304,8 @@ impl Role {
             Role::Palace(_) | Role::GuPalace => 30.0,
             Role::TlFleshVat | Role::IxResCentre | Role::ImBarracks | Role::FrCamp => 20.0,
             Role::FrFremen | Role::ImSardaukar | Role::TlContaminator | Role::IxInfiltrator => 11.0,
+            // Brought by missions, never made.
+            Role::FrAdvFremen | Role::Civilian(_) | Role::HkGeneral => 11.0,
             Role::GuMaker => 15.0,
             Role::Outpost => 20.0,
             Role::Barracks => 15.0,
@@ -1339,7 +1370,9 @@ impl Role {
             Role::Prop(_) => 0,
             Role::Windtrap => 225,
             Role::Starport => 1500,
-            Role::FrFremen => 150,
+            Role::FrFremen | Role::Civilian(_) => 150,
+            Role::FrAdvFremen => 250,
+            Role::HkGeneral => 40,
             Role::ImSardaukar | Role::TlContaminator => 300,
             Role::IxInfiltrator => 500,
             Role::GuMaker => 1000,
@@ -1683,6 +1716,13 @@ impl Role {
                 .find(|&house| name.starts_with(house_letters(house)));
             return Some((Role::Prop(prop), house.unwrap_or(Faction::Harkonnen)));
         }
+        // A mission's own of a kind, such as its `StoryFRFremen`, is that kind.
+        let name = name.strip_prefix("Story").unwrap_or(name);
+        match name {
+            "INMaleCiv" => return Some((Role::Civilian(Gender::Male), Faction::Atreides)),
+            "INFemaleCiv" => return Some((Role::Civilian(Gender::Female), Faction::Atreides)),
+            _ => {}
+        }
         let name = name.replace("SmWindtrap", "Windtrap");
         let house_of = |name: &str| {
             HOUSES
@@ -1761,7 +1801,8 @@ impl Role {
             Role::HkGunship => [62.0, 27.2, 84.7],
             Role::OrAdp => [18.5, 32.4, 24.6],
             Role::OrEits => [69.3, 22.5, 38.3],
-            Role::FrFremen => [23.1, 35.9, 20.5],
+            Role::FrFremen | Role::FrAdvFremen => [23.1, 35.9, 20.5],
+            Role::Civilian(_) | Role::HkGeneral => [14.0, 35.0, 14.0],
             Role::ImSardaukar => [15.3, 38.0, 20.7],
             Role::TlContaminator => [19.1, 33.4, 16.3],
             Role::IxInfiltrator => [51.7, 12.8, 20.6],
@@ -1801,9 +1842,13 @@ impl Role {
     /// `original_size`. Drawing tests keep these up to date with the models.
     pub fn made_size(self) -> [f32; 3] {
         match self {
-            Role::AtInfantry | Role::FrFremen | Role::ImSardaukar | Role::TlContaminator => {
-                [0.415, 0.664, 0.2685]
-            }
+            Role::AtInfantry
+            | Role::FrFremen
+            | Role::FrAdvFremen
+            | Role::Civilian(_)
+            | Role::HkGeneral
+            | Role::ImSardaukar
+            | Role::TlContaminator => [0.415, 0.664, 0.2685],
             Role::Scout => [0.31, 0.7703, 0.2685],
             Role::AtSniper => [0.645, 0.656, 0.2685],
             Role::Engineer => [0.4359, 0.675, 0.3266],
@@ -2839,7 +2884,7 @@ impl Unit {
     pub fn can_cloak(&self) -> bool {
         matches!(
             self.role,
-            Role::Scout | Role::AtApc | Role::FrFremen | Role::IxInfiltrator
+            Role::Scout | Role::AtApc | Role::FrFremen | Role::FrAdvFremen | Role::IxInfiltrator
         ) || (self.role == Role::AtSniper && self.rank() >= 3)
     }
 
@@ -4779,6 +4824,18 @@ pub fn order_stop(units: &mut [Unit]) {
             unit.harvest = Harvest::Idle;
         }
     }
+}
+
+/// Turns a unit into one of another role where it stands, whole, with nothing to do: as a
+/// mission's freed prisoners become Fremen.
+pub fn turn_into(unit: &mut Unit, role: Role) {
+    unit.role = role;
+    unit.kind = role.kind();
+    unit.weapon = role.weapon();
+    unit.health = role.max_health();
+    unit.heavy = unit.kind == UnitKind::Vehicle;
+    unit.target = None;
+    unit.destination = (unit.x, unit.z);
 }
 
 /// Has the soldiers of the sides that have won stop where they are and cheer.
@@ -11176,6 +11233,27 @@ mod tests {
                 .iter()
                 .all(|kind| kind.health > 0.0 && kind.plot.0 > 0)
         );
+    }
+
+    #[test]
+    fn a_missions_prisoners_guards_and_story_fremen_are_known_by_the_rules_names() {
+        let role = |name: &str| Role::named(name).map(|(role, _)| role);
+        assert_eq!(role("INMaleCiv"), Some(Role::Civilian(Gender::Male)));
+        assert_eq!(role("INFemaleCiv"), Some(Role::Civilian(Gender::Female)));
+        assert_eq!(role("HKGeneral"), Some(Role::HkGeneral));
+        assert_eq!(role("StoryFRFremen"), Some(Role::FrFremen));
+        assert_eq!(role("StoryFRADVFremen"), Some(Role::FrAdvFremen));
+        assert_eq!(Role::Civilian(Gender::Male).weapon(), WeaponKind::Unarmed);
+        // Freed, a prisoner is a Fremen whole, with nothing to do.
+        let mut prisoner = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Infantry);
+        prisoner.role = Role::Civilian(Gender::Male);
+        prisoner.health = 10.0;
+        turn_into(&mut prisoner, Role::FrFremen);
+        assert_eq!(
+            (prisoner.role, prisoner.weapon),
+            (Role::FrFremen, WeaponKind::Sniper)
+        );
+        assert_eq!(prisoner.health, Role::FrFremen.max_health());
     }
 
     #[test]

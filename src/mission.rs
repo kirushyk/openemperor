@@ -136,6 +136,36 @@ const LEFT: u16 = 35;
 const SAY: u16 = 45;
 const PAY: u16 = 62;
 const WIN: u16 = 83;
+/// Where reinforcements come in: given to the player's mostly.
+const ENTRANCE: u16 = 8;
+/// A place near one given: taken as that place.
+const NEAR: u16 = 11;
+/// Where a side's units arrive, its base.
+const ARRIVAL: u16 = 12;
+/// Where a thing is.
+const WHERE: u16 = 13;
+/// A side that is neither the player's nor one the script makes: what the scripts make
+/// friends and enemies of the others with, as if the world at large.
+const SOMEONE: u16 = 16;
+/// Whether a side's units are seen by another's.
+const SEES: u16 = 32;
+/// Sets a thing's health, in the original's.
+const SET_HEALTH: u16 = 54;
+/// Turns a thing into another kind, for a side: prisoners freed become Fremen.
+const TURN_INTO: u16 = 57;
+/// Makes one side a friend of another, or an enemy.
+const FRIENDS: u16 = 59;
+const ENEMIES: u16 = 60;
+/// Whose a thing is: the player's, or the script's side it was put down for.
+const OWNER: u16 = 17;
+/// Whether a thing still stands.
+const STANDS: u16 = 22;
+/// Whether a side has hurt a thing: the outpost of a camp, fired on.
+const HURT_BY: u16 = 27;
+/// Whether a thing is destroyed, as `DESTROYED`.
+const GONE: u16 = 44;
+/// What `SOMEONE` is as a side.
+pub const SOMEONE_SIDE: i32 = -1;
 
 /// A value of a script: a number, truth being 1 and falsehood 0; a place on the map; or a thing
 /// on it, if one was made.
@@ -194,6 +224,29 @@ pub trait Battle {
     fn pay(&mut self, side: i32, money: i32);
     /// The player has won.
     fn win(&mut self);
+    /// Where a thing is, if it is still there.
+    fn place_of(&self, _thing: Option<u32>) -> Option<(f32, f32)> {
+        None
+    }
+    /// Whether any of `seen`'s units are in sight of any of `by`'s.
+    fn sees(&self, _seen: i32, _by: i32) -> bool {
+        false
+    }
+    fn set_health(&mut self, _thing: Option<u32>, _health: i32) {}
+    /// Turns a thing into one of another kind for a side, in its place, and says which it is.
+    fn turn_into(&mut self, thing: Option<u32>, _kind: u16, _side: i32) -> Option<u32> {
+        thing
+    }
+    /// Makes side `a` a friend of `b`, or an enemy.
+    fn relate(&mut self, _a: i32, _b: i32, _enemies: bool) {}
+    /// Whose a thing is, as a side, if it stands.
+    fn owner_side(&self, _thing: Option<u32>) -> Option<i32> {
+        None
+    }
+    /// Whether a thing has been hurt by a side.
+    fn hurt_by(&self, _thing: Option<u32>, _side: i32) -> bool {
+        false
+    }
 }
 
 /// A piece of a line as the script reads it.
@@ -339,7 +392,16 @@ impl Script {
                         Some(kind) => Value::Thing(battle.bring(number(0), kind, at(2).place())),
                         None => Value::Thing(None),
                     },
-                    Piece::Function(DESTROYED) => {
+                    Piece::Function(OWNER) => {
+                        Value::Number(battle.owner_side(at(0).thing()).unwrap_or(SOMEONE_SIDE))
+                    }
+                    Piece::Function(STANDS) => {
+                        Value::Number(i32::from(!battle.destroyed(at(0).thing())))
+                    }
+                    Piece::Function(HURT_BY) => {
+                        Value::Number(i32::from(battle.hurt_by(at(0).thing(), number(1))))
+                    }
+                    Piece::Function(DESTROYED | GONE) => {
                         Value::Number(i32::from(battle.destroyed(at(0).thing())))
                     }
                     Piece::Function(LEFT) => Value::Number(battle.left(number(0))),
@@ -355,6 +417,30 @@ impl Script {
                     }
                     Piece::Function(WIN) => {
                         battle.win();
+                        Value::Number(0)
+                    }
+                    Piece::Function(ENTRANCE) => place(battle.base(0)),
+                    Piece::Function(NEAR) => at(0),
+                    Piece::Function(ARRIVAL) => place(battle.base(number(0))),
+                    Piece::Function(WHERE) => battle
+                        .place_of(at(0).thing())
+                        .map_or(Value::Thing(None), place),
+                    Piece::Function(SOMEONE) => Value::Number(SOMEONE_SIDE),
+                    Piece::Function(SEES) => {
+                        Value::Number(i32::from(battle.sees(number(0), number(1))))
+                    }
+                    Piece::Function(SET_HEALTH) => {
+                        battle.set_health(at(0).thing(), number(1));
+                        Value::Number(0)
+                    }
+                    Piece::Function(TURN_INTO) => match kind(1) {
+                        Some(kind) => {
+                            Value::Thing(battle.turn_into(at(0).thing(), kind, number(2)))
+                        }
+                        None => Value::Thing(None),
+                    },
+                    Piece::Function(FRIENDS | ENEMIES) => {
+                        battle.relate(number(0), number(1), *callee == Piece::Function(ENEMIES));
                         Value::Number(0)
                     }
                     _ => Value::Number(0),
@@ -575,6 +661,9 @@ mod tests {
         said: Vec<u16>,
         paid: Vec<(i32, i32)>,
         won: bool,
+        related: Vec<(i32, i32, bool)>,
+        turned: Vec<(Option<u32>, u16, i32)>,
+        health: Vec<(Option<u32>, i32)>,
     }
 
     impl Battle for Written {
@@ -617,10 +706,97 @@ mod tests {
         fn win(&mut self) {
             self.won = true;
         }
+        fn relate(&mut self, a: i32, b: i32, enemies: bool) {
+            self.related.push((a, b, enemies));
+        }
+        fn turn_into(&mut self, thing: Option<u32>, kind: u16, side: i32) -> Option<u32> {
+            self.turned.push((thing, kind, side));
+            thing
+        }
+        fn set_health(&mut self, thing: Option<u32>, health: i32) {
+            self.health.push((thing, health));
+        }
+        fn sees(&self, seen: i32, by: i32) -> bool {
+            (seen, by) == (1, 0)
+        }
     }
 
     fn text(text: &str) -> Token {
         Token::Text(text.to_string())
+    }
+
+    #[test]
+    fn a_prison_camps_sides_are_related_and_its_prisoners_freed_once_seen() {
+        use Token::{Function as F, Keyword as K, Kind, Variable as V};
+        let lines = vec![
+            // v1 = F18(); v2 = F18(); F59(v1, F14()); F60(F16(), v2)
+            vec![V(1), K(SET), F(NEW_SIDE), text("()")],
+            vec![V(2), K(SET), F(NEW_SIDE), text("()")],
+            vec![
+                F(FRIENDS),
+                text("("),
+                V(1),
+                text(","),
+                F(PLAYER),
+                text("())"),
+            ],
+            vec![
+                F(ENEMIES),
+                text("("),
+                F(SOMEONE),
+                text("(),"),
+                V(2),
+                text(")"),
+            ],
+            // v3 = K139(v1, <kind 4>, F3(), 0, 0, 0); F54(v3, 250)
+            vec![
+                V(3),
+                K(SET),
+                K(PLACE),
+                text("("),
+                V(1),
+                text(","),
+                Kind(4),
+                text(","),
+                F(ENEMY_BASE),
+                text("(),0,0,0)"),
+            ],
+            vec![F(SET_HEALTH), text("("), V(3), text(",250)")],
+            // if (F32(v1, F14()) == TRUE) F57(v3, <kind 7>, F14())
+            vec![
+                K(IF),
+                text("("),
+                F(SEES),
+                text("("),
+                V(1),
+                text(","),
+                F(PLAYER),
+                text("())"),
+                K(EQUAL),
+                K(TRUE),
+                text(")"),
+            ],
+            vec![
+                F(TURN_INTO),
+                text("("),
+                V(3),
+                text(","),
+                Kind(7),
+                text(","),
+                F(PLAYER),
+                text("())"),
+            ],
+            vec![K(END)],
+        ];
+        let mut battle = Written::default();
+        Script::new(&lines).run(&mut battle);
+        assert_eq!(
+            battle.related,
+            [(1, 0, false), (SOMEONE_SIDE, 2, true)],
+            "friends, then enemies"
+        );
+        assert_eq!(battle.health, [(Some(1), 250)]);
+        assert_eq!(battle.turned, [(Some(1), 7, 0)], "seen, it is the player's");
     }
 
     #[test]

@@ -32,6 +32,8 @@ const TEXT_DATA: &str = "\\data\\STRINGS0001.RFD";
 const CONNECTIONS: &str = "arrakis connections.txt";
 const PHASE_RULES: &str = "PhaseRules.txt";
 const FORCED_MISSIONS: &str = "Forced Missions.txt";
+/// Every mission of the campaign, by the name of its text, kept with their scripts.
+const MISSION_LIST: &str = "missionlist.ini";
 const SCENE: &str = "FRONTEND\\CAMPAIGN.XBF";
 /// The missions' scripts, and the rules whose lists of kinds the scripts' kinds count in.
 const MISSIONS_INDEX: &str = "\\data\\MISSIONS0001.RFH";
@@ -154,6 +156,10 @@ pub struct Data {
     start_scripts: Vec<(Faction, Vec<Vec<Token>>)>,
     /// The names of the kinds the scripts count, in the rules' order.
     kinds: Vec<String>,
+    /// The scripts of the battles for territories, by name without `.tok`, such as
+    /// `ATP1D7FR`: the house, the phase, an attack (`M`) or a defence (`D`), the territory's
+    /// number, then whom the battle is with.
+    mission_scripts: Vec<(String, Vec<Vec<Token>>)>,
 }
 
 impl Data {
@@ -227,6 +233,19 @@ fn read(disc: &Path) -> Option<Data> {
             Some((house, mission::read(&script)?))
         })
         .collect();
+    // The missions the campaign lists, each with its script; their win and fail texts have
+    // none.
+    let listed = from(MISSIONS_INDEX, MISSIONS_DATA, MISSION_LIST)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
+    let mission_scripts = listed
+        .lines()
+        .filter_map(|line| line.trim().strip_suffix(".txt"))
+        .filter_map(|name| {
+            let script = from(MISSIONS_INDEX, MISSIONS_DATA, &format!("{name}.tok"))?;
+            Some((name.to_string(), mission::read(&script)?))
+        })
+        .collect();
     let kinds = from(MODEL_INDEX, MODEL_DATA, RULES)
         .map(|rules| kinds(&String::from_utf8_lossy(&rules)))
         .unwrap_or_default();
@@ -238,6 +257,7 @@ fn read(disc: &Path) -> Option<Data> {
         new_units,
         start_scripts,
         kinds,
+        mission_scripts,
     })
 }
 
@@ -246,6 +266,31 @@ pub fn start_script(house: Faction) -> Option<&'static [Vec<Token>]> {
     let data = data()?;
     let (_, script) = data.start_scripts.iter().find(|(of, _)| *of == house)?;
     Some(script)
+}
+
+/// The script of a house's battle for a territory in a phase, if the disc has one: its
+/// defence of it, or its attack on it.
+pub fn mission_script(
+    house: Faction,
+    phase: u32,
+    defence: bool,
+    territory: usize,
+) -> Option<&'static [Vec<Token>]> {
+    let prefix = format!(
+        "{}P{phase}{}{}",
+        crate::units::house_letters(house),
+        if defence { 'D' } else { 'M' },
+        territory + 1
+    );
+    data()?
+        .mission_scripts
+        .iter()
+        .find(|(name, _)| {
+            // Whom it is with follows in letters: territory 1 is not 11.
+            name.strip_prefix(&prefix)
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_alphabetic()))
+        })
+        .map(|(_, script)| script.as_slice())
 }
 
 /// What the rules call the kind a script counts as this, if they have it.
@@ -924,7 +969,7 @@ pub(crate) mod tests {
             |id| (Some(format!("{id} name")), Some(format!("What {id} is"))),
         );
         // A first battle for the Atreides: their yard at their base, the enemy's palace at
-        // theirs, an MCV at the first point at update 3, money and a line of speech.
+        // theirs, the enemy's side made theirs, an MCV at the first point at update 3, money and a line of speech.
         let start = {
             use Token::{Function as F, Keyword as K, Kind, Speech, Variable as V};
             let text = |t: &str| Token::Text(t.to_string());
@@ -955,6 +1000,8 @@ pub(crate) mod tests {
                     F(3),
                     text("(),0,0,1)"),
                 ],
+                // Their side the player's enemy, as the original's scripts make theirs.
+                vec![F(60), text("("), V(1), text(","), F(14), text("())")],
                 vec![F(62), text("("), F(14), text("(),10000)")],
                 vec![F(45), text("("), Speech(642), text(")")],
                 vec![K(167)],
@@ -983,6 +1030,7 @@ pub(crate) mod tests {
             new_units,
             start_scripts: vec![(Faction::Atreides, start)],
             kinds: ["ATConYard", "HKPalace", "MCV"].map(String::from).to_vec(),
+            mission_scripts: Vec::new(),
         }
     }
 

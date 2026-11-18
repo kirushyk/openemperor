@@ -86,6 +86,19 @@ Their names are not on the disc. These are what their use in `ATStart.tok` shows
 | `F60(a, b)` | Makes side `a` an enemy of `b` | given both ways |
 | `F62(side, n)` | Gives a side money | `F62(v0,10000)` |
 | `F83`, `F84` | End the mission, won it seems | after the three buildings are destroyed |
+| `F8()` | Where reinforcements come in; taken as the player's base | `F21(F14(),<FRFremen>,F8())` |
+| `F11(place)` | A place near one; taken as that place | `F11(F12(F16()))` |
+| `F12(side)` | Where a side's units arrive; taken as its base | `F21(F14(),<ATMongoose>,F12(F14()))` |
+| `F13(thing)` | Where a thing is | `F97(F13(v3),12)` |
+| `F16()` | A side that is neither the player's nor one of the script's | `F59(v1,F16())` |
+| `F17(thing)` | Whose a thing is, as a side | `F17(v3) K168 F14()`: the outpost captured |
+| `F22(thing)` | Whether a thing still stands | |
+| `F27(thing, side)` | Whether a side has hurt a thing; taken as: it is hurt, and the side is its enemy | `F27(v3,F14())` |
+| `F32(a, b)` | Whether side `a`'s units are in sight of `b`'s | prisoners reached |
+| `F44(thing)` | Whether a thing is destroyed | |
+| `F54(thing, n)` | Sets a thing's health | a camp's windtraps at 90 to 320 |
+| `F57(thing, kind, side)` | Turns a thing into a kind, for a side | prisoners freed as Fremen |
+| `F59(a, b)` | Makes side `a` a friend of `b` | given both ways |
 
 ## The Atreides' first mission
 
@@ -113,6 +126,15 @@ statement (an `if`, its end, a variable set, or a call), all of them run once an
 what is inside an `if` that does not hold left out, as the original's scripts are written to
 be run. The functions and keywords in the table above do what it says; the others do
 nothing yet. The update is taken to be a tenth of a second, which is a guess.
+
+A battle for a territory runs the script of its house, phase, attack (`M`) or defence (`D`)
+and territory, where the disc's `missionlist.ini` in `MISSIONS0001` lists one: the
+Atreides' defence of Bilar Slopes, territory 7, in phase 1 is `ATP1D7FR`, the prison camp.
+A script's sides are the enemy's if it makes them the player's enemy, the player's if it
+makes them the enemy of one of those, and nobody's otherwise, as the camp's prisoners are;
+what a side is follows each `F59` and `F60` again, as the scripts put things down before
+saying whose enemy they are. A side the original keeps apart, such as Fremen freed to fight
+beside the player, is the player's own here, as the battle has only two owners.
 
 A house's first battle in the campaign runs its start script (`ATStart.tok` for the
 Atreides): the battle starts with nothing but what the script puts down, the sides it makes

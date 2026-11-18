@@ -2025,6 +2025,118 @@ impl mission::Battle for Game {
     fn win(&mut self) {
         self.decide(Outcome::Victory);
     }
+
+    fn place_of(&self, thing: Option<u32>) -> Option<(f32, f32)> {
+        let unit = self.units.iter().find(|u| Some(u.id) == thing && u.alive)?;
+        Some((unit.x, unit.z))
+    }
+
+    fn sees(&self, seen: i32, by: i32) -> bool {
+        let of = |side: i32| {
+            self.units
+                .iter()
+                .filter(move |u| u.alive && self.script_side(u) == Some(side))
+        };
+        of(by).any(|looking| {
+            of(seen).any(|u| (u.x - looking.x).hypot(u.z - looking.z) <= looking.sight())
+        })
+    }
+
+    fn set_health(&mut self, thing: Option<u32>, health: i32) {
+        if let Some(unit) = self.units.iter_mut().find(|u| Some(u.id) == thing) {
+            unit.health = (health as f32).min(unit.max_health());
+        }
+    }
+
+    fn turn_into(&mut self, thing: Option<u32>, kind: u16, side: i32) -> Option<u32> {
+        let (role, _) = Role::named(campaign::kind_name(kind)?)?;
+        let id = thing?;
+        let (owner, color) = self.side_owner(side)?;
+        let unit = self.units.iter_mut().find(|u| u.id == id && u.alive)?;
+        units::turn_into(unit, role);
+        (unit.owner, unit.color) = (owner, color);
+        self.script_side_of.retain(|&(of, _)| of != id);
+        self.script_side_of.push((id, side));
+        Some(id)
+    }
+
+    fn owner_side(&self, thing: Option<u32>) -> Option<i32> {
+        let unit = self.units.iter().find(|u| Some(u.id) == thing && u.alive)?;
+        // What has changed hands is its new owner's: a captured outpost the player's.
+        if unit.owner == 0 {
+            return Some(0);
+        }
+        self.script_side(unit)
+    }
+
+    fn hurt_by(&self, thing: Option<u32>, side: i32) -> bool {
+        // Who hurt it is not kept: what the player's enemies hold is hurt by the player.
+        let Some(unit) = self.units.iter().find(|u| Some(u.id) == thing) else {
+            return false;
+        };
+        let hurt = !unit.alive || unit.health < unit.max_health();
+        hurt && (side == 0) == (unit.owner != 0)
+    }
+
+    fn relate(&mut self, a: i32, b: i32, enemies: bool) {
+        let pair = (a.min(b), a.max(b));
+        self.script_enemies.retain(|&made| made != pair);
+        if enemies {
+            self.script_enemies.push(pair);
+        }
+        // What each of the script's things is follows from whom its side is now the enemy of.
+        let sides = self.script_side_of.clone();
+        for (id, side) in sides {
+            let Some((owner, color)) = self.side_owner(side) else {
+                continue;
+            };
+            if let Some(unit) = self.units.iter_mut().find(|u| u.id == id) {
+                (unit.owner, unit.color) = (owner, color);
+            }
+        }
+    }
+}
+
+impl Game {
+    /// Whether the script has made these two of its sides enemies.
+    fn script_enemies_of(&self, a: i32, b: i32) -> bool {
+        self.script_enemies.contains(&(a.min(b), a.max(b)))
+    }
+
+    /// Whose a script's side's things are, and in what color: the player's own for the
+    /// player's side, and for a side the player's enemies are the enemies of; the enemy's for
+    /// one the player's are; and nobody's for the rest, as the prisoners of a camp, whom
+    /// neither side fires at.
+    fn side_owner(&self, side: i32) -> Option<(usize, TeamColor)> {
+        let fights_the_enemy = || {
+            (1..=self.script_sides).any(|other| {
+                self.script_enemies_of(side, other) && self.script_enemies_of(other, 0)
+            })
+        };
+        let owner = if side == 0 {
+            0
+        } else if self.script_enemies_of(side, 0) {
+            1
+        } else if fights_the_enemy() {
+            0
+        } else {
+            units::NEUTRAL
+        };
+        let color = match self.stats_rows().get(owner) {
+            Some(row) => row.color,
+            None => TeamColor::Yellow,
+        };
+        Some((owner, color))
+    }
+
+    /// The script's side a thing is on, if the script put it down.
+    fn script_side(&self, unit: &Unit) -> Option<i32> {
+        self.script_side_of
+            .iter()
+            .find(|&&(id, _)| id == unit.id)
+            .map(|&(_, side)| side)
+            .or((unit.owner == 0).then_some(0))
+    }
 }
 
 /// Whether a point is inside a triangle, whichever way round its corners go.
@@ -2092,6 +2204,8 @@ pub struct Game {
     script_clock: f32,
     script_sides: i32,
     script_side_of: Vec<(u32, i32)>,
+    /// The pairs of the script's sides it has made enemies.
+    script_enemies: Vec<(i32, i32)>,
     mission_lines: Vec<u16>,
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
@@ -2233,6 +2347,7 @@ impl Game {
             script_clock: 0.0,
             script_sides: 0,
             script_side_of: Vec::new(),
+            script_enemies: Vec::new(),
             mission_lines: Vec::new(),
             minimap_dragging: false,
             units: Vec::new(),
@@ -4173,7 +4288,7 @@ impl Game {
         let Some(campaign) = &self.campaign else {
             return;
         };
-        let house = campaign.house;
+        let (house, phase) = (campaign.house, campaign.phase);
         let map = maps::by_id(&campaign.map_id(mission)).unwrap_or(0);
         self.mission = Some(mission);
         self.briefing = None;
@@ -4184,6 +4299,15 @@ impl Game {
             if let Some(lines) = campaign::start_script(house) {
                 self.start_script(lines);
             }
+        }
+        // A battle for a territory runs its own script, where the disc has one for the phase.
+        let script = match mission {
+            Mission::Attack(at) => campaign::mission_script(house, phase, false, at),
+            Mission::Defend(at, _) => campaign::mission_script(house, phase, true, at),
+            _ => None,
+        };
+        if let Some(lines) = script {
+            self.start_script(lines);
         }
     }
 
@@ -4196,6 +4320,7 @@ impl Game {
         self.script_clock = 0.0;
         self.script_sides = 0;
         self.script_side_of.clear();
+        self.script_enemies.clear();
         let mut script = Script::new(lines);
         script.run(self);
         self.script = Some(script);
@@ -4305,8 +4430,7 @@ impl Game {
     ) -> Option<u32> {
         let name = campaign::kind_name(kind)?;
         let thing = Role::named(name)?;
-        let owner = usize::from(side != 0);
-        let color = self.stats_rows().get(owner)?.color;
+        let (owner, color) = self.side_owner(side)?;
         let dug_in = facing.is_some() && name.ends_with(CONSTRUCTION_YARD);
         let terrain = battlefield::terrain(self.battle_map);
         let id = self.next_unit_id;
@@ -6108,6 +6232,21 @@ mod tests {
         game.update(0.1);
         assert!(game.crates.is_empty());
         assert_eq!(sardaukar(&game), before + 1);
+    }
+
+    #[test]
+    fn a_scripts_sides_are_the_enemys_the_players_or_nobodys_by_whom_they_fight() {
+        use mission::Battle;
+        let mut game = in_battle();
+        game.script_sides = 2;
+        let owner = |game: &Game, side: i32| game.side_owner(side).map(|(owner, _)| owner);
+        assert_eq!(owner(&game, 0), Some(0));
+        assert_eq!(owner(&game, 1), Some(units::NEUTRAL), "fighting nobody yet");
+        game.relate(2, 0, true);
+        assert_eq!(owner(&game, 2), Some(1), "the player's enemy");
+        assert_eq!(owner(&game, 1), Some(units::NEUTRAL), "a prisoner, say");
+        game.relate(1, 2, true);
+        assert_eq!(owner(&game, 1), Some(0), "fighting the player's enemy");
     }
 
     #[test]

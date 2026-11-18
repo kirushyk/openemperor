@@ -110,10 +110,23 @@ pub(super) fn read_parts(
             .iter()
             .find_map(|child| find(child, world, name))
     }
+    /// Whether a part of this name sits somewhere in this one.
+    fn holds(object: &Object, name: &str) -> bool {
+        object
+            .children
+            .iter()
+            .any(|child| child.name.eq_ignore_ascii_case(name) || holds(child, name))
+    }
     let model = xbf::parse(model)?;
-    let roots = parts
+    let roots: Vec<_> = parts
         .iter()
         .filter_map(|name| model.objects.iter().find_map(|o| find(o, IDENTITY, name)))
+        .collect();
+    // A part that sits in another of them comes with it, where that one puts it.
+    let roots = roots
+        .iter()
+        .filter(|(part, _)| !roots.iter().any(|(other, _)| holds(other, &part.name)))
+        .copied()
         .collect();
     build(&model, roots, textures, pictures, layers)
 }
@@ -267,6 +280,15 @@ fn affine(transform: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     fixed
 }
 
+/// A scene as its front shows it: see `Scene::front`.
+struct Front {
+    faces: Vec<Face>,
+    low: [f32; 3],
+    high: [f32; 3],
+    right: usize,
+    up: usize,
+}
+
 /// A corner of a face on the screen, and where it is on its picture.
 type Corner = ((f32, f32), [f32; 2]);
 
@@ -314,7 +336,7 @@ impl Scene {
             if (b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1) < 0.0 {
                 continue;
             }
-            lay(vertices, &corners, *picture);
+            lay(vertices, &corners, *picture, 1.0);
         }
     }
 }
@@ -356,7 +378,71 @@ impl Scene {
         vertices: &mut Vec<Vertex>,
         (x, y, w, h): (f32, f32, f32, f32),
     ) {
-        // Where it has come to at the end of its animation: the sidebar slides in.
+        let Front {
+            faces,
+            low,
+            high,
+            right,
+            up,
+        } = self.front();
+        let span = |axis: usize| (high[axis] - low[axis]).max(SLIVER);
+        for face in faces {
+            let Some(Some(picture)) = self.pictures.get(face.picture) else {
+                continue;
+            };
+            let corners: [Corner; 3] = std::array::from_fn(|n| {
+                let corner = face.corners[n];
+                let at = (
+                    x + (corner[right] - low[right]) / span(right) * w,
+                    y + (high[up] - corner[up]) / span(up) * h,
+                );
+                (at, face.uv[n])
+            });
+            lay(vertices, &corners, *picture, 1.0);
+        }
+    }
+
+    /// Draws the scene as its front shows it, as big as fits a square `size` wide with its
+    /// middle at `at`, keeping its shape, its colors times `tint`: as the sidebar's symbols are
+    /// drawn on its buttons.
+    pub(super) fn draw_icon(
+        &self,
+        vertices: &mut Vec<Vertex>,
+        (cx, cy): (f32, f32),
+        size: f32,
+        tint: f32,
+    ) {
+        // Seen as the sidebar's camera sees it, along its depth.
+        let Front {
+            faces, low, high, ..
+        } = self.front();
+        let (right, up) = (0, 1);
+        let (wide, tall) = (
+            (high[right] - low[right]).max(SLIVER),
+            (high[up] - low[up]).max(SLIVER),
+        );
+        let fit = size / wide.max(tall);
+        for face in faces {
+            let Some(Some(picture)) = self.pictures.get(face.picture) else {
+                continue;
+            };
+            let corners: [Corner; 3] = std::array::from_fn(|n| {
+                let corner = face.corners[n];
+                let middle = |axis: usize| (low[axis] + high[axis]) / 2.0;
+                let at = (
+                    cx + (corner[right] - middle(right)) * fit,
+                    cy - (corner[up] - middle(up)) * fit,
+                );
+                (at, face.uv[n])
+            });
+            lay(vertices, &corners, *picture, tint);
+        }
+    }
+
+    /// Its faces where it has come to at the end of its animation, as the sidebar has slid
+    /// in, with how far they reach each way, and which ways go right and up as its front
+    /// shows it: seen along the axis it is flattest along.
+    fn front(&self) -> Front {
         let faces = self.posed_at(|frames| frames.saturating_sub(1));
         let (mut low, mut high) = ([f32::MAX; 3], [f32::MIN; 3]);
         for corner in faces.iter().flat_map(|face| face.corners) {
@@ -374,19 +460,12 @@ impl Scene {
             1 => [0, 2],
             _ => [0, 1],
         };
-        for face in faces {
-            let Some(Some(picture)) = self.pictures.get(face.picture) else {
-                continue;
-            };
-            let corners: [Corner; 3] = std::array::from_fn(|n| {
-                let corner = face.corners[n];
-                let at = (
-                    x + (corner[right] - low[right]) / span(right) * w,
-                    y + (high[up] - corner[up]) / span(up) * h,
-                );
-                (at, face.uv[n])
-            });
-            lay(vertices, &corners, *picture);
+        Front {
+            faces,
+            low,
+            high,
+            right,
+            up,
         }
     }
 
@@ -435,14 +514,14 @@ impl Scene {
                 );
                 (at, face.uv[n])
             });
-            lay(vertices, &corners, *picture);
+            lay(vertices, &corners, *picture, 1.0);
         }
     }
 }
 
 /// Lays a triangle on the screen with its picture, cut along the edges of the picture's
 /// tiles, each piece shown with its own tile.
-fn lay(vertices: &mut Vec<Vertex>, corners: &[Corner; 3], picture: Picture) {
+fn lay(vertices: &mut Vec<Vertex>, corners: &[Corner; 3], picture: Picture, tint: f32) {
     let tiles = picture.tiles as f32;
     // In tiles, from a whole picture's top left: a picture repeats past its edges.
     let least = |n: usize| {
@@ -482,10 +561,15 @@ fn lay(vertices: &mut Vec<Vertex>, corners: &[Corner; 3], picture: Picture) {
                         u,
                         v,
                         layer: layer as f32,
-                        ..Vertex::premultiplied(at, [1.0, 1.0, 1.0, 0.0])
+                        ..Vertex::premultiplied(at, [tint, tint, tint, 0.0])
                     }
                 } else {
-                    Vertex::pictured(at, (u, v), layer)
+                    Vertex {
+                        r: tint,
+                        g: tint,
+                        b: tint,
+                        ..Vertex::pictured(at, (u, v), layer)
+                    }
                 }
             };
             for n in 1..piece.len().saturating_sub(1) {
@@ -545,7 +629,7 @@ mod tests {
             ((0.0, 100.0), [0.0, 1.0]),
         ];
         let mut vertices = Vec::new();
-        lay(&mut vertices, &corners, picture);
+        lay(&mut vertices, &corners, picture, 1.0);
         let layers: std::collections::BTreeSet<usize> =
             vertices.iter().map(|v| v.layer as usize).collect();
         assert_eq!(layers.into_iter().collect::<Vec<_>>(), [10, 11, 12]);
@@ -576,7 +660,7 @@ mod tests {
             ((0.0, 10.0), [1.25, 2.5]),
         ];
         let mut vertices = Vec::new();
-        lay(&mut vertices, &corners, glow);
+        lay(&mut vertices, &corners, glow, 1.0);
         assert_eq!(vertices.len(), 3);
         assert!(vertices.iter().all(|v| v.a == 0.0 && v.layer == 3.0));
         assert_eq!((vertices[0].u, vertices[0].v), (0.25, 0.0));

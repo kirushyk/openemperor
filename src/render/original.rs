@@ -810,6 +810,8 @@ struct Original {
     cursors: Vec<Option<frontend::Scene>>,
     /// The sidebar's frame, if the disc has it.
     sidebar_frame: Option<frontend::Scene>,
+    /// Each of `SYMBOLS` as the sidebar's model draws it, glowing, if the disc has it.
+    symbol_scenes: Vec<Option<frontend::Scene>>,
     /// The symbol of each of `SYMBOLS`, as flat triangles in a square from -1 to 1 across and
     /// down: none for one the disc has not.
     symbols: Vec<Vec<[(f32, f32); 3]>>,
@@ -1408,9 +1410,17 @@ fn read_shapes(disc: &Path) -> Option<Original> {
             frontend::read(&model, &archive, &mut pictures, &mut layers)
         })
         .collect();
-    let sidebar_frame = read_interface(disc, SIDEBAR).and_then(|model| {
-        frontend::read_parts(&model, &SIDEBAR_FRAME, &archive, &mut pictures, &mut layers)
+    let sidebar = read_interface(disc, SIDEBAR);
+    let sidebar_frame = sidebar.as_ref().and_then(|model| {
+        frontend::read_parts(model, &SIDEBAR_FRAME, &archive, &mut pictures, &mut layers)
     });
+    let symbol_scenes = SYMBOLS
+        .iter()
+        .map(|(_, parts)| {
+            let model = sidebar.as_ref()?;
+            frontend::read_parts(model, parts, &archive, &mut pictures, &mut layers)
+        })
+        .collect();
     (!shapes.is_empty()).then_some(Original {
         shapes,
         damaged,
@@ -1426,6 +1436,7 @@ fn read_shapes(disc: &Path) -> Option<Original> {
         lettering,
         cursors,
         sidebar_frame,
+        symbol_scenes,
         archive,
         spice,
     })
@@ -1532,6 +1543,27 @@ fn read_symbols(disc: &Path) -> Option<Vec<Vec<[(f32, f32); 3]>>> {
 
 /// A symbol of the original's sidebar: flat triangles in a square from -1 to 1 across and
 /// down, once the disc's are read.
+/// Draws one of the sidebar's symbols as the original does, glowing in its own pictures, as
+/// big as fits a square `size` wide with its middle at `at`, as bright as `tint`. Returns
+/// whether it was drawn.
+pub(super) fn draw_symbol_icon(
+    vertices: &mut Vec<Vertex>,
+    symbol: Symbol,
+    at: (f32, f32),
+    size: f32,
+    tint: f32,
+) -> bool {
+    let at_symbol = SYMBOLS.iter().position(|&(of, _)| of == symbol);
+    let scene = ORIGINAL
+        .get()
+        .zip(at_symbol)
+        .and_then(|(original, at)| original.symbol_scenes.get(at)?.as_ref());
+    scene.is_some_and(|scene| {
+        scene.draw_icon(vertices, at, size, tint);
+        true
+    })
+}
+
 pub fn symbol(symbol: Symbol) -> Option<&'static [[(f32, f32); 3]]> {
     let at = SYMBOLS.iter().position(|&(of, _)| of == symbol)?;
     ORIGINAL

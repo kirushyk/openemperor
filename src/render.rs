@@ -62,6 +62,11 @@ const ROCKET_PIP_GONE: Color = [0.1, 0.1, 0.1, 0.8];
 const QUIET: Color = [0.55, 0.53, 0.48, 1.0];
 const GOLD: Color = [0.95, 0.76, 0.32, 1.0];
 const GOLD_DIM: Color = [0.62, 0.50, 0.24, 1.0];
+/// What a building's picture on its button is multiplied by once it is made and waiting to be
+/// put down.
+const READY_TINT: Color = [0.45, 1.0, 0.45, 1.0];
+/// How bright a sidebar symbol glows on a button that is greyed out.
+const DIMMED_SYMBOL: f32 = 0.35;
 const PANEL: Color = [0.09, 0.09, 0.13, 1.0];
 const BUTTON: Color = [0.13, 0.13, 0.18, 1.0];
 const BUTTON_HOVER: Color = [0.22, 0.21, 0.27, 1.0];
@@ -356,10 +361,20 @@ impl Canvas {
     }
 
     /// One of the pictures given to the backend, square, `half` across from its middle each way.
-    fn picture(&mut self, (cx, cy): (f32, f32), half: f32, layer: usize) {
+    fn picture(&mut self, at: (f32, f32), half: f32, layer: usize) {
+        self.picture_tinted(at, half, layer, [1.0; 4]);
+    }
+
+    /// A picture with each of its colors multiplied by `tint`'s.
+    fn picture_tinted(&mut self, (cx, cy): (f32, f32), half: f32, layer: usize, tint: Color) {
         let corner = |(u, v): (f32, f32)| {
             let at = (cx + (u * 2.0 - 1.0) * half, cy + (v * 2.0 - 1.0) * half);
-            Vertex::pictured(at, (u, v), layer)
+            Vertex {
+                r: tint[0],
+                g: tint[1],
+                b: tint[2],
+                ..Vertex::pictured(at, (u, v), layer)
+            }
         };
         self.vertices.extend(
             [
@@ -1268,7 +1283,13 @@ fn draw_button(canvas: &mut Canvas, game: &Game, b: Button) {
         } else {
             (cx, cy)
         };
-        if draw_symbol(canvas, symbol, at, b.h * 0.7, color) && !wide {
+        if draw_symbol(canvas, symbol, at, b.h * 0.7, color) {
+            if !wide {
+                return;
+            }
+            // Its name beside it, in the rest of the button.
+            let rest = (b.x + b.h + b.x + b.w) / 2.0;
+            canvas.text_centered(b.label, rest, cy, px, color);
             return;
         }
     }
@@ -4320,7 +4341,10 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
         let icon = makes.and_then(|role| original_icon(role, game.faction_of(0), !can_make));
         if let Some(layer) = icon {
             let half = cell.w / 2.0 - border_px(game.height) * 2.0;
-            canvas.picture((cx, cy), half, layer);
+            // A building made and waiting to be put down shows green, as the original's does.
+            let ready = makes.is_some_and(|role| game.is_ready_to_place(role));
+            let tint = if ready { READY_TINT } else { [1.0; 4] };
+            canvas.picture_tinted((cx, cy), half, layer, tint);
         } else {
             let symbol = if can_make { GOLD } else { GOLD_DIM };
             draw_tab_symbol(canvas, game.build_tab, cx, cy, cell.w * 0.5, symbol);
@@ -4506,6 +4530,15 @@ fn draw_symbol(
     size: f32,
     c: Color,
 ) -> bool {
+    // Glowing in its own pictures as the original's sidebar has it, dimmer when greyed out.
+    let tint = if c == QUIET || c == GOLD_DIM {
+        DIMMED_SYMBOL
+    } else {
+        1.0
+    };
+    if original::draw_symbol_icon(&mut canvas.vertices, symbol, (cx, cy), size, tint) {
+        return true;
+    }
     let Some(faces) = original_symbol(symbol) else {
         return false;
     };

@@ -530,6 +530,17 @@ pub enum Facing {
 }
 
 impl Facing {
+    /// The one a mission script gives by its number, a quarter turn each from the front out
+    /// along +z: out along -x, -z, then +x.
+    pub fn numbered(number: i32) -> Self {
+        [
+            Facing::LeftBottom,
+            Facing::LeftTop,
+            Facing::RightTop,
+            Facing::RightBottom,
+        ][number.rem_euclid(4) as usize]
+    }
+
     /// The one a drag across the screen points to.
     pub fn of_drag(dx: f32, dy: f32) -> Self {
         match (dx < 0.0, dy < 0.0) {
@@ -3623,19 +3634,28 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
 
 /// Puts a mission script's unit or building on the map for a side, and says its id: a
 /// building where it is put, dug in if it is a construction yard, an MCV dug in; a unit at
-/// the free spot nearest.
+/// the free spot nearest. Facing a way, a building stands as the original puts one: across,
+/// its middle at the point, and its front row on it, the rest behind; a unit looks that way.
 pub fn put(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
     at: (f32, f32),
     (role, house): (Role, Faction),
     side: (usize, TeamColor),
-    dug_in: bool,
+    (dug_in, facing): (bool, Option<Facing>),
     id: u32,
 ) -> Option<u32> {
     let kind = role.kind();
-    let spot = if kind.is_building() || dug_in {
-        at
+    let stands = kind.is_building() || dug_in;
+    let spot = if stands {
+        let (cols, rows) = role.plot_size(house);
+        let facing = facing.unwrap_or_default();
+        // Its middle from the point: half a square off across for an even width, and half
+        // its depth back from its front row.
+        let across = (cols - 1) as f32 / 2.0 - (cols / 2) as f32;
+        let back = (rows - 1) as f32 / 2.0;
+        let (dx, dz) = facing.turned((across * CELL_SIDE, -back * CELL_SIDE));
+        (at.0 + dx, at.1 + dz)
     } else {
         let taken = spots_taken(units, kind.flies());
         *find_slots(terrain, at, 1, &taken, kind.going_on_the_ground()).first()?
@@ -3643,6 +3663,11 @@ pub fn put(
     place_unit(units, terrain, spot, role, role.weapon(), side, id);
     let unit = units.last_mut()?;
     unit.house = house;
+    if let Some(facing) = facing {
+        unit.facing = facing;
+        let (x, z) = facing.way_out();
+        unit.heading = z.atan2(x);
+    }
     if dug_in {
         switch_deployed(unit);
     }
@@ -10784,6 +10809,39 @@ mod tests {
         walls[0].alive = false;
         join_walls(&mut walls);
         assert_eq!(WallPiece::of(walls[1].wall_joins).0, WallPiece::Single);
+    }
+
+    #[test]
+    fn a_scripted_building_stands_with_its_front_row_on_its_point_and_faces_its_way() {
+        // The Atreides' first construction yard: at its base's point, facing the way out along
+        // -x, inside walls that close it in from tile 1 to 7 along x and -3 to 3 along z.
+        let terrain = Terrain::open();
+        let at = grid_to_world(40.5, 40.5);
+        let mut units = Vec::new();
+        let side = (0, TeamColor::Blue);
+        let yard = (Role::Mcv, Faction::Atreides);
+        put(
+            &mut units,
+            &terrain,
+            at,
+            yard,
+            side,
+            (true, Some(Facing::numbered(1))),
+            0,
+        )
+        .unwrap();
+        let plot = units[0].plot().unwrap();
+        assert_eq!(units[0].facing, Facing::LeftTop);
+        assert_eq!(
+            (plot.u, plot.v, plot.cols, plot.rows),
+            (40, 38, 7, 5),
+            "from its point to the walls' far side, between the walls each way"
+        );
+        let (x, z) = Facing::LeftTop.way_out();
+        assert!(
+            (x + 1.0).abs() < 1e-6 && z.abs() < 1e-6,
+            "out of the open side"
+        );
     }
 
     #[test]

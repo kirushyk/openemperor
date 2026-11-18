@@ -11,7 +11,7 @@ use crate::maps;
 use crate::mission::{self, Script, Token};
 use crate::platform::{Event, Key, Modifier};
 use crate::strategy::Strategy;
-use crate::units::{self, Role, Unit, UnitKind};
+use crate::units::{self, Facing, Role, Unit, UnitKind};
 use crate::weapons::OVERKILL_BLOWS_APART;
 use crate::weapons::{Combat, Made, Noise, Superweapon};
 
@@ -1985,12 +1985,12 @@ impl mission::Battle for Game {
         self.map_point(&format!("Script{number}"))
     }
 
-    fn place(&mut self, side: i32, kind: u16, at: (f32, f32), _facing: i32) -> Option<u32> {
-        self.put_scripted(side, kind, at, true)
+    fn place(&mut self, side: i32, kind: u16, at: (f32, f32), facing: i32) -> Option<u32> {
+        self.put_scripted(side, kind, at, Some(Facing::numbered(facing)))
     }
 
     fn bring(&mut self, side: i32, kind: u16, at: (f32, f32)) -> Option<u32> {
-        self.put_scripted(side, kind, at, false)
+        self.put_scripted(side, kind, at, None)
     }
 
     fn left(&self, side: i32) -> i32 {
@@ -4205,12 +4205,19 @@ impl Game {
 
     /// Puts what the script asks for on the map for one of its sides: the player's own, any
     /// other the enemy's. Exactly where, or else at the free spot nearest.
-    fn put_scripted(&mut self, side: i32, kind: u16, at: (f32, f32), exact: bool) -> Option<u32> {
+    /// Puts what a script names on the map: placed exactly, facing a way, or brought in.
+    fn put_scripted(
+        &mut self,
+        side: i32,
+        kind: u16,
+        at: (f32, f32),
+        facing: Option<Facing>,
+    ) -> Option<u32> {
         let name = campaign::kind_name(kind)?;
         let thing = Role::named(name)?;
         let owner = usize::from(side != 0);
         let color = self.stats_rows().get(owner)?.color;
-        let dug_in = exact && name.ends_with(CONSTRUCTION_YARD);
+        let dug_in = facing.is_some() && name.ends_with(CONSTRUCTION_YARD);
         let terrain = battlefield::terrain(self.battle_map);
         let id = self.next_unit_id;
         let placed = units::put(
@@ -4219,7 +4226,7 @@ impl Game {
             at,
             thing,
             (owner, color),
-            dug_in,
+            (dug_in, facing),
             id,
         )?;
         self.next_unit_id += 1;

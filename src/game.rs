@@ -4018,6 +4018,12 @@ impl Game {
             return;
         }
         self.outcome = Some(outcome);
+        // The side that has won cheers: the player's on a victory, their enemies' on a defeat.
+        let teams = &self.teams;
+        units::cheer(&mut self.units, |owner| {
+            let enemy = units::are_enemies(teams, 0, owner);
+            teams.get(owner).is_some() && enemy == (outcome == Outcome::Defeat)
+        });
         self.announce(match outcome {
             Outcome::Victory => Speech::Victory,
             Outcome::Defeat => Speech::Defeat,
@@ -6047,6 +6053,33 @@ mod tests {
         let mut game = in_battle();
         kill_owners(&mut game, &[0]);
         assert_eq!(game.outcome, Some(Outcome::Defeat));
+    }
+
+    #[test]
+    fn the_winners_soldiers_stop_and_cheer() {
+        let mut game = in_battle();
+        win(&mut game);
+        let soldiers = |owner: usize| {
+            game.units
+                .iter()
+                .filter(move |u| u.alive && u.owner == owner && u.kind == UnitKind::Infantry)
+        };
+        assert!(soldiers(0).next().is_some());
+        assert!(soldiers(0).all(|u| u.cheering && !u.is_moving()));
+
+        let mut game = in_battle();
+        kill_owners(&mut game, &[0]);
+        let enemy = all_enemies(&game)[0];
+        let theirs: Vec<_> = game
+            .units
+            .iter()
+            .filter(|u| u.alive && u.owner == enemy && u.kind == UnitKind::Infantry)
+            .collect();
+        assert!(!theirs.is_empty());
+        assert!(
+            theirs.iter().all(|u| u.cheering),
+            "on a defeat the enemy does"
+        );
     }
 
     #[test]

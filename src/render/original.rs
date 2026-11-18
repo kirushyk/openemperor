@@ -2010,6 +2010,7 @@ fn frame(shape: &Shape, unit: &Unit, time: f32) -> usize {
         Harvest::Dumping(_) if unit.role == Role::Harvester => &["Harv Unload Hold"],
         _ if unit.deployed => &["Deployed Idle 0", "Deploy Gun Hold"],
         _ if moving => &["Move"],
+        _ if unit.cheering => &["Win", "Stationary"],
         _ => &["Stationary"],
     };
     names
@@ -2609,6 +2610,27 @@ mod tests {
             combat.stir_tornados(&terrain, 1.0);
         }
         assert!(!draw_tornado(&mut canvas, &combat.tornados[0], 0.0));
+    }
+
+    #[test]
+    fn a_soldier_cheers_by_its_win_once_he_stands() {
+        let shape = Shape {
+            sequences: vec![
+                Sequence {
+                    name: "Stationary".into(),
+                    ranges: vec![(0, 10)],
+                },
+                Sequence {
+                    name: "Win".into(),
+                    ranges: vec![(50, 80)],
+                },
+            ],
+            ..Shape::default()
+        };
+        let mut unit = Unit::for_test(0.0, 0.0, UnitKind::Infantry);
+        assert!(frame(&shape, &unit, 0.5) < 10);
+        unit.cheering = true;
+        assert!((50..80).contains(&frame(&shape, &unit, 0.5)));
     }
 
     #[test]

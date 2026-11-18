@@ -2118,6 +2118,8 @@ pub struct Unit {
     pad: Option<Pad>,
     /// Seconds an invisible unit stays seen after it last fired.
     pub revealed: f32,
+    /// Whether a soldier is cheering his side's win.
+    pub cheering: bool,
     /// How far a pop-up turret has come up: 0 sunk in the ground, 1 ready to fire. For a
     /// Kobra, how far its cannon is raised: 0 resting on its tracks, 1 high on its leg.
     pub popped: f32,
@@ -3157,6 +3159,7 @@ impl Unit {
             on_mission: false,
             pace: None,
             revealed: 0.0,
+            cheering: false,
             popped: 0.0,
             gun_turn: 0.0,
             wall_joins: [false; 4],
@@ -3318,6 +3321,7 @@ fn place_unit(
         on_mission: false,
         pace: None,
         revealed: 0.0,
+        cheering: false,
         popped: 0.0,
         gun_turn: 0.0,
         wall_joins: [false; 4],
@@ -4619,6 +4623,20 @@ pub fn order_stop(units: &mut [Unit]) {
         if unit.role == Role::Harvester {
             unit.harvest = Harvest::Idle;
         }
+    }
+}
+
+/// Has the soldiers of the sides that have won stop where they are and cheer.
+pub fn cheer(units: &mut [Unit], won: impl Fn(usize) -> bool) {
+    for unit in units
+        .iter_mut()
+        .filter(|u| u.alive && u.kind == UnitKind::Infantry && won(u.owner))
+    {
+        unit.stand_down();
+        unit.on_mission = false;
+        unit.way = None;
+        unit.reset_progress();
+        unit.cheering = true;
     }
 }
 

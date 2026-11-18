@@ -1471,6 +1471,13 @@ impl Role {
         self != Role::Wall
     }
 
+    /// Whether it is a building whose units can be sent on to a gathering point: one that
+    /// makes them, or a starport they are delivered to. A windtrap, a refinery and such make
+    /// nothing to send.
+    pub fn takes_gathering_point(self) -> bool {
+        self.makes_units() || self == Role::Starport
+    }
+
     /// Whether it is a building that makes units.
     pub fn makes_units(self) -> bool {
         matches!(
@@ -4933,14 +4940,10 @@ pub fn order_dump(units: &mut [Unit], refinery: usize) {
 
 /// Tells every selected building that makes units where to send them.
 pub fn set_gathering(units: &mut [Unit], point: (f32, f32)) {
-    for unit in units.iter_mut().filter(|u| {
-        u.selected
-            && u.kind == UnitKind::Building
-            && !matches!(
-                u.role,
-                Role::Helipad | Role::Refinery | Role::Mcv | Role::Palace(_)
-            )
-    }) {
+    for unit in units
+        .iter_mut()
+        .filter(|u| u.selected && u.kind == UnitKind::Building && u.role.takes_gathering_point())
+    {
         unit.gathering = Some(point);
     }
 }
@@ -8591,6 +8594,14 @@ mod tests {
         assert_eq!(barracks.gathering, Some(point));
         let factory = units.iter().find(|u| u.role == Role::Factory).unwrap();
         assert_eq!(factory.gathering, None, "not selected");
+        let mut windtrap = [unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Building)];
+        windtrap[0].role = Role::Windtrap;
+        windtrap[0].selected = true;
+        set_gathering(&mut windtrap, point);
+        assert_eq!(
+            windtrap[0].gathering, None,
+            "a windtrap makes nothing to send"
+        );
         assert!(produce(&mut units, open_ground(), Role::Scout, 0, 50));
         assert!(produce(&mut units, open_ground(), Role::Scout, 0, 51));
         let [.., first, second] = &units[..] else {

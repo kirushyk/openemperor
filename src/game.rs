@@ -3644,9 +3644,7 @@ impl Game {
             !u.deployed
                 && match u.kind {
                     UnitKind::Tower => false,
-                    UnitKind::Building => {
-                        !matches!(u.role, Role::Helipad | Role::Refinery | Role::Palace(_))
-                    }
+                    UnitKind::Building => u.role.takes_gathering_point(),
                     _ => u.role.goes_where_told(),
                 }
         };

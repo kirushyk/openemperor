@@ -167,6 +167,8 @@ pub struct Terrain {
     /// Which grid points a route may go through, each way of going, worked out the first time
     /// it is needed.
     walkable: [OnceLock<Vec<bool>>; 3],
+    /// How high its highest and lowest grid points are, worked out the first time asked.
+    span: OnceLock<(f32, f32)>,
 }
 
 /// How a map is lit: the way to its sun as a unit vector, the light its ground gets from all
@@ -413,6 +415,7 @@ impl Terrain {
             radar,
             light: DAYLIGHT,
             walkable: Default::default(),
+            span: OnceLock::new(),
         })
     }
 
@@ -445,6 +448,7 @@ impl Terrain {
             radar: vec![SAND; width * height],
             light: DAYLIGHT,
             walkable: Default::default(),
+            span: OnceLock::new(),
         };
         let (far_u, far_v) = (width.saturating_sub(BASE), height.saturating_sub(BASE));
         [(0, 0), (far_u, far_v), (far_u, 0), (0, far_v)]
@@ -905,6 +909,17 @@ impl Terrain {
     }
 
     /// The terrain's height under a world point, between the heights at the corners of its cell.
+    /// How high its lowest and highest grid points are.
+    pub fn span(&self) -> (f32, f32) {
+        *self.span.get_or_init(|| {
+            self.heights
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), &h| {
+                    (low.min(h), high.max(h))
+                })
+        })
+    }
+
     pub fn height_at(&self, x: f32, z: f32) -> f32 {
         let (u, v) = world_to_grid(x, z);
         let (last_u, last_v) = (self.width as f32, self.height as f32);
@@ -1478,11 +1493,37 @@ impl View {
 
     /// The world (x, z) on the land itself under a screen point, up on what stands high too.
     pub fn land_at(&self, terrain: &Terrain, screen_x: f32, screen_y: f32) -> Option<(f32, f32)> {
-        let mut at = self.ground_at(screen_x, screen_y)?;
-        for _ in 0..4 {
-            at = self.plane_at(screen_x, screen_y, terrain.height_at(at.0, at.1))?;
+        // Down the ray from over the highest ground, the first place it is at or under the
+        // ground there, then narrowed down: what it meets first, a deck's edge over a void too.
+        const STEP: f32 = 4.0;
+        let (low, high) = terrain.span();
+        let under = |y: f32| {
+            let at = self.plane_at(screen_x, screen_y, y)?;
+            Some((at, terrain.height_at(at.0, at.1) >= y))
+        };
+        let mut above = high + STEP;
+        under(above)?;
+        let mut y = high;
+        while y > low - STEP {
+            let (at, hit) = under(y)?;
+            if hit {
+                let mut below = y;
+                let mut found = at;
+                for _ in 0..8 {
+                    let middle = (above + below) / 2.0;
+                    let (at, hit) = under(middle)?;
+                    if hit {
+                        (below, found) = (middle, at);
+                    } else {
+                        above = middle;
+                    }
+                }
+                return Some(found);
+            }
+            above = y;
+            y -= STEP;
         }
-        Some(at)
+        self.ground_at(screen_x, screen_y)
     }
 
     /// The world (x, z) on the sand plane under a screen point; `None` above the horizon.
@@ -2152,5 +2193,36 @@ mod tests {
             (camera.yaw - usual - TAU).abs() < 1e-3,
             "not turned back round"
         );
+    }
+
+    #[test]
+    fn the_cursor_finds_the_first_ground_its_ray_meets_a_raised_deck_over_a_void_too() {
+        // A deck 160 high round the middle, as the Heighliner's, and the rest down at 0.
+        let mut terrain = Terrain::open();
+        let middle = MOST_CELLS / 2;
+        for v in middle - 20..=middle + 20 {
+            for u in middle - 20..=middle + 20 {
+                terrain.heights[grid_index(u, v)] = 160.0;
+            }
+        }
+        let view = View::new(Camera::centered(), W, H);
+        let mut on_deck = 0;
+        for row in 1..20 {
+            for column in 1..20 {
+                let (sx, sy) = (W * column as f32 / 20.0, H * row as f32 / 20.0);
+                let Some(at) = view.land_at(&terrain, sx, sy) else {
+                    continue;
+                };
+                let height = terrain.height_at(at.0, at.1);
+                // Where the ray is at that height, so the ground it meets.
+                let met = view.plane_at(sx, sy, height).unwrap();
+                assert!((met.0 - at.0).hypot(met.1 - at.1) < 8.0, "{sx},{sy}");
+                // And nothing higher along the ray before it.
+                let before = view.plane_at(sx, sy, height + 8.0).unwrap();
+                assert!(terrain.height_at(before.0, before.1) < height + 8.0);
+                on_deck += usize::from(height == 160.0);
+            }
+        }
+        assert!(on_deck > 0);
     }
 }

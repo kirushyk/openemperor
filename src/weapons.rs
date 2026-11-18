@@ -1714,8 +1714,9 @@ impl Combat {
         self.random = random;
     }
 
-    /// Spins up the odd tornado, walks those there are over the land, and throws up dust where
-    /// each touches the ground.
+    /// Spins up the odd tornado out of the sand, walks those there are over the land, and
+    /// throws up dust where each touches the ground. Where there is no sand, as on the
+    /// Heighliner's deck, none spins up.
     pub fn stir_tornados(&mut self, terrain: &Terrain, dt: f32) {
         const AT_ONCE: usize = 3;
         const SPEED: f32 = 90.51;
@@ -1725,7 +1726,7 @@ impl Combat {
         if self.tornado_wait <= 0.0 && self.tornados.len() < AT_ONCE {
             self.tornado_wait = 4.0 + next_random(&mut random) * 8.0;
             let (x, z) = terrain.random_point(&mut random);
-            if terrain.can_walk(x, z) {
+            if terrain.ground_at(x, z) == crate::battlefield::Ground::Sand {
                 self.tornados.push(Tornado {
                     at: (x, terrain.height_at(x, z), z),
                     heading: next_random(&mut random) * TAU,
@@ -4367,6 +4368,13 @@ mod tests {
         assert!(seen);
         assert!(combat.tornados.len() <= 3);
         assert!(!combat.wisps.is_empty(), "dust where it touches down");
+
+        let deck = Terrain::open_rock();
+        let mut combat = Combat::default();
+        for _ in 0..2000 {
+            combat.stir_tornados(&deck, 0.05);
+        }
+        assert!(combat.tornados.is_empty(), "none without sand");
     }
 
     #[test]

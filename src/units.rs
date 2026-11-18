@@ -635,14 +635,14 @@ pub enum Facing {
 }
 
 impl Facing {
-    /// The one a mission script gives by its number, a quarter turn each from the front out
-    /// along +z: out along -x, -z, then +x.
+    /// The one a mission script or a map gives by its number, a quarter turn each from the
+    /// front out along -z: out along +x, +z, then -x.
     pub fn numbered(number: i32) -> Self {
         [
-            Facing::LeftBottom,
-            Facing::LeftTop,
             Facing::RightTop,
             Facing::RightBottom,
+            Facing::LeftBottom,
+            Facing::LeftTop,
         ][number.rem_euclid(4) as usize]
     }
 
@@ -3760,8 +3760,8 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
 
 /// Puts a mission script's unit or building on the map for a side, and says its id: a
 /// building where it is put, dug in if it is a construction yard, an MCV dug in; a unit at
-/// the free spot nearest. Facing a way, a building stands as the original puts one: its front
-/// row on the point, the rest behind, running to one side of it, a construction yard to both;
+/// the free spot nearest. Facing a way, a building stands as the original puts one: its back
+/// row on the point, the rest ahead, running to one side of it, a construction yard to both;
 /// a unit looks that way.
 pub fn put(
     units: &mut Vec<Unit>,
@@ -3777,17 +3777,17 @@ pub fn put(
     let spot = if stands {
         let (cols, rows) = role.plot_size(house);
         let facing = facing.unwrap_or_default();
-        // Its middle from the point: its squares run from the point to its right as it faces,
+        // Its middle from the point: its squares run from the point to its left as it faces,
         // a factory frigate's along its compound; a construction yard, an MCV dug in, has the
         // point in its middle across, between the walls the first one stands in. Its depth
-        // runs back from its front row.
+        // runs ahead from its back row.
         let across = if dug_in {
-            (cols - 1) as f32 / 2.0 - (cols / 2) as f32
+            (cols / 2) as f32 - (cols - 1) as f32 / 2.0
         } else {
-            -(cols - 1) as f32 / 2.0
+            (cols - 1) as f32 / 2.0
         };
-        let back = (rows - 1) as f32 / 2.0;
-        let (dx, dz) = facing.turned((across * CELL_SIDE, -back * CELL_SIDE));
+        let ahead = (rows - 1) as f32 / 2.0;
+        let (dx, dz) = facing.turned((across * CELL_SIDE, ahead * CELL_SIDE));
         (at.0 + dx, at.1 + dz)
     } else {
         let taken = spots_taken(units, kind.flies());
@@ -10978,7 +10978,7 @@ mod tests {
     #[test]
     fn a_scripted_building_stands_with_its_front_row_on_its_point_and_faces_its_way() {
         // The Atreides' first construction yard: at its base's point, facing the way out along
-        // -x, inside walls that close it in from tile 1 to 7 along x and -3 to 3 along z.
+        // +x, inside walls that close it in from tile 1 to 7 along x and -3 to 3 along z.
         let terrain = Terrain::open();
         let at = grid_to_world(40.5, 40.5);
         let mut units = Vec::new();
@@ -10995,19 +10995,19 @@ mod tests {
         )
         .unwrap();
         let plot = units[0].plot().unwrap();
-        assert_eq!(units[0].facing, Facing::LeftTop);
+        assert_eq!(units[0].facing, Facing::RightBottom);
         assert_eq!(
             (plot.u, plot.v, plot.cols, plot.rows),
             (40, 38, 7, 5),
             "from its point to the walls' far side, between the walls each way"
         );
-        let (x, z) = Facing::LeftTop.way_out();
+        let (x, z) = Facing::RightBottom.way_out();
         assert!(
-            (x + 1.0).abs() < 1e-6 && z.abs() < 1e-6,
-            "out of the open side"
+            (x - 1.0).abs() < 1e-6 && z.abs() < 1e-6,
+            "its pad towards the walls' far side"
         );
-        // The factory frigate of its map's compound, at square 87 by 7 facing out along -z, runs
-        // along the compound to square 104 and back from its front row.
+        // The factory frigate of its map's compound, at square 87 by 7 facing out along +z, runs
+        // along the compound to square 104 and ahead from its back row.
         let at = grid_to_world(87.5, 7.5);
         let frigate = (Role::Prop(Prop::FactoryFrigate), Faction::Harkonnen);
         let facing = (false, Some(Facing::numbered(2)));

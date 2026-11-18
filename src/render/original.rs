@@ -863,13 +863,14 @@ impl Spice {
         }
     }
 
-    /// Lays the patches of the cell at column `u` and row `v`, as much as `seen` of it shows.
+    /// Lays the patches of the cell at column `u` and row `v`, each corner shaded by the fog
+    /// where it lies, as the ground under it is.
     fn lay(
         &self,
         decals: &mut Vec<WorldVertex>,
         terrain: &Terrain,
         (u, v): (usize, usize),
-        seen: f32,
+        fog: Option<&Fog>,
     ) {
         let amount = terrain.spice_in(u, v);
         if amount == 0 {
@@ -884,20 +885,21 @@ impl Spice {
             at = (at + step) & 63;
             let y = terrain.height_at(mx, mz) + SPICE_LIFT;
             for (&(cx, cz), [pu, pv]) in self.patches[at & 31].iter().zip(SPICE_CORNERS) {
+                let (x, z) = (mx + cx, mz + cz);
                 decals.push(WorldVertex {
-                    x: mx + cx,
+                    x,
                     y,
-                    z: mz + cz,
+                    z,
                     normal: [0.0, 1.0, 0.0],
                     r: 1.0,
                     g: 1.0,
                     b: 1.0,
-                    seen,
+                    seen: 1.0,
                     level: 1.0,
                     stain: [0.0; 3],
                     picture: [pu, pv, self.layer as f32],
                     team: [0.0; 3],
-                    fog: crate::platform::FOG_CLEAR,
+                    fog: battlefield::fog_at(fog, x, z),
                 });
             }
         }
@@ -1296,8 +1298,7 @@ pub(super) fn draw_spice(
     let (u1, v1) = (cell(x1 + ROOM, columns - 1), cell(z1 + ROOM, rows - 1));
     for v in v0..=v1 {
         for u in u0..=u1 {
-            let (x, z) = battlefield::grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
-            spice.lay(decals, terrain, (u, v), battlefield::seen_at(fog, x, z));
+            spice.lay(decals, terrain, (u, v), fog);
         }
     }
 }
@@ -3035,9 +3036,9 @@ mod tests {
         let terrain = Terrain::open_rock().with_spice((100, 100), (1, 1));
         let spice = Spice::new(3);
         let mut decals = Vec::new();
-        spice.lay(&mut decals, &terrain, (101, 100), 1.0);
+        spice.lay(&mut decals, &terrain, (101, 100), None);
         assert!(decals.is_empty());
-        spice.lay(&mut decals, &terrain, (100, 100), 1.0);
+        spice.lay(&mut decals, &terrain, (100, 100), None);
         assert_eq!(decals.len(), 4 * 3);
         let (x, z) = battlefield::grid_to_world(100.5, 100.5);
         let reach = SPICE_SHIFT * 2.0_f32.sqrt() + SPICE_REACH + SPICE_REACH_JITTER;
@@ -3045,6 +3046,18 @@ mod tests {
             assert!((corner.x - x).hypot(corner.z - z) <= reach);
             assert_eq!(corner.y, SPICE_LIFT);
             assert_eq!(corner.picture[2], 3.0);
+            assert_eq!(corner.fog, crate::platform::FOG_CLEAR, "no fog");
+        }
+
+        // Under fog, each corner is shaded by the fog where it lies, as the ground is, so a
+        // patch fades over the fog's edge rather than showing or not as a whole.
+        let mut fog = Fog::new();
+        fog.update(std::iter::empty(), 0.0);
+        let mut fogged = Vec::new();
+        spice.lay(&mut fogged, &terrain, (100, 100), Some(&fog));
+        for corner in &fogged {
+            assert_eq!(corner.seen, 1.0);
+            assert_eq!(corner.fog, fog.edges_at(corner.x, corner.z));
         }
     }
 

@@ -1540,11 +1540,6 @@ pub fn edge_direction(mouse: (f32, f32), width: f32, height: f32) -> (f32, f32) 
     }
 }
 
-/// How bright the land is at a world point, as the player knows it.
-pub fn seen_at(fog: Option<&Fog>, x: f32, z: f32) -> f32 {
-    fog.map_or(1.0, |fog| fog.at(x, z).shade())
-}
-
 /// How far into what is seen now and what was ever seen a place lies, for a corner of the
 /// ground to be shaded by: all clear with no fog.
 pub fn fog_at(fog: Option<&Fog>, x: f32, z: f32) -> [f32; 2] {

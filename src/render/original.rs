@@ -1606,6 +1606,11 @@ fn gather(
         .filter_map(|face| {
             let (layer, glows) = match face.texture.and_then(|n| pictures.get(n).copied()) {
                 Some(Picture::Glow { layer, .. }) if lit => (*layer, true),
+                // A light kept out of sight as a mark glows with its picture, marked to glow
+                // or not, as a windtrap's front and back panels do.
+                Some(Picture::Painted { layer, .. }) if lit && is_marker(&object.name) => {
+                    (*layer, true)
+                }
                 Some(Picture::SeeThrough { layer, .. }) if shown => (*layer, false),
                 _ => return None,
             };
@@ -2091,9 +2096,11 @@ fn ends_of(shape: &Shape, unit: &Unit) -> Vec<(f32, f32, f32)> {
 }
 
 /// Where the searchlights of the unit's model throw their light, at this time of the battle:
-/// the far end of each beam, as it is posed now. None without the disc's model.
+/// the far end of each beam, as it is posed now. None without the disc's model, or for a
+/// building.
 pub fn searchlight_spots(unit: &Unit, time: f32) -> Vec<[f32; 3]> {
-    let Some(shape) = shape_of(unit) else {
+    // A building's lights, such as a windtrap's glowing panels, light only themselves.
+    let Some(shape) = shape_of(unit).filter(|_| unit.kind != UnitKind::Building) else {
         return Vec::new();
     };
     let (body, head) = places(shape, unit);
@@ -2824,6 +2831,29 @@ mod tests {
                 .filter(|part| part.veils.iter().any(|veil| veil.glows) && part.slide[0] > 0.0)
                 .collect();
             assert!(wind.len() >= 2, "{name}: its two streams of wind");
+        }
+    }
+
+    #[test]
+    fn a_windtraps_front_and_back_panels_on_the_disc_glow() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(index) = archive::from_cabinet(&disc.join(CABINET), INDEX) else {
+            return;
+        };
+        let archive = Archive::open(&index, &disc.join(DATA)).unwrap();
+        for name in [
+            "Buildings\\AT_Windtrap_H0.XbF",
+            "Buildings\\HK_Windtrap_H0.XBF",
+            "Buildings\\or_windtrap_H0.XbF",
+        ] {
+            let mut pictures = HashMap::new();
+            let shape = read_shape(&archive, name, &mut pictures).unwrap();
+            let panels = shape
+                .parts
+                .iter()
+                .filter(|part| part.beam && part.veils.iter().any(|veil| veil.glows))
+                .count();
+            assert!(panels >= 2, "{name}: {panels} glowing panels");
         }
     }
 

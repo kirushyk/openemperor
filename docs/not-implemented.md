@@ -55,17 +55,20 @@ we are missing is in [units.md](units.md). This list is about everything else.
 
 - **Searchlights** light the ground where their beams end: each `?Spotlight` beam of a disc
   model, as posed that moment, and a deployed MCV's sweeping beam, throw a pale pool of light
-  there. There are more beams than the 16 lights the backends take: those nearest where the
-  camera looks go first, after fire. How bright and wide the original's are is our guess, and
-  whether it lights them by day as well.
+  there, at full white as a light of the original's Direct3D adds itself, and on top of the
+  ground's wash. There are more beams than the 16 lights the backends take: those nearest
+  where the camera looks go first, after fire. How bright and wide the original's are is our
+  guess, and whether it lights them by day as well: its numbers are in `GAME.EXE`'s code.
 
 - **The glow of the original's lights** is drawn: searchlight beams, the spots they throw,
   lamps and flares. They do not light anything around them. Only explosions, fires, eruptions
   and gunfire do.
 - **Ground lighting**: on maps with a blue light, buildings take its hue, but the ground stays
   orange. The cause is not found yet.
-- **The map's light file**: lines 4 and 5 of `test.lit` make a colour ramp that we don't use.
-  What the original uses it for is not known.
+- **The map's light file**: lines 4 and 5 of `test.lit` light the models, taken as their
+  ambient light and sunlight; lines 2 and 3 the ground. That is our reading: on every map the
+  second pair is darker than the first in the same hue, and the ground's own light is baked
+  into its wash. The names are not on the disc.
 
 ## Maps
 

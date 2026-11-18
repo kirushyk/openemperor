@@ -445,6 +445,8 @@ pub enum CursorLook {
     Board,
     /// A click would sell what is here, or anything of the player's it is put on.
     Sell,
+    /// A click would start or stop mending the player's building here.
+    Repair,
 }
 
 /// What the next click on the map does instead of what it usually would.
@@ -3241,7 +3243,8 @@ impl Game {
             }
         };
         match self.click_mode {
-            Some(ClickMode::Sell | ClickMode::Repair) => return CursorLook::Sell,
+            Some(ClickMode::Sell) => return CursorLook::Sell,
+            Some(ClickMode::Repair) => return CursorLook::Repair,
             Some(ClickMode::Route) if self.would_go_here() => return CursorLook::March,
             Some(ClickMode::March) if self.would_go_here() => return CursorLook::March,
             _ => {}

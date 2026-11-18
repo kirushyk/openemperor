@@ -22,6 +22,8 @@ const NEAREST: f32 = 1.0;
 const MOST_TILES: usize = 4;
 /// Twice the area, in pixels, under which a piece of a face is not worth drawing.
 const SLIVER: f32 = 1e-3;
+/// How many times as tall as it is deep a scene drawn flat stands, to be seen from its front.
+const STANDING: f32 = 2.0;
 /// What starts the name of an object that only marks a place.
 const MARKER: char = '#';
 /// The storm clouds over Arrakis, which come out as blocks with what is read of them: left
@@ -96,7 +98,7 @@ pub(super) fn read(
     for object in &model.objects {
         gather(object, &IDENTITY, &mut scene);
     }
-    (!scene.still.is_empty()).then_some(scene)
+    (!scene.still.is_empty() || !scene.moving.is_empty()).then_some(scene)
 }
 
 /// One of the squares a picture is cut into, `PICTURE_SIDE` wide, as the backend takes it.
@@ -116,7 +118,7 @@ fn tile(image: &Image, tiles: usize, (across, down): (usize, usize)) -> Vec<u8> 
 /// Adds an object's faces to the scene, and those of what sits in it: where they stand if
 /// nothing moves them, or else as a moving part of their own.
 fn gather(object: &Object, above: &[[f32; 4]; 4], scene: &mut Scene) {
-    let world = times(&object.transform, above);
+    let world = times(&affine(&object.transform), above);
     if !object.name.starts_with(MARKER) && object.name != CLOUDS {
         let faces = object.faces.iter().filter_map(|face| {
             let picture = face.texture?;
@@ -145,6 +147,16 @@ fn gather(object: &Object, above: &[[f32; 4]; 4], scene: &mut Scene) {
     }
 }
 
+/// A transform as the affine one it is: some of the original's models, its cursors among
+/// them, leave rubbish where its last column has nothing but a 1 at its foot.
+fn affine(transform: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut fixed = *transform;
+    for (row, line) in fixed.iter_mut().enumerate() {
+        line[3] = if row == 3 { 1.0 } else { 0.0 };
+    }
+    fixed
+}
+
 /// A corner of a face on the screen, and where it is on its picture.
 type Corner = ((f32, f32), [f32; 2]);
 
@@ -152,17 +164,7 @@ impl Scene {
     /// Draws the scene on a screen this wide and tall, as it is this many seconds on: what is
     /// farthest first. The original's 4:3 view fills the screen's height.
     pub(super) fn draw(&self, vertices: &mut Vec<Vertex>, (width, height): (f32, f32), time: f32) {
-        let frame = (time * FRAMES_PER_SECOND) as usize;
-        let moved = self.moving.iter().flat_map(|part| {
-            let cycle = frame % part.animation.frames.len().max(1);
-            let pose = part.animation.at(cycle).copied().unwrap_or(IDENTITY);
-            let world = times(&pose, &part.above);
-            part.faces.iter().map(move |face| Face {
-                corners: face.corners.map(|corner| point(&world, corner)),
-                ..*face
-            })
-        });
-        let mut faces: Vec<Face> = self.still.iter().copied().chain(moved).collect();
+        let mut faces = self.posed(time);
         faces.retain(|face| face.corners.iter().all(|corner| corner[2] > NEAREST));
         let depth = |face: &Face| face.corners.iter().map(|c| c[2]).fold(0.0, f32::max);
         faces.sort_by(|a, b| depth(b).total_cmp(&depth(a)));
@@ -193,6 +195,66 @@ impl Scene {
             if (b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1) < 0.0 {
                 continue;
             }
+            lay(vertices, &corners, *picture);
+        }
+    }
+}
+
+impl Scene {
+    /// Its faces where they stand this many seconds on.
+    fn posed(&self, time: f32) -> Vec<Face> {
+        let frame = (time * FRAMES_PER_SECOND) as usize;
+        let moved = self.moving.iter().flat_map(|part| {
+            let cycle = frame % part.animation.frames.len().max(1);
+            let pose = part.animation.at(cycle).map_or(IDENTITY, affine);
+            let world = times(&pose, &part.above);
+            part.faces.iter().map(move |face| Face {
+                corners: face.corners.map(|corner| point(&world, corner)),
+                ..*face
+            })
+        });
+        self.still.iter().copied().chain(moved).collect()
+    }
+
+    /// Draws the scene flat, its middle at `at` and `scale` pixels to its unit, as it is this
+    /// many seconds on. The original's cursors are such scenes: most lie on the ground and are
+    /// seen from straight above, what stands highest last; one that stands up, `STANDING`
+    /// times as tall as it is deep, is seen from its front.
+    pub(super) fn draw_flat(
+        &self,
+        vertices: &mut Vec<Vertex>,
+        (x, y): (f32, f32),
+        scale: f32,
+        time: f32,
+    ) {
+        let mut faces = self.posed(time);
+        let span = |axis: usize| {
+            let along = faces.iter().flat_map(|face| face.corners.map(|c| c[axis]));
+            let (low, high) = along.fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(v), h.max(v)));
+            high - low
+        };
+        let (deep, near) = if span(1) > STANDING * span(2) {
+            (1, 2)
+        } else {
+            (2, 1)
+        };
+        let nearness = |face: &Face| {
+            face.corners
+                .iter()
+                .map(|c| c[near])
+                .fold(f32::MIN, f32::max)
+        };
+        faces.sort_by(|a, b| nearness(a).total_cmp(&nearness(b)));
+        let down = if deep == 1 { -1.0 } else { 1.0 };
+        for face in faces {
+            let Some(Some(picture)) = self.pictures.get(face.picture) else {
+                continue;
+            };
+            let corners: [Corner; 3] = std::array::from_fn(|n| {
+                let corner = face.corners[n];
+                let at = (x + corner[0] * scale, y + corner[deep] * scale * down);
+                (at, face.uv[n])
+            });
             lay(vertices, &corners, *picture);
         }
     }
@@ -338,5 +400,17 @@ mod tests {
         assert_eq!(vertices.len(), 3);
         assert!(vertices.iter().all(|v| v.a == 0.0 && v.layer == 3.0));
         assert_eq!((vertices[0].u, vertices[0].v), (0.25, 0.0));
+    }
+
+    #[test]
+    fn rubbish_in_a_transforms_last_column_is_taken_as_the_affine_one_it_is() {
+        let mut transform = IDENTITY;
+        transform[3] = [5.0, 6.0, 7.0, -107_374_180.0];
+        transform[0][3] = 3.0;
+        let fixed = affine(&transform);
+        assert_eq!(fixed[3], [5.0, 6.0, 7.0, 1.0]);
+        assert_eq!(fixed[0][3], 0.0);
+        let world = times(&fixed, &fixed);
+        assert_eq!(point(&world, [0.0; 3]), [10.0, 12.0, 14.0]);
     }
 }

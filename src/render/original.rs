@@ -10,7 +10,7 @@ use super::models::{Model, Paint, Place};
 use crate::archive::{self, Archive};
 use crate::battlefield::{self, CELL_SIDE, Terrain, View};
 use crate::fog::Fog;
-use crate::game::Faction;
+use crate::game::{CursorLook, Faction};
 use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
 use crate::units::{Harvest, Role, Unit, UnitKind, WallPiece, Wound};
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
@@ -560,6 +560,25 @@ const DAMAGED: [&str; 2] = ["_h1.", "_h2."];
 const UI_INDEX: &str = "\\data\\UI0001.RFH";
 const UI_DATA: &str = "\\data\\UI0001.RFD";
 const SIDEBAR: &str = "SIDEBAR\\SIDEBAR1.XBF";
+/// The original's cursors in the interface's data, each for the look it gives the cursor:
+/// models of their own, most lying on the ground under it.
+const CURSORS: [(CursorLook, &str); 13] = [
+    (CursorLook::Arrow, "CU_Pointer_H0"),
+    (CursorLook::Attack, "CU_attack_H0"),
+    (CursorLook::Heal, "CU_Repair_H0"),
+    (CursorLook::Carry, "CU_PickUp_H0"),
+    (CursorLook::Move, "CU_Move_H0"),
+    (CursorLook::Deploy, "CU_Deploy_H0"),
+    (CursorLook::Undeploy, "CU_Deploy_H0"),
+    (CursorLook::Land, "CU_Enter_H0"),
+    (CursorLook::Harvest, "CU_attack_H0"),
+    (CursorLook::March, "CU_Move_Formation_H0"),
+    (CursorLook::Board, "CU_Enter_H0"),
+    (CursorLook::Sell, "CU_Sell_H0"),
+    (CursorLook::Repair, "CU_Repair_H0"),
+];
+const CURSOR_FOLDER: &str = "CURSORS\\";
+
 /// The original's lettering: the picture of its letters among the models' pictures, and the
 /// list of which they are in the interface's data.
 const FONT_PICTURE: &str = "Standard.tga";
@@ -657,6 +676,8 @@ struct Original {
     menu: Option<frontend::Scene>,
     /// The letters text is drawn with, if the disc has them.
     lettering: Option<Lettering>,
+    /// The cursor of each of `CURSORS`, if the disc has it.
+    cursors: Vec<Option<frontend::Scene>>,
     /// The symbol of each of `SYMBOLS`, as flat triangles in a square from -1 to 1 across and
     /// down: none for one the disc has not.
     symbols: Vec<Vec<[(f32, f32); 3]>>,
@@ -1239,6 +1260,13 @@ fn read_shapes(disc: &Path) -> Option<Original> {
         .and_then(|bytes| xbf::tga(&bytes))
         .zip(read_interface(disc, FONT_LIST))
         .and_then(|(image, listed)| lettering::read(&image, &listed, &mut pictures, &mut layers));
+    let cursors = CURSORS
+        .iter()
+        .map(|(_, name)| {
+            let model = read_interface(disc, &format!("{CURSOR_FOLDER}{name}.xbf"))?;
+            frontend::read(&model, &archive, &mut pictures, &mut layers)
+        })
+        .collect();
     (!shapes.is_empty()).then_some(Original {
         shapes,
         damaged,
@@ -1252,9 +1280,30 @@ fn read_shapes(disc: &Path) -> Option<Original> {
         upgrade_icons,
         menu,
         lettering,
+        cursors,
         archive,
         spice,
     })
+}
+
+/// Draws the original's cursor of this look at `at`, `scale` pixels to its unit, as it is
+/// this many seconds on, once the disc's are read. Returns whether it was drawn.
+pub(super) fn draw_cursor(
+    vertices: &mut Vec<Vertex>,
+    look: CursorLook,
+    at: (f32, f32),
+    scale: f32,
+    time: f32,
+) -> bool {
+    let Some(original) = ORIGINAL.get() else {
+        return false;
+    };
+    let found = CURSORS.iter().position(|&(of, _)| of == look);
+    let Some(Some(cursor)) = found.and_then(|n| original.cursors.get(n)) else {
+        return false;
+    };
+    cursor.draw_flat(vertices, at, scale, time);
+    true
 }
 
 /// The original's lettering, once the disc's is read.

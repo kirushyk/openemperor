@@ -128,6 +128,9 @@ const VIEW_OUTLINE: Color = [1.0, 1.0, 1.0, 1.0];
 const CURSOR_FILL: Color = [0.98, 0.98, 0.95, 1.0];
 const CURSOR_EDGE: Color = [0.0, 0.0, 0.0, 1.0];
 
+/// How many pixels the original's cursors are drawn to their unit, on a screen 1080 tall.
+const CURSOR_SCALE: f32 = 1.6;
+
 pub const TITLE: &str = "OpenEmperor";
 pub const VERSION: &str = "v2.00";
 
@@ -1117,7 +1120,16 @@ fn canvas_of(game: &Game) -> Canvas {
     }
     let look = game.cursor_look();
     let cursor_drawn = canvas.vertices.len();
+    let time = game.screen_elapsed();
+    let original_cursor = original::draw_cursor(
+        &mut canvas.vertices,
+        look,
+        game.mouse,
+        CURSOR_SCALE * s,
+        time,
+    );
     match look {
+        _ if original_cursor => {}
         CursorLook::Attack | CursorLook::Harvest => {
             canvas.attack_cursor(game.mouse, s, game.screen_elapsed())
         }
@@ -1129,7 +1141,9 @@ fn canvas_of(game: &Game) -> Canvas {
         CursorLook::Land => canvas.land_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::March => canvas.march_cursor(game.mouse, s, game.screen_elapsed()),
         CursorLook::Board => canvas.board_cursor(game.mouse, s, game.screen_elapsed()),
-        CursorLook::Sell => canvas.sell_cursor(game.mouse, s, game.screen_elapsed()),
+        CursorLook::Sell | CursorLook::Repair => {
+            canvas.sell_cursor(game.mouse, s, game.screen_elapsed())
+        }
         CursorLook::Arrow => canvas.cursor(game.mouse, s),
     }
     let lies_on_map = matches!(

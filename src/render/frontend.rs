@@ -429,8 +429,9 @@ impl Scene {
             let corners: [Corner; 3] = std::array::from_fn(|n| {
                 let corner = face.corners[n];
                 let middle = |axis: usize| (low[axis] + high[axis]) / 2.0;
+                // In the disc's left-handed space, x runs to the left as its camera sees it.
                 let at = (
-                    cx + (corner[right] - middle(right)) * fit,
+                    cx - (corner[right] - middle(right)) * fit,
                     cy - (corner[up] - middle(up)) * fit,
                 );
                 (at, face.uv[n])

@@ -4595,6 +4595,19 @@ impl Game {
         self.fight(Mission::Start);
     }
 
+    /// Goes straight into a territory's battle by its script's name on the disc, `ATP1M7FR`,
+    /// in a campaign set up as it would be by then. Whether the disc has such a battle.
+    pub fn play_mission(&mut self, name: &str) -> bool {
+        let Some((house, phase, mission)) = campaign::named_mission(name) else {
+            return false;
+        };
+        self.campaign = Some(Campaign::at(house, phase, mission, self.start_random));
+        self.units_shown = 0;
+        self.picked = None;
+        self.fight(mission);
+        true
+    }
+
     /// The movie has ended: on to what follows its screen, unless it was skipped already.
     pub fn end_movie(&mut self) {
         if std::mem::take(&mut self.movie_playing) {
@@ -6452,6 +6465,21 @@ mod tests {
         win(game);
         game.handle(Event::KeyDown(Key::Escape));
         click(game, Action::LeaveBattleStats);
+    }
+
+    #[test]
+    fn a_territorys_battle_can_be_gone_straight_into_by_its_scripts_name() {
+        let mut game = Game::new(1280.0, 800.0);
+        assert!(!game.play_mission("ORP3D30TLFail"));
+        assert!(!game.play_mission("Nothing"));
+        assert_eq!(game.campaign, None);
+        assert!(game.play_mission("ORP3D30TL"));
+        let defence = Mission::Defend(29, Faction::Atreides);
+        assert_eq!(game.mission, Some(defence));
+        assert_eq!(game.screen, Screen::Loading);
+        let campaign = game.campaign.as_ref().unwrap();
+        assert_eq!((campaign.house, campaign.phase), (Faction::Ordos, 3));
+        assert_eq!(campaign.next(), Next::Defend(29, Faction::Atreides));
     }
 
     #[test]

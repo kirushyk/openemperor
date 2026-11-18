@@ -285,12 +285,60 @@ pub fn mission_script(
     data()?
         .mission_scripts
         .iter()
-        .find(|(name, _)| {
-            // Whom it is with follows in letters: territory 1 is not 11.
-            name.strip_prefix(&prefix)
-                .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_alphabetic()))
-        })
+        .find(|(name, _)| name.strip_prefix(&prefix).is_some_and(names_whom))
         .map(|(_, script)| script.as_slice())
+}
+
+/// Whether what ends a territory's script's name says whom the battle is with, in capitals
+/// (`FR`, `SA`): territory 1 is not 11, and its `…Fail` and `…Win` scripts are others'.
+fn names_whom(rest: &str) -> bool {
+    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_uppercase())
+}
+
+/// The house, the phase and the battle of a territory's script, by its name: `ATP1M7FR` is
+/// the Atreides' attack on territory 7 in phase 1; one of a defence is fought against who
+/// held the territory at first.
+pub fn named_mission(name: &str) -> Option<(Faction, u32, Mission)> {
+    let house = [Faction::Atreides, Faction::Harkonnen, Faction::Ordos]
+        .into_iter()
+        .find(|&house| name.starts_with(crate::units::house_letters(house)))?;
+    let digits = |s: &str| s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let rest = name[2..].strip_prefix('P')?;
+    let (phase, rest) = rest.split_at(digits(rest));
+    let phase = phase.parse().ok()?;
+    let (defence, rest) = if let Some(rest) = rest.strip_prefix('D') {
+        (true, rest)
+    } else {
+        (false, rest.strip_prefix('M')?)
+    };
+    let (territory, rest) = rest.split_at(digits(rest));
+    let at = territory
+        .parse::<usize>()
+        .ok()?
+        .checked_sub(1)
+        .filter(|&at| at < ARRAKIS)?;
+    if !names_whom(rest) {
+        return None;
+    }
+    if !defence {
+        return Some((house, phase, Mission::Attack(at)));
+    }
+    let by = data()
+        .and_then(|data| data.territories.get(at)?.first_owner)
+        .filter(|&owner| owner != house)
+        .unwrap_or(house.next());
+    Some((house, phase, Mission::Defend(at, by)))
+}
+
+/// The names of the territories' scripts on the disc, each a battle `named_mission` knows.
+pub fn mission_names() -> Vec<&'static str> {
+    data().map_or_else(Vec::new, |data| {
+        data.mission_scripts
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .filter(|name| named_mission(name).is_some())
+            .collect()
+    })
 }
 
 /// What the rules call the kind a script counts as this, if they have it.
@@ -608,6 +656,23 @@ impl Campaign {
             over: None,
             random: seed | 1,
         }
+    }
+
+    /// A house's campaign as it is when this battle of this phase comes: the phases before it
+    /// gone through, and a territory to defend the player's own and under attack.
+    pub fn at(house: Faction, phase: u32, mission: Mission, seed: u32) -> Self {
+        let mut campaign = Campaign::new(house, seed);
+        for phase in FIRST_PHASE..=phase {
+            campaign.enter(phase);
+        }
+        if let Mission::Defend(at, by) = mission
+            && let Some(owner) = campaign.owners.get_mut(at)
+        {
+            *owner = house;
+            campaign.attacks.push((at, by));
+        }
+        campaign.raise_tech();
+        campaign
     }
 
     /// What the campaign waits for now.
@@ -1030,7 +1095,17 @@ pub(crate) mod tests {
             new_units,
             start_scripts: vec![(Faction::Atreides, start)],
             kinds: ["ATConYard", "HKPalace", "MCV"].map(String::from).to_vec(),
-            mission_scripts: Vec::new(),
+            // The one that fails listed first, as the disc may.
+            mission_scripts: vec![
+                (
+                    "ORP3D30TLFail".to_string(),
+                    vec![vec![Token::Text("fail".to_string())]],
+                ),
+                (
+                    "ORP3D30TL".to_string(),
+                    vec![vec![Token::Text("defend".to_string())]],
+                ),
+            ],
         }
     }
 
@@ -1039,6 +1114,61 @@ pub(crate) mod tests {
         let mut campaign = Campaign::new(house, 7);
         campaign.finish(Mission::Start, true);
         campaign
+    }
+
+    #[test]
+    fn a_territorys_script_is_named_for_the_house_the_phase_the_battle_and_whom_it_is_with() {
+        assert_eq!(
+            named_mission("ATP1M7FR"),
+            Some((Faction::Atreides, 1, Mission::Attack(6)))
+        );
+        assert_eq!(
+            named_mission("ATP1D7FR"),
+            Some((Faction::Atreides, 1, Mission::Defend(6, Faction::Harkonnen))),
+            "defended against who held it at first"
+        );
+        assert_eq!(
+            named_mission("HKP2D7SA"),
+            Some((Faction::Harkonnen, 2, Mission::Defend(6, Faction::Ordos)))
+        );
+        assert_eq!(
+            named_mission("ORP3M11GN"),
+            Some((Faction::Ordos, 3, Mission::Attack(10)))
+        );
+        for other in [
+            "ATP1D7FRFail",
+            "ATP1D19GNWin",
+            "ATP1M7",
+            "ATHeighliner",
+            "ORJump_reb",
+        ] {
+            assert_eq!(named_mission(other), None, "{other}");
+        }
+        assert_eq!(mission_names(), vec!["ORP3D30TL"]);
+        let script = mission_script(Faction::Ordos, 3, true, 29).unwrap();
+        assert_eq!(script[0], vec![Token::Text("defend".to_string())]);
+        assert_eq!(
+            mission_script(Faction::Ordos, 3, true, 2),
+            None,
+            "30 is not 3"
+        );
+    }
+
+    #[test]
+    fn a_campaign_can_be_set_up_at_a_territorys_battle() {
+        let campaign = Campaign::at(Faction::Atreides, 1, Mission::Attack(6), 7);
+        assert_eq!((campaign.phase, campaign.next()), (1, Next::Pick));
+        assert_eq!(campaign.attack(6), Some(Mission::Attack(6)));
+        assert_eq!(campaign.tech, on_the_map(Faction::Atreides).tech);
+
+        let defence = Mission::Defend(6, Faction::Harkonnen);
+        let mut campaign = Campaign::at(Faction::Atreides, 2, defence, 7);
+        assert_eq!(campaign.phase, 2);
+        assert_eq!(campaign.owners[6], Faction::Atreides);
+        assert_eq!(campaign.next(), Next::Defend(6, Faction::Harkonnen));
+        assert_eq!(campaign.enemy(defence), Faction::Harkonnen);
+        campaign.finish(defence, true);
+        assert_eq!(campaign.next(), Next::Pick);
     }
 
     #[test]

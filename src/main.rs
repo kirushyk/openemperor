@@ -32,9 +32,6 @@ use std::time::Instant;
 /// it, the intro movie, the bag of music, and the menus' track in it.
 #[cfg(target_os = "macos")]
 const DISC: &str = "/Volumes/EMPEROR1";
-/// What on the command line lists the campaign's maps among the skirmish's.
-#[cfg(target_os = "macos")]
-const CAMPAIGN_MAPS: &str = "--campaign-maps";
 #[cfg(target_os = "macos")]
 const INTRO_MOVIE: &str = "INSTALL/DATA/MOVIES/LEGALS.BIK";
 /// The movie on the disc that plays when a faction is picked for the campaign, before the
@@ -70,24 +67,72 @@ Arguments:
 
 Options:
   --campaign-maps    List the campaign's maps among the skirmish's
+  --mission <NAME>   Go straight into a campaign territory's battle, by its script's name
+                     on the disc (ATP1M7FR: Atreides, phase 1, attack (M) or defence (D),
+                     territory 7, with the Fremen)
+  --missions         List the battles --mission can go into, and quit
   -h, --help         Print this help and quit
 ";
 
+/// What the command line asks for.
+#[derive(Debug, Default, PartialEq)]
+struct Options {
+    help: bool,
+    campaign_maps: bool,
+    list_missions: bool,
+    mission: Option<String>,
+    movie: Option<std::path::PathBuf>,
+}
+
+impl Options {
+    fn parse(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Self, String> {
+        let mut options = Options::default();
+        while let Some(arg) = args.next() {
+            match arg.to_str() {
+                Some("-h" | "--help") => options.help = true,
+                Some("--campaign-maps") => options.campaign_maps = true,
+                Some("--missions") => options.list_missions = true,
+                Some("--mission") => {
+                    let name = args.next().ok_or("--mission needs a mission's name")?;
+                    options.mission = Some(name.to_string_lossy().into_owned());
+                }
+                Some(other) if other.starts_with('-') => {
+                    return Err(format!("Unknown option {other}; see --help"));
+                }
+                _ => options.movie = Some(arg.into()),
+            }
+        }
+        Ok(options)
+    }
+}
+
+/// Prints the battles `--mission` can go into: each script's name, and what it is.
+fn list_missions() {
+    let names = campaign::mission_names();
+    if names.is_empty() {
+        eprintln!("No missions found: is the game's first disc mounted?");
+        std::process::exit(1);
+    }
+    for name in names {
+        if let Some((house, phase, mission)) = campaign::named_mission(name) {
+            let title = campaign::Campaign::new(house, 1).title(mission);
+            println!("{name:<12} {}, phase {phase}: {title}", house.label());
+        }
+    }
+}
+
 fn main() {
-    if std::env::args()
-        .skip(1)
-        .any(|arg| arg == "--help" || arg == "-h")
-    {
+    let options = match Options::parse(std::env::args_os().skip(1)) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+    };
+    if options.help {
         print!("{USAGE}");
         return;
     }
-    let (mut platform, width, height) = match platform::Platform::new(render::TITLE) {
-        Ok(opened) => opened,
-        Err(message) => {
-            eprintln!("{message}");
-            std::process::exit(1);
-        }
-    };
 
     // A different placing of the sides each run; the clock is all that is wanted of it.
     let seed = std::time::SystemTime::now()
@@ -107,9 +152,26 @@ fn main() {
     #[cfg(target_os = "macos")]
     let disc = disc.as_path();
     #[cfg(target_os = "macos")]
-    maps::load(disc, std::env::args_os().any(|arg| arg == CAMPAIGN_MAPS));
+    maps::load(disc, options.campaign_maps);
     #[cfg(target_os = "macos")]
     campaign::load(disc);
+    if options.list_missions {
+        list_missions();
+        return;
+    }
+    if let Some(name) = &options.mission
+        && !campaign::mission_names().contains(&name.as_str())
+    {
+        eprintln!("No mission {name} on the disc; --missions lists them");
+        std::process::exit(2);
+    }
+    let (mut platform, width, height) = match platform::Platform::new(render::TITLE) {
+        Ok(opened) => opened,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+    };
     let mut game = game::Game::new(width as f32, height as f32).with_start_seed(seed);
     #[cfg(target_os = "macos")]
     let mounted = disc.is_dir();
@@ -130,12 +192,12 @@ fn main() {
     let mut line_random = seed | 1;
     #[cfg(target_os = "macos")]
     let (mut movie, menu_music, battle_music) = {
-        // A movie given on the command line plays in place of the disc's.
-        let path = std::env::args_os()
-            .skip(1)
-            .find(|arg| arg != CAMPAIGN_MAPS)
-            .map(std::path::PathBuf::from)
-            .or_else(|| mounted.then(|| disc.join(INTRO_MOVIE)));
+        // A movie given on the command line plays in place of the disc's, and none before a
+        // mission gone straight into.
+        let path = options
+            .movie
+            .clone()
+            .or_else(|| (mounted && options.mission.is_none()).then(|| disc.join(INTRO_MOVIE)));
         let intro = path.as_deref().and_then(video::Movie::open);
         if let Some(movie) = &intro {
             game.start_movie();
@@ -152,6 +214,9 @@ fn main() {
         let battle_music = mounted.then(|| music::battle_tracks(&bags));
         (intro, menu_music, battle_music)
     };
+    if let Some(name) = &options.mission {
+        game.play_mission(name);
+    }
     // The screen a movie was last looked for on, so that each faction's plays once per pick.
     #[cfg(target_os = "macos")]
     let mut movie_screen = game.screen;
@@ -321,5 +386,28 @@ fn main() {
             pictures_given = Some(game.battle_map);
         }
         platform.draw(&render::build_frame(&game), render::clear_color(&game));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Options, String> {
+        Options::parse(args.iter().map(std::ffi::OsString::from))
+    }
+
+    #[test]
+    fn the_command_line_reads_its_options_and_a_movie() {
+        assert_eq!(parse(&[]), Ok(Options::default()));
+        let options = parse(&["--mission", "ATP1M7FR", "--campaign-maps"]).unwrap();
+        assert_eq!(options.mission.as_deref(), Some("ATP1M7FR"));
+        assert!(options.campaign_maps && !options.list_missions);
+        assert!(parse(&["--missions"]).unwrap().list_missions);
+        assert!(parse(&["-h"]).unwrap().help);
+        let movie = parse(&["intro.bik"]).unwrap().movie;
+        assert_eq!(movie, Some("intro.bik".into()));
+        assert!(parse(&["--mission"]).is_err());
+        assert!(parse(&["--nonsense"]).is_err());
     }
 }

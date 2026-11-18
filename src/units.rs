@@ -161,11 +161,11 @@ impl UnitKind {
     #[cfg(test)]
     pub fn max_health(self) -> f32 {
         match self {
-            UnitKind::Infantry => 600.0 / HEALTH_SCALE,
-            UnitKind::Vehicle => 2400.0 / HEALTH_SCALE,
-            UnitKind::Aircraft => 900.0 / HEALTH_SCALE,
-            UnitKind::Tower => 4000.0 / HEALTH_SCALE,
-            UnitKind::Building => 2500.0 / HEALTH_SCALE,
+            UnitKind::Infantry => 600.0,
+            UnitKind::Vehicle => 2400.0,
+            UnitKind::Aircraft => 900.0,
+            UnitKind::Tower => 4000.0,
+            UnitKind::Building => 2500.0,
         }
     }
 }
@@ -718,9 +718,6 @@ pub enum Role {
     GuMaker,
 }
 
-/// How many times the original's health and damage are ours: its infantry's 600 are our 100.
-pub const HEALTH_SCALE: f32 = 6.0;
-
 /// What a unit is made of, as the original's `[ArmourTypes]`, in its order: each warhead
 /// hurts each of them by its own share. Concrete, walls and the invulnerable are there for
 /// that order: nothing of ours is made of them.
@@ -1096,11 +1093,11 @@ impl Role {
         }
     }
 
-    /// How much it takes to destroy one: the original's `Health`, in our scale of it. Where
+    /// How much it takes to destroy one: the original's `Health`. Where
     /// the original's houses differ, the most of them have: its Harkonnen engineer has 600, and
     /// its Atreides outpost 100.
     fn max_health(self) -> f32 {
-        let original = match self {
+        match self {
             Role::Scout => 200.0,
             Role::Engineer => 400.0,
             Role::AtInfantry
@@ -1138,8 +1135,7 @@ impl Role {
             Role::Hanger => 3500.0,
             Role::Outpost => 2500.0,
             Role::ImBarracks => 3200.0,
-        };
-        original / HEALTH_SCALE
+        }
     }
 
     /// What one of this house's is made of, which decides how much each warhead hurts it: the
@@ -7795,7 +7791,7 @@ mod tests {
         assert_eq!(unit.health, 40.0, "no new rank yet");
         unit.gain_experience(1);
         assert_eq!(unit.rank(), 1);
-        assert_eq!(unit.health, 40.0 + 100.0 * RANK_HEALTH);
+        assert_eq!(unit.health, 40.0 + 600.0 * RANK_HEALTH);
     }
 
     #[test]

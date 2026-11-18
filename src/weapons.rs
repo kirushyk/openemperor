@@ -9,9 +9,9 @@ use crate::game::Faction;
 use std::f32::consts::{PI, TAU};
 
 use crate::units::{
-    Armour, BURNS_PAST, CANNON_HEIGHT, CANNON_SIDES, CONSTRUCTION_DOWN, CONSTRUCTION_UP,
-    HEALTH_SCALE, Point, ROCKET_SIDES, Role, SMOKES_PAST, TUBE_HEIGHT, Target, UPDATES_PER_SECOND,
-    Unit, UnitKind, Wound, are_enemies, are_friends, distance, substeps, turn_between,
+    Armour, BURNS_PAST, CANNON_HEIGHT, CANNON_SIDES, CONSTRUCTION_DOWN, CONSTRUCTION_UP, Point,
+    ROCKET_SIDES, Role, SMOKES_PAST, TUBE_HEIGHT, Target, UPDATES_PER_SECOND, Unit, UnitKind,
+    Wound, are_enemies, are_friends, distance, substeps, turn_between,
 };
 
 /// A unit with nothing in range looks again this often, in seconds.
@@ -81,10 +81,10 @@ const PLACE_SHOT_SPREAD: f32 = 13.58;
 /// How long one puff of fire or gas shows, a little longer than the time between puffs.
 const SPRAY_SECONDS: f32 = 0.3;
 
-/// Health a repair vehicle gives back with each pulse.
-const REPAIR_HEALTH: f32 = 12.0;
+/// Health a repair vehicle gives back with each pulse, in the original's health.
+const REPAIR_HEALTH: f32 = 72.0;
 /// Health per second that experienced units win back, for each rank.
-const VETERAN_HEALING: f32 = 1.0;
+const VETERAN_HEALING: f32 = 6.0;
 
 const BEAM_SECONDS: f32 = 0.2;
 const FLARE_SECONDS: f32 = 0.1;
@@ -108,7 +108,7 @@ const CISTERN_TUMBLE: f32 = 9.0;
 const GAS_CLOUD_RADIUS: f32 = 113.1;
 const GAS_CLOUD_SECONDS: f32 = 3.0;
 /// Enough to kill any infantry within about a second.
-const GAS_DAMAGE_PER_SECOND: f32 = 200.0;
+const GAS_DAMAGE_PER_SECOND: f32 = 1200.0;
 /// How many wisps of vapor a bursting cistern throws out at once, and then each second.
 const GAS_VAPOR_AT_BURST: f32 = 40.0;
 const GAS_VAPOR_PER_SECOND: f32 = 40.0;
@@ -142,8 +142,8 @@ impl Superweapon {
 
 /// How long an invisible unit stays seen after it fires.
 pub const REVEAL_SECONDS: f32 = 4.0;
-/// How far a saboteur's explosion reaches.
-pub const OR_SABOTEUR_BLAST_RADIUS: f32 = 144.8;
+/// How far a saboteur's explosion reaches: its bomb's `BlastRadius`, 32 to a tile.
+pub const OR_SABOTEUR_BLAST_RADIUS: f32 = 96.0;
 /// What a saboteur's and an infiltrator's bombs do: the original's SaboteurBomb and
 /// InfiltratorDeath, the same all the way out.
 const OR_SABOTEUR_BOMB: Bullet = Bullet::new(3000, Warhead::Howitzer, 0);
@@ -151,12 +151,12 @@ const IX_INFILTRATOR_BOMB: Bullet = Bullet::new(1500, Warhead::Howitzer, 0);
 /// What a barrel does when it goes up: the original's `BarrelBomb`, whose warhead hurts
 /// everything alike, as far out as its `BlastRadius` of 128 of the original's units.
 const BARREL_BOMB: Bullet = Bullet::new(5000, Warhead::Whole, 0);
-const BARREL_BLAST_RADIUS: f32 = 193.1;
+const BARREL_BLAST_RADIUS: f32 = 128.0;
 /// How far ahead of a buzzsaw's middle its blade spins, how far it reaches from there, and
 /// how much it harms the infantry it cuts each second.
 pub const SAW_AHEAD: f32 = 0.42;
 const SAW_REACH: f32 = 19.01;
-const SAW_DAMAGE_PER_SECOND: f32 = 260.0;
+const SAW_DAMAGE_PER_SECOND: f32 = 1560.0;
 /// Which way a flame tank's two flamethrowers point from its nose: ten and two o'clock.
 pub const FLAME_TANK_NOZZLES: [f32; 2] =
     [-std::f32::consts::FRAC_PI_3, std::f32::consts::FRAC_PI_3];
@@ -178,12 +178,12 @@ const STRIKE_HEIGHT: f32 = 2715.0;
 const STRIKE_SECONDS: f32 = 1.5;
 pub const STRIKE_RADIUS: f32 = 316.8;
 /// Immediate damage at the center; it falls to half of this at the edge.
-const STRIKE_DAMAGE: f32 = 400.0;
+const STRIKE_DAMAGE: f32 = 2400.0;
 pub const POISON_SECONDS: f32 = 60.0;
 /// How long the mushroom cloud over the superweapon's blast stands before it has thinned away.
 const MUSHROOM_SECONDS: f32 = 16.0;
 /// Damage per second to anyone on the ground in poisoned land.
-const POISON_DAMAGE: f32 = 8.0;
+const POISON_DAMAGE: f32 = 48.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WeaponKind {
@@ -418,7 +418,7 @@ impl WeaponKind {
         }
     }
 
-    /// What it does to unarmoured infantry, in our scale of health.
+    /// What it does to unarmoured infantry, in the original's health.
     #[cfg(test)]
     fn damage(self) -> f32 {
         self.bullet().damage_to(Armour::None)
@@ -445,7 +445,7 @@ impl Shooter {
         }
     }
 
-    /// What its shot does to one made of this, in our scale of health.
+    /// What its shot does to one made of this, in the original's health.
     fn damage_to(&self, armour: Armour) -> f32 {
         self.bullet.damage_to(armour) * self.power
     }
@@ -589,9 +589,9 @@ impl Bullet {
         }
     }
 
-    /// What it does to one made of this, in our scale of health.
+    /// What it does to one made of this, in the original's health.
     pub fn damage_to(self, armour: Armour) -> f32 {
-        self.damage * self.warhead.share_against(armour) / HEALTH_SCALE
+        self.damage * self.warhead.share_against(armour)
     }
 }
 
@@ -3152,6 +3152,9 @@ mod tests {
         unit
     }
 
+    /// A soldier's whole health, the original's 600.
+    const FULL: f32 = 600.0;
+
     fn target_at(x: f32, z: f32) -> Unit {
         let mut unit = Unit::for_test(x, z, UnitKind::Infantry);
         unit.id = 2;
@@ -4262,7 +4265,7 @@ mod tests {
         let ways: Vec<Point> = combat.missiles.iter().map(|m| m.direction).collect();
         assert!(ways.windows(2).any(|w| w[0] != w[1]), "every which way");
         run(&mut combat, &mut units, 4.0);
-        assert!(units[1].health < health - 100.0, "{}", units[1].health);
+        assert!(units[1].health < health - FULL, "{}", units[1].health);
     }
 
     #[test]
@@ -4411,7 +4414,7 @@ mod tests {
         let mut units = [shooter(WeaponKind::Bullet), target_at(113.2, 2715.0)];
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
-        assert!(units[1].health < 100.0, "hit on the first step");
+        assert!(units[1].health < FULL, "hit on the first step");
         assert_eq!(
             combat.flares.len(),
             1,
@@ -4435,7 +4438,7 @@ mod tests {
             let mut units = [shooter(weapon), target_at(weapon.range() + 45.25, 2715.0)];
             let mut combat = Combat::default();
             run(&mut combat, &mut units, 2.0);
-            assert_eq!(units[1].health, 100.0, "{weapon:?} out of range");
+            assert_eq!(units[1].health, FULL, "{weapon:?} out of range");
             assert!(
                 combat.missiles.is_empty() && combat.shells.is_empty(),
                 "{weapon:?} held fire"
@@ -4446,7 +4449,7 @@ mod tests {
             for _ in 0..40 {
                 combat.advance(&mut units, &[0, 0], flat(), 0.05);
             }
-            assert_eq!(units[1].health, 100.0, "{weapon:?} at an ally");
+            assert_eq!(units[1].health, FULL, "{weapon:?} at an ally");
         }
     }
 
@@ -4456,7 +4459,7 @@ mod tests {
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 0.1);
         let after_one = units[1].health;
-        assert_eq!(after_one, 100.0 - WeaponKind::Bullet.damage());
+        assert_eq!(after_one, FULL - WeaponKind::Bullet.damage());
         // The original's infantry rifle reloads for 30 updates.
         let reload = WeaponKind::Bullet.bullet().reload;
         assert_eq!(reload, 1.2);
@@ -4477,15 +4480,9 @@ mod tests {
     #[test]
     fn each_warhead_hurts_each_armour_by_the_originals_share() {
         let against = |weapon: WeaponKind, armour| weapon.bullet().damage_to(armour);
-        // An infantry rifle's 219, all of it on a soldier, 40% on heavy armour, in our scale.
-        assert_eq!(
-            against(WeaponKind::Bullet, Armour::None),
-            219.0 / HEALTH_SCALE
-        );
-        assert_eq!(
-            against(WeaponKind::Bullet, Armour::Heavy),
-            219.0 * 0.4 / HEALTH_SCALE
-        );
+        // An infantry rifle's 219, all of it on a soldier, 40% on heavy armour.
+        assert_eq!(against(WeaponKind::Bullet, Armour::None), 219.0);
+        assert_eq!(against(WeaponKind::Bullet, Armour::Heavy), 219.0 * 0.4);
         // An 80mm gun the other way round.
         assert!(
             against(WeaponKind::Cannon, Armour::Heavy)
@@ -4495,7 +4492,7 @@ mod tests {
         assert_eq!(Warhead::Cal50.share_against(Armour::Heavy), 0.02);
         // Three of the rifle's shots kill a soldier, as in the original: 600 health.
         let soldier = Unit::for_test(0.0, 0.0, UnitKind::Infantry);
-        assert_eq!(soldier.max_health(), 600.0 / HEALTH_SCALE);
+        assert_eq!(soldier.max_health(), 600.0);
         assert_eq!(soldier.armour(), Armour::None);
         assert!(against(WeaponKind::Bullet, Armour::None) * 3.0 >= soldier.max_health());
     }
@@ -4505,7 +4502,7 @@ mod tests {
         let mut units = [shooter(WeaponKind::Laser), target_at(226.3, 2715.0)];
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
-        assert!(units[1].health < 100.0, "immediate");
+        assert!(units[1].health < FULL, "immediate");
         assert_eq!(combat.beams.len(), 1, "visible");
         assert_eq!(combat.beams[0].from, units[0].muzzle());
         assert_eq!(combat.beams[0].to, units[1].center());
@@ -4519,14 +4516,14 @@ mod tests {
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         assert_eq!(combat.missiles.len(), 1);
-        assert_eq!(units[1].health, 100.0, "not yet");
+        assert_eq!(units[1].health, FULL, "not yet");
         // The original's HEAT_B flies 28 a update: 700 a second.
         assert_eq!(WeaponKind::Missile.bullet().speed, Some(700.0));
         run(&mut combat, &mut units, 0.2);
-        assert_eq!(units[1].health, 100.0, "still flying");
+        assert_eq!(units[1].health, FULL, "still flying");
         units[0].cooldown = 1000.0;
         run(&mut combat, &mut units, 3.0);
-        assert_eq!(units[1].health, 100.0 - WeaponKind::Missile.damage());
+        assert_eq!(units[1].health, FULL - WeaponKind::Missile.damage());
         assert!(combat.missiles.is_empty());
     }
 
@@ -4541,7 +4538,7 @@ mod tests {
             units[1].x += 905.1 * 0.05;
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
         }
-        assert_eq!(units[1].health, 100.0, "it missed");
+        assert_eq!(units[1].health, FULL, "it missed");
         assert!(combat.missiles.is_empty(), "and burned out");
     }
 
@@ -4591,7 +4588,7 @@ mod tests {
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
         }
         assert!(highest > 181.0, "it climbed: {highest}");
-        assert!(units[1].health < 100.0, "and hit it in the air");
+        assert!(units[1].health < FULL, "and hit it in the air");
 
         // Launched at something suddenly below it, it comes back down.
         let mut units = [shooter(WeaponKind::Missile), target_at(11.31, 2715.0)];
@@ -4632,7 +4629,7 @@ mod tests {
         run(&mut combat, &mut units, 0.05);
         assert!(combat.missiles.is_empty(), "it flies no further");
         let other = if index == 1 { 2 } else { 1 };
-        assert_eq!(units[other].health, 100.0);
+        assert_eq!(units[other].health, FULL);
     }
 
     #[test]
@@ -4649,7 +4646,7 @@ mod tests {
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         units[0].cooldown = 1000.0;
         assert_eq!(combat.shells.len(), 1);
-        assert_eq!(units[1].health, 100.0, "not yet");
+        assert_eq!(units[1].health, FULL, "not yet");
 
         let start_y = combat.shells[0].position().1;
         let landing_y = combat.shells[0].landing().1;
@@ -4662,10 +4659,10 @@ mod tests {
 
         run(&mut combat, &mut units, 2.0);
         assert!(combat.shells.is_empty());
-        assert!(units[1].health < 100.0, "direct hit");
-        assert!(units[2].health < 100.0, "the one beside it too");
+        assert!(units[1].health < FULL, "direct hit");
+        assert!(units[2].health < FULL, "the one beside it too");
         assert!(units[1].health < units[2].health, "less farther out");
-        assert_eq!(units[3].health, 100.0, "outside the radius");
+        assert_eq!(units[3].health, FULL, "outside the radius");
     }
 
     #[test]
@@ -4676,7 +4673,7 @@ mod tests {
         units[0].cooldown = 1000.0;
         units[1].z = 3168.0;
         run(&mut combat, &mut units, 3.0);
-        assert_eq!(units[1].health, 100.0);
+        assert_eq!(units[1].health, FULL);
         assert!(combat.shells.is_empty(), "it landed all the same");
     }
 
@@ -4694,9 +4691,9 @@ mod tests {
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         units[0].cooldown = 1000.0;
         run(&mut combat, &mut units, 3.0);
-        assert!(units[1].health < 100.0);
+        assert!(units[1].health < FULL);
         // The original's InkVine_B has FriendlyDamageAmount 50.
-        let lost = [100.0 - units[1].health, 100.0 - units[2].health];
+        let lost = [FULL - units[1].health, FULL - units[2].health];
         assert!(lost[1] > 0.0 && lost[1] <= lost[0] * 0.5 + 0.01, "{lost:?}");
     }
 
@@ -4730,7 +4727,7 @@ mod tests {
             units[1].health < UnitKind::Vehicle.max_health(),
             "its own side is not spared"
         );
-        assert_eq!(units[3].health, 100.0, "beyond the radius");
+        assert_eq!(units[3].health, FULL, "beyond the radius");
         assert_eq!(combat.poison.len(), 1);
         assert!((combat.poison[0].life - POISON_SECONDS).abs() < 0.2);
         assert_eq!(combat.mushrooms.len(), 1, "a mushroom cloud climbs over it");
@@ -4761,7 +4758,7 @@ mod tests {
             (hurt_so_far - POISON_DAMAGE * 10.0).abs() < 45.25,
             "{hurt_so_far}"
         );
-        assert_eq!(units[1].health, 100.0);
+        assert_eq!(units[1].health, FULL);
 
         run(&mut combat, &mut units, 49.0);
         assert_eq!(
@@ -4831,7 +4828,7 @@ mod tests {
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         units[0].cooldown = 1000.0;
         run(&mut combat, &mut units, 3.0);
-        assert!(units[1].health < 100.0, "the infantry below is hit");
+        assert!(units[1].health < FULL, "the infantry below is hit");
         assert_eq!(units[2].health, UnitKind::Aircraft.max_health());
     }
 
@@ -4848,7 +4845,7 @@ mod tests {
             assert!(combat.missiles[0].direction.1 < 0.0, "aimed down");
             units[0].cooldown = 1000.0;
             run(&mut combat, &mut units, 3.0);
-            assert!(units[1].health < 100.0, "from {target_x} away");
+            assert!(units[1].health < FULL, "from {target_x} away");
         }
     }
 
@@ -4878,8 +4875,8 @@ mod tests {
         units[0].target = Some(Target::Unit(3));
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
-        assert_eq!(units[1].health, 100.0, "the nearer one is spared");
-        assert!(units[2].health < 100.0);
+        assert_eq!(units[1].health, FULL, "the nearer one is spared");
+        assert!(units[2].health < FULL);
     }
 
     #[test]
@@ -4890,8 +4887,8 @@ mod tests {
         units[0].target = Some(Target::Unit(3));
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
-        assert!(units[1].health < 100.0);
-        assert_eq!(units[2].health, 100.0);
+        assert!(units[1].health < FULL);
+        assert_eq!(units[2].health, FULL);
     }
 
     fn tower() -> Unit {
@@ -4954,7 +4951,7 @@ mod tests {
             distance(launched_from[0], launched_from[1]) > 4.525,
             "from the other tube"
         );
-        assert!(units[1].health < 100.0);
+        assert!(units[1].health < FULL);
     }
 
     #[test]
@@ -5021,7 +5018,7 @@ mod tests {
             let mut units = [shooter(weapon), target_at(90.5, 2715.0)];
             let mut combat = Combat::default();
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
-            assert!(units[1].health < 100.0, "{weapon:?}");
+            assert!(units[1].health < FULL, "{weapon:?}");
             assert_eq!(combat.flares.len(), 1, "{weapon:?}");
             assert!(combat.beams.is_empty(), "{weapon:?} leaves no line");
         }
@@ -5078,7 +5075,7 @@ mod tests {
             let mut units = [shooter(weapon), target_at(45.25, 2715.0)];
             let mut combat = Combat::default();
             run(&mut combat, &mut units, 3.0);
-            assert_eq!(units[1].health, 100.0, "{weapon:?}");
+            assert_eq!(units[1].health, FULL, "{weapon:?}");
         }
     }
 
@@ -5157,7 +5154,7 @@ mod tests {
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 2.0);
         assert!(combat.missiles.is_empty(), "held fire at the ground");
-        assert_eq!(units[1].health, 100.0);
+        assert_eq!(units[1].health, FULL);
 
         let mut units = [drone, plane_at(181.0, 2715.0)];
         let mut combat = Combat::default();
@@ -5219,11 +5216,11 @@ mod tests {
         for _ in 0..4 {
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
         }
-        assert!(units[1].health < 100.0, "the target");
-        assert!(units[2].health < 100.0, "the one beside it");
-        assert_eq!(units[3].health, 100.0, "behind it");
-        assert_eq!(units[4].health, 100.0, "too far");
-        assert_eq!(units[5].health, 100.0, "a friend");
+        assert!(units[1].health < FULL, "the target");
+        assert!(units[2].health < FULL, "the one beside it");
+        assert_eq!(units[3].health, FULL, "behind it");
+        assert_eq!(units[4].health, FULL, "too far");
+        assert_eq!(units[5].health, FULL, "a friend");
     }
 
     #[test]
@@ -5247,7 +5244,7 @@ mod tests {
             ];
             let mut combat = Combat::default();
             run(&mut combat, &mut units, 1.0);
-            assert!(units[1].health < 100.0);
+            assert!(units[1].health < FULL);
             assert_eq!(
                 units[2].health,
                 UnitKind::Aircraft.max_health(),
@@ -5275,7 +5272,7 @@ mod tests {
             let mut combat = Combat::default();
             run(&mut combat, &mut units, 0.5);
             assert_eq!(
-                units[1].health, 100.0,
+                units[1].health, FULL,
                 "{weapon:?} misses whatever is above it"
             );
         }
@@ -5291,7 +5288,7 @@ mod tests {
         let mut units = [flame, target_at(0.0, 2851.0)];
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 2.0);
-        assert!(units[1].health < 100.0);
+        assert!(units[1].health < FULL);
         assert!(
             units[0].heading.sin() > 0.9,
             "it faces south: {}",
@@ -5324,8 +5321,8 @@ mod tests {
             units[0].target = Some(Target::Place(135.8, 2715.0));
             let mut combat = Combat::default();
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
-            assert!(units[1].health < 100.0, "{weapon:?} hit the friend there");
-            assert_eq!(units[2].health, 100.0, "{weapon:?} spared the one nearby");
+            assert!(units[1].health < FULL, "{weapon:?} hit the friend there");
+            assert_eq!(units[2].health, FULL, "{weapon:?} spared the one nearby");
         }
     }
 
@@ -5351,12 +5348,12 @@ mod tests {
         units[0].target = Some(Target::Place(135.8, 2715.0));
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 1.0);
-        assert_eq!(units[1].health, 100.0, "it keeps to the place");
+        assert_eq!(units[1].health, FULL, "it keeps to the place");
 
         units[0].target = Some(Target::Place(1358.0, 2715.0));
         run(&mut combat, &mut units, 1.0);
         assert!(
-            units[1].health < 100.0,
+            units[1].health < FULL,
             "out of range of it, the nearest enemy will do"
         );
     }
@@ -5374,7 +5371,7 @@ mod tests {
         units[0].cooldown = 1000.0;
         run(&mut combat, &mut units, 3.0);
         assert!(combat.missiles.is_empty());
-        assert!(units[1].health < 100.0);
+        assert!(units[1].health < FULL);
     }
 
     #[test]
@@ -5390,7 +5387,7 @@ mod tests {
             assert_eq!(combat.shells.len(), 1, "{target:?}");
             units[0].cooldown = 1000.0;
             run(&mut combat, &mut units, 3.0);
-            assert!(units[1].health < 100.0, "{target:?}");
+            assert!(units[1].health < FULL, "{target:?}");
         }
     }
 
@@ -5402,7 +5399,7 @@ mod tests {
         let mut units = [shooter(WeaponKind::Bullet), friend];
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 2.0);
-        assert_eq!(units[1].health, 100.0, "not without the order");
+        assert_eq!(units[1].health, FULL, "not without the order");
 
         units[0].target = Some(Target::Forced(3));
         run(&mut combat, &mut units, 10.0);
@@ -5418,9 +5415,9 @@ mod tests {
         units[0].target = Some(Target::Place(-90.51, 2715.0));
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 0.5);
-        assert_eq!(units[1].health, 100.0, "still turning");
+        assert_eq!(units[1].health, FULL, "still turning");
         run(&mut combat, &mut units, 2.0);
-        assert!(units[1].health < 100.0);
+        assert!(units[1].health < FULL);
     }
 
     #[test]
@@ -5449,7 +5446,7 @@ mod tests {
             let mut combat = Combat::default();
             run(&mut combat, &mut units, 1.0);
             assert!(
-                !combat.beams.is_empty() || !combat.missiles.is_empty() || units[1].health < 100.0,
+                !combat.beams.is_empty() || !combat.missiles.is_empty() || units[1].health < FULL,
                 "{weapon:?}"
             );
         }
@@ -5465,13 +5462,13 @@ mod tests {
             let mut units = [moving(shooter(weapon)), target_at(67.9, 2715.0)];
             let mut combat = Combat::default();
             run(&mut combat, &mut units, 2.0);
-            assert_eq!(units[1].health, 100.0, "{weapon:?} holds fire");
+            assert_eq!(units[1].health, FULL, "{weapon:?} holds fire");
             assert_eq!(combat, Combat::default(), "{weapon:?} shows nothing");
 
             units[0].destination = (units[0].x, units[0].z);
             run(&mut combat, &mut units, 3.0);
             assert!(
-                combat != Combat::default() || units[1].health < 100.0,
+                combat != Combat::default() || units[1].health < FULL,
                 "{weapon:?} fires once stopped"
             );
         }
@@ -5565,7 +5562,7 @@ mod tests {
             let mut units = [unit, target_at(90.5, 2715.0)];
             let mut combat = Combat::default();
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
-            100.0 - units[1].health
+            FULL - units[1].health
         };
         assert_eq!(damage_by(0), WeaponKind::Bullet.damage());
         assert!(damage_by(2) > damage_by(0));
@@ -5577,21 +5574,21 @@ mod tests {
         let hurt_for_ten_seconds = |experience: u32| {
             let mut unit = shooter(WeaponKind::Unarmed);
             unit.experience = experience;
-            unit.health = 50.0;
+            unit.health = 300.0;
             let mut units = [unit];
             let mut combat = Combat::default();
             run(&mut combat, &mut units, 10.0);
             units[0].health
         };
-        assert_eq!(hurt_for_ten_seconds(0), 50.0);
-        assert_eq!(hurt_for_ten_seconds(2), 50.0, "one medal is not enough");
+        assert_eq!(hurt_for_ten_seconds(0), 300.0);
+        assert_eq!(hurt_for_ten_seconds(2), 300.0, "one medal is not enough");
         let (two_medals, three) = (hurt_for_ten_seconds(5), hurt_for_ten_seconds(10));
         assert!(
-            two_medals > 50.0 && two_medals < 75.0,
+            two_medals > 300.0 && two_medals < 450.0,
             "slowly: {two_medals}"
         );
         assert!(
-            three - 50.0 > (two_medals - 50.0) * 1.5,
+            three - 300.0 > (two_medals - 300.0) * 1.5,
             "much faster with all three"
         );
 
@@ -5719,7 +5716,7 @@ mod tests {
             lowest = lowest.min(units[0].tube_pitch);
         }
         assert!(lowest < 0.0, "{lowest}");
-        assert!(units[1].health < 100.0, "and it hits");
+        assert!(units[1].health < FULL, "and it hits");
     }
 
     #[test]
@@ -5816,7 +5813,7 @@ mod tests {
         let mut units = [tower, target_at(181.0, 2715.0)];
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 2.0);
-        assert!(units[1].health < 100.0);
+        assert!(units[1].health < FULL);
     }
 
     #[test]
@@ -6076,7 +6073,7 @@ mod tests {
         for _ in 0..40 {
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
         }
-        assert!(units[1].health < 100.0);
+        assert!(units[1].health < FULL);
         assert!(
             combat
                 .blasts
@@ -6158,7 +6155,7 @@ mod tests {
         let mut units = [gunner, target_at(181.0, 2715.0)];
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
-        assert!(units[1].health < 100.0);
+        assert!(units[1].health < FULL);
     }
 
     fn enemy_barracks_at(x: f32, z: f32) -> Unit {
@@ -6277,7 +6274,7 @@ mod tests {
         for _ in 0..60 {
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
         }
-        assert_eq!(units[1].health, 100.0 - WeaponKind::Rockets.damage());
+        assert_eq!(units[1].health, FULL - WeaponKind::Rockets.damage());
     }
 
     fn hk_ink_vine_facing_east() -> Unit {
@@ -6324,10 +6321,10 @@ mod tests {
         let mut units = [tank, target_at(-113.2, 2715.0)];
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 0.3);
-        assert_eq!(units[1].health, 100.0, "still turning");
+        assert_eq!(units[1].health, FULL, "still turning");
         assert_ne!(units[0].heading, 0.0);
         run(&mut combat, &mut units, 2.0);
-        assert!(units[1].health < 100.0, "now it fires");
+        assert!(units[1].health < FULL, "now it fires");
         assert!(units[0].heading.cos() < -0.9, "facing west");
     }
 
@@ -6362,7 +6359,7 @@ mod tests {
         let mut units = [shooter(WeaponKind::Mortar), target_at(633.6, 2715.0)];
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 3.0);
-        assert!(units[1].health < 100.0);
+        assert!(units[1].health < FULL);
     }
 
     #[test]
@@ -6371,7 +6368,7 @@ mod tests {
         units[0].alive = false;
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 1.0);
-        assert_eq!(units[1].health, 100.0);
+        assert_eq!(units[1].health, FULL);
 
         let mut units = [shooter(WeaponKind::Laser), target_at(135.8, 2715.0)];
         units[1].alive = false;

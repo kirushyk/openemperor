@@ -1720,10 +1720,11 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         .iter()
         .filter(|c| game.sight_at(c.x, c.z) == Sight::Visible)
     {
-        models::draw_crate(
-            canvas,
-            (found.x, terrain.height_at(found.x, found.z), found.z),
-        );
+        let (x, z) = (found.x, found.z);
+        let y = terrain.height_at(x, z);
+        if !original::draw_crate(canvas, found.kind, [x, y, z], game.battle_time()) {
+            models::draw_crate(canvas, (x, y, z));
+        }
     }
     // A body reaches no farther than this from its first joint.
     const RAGDOLL_REACH: f32 = 67.88;

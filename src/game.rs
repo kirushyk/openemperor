@@ -349,11 +349,6 @@ const CRATE_SECONDS: f32 = 40.0;
 const CRATE_LASTS: f32 = 60.0;
 const CRATES_AT_MOST: usize = 6;
 const CRATE_MONEY: (i32, i32) = (250, 1500);
-/// The money in a crate a map lies on it, by the rules' name for it: a `MoneyCrate` holds
-/// their `CASH2000`.
-fn crate_money(name: &str) -> Option<i32> {
-    (name == "MoneyCrate").then_some(2000)
-}
 
 /// What opponents make before anything else, while they have fewer than this many of each for
 /// each of their refineries: harvesters to bring in money, and carryalls to help them.
@@ -2796,10 +2791,41 @@ impl Game {
             self.drop_crate(dt);
         }
         let opened = units::open_crates(&self.units, &mut self.crates, &mut self.money, dt);
-        for (owner, money) in opened {
+        for (owner, found) in opened {
+            let what = match found.gift {
+                units::Gift::Money(money) => format!("${money}"),
+                units::Gift::Unit(role) => {
+                    self.let_out(owner, role, (found.x, found.z));
+                    role.name().to_string()
+                }
+            };
             if owner == 0 {
-                self.post_chat(format!("Crate: ${money}"));
+                self.post_chat(format!("Crate: {what}"));
             }
+        }
+    }
+
+    /// Lets a unit out of a crate for its opener, at the free spot nearest it.
+    fn let_out(&mut self, owner: usize, role: Role, at: (f32, f32)) {
+        let Some(color) = self.stats_rows().get(owner).map(|row| row.color) else {
+            return;
+        };
+        let house = self.faction_of(owner);
+        let terrain = battlefield::terrain(self.battle_map);
+        let id = self.next_unit_id;
+        let side = (owner, color);
+        if units::put(
+            &mut self.units,
+            terrain,
+            at,
+            (role, house),
+            side,
+            (false, None),
+            id,
+        )
+        .is_some()
+        {
+            self.next_unit_id += 1;
         }
     }
 
@@ -2822,7 +2848,8 @@ impl Game {
                 self.crates.push(units::Crate {
                     x,
                     z,
-                    money: least * (1 + steps),
+                    kind: units::CrateKind::Money,
+                    gift: units::Gift::Money(least * (1 + steps)),
                     left: CRATE_LASTS,
                 });
             }
@@ -4185,18 +4212,19 @@ impl Game {
 
     /// Puts down what the battle's map has standing on it from the start, of what we know: its
     /// walls, buildings and units, each the player's if of the player's house and the enemy's
-    /// if not; its barrels, wrecks and such, which are nobody's; and its crates of money.
+    /// if not; its barrels, wrecks and such, which are nobody's; and its crates.
     fn place_map_objects(&mut self) {
         let terrain = battlefield::terrain(self.battle_map);
         let player = self.faction_of(0);
         for object in terrain.objects() {
             let (column, row) = object.cell;
             let at = battlefield::grid_to_world(column as f32 + 0.5, row as f32 + 0.5);
-            if let Some(money) = crate_money(&object.name) {
+            if let Some(kind) = units::CrateKind::named(&object.name) {
                 self.crates.push(units::Crate {
                     x: at.0,
                     z: at.1,
-                    money,
+                    kind,
+                    gift: kind.gift(),
                     left: f32::INFINITY,
                 });
                 continue;
@@ -6056,6 +6084,35 @@ mod tests {
     }
 
     #[test]
+    fn a_sardaukar_steps_out_of_his_crate_for_whoever_opens_it() {
+        let mut game = in_battle();
+        let finder = game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.kind == UnitKind::Vehicle)
+            .copied()
+            .unwrap();
+        let kind = units::CrateKind::named("SardaukarCrate").unwrap();
+        game.crates.push(units::Crate {
+            x: finder.x,
+            z: finder.z,
+            kind,
+            gift: kind.gift(),
+            left: f32::INFINITY,
+        });
+        let sardaukar = |game: &Game| {
+            game.units
+                .iter()
+                .filter(|u| u.owner == 0 && u.role == Role::ImSardaukar)
+                .count()
+        };
+        let before = sardaukar(&game);
+        game.update(0.1);
+        assert!(game.crates.is_empty());
+        assert_eq!(sardaukar(&game), before + 1);
+    }
+
+    #[test]
     fn the_winners_soldiers_stop_and_cheer() {
         let mut game = in_battle();
         win(&mut game);
@@ -6760,7 +6817,10 @@ mod tests {
         let found = game.crates[0];
         let terrain = battlefield::terrain(game.battle_map);
         assert!(terrain.can_walk(found.x, found.z));
-        assert!((CRATE_MONEY.0..=CRATE_MONEY.1).contains(&found.money));
+        let units::Gift::Money(money) = found.gift else {
+            panic!("a dropped crate holds money");
+        };
+        assert!((CRATE_MONEY.0..=CRATE_MONEY.1).contains(&money));
         let vehicle = game
             .units
             .iter()
@@ -6771,8 +6831,8 @@ mod tests {
         game.units[vehicle].destination = (found.x, found.z);
         game.update(0.01);
         assert!(game.crates.iter().all(|c| (c.x, c.z) != (found.x, found.z)));
-        assert!(game.player_money() >= before + found.money);
-        let line = format!("Crate: ${}", found.money);
+        assert!(game.player_money() >= before + money);
+        let line = format!("Crate: ${money}");
         assert!(game.chat.iter().any(|l| l.text == line));
 
         let lying = game.crates.clone();

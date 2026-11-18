@@ -6468,28 +6468,87 @@ pub fn short_of_harvesters(units: &[Unit], owner: usize) -> Option<usize> {
     (harvesters < 1 + refineries.count()).then_some(first)
 }
 
-/// Credits lying on the battlefield in a crate, for whoever reaches it first.
+/// A crate lying on the battlefield, for whoever reaches it first.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Crate {
     pub x: f32,
     pub z: f32,
-    pub money: i32,
+    pub kind: CrateKind,
+    /// What is in it.
+    pub gift: Gift,
     /// Seconds until it is gone, if nobody reaches it first.
     pub left: f32,
+}
+
+/// What a crate holds: credits, or a unit that steps out of it for whoever opened it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Gift {
+    Money(i32),
+    Unit(Role),
+}
+
+/// The kinds of crate the original's rules have, each looking as it does and holding its own
+/// gift. A leech's and a NIAB tank's are left out, having no units of ours to hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrateKind {
+    /// A bunch of boxes of credits.
+    Money,
+    /// An Imperial sarcophagus with a Sardaukar in it.
+    Sardaukar,
+    /// A Tleilaxu egg with a contaminator in it.
+    Contaminator,
+    /// An Ixian pod with an infiltrator in it.
+    Infiltrator,
+}
+
+impl CrateKind {
+    /// Each kind with the rules' names for crates of it.
+    const NAMED: [(CrateKind, &'static [&'static str]); 4] = [
+        (CrateKind::Money, &["MoneyCrate"]),
+        (
+            CrateKind::Sardaukar,
+            &["SardaukarCrate", "ADVSardaukarCrate"],
+        ),
+        (CrateKind::Contaminator, &["ContaminatorCrate"]),
+        // The rules hand a projector's crate an infiltrator too.
+        (
+            CrateKind::Infiltrator,
+            &["InfiltratorCrate", "ProjectorCrate"],
+        ),
+    ];
+
+    /// The kind of crate of this name in the rules, if it is one of ours.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::NAMED
+            .into_iter()
+            .find(|(_, names)| names.contains(&name))
+            .map(|(kind, _)| kind)
+    }
+
+    /// What one of the map's own holds, as the rules' `CrateGiftObject` says: a money crate
+    /// their `CASH2000`.
+    pub fn gift(self) -> Gift {
+        match self {
+            CrateKind::Money => Gift::Money(2000),
+            CrateKind::Sardaukar => Gift::Unit(Role::ImSardaukar),
+            CrateKind::Contaminator => Gift::Unit(Role::TlContaminator),
+            CrateKind::Infiltrator => Gift::Unit(Role::IxInfiltrator),
+        }
+    }
 }
 
 /// How near a unit on the ground has to come to a crate to pick it up.
 const CRATE_REACH: f32 = 36.2;
 
 /// Opens the crates that a unit on the ground has reached, paying each one's money to that
-/// unit's owner, and takes away those left lying too long. Returns the owners paid and how
-/// much, in turn.
+/// unit's owner, and takes away those left lying too long. Returns the crates opened and by
+/// whose unit, in turn, for what else is in them to be let out.
 pub fn open_crates(
     units: &[Unit],
     crates: &mut Vec<Crate>,
     money: &mut [i32],
     dt: f32,
-) -> Vec<(usize, i32)> {
+) -> Vec<(usize, Crate)> {
     let mut opened = Vec::new();
     crates.retain_mut(|found| {
         found.left -= dt;
@@ -6505,10 +6564,10 @@ pub fn open_crates(
         let Some(finder) = finder else {
             return true;
         };
-        if let Some(money) = money.get_mut(finder.owner) {
-            *money += found.money;
+        if let (Gift::Money(credits), Some(money)) = (found.gift, money.get_mut(finder.owner)) {
+            *money += credits;
         }
-        opened.push((finder.owner, found.money));
+        opened.push((finder.owner, *found));
         false
     });
     opened
@@ -10858,11 +10917,32 @@ mod tests {
     }
 
     #[test]
+    fn the_rules_crates_hold_their_gifts() {
+        let gift = |name: &str| CrateKind::named(name).map(CrateKind::gift);
+        assert_eq!(gift("MoneyCrate"), Some(Gift::Money(2000)));
+        assert_eq!(gift("SardaukarCrate"), Some(Gift::Unit(Role::ImSardaukar)));
+        assert_eq!(
+            gift("ADVSardaukarCrate"),
+            Some(Gift::Unit(Role::ImSardaukar))
+        );
+        assert_eq!(
+            gift("ContaminatorCrate"),
+            Some(Gift::Unit(Role::TlContaminator))
+        );
+        assert_eq!(
+            gift("ProjectorCrate"),
+            Some(Gift::Unit(Role::IxInfiltrator))
+        );
+        assert_eq!(gift("LeechCrate"), None, "no leech of ours to hold");
+    }
+
+    #[test]
     fn a_crate_pays_whoever_reaches_it_on_the_ground() {
         let mut crates = vec![Crate {
             x: MAP_MIDDLE_X,
             z: 2715.0,
-            money: 500,
+            kind: CrateKind::Money,
+            gift: Gift::Money(500),
             left: 10.0,
         }];
         let mut money = [0, 0];
@@ -10871,16 +10951,16 @@ mod tests {
         let far = unit_at(MAP_MIDDLE_X + 226.3, 2715.0, UnitKind::Infantry);
         assert!(open_crates(&[flier, far], &mut crates, &mut money, 1.0).is_empty());
         let near = unit_at(MAP_MIDDLE_X + 13.58, 2715.0, UnitKind::Vehicle);
-        assert_eq!(
-            open_crates(&[near], &mut crates, &mut money, 1.0),
-            [(0, 500)]
-        );
+        let opened = open_crates(&[near], &mut crates, &mut money, 1.0);
+        assert_eq!(opened.len(), 1);
+        assert_eq!((opened[0].0, opened[0].1.gift), (0, Gift::Money(500)));
         assert_eq!((money, crates.len()), ([500, 0], 0));
 
         let mut crates = vec![Crate {
             x: MAP_MIDDLE_X,
             z: 2715.0,
-            money: 500,
+            kind: CrateKind::Money,
+            gift: Gift::Money(500),
             left: 10.0,
         }];
         assert!(open_crates(&[far], &mut crates, &mut money, 9.0).is_empty());

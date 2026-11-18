@@ -12,7 +12,7 @@ use crate::battlefield::{self, CELL_SIDE, Terrain, View};
 use crate::fog::Fog;
 use crate::game::{CursorLook, Faction};
 use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
-use crate::units::{Harvest, Prop, Role, Unit, UnitKind, WallPiece, Wound};
+use crate::units::{CrateKind, Harvest, Prop, Role, Unit, UnitKind, WallPiece, Wound};
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
 pub(super) use crate::xbf::{point, times};
@@ -585,6 +585,14 @@ const WALLS: [(Faction, [&str; 6]); 3] = [
             "Buildings\\OR_Wall_Cross_H0.xbf",
         ],
     ),
+];
+
+/// The original's model of each kind of crate.
+const CRATES: [(CrateKind, &str); 4] = [
+    (CrateKind::Money, "crates\\G_Crates_H0.xbf"),
+    (CrateKind::Sardaukar, "crates\\Crate_IM_Sarcophahus_H0.xbf"),
+    (CrateKind::Contaminator, "crates\\Crate_TL_Egg_H0.xbf"),
+    (CrateKind::Infiltrator, "crates\\Crate_IX_Pod_H0.xbf"),
 ];
 
 /// The construction yard each house's MCV deploys into.
@@ -1211,6 +1219,7 @@ fn read_shapes(disc: &Path) -> Option<Original> {
     let names = names.chain(CONSTRUCTION_YARDS.iter().map(|&(_, name)| name));
     let names = names.chain(WALLS.iter().flat_map(|(_, pieces)| pieces.iter().copied()));
     let names = names.chain([TORNADO]);
+    let names = names.chain(CRATES.iter().map(|&(_, name)| name));
     let shapes: HashMap<_, _> = names
         .filter_map(|name| Some((name, read_shape(&archive, name, &mut pictures)?)))
         .collect();
@@ -2333,6 +2342,34 @@ pub(super) fn draw_tornado(canvas: &mut Canvas, tornado: &Tornado, time: f32) ->
     true
 }
 
+/// Draws the original's model of a crate of this kind lying here, if it has been read.
+pub(super) fn draw_crate(canvas: &mut Canvas, kind: CrateKind, at: [f32; 3], time: f32) -> bool {
+    let Some(shape) = CRATES
+        .iter()
+        .find(|&&(of, _)| of == kind)
+        .and_then(|&(_, name)| ORIGINAL.get()?.shapes.get(name))
+    else {
+        return false;
+    };
+    let played = (time * FRAMES_PER_SECOND) as usize;
+    let frame = shape
+        .sequences
+        .iter()
+        .find(|sequence| sequence.name == "Stationary")
+        .map_or(0, |sequence| looped(&sequence.ranges, played));
+    let body = Place::turned(at, 0.0);
+    let posed = Posed {
+        body,
+        head: body,
+        frame,
+        slid: time * FRAMES_PER_SECOND,
+        worlds: pose(shape, 0.0, 0.0, frame),
+        set_up: true,
+    };
+    draw_posed(canvas, shape, &posed, [0.0; 3]);
+    true
+}
+
 /// Which frame of its model a tornado is at, this many seconds since it rose and before it is
 /// gone: rising for as long as its "Surface" plays, then sinking for as long as its "Sink"
 /// does, and in between going round its "Move" at this time of the battle.
@@ -2966,6 +3003,20 @@ mod tests {
                 .filter(|part| part.veils.iter().any(|veil| veil.glows) && part.slide[0] > 0.0)
                 .collect();
             assert!(wind.len() >= 2, "{name}: its two streams of wind");
+        }
+    }
+
+    #[test]
+    fn each_kind_of_crate_has_its_model_on_the_disc() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        for (kind, _) in CRATES {
+            let mut canvas = Canvas::default();
+            assert!(draw_crate(&mut canvas, kind, [0.0; 3], 0.0), "{kind:?}");
+            assert!(!canvas.objects.is_empty(), "{kind:?}");
         }
     }
 

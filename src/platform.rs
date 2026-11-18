@@ -87,7 +87,14 @@ pub struct WorldVertex {
     pub picture: [f32; 3],
     /// The house color that its picture's house parts take.
     pub team: [f32; 3],
+    /// How far into what is seen right now, and into what was ever seen, it lies, in squares,
+    /// below 0 outside: the backend shades it seen, dimmed or black by where each crosses 0
+    /// between its corners, so that the fog's edges run round. `FOG_CLEAR` where there is none.
+    pub fog: [f32; 2],
 }
+
+/// What a corner has for its `fog` where nothing hides it.
+pub const FOG_CLEAR: [f32; 2] = [1.0; 2];
 
 /// What a corner with no picture has for one.
 pub const NO_PICTURE: [f32; 3] = [0.0, 0.0, -1.0];
@@ -118,6 +125,7 @@ impl WorldVertex {
             stain: [0.0; 3],
             picture: NO_PICTURE,
             team: [0.0; 3],
+            fog: FOG_CLEAR,
         }
     }
 }

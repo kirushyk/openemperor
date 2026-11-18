@@ -1545,6 +1545,12 @@ pub fn seen_at(fog: Option<&Fog>, x: f32, z: f32) -> f32 {
     fog.map_or(1.0, |fog| fog.at(x, z).shade())
 }
 
+/// How far into what is seen now and what was ever seen a place lies, for a corner of the
+/// ground to be shaded by: all clear with no fog.
+pub fn fog_at(fog: Option<&Fog>, x: f32, z: f32) -> [f32; 2] {
+    fog.map_or(crate::platform::FOG_CLEAR, |fog| fog.edges_at(x, z))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

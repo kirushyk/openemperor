@@ -72,6 +72,7 @@ typedef struct {
     float stain[3];   /* where on its unit it is, and how black it goes */
     float picture[3]; /* where on a picture of oe_set_pictures it is, and which; below 0, none */
     float team[3];    /* the house color its picture's house parts take */
+    float fog[2];     /* how far into what is seen now and what was ever seen, in squares */
 } OeWorldVertex;
 
 /* A corner of something see-through: on the screen, with a depth to test. Premultiplied. */

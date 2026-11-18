@@ -46,9 +46,9 @@ static NSString *const kShader = @
     /* A tile's diagonal, in world units: the original game's coordinates, 32 to a tile's side. */
     "constant float TILE_DIAGONAL = 45.254834;\n"
     "struct WorldIn { packed_float3 pos; packed_float3 normal; packed_float3 color; float seen; float level; packed_float3 stain;\n"
-    "                 packed_float3 picture; packed_float3 team; };\n"
+    "                 packed_float3 picture; packed_float3 team; packed_float2 fog; };\n"
     "struct WorldOut { float4 pos [[position]]; float3 world; float3 normal; float3 color; float seen; float level; float3 stain;\n"
-    "                  float3 picture; float3 team; };\n"
+    "                  float3 picture; float3 team; float2 fog; };\n"
     "struct PointLight { packed_float3 place; float radius; packed_float3 color; float unused; };\n"
     "struct Sky { float4x4 view; float4x4 sun_view; float2 size; float time; int material;\n"
     "             float3 camera; float3 sun; float3 air; float3 sunlight; int mirrored; int light_count;\n"
@@ -58,7 +58,8 @@ static NSString *const kShader = @
     "  WorldOut o; o.world = float3(v[id].pos); o.pos = sky.view * float4(o.world, 1.0);\n"
     "  o.normal = float3(v[id].normal); o.color = float3(v[id].color);\n"
     "  o.seen = v[id].seen; o.level = v[id].level; o.stain = float3(v[id].stain);\n"
-    "  o.picture = float3(v[id].picture); o.team = float3(v[id].team); return o;\n"
+    "  o.picture = float3(v[id].picture); o.team = float3(v[id].team); o.fog = float2(v[id].fog);\n"
+    "  return o;\n"
     "}\n"
     "vertex float4 vs_shadow(uint id [[vertex_id]], const device WorldIn *v [[buffer(0)]],\n"
     "                        constant Sky &sky [[buffer(1)]]) {\n"
@@ -404,6 +405,14 @@ static NSString *const kShader = @
     "  float3 mirrored = color * seen * 1.1 + seen * glance * 0.35;\n"
     "  return mix(lit, lit * 0.6 + mirrored * 0.7, metal * 0.55) + float3(1.0, 0.96, 0.88) * spec;\n"
     "}\n"
+    /* How much the fog of war lets through where a corner's distances into what is seen now and
+     * what was ever seen have come to: all of it inside the first, dimmed inside the second, none
+     * outside both, each edge a little soft and as round as the sight it follows. */
+    "constant float EXPLORED_SHADE = 0.45;\n"
+    "float fogged(float2 fog) {\n"
+    "  float now = smoothstep(-0.12, 0.12, fog.x), ever = smoothstep(-0.12, 0.12, fog.y);\n"
+    "  return mix(ever * EXPLORED_SHADE, 1.0, now);\n"
+    "}\n"
     "fragment float4 fs_world(WorldOut in [[stage_in]], constant Sky &sky [[buffer(0)]],\n"
     "                         texture2d<float> mirror [[texture(0)]], depth2d<float> map [[texture(1)]],\n"
     "                         sampler smooth [[sampler(0)]], sampler compare [[sampler(1)]],\n"
@@ -411,6 +420,7 @@ static NSString *const kShader = @
     "                         texture2d<float> wash [[texture(3)]]) {\n"
     "  /* What lies under the sea's surface shows nothing in the mirror. */\n"
     "  if (sky.mirrored != 0 && in.world.y < sky.sea) discard_fragment();\n"
+    "  in.seen *= fogged(in.fog);\n"
     "  float3 normal = normalize(in.normal);\n"
     "  float in_sun = sun_on(in.world, normal, sky, map, compare);\n"
     /* The ground's patterns and how high and deep it lies are laid out in tile diagonals. */

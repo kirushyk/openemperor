@@ -883,6 +883,7 @@ impl Spice {
                     stain: [0.0; 3],
                     picture: [pu, pv, self.layer as f32],
                     team: [0.0; 3],
+                    fog: crate::platform::FOG_CLEAR,
                 });
             }
         }
@@ -1210,7 +1211,7 @@ fn lay(
             r,
             g,
             b,
-            seen: battlefield::seen_at(fog, x, z),
+            seen: 1.0,
             level: if face.sea { -SEA_DEPTH } else { y },
             stain: [0.0; 3],
             picture: if face.sea {
@@ -1219,6 +1220,7 @@ fn lay(
                 face.picture[n]
             },
             team: [0.0; 3],
+            fog: battlefield::fog_at(fog, x, z),
         });
     }
 }

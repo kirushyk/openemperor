@@ -2218,10 +2218,16 @@ pub(super) fn draw(canvas: &mut Canvas, unit: &Unit, team: [f32; 3], time: f32) 
         frame,
         slid,
         worlds: pose(shape, unit.tube_pitch, unit.gun_turn, frame),
-        set_up: unit.deployed,
+        set_up: shows_set_up(&unit),
     };
     draw_posed(canvas, shape, &posed, team);
     true
+}
+
+/// Whether what a unit's model has set up shows: only a soldier sets his gun down, and only
+/// once dug in. A building's or machine's still gun, as a rocket turret's head, is always there.
+fn shows_set_up(unit: &Unit) -> bool {
+    unit.deployed || unit.kind != UnitKind::Infantry
 }
 
 /// A model as it is drawn at one time: where its body and its head are, the frame of its
@@ -2253,7 +2259,7 @@ pub(super) fn draw_body(canvas: &mut Canvas, body: &Body, team: [f32; 3]) -> boo
         frame,
         slid: 0.0,
         worlds: pose(shape, unit.tube_pitch, unit.gun_turn, frame),
-        set_up: unit.deployed,
+        set_up: shows_set_up(&unit),
     };
     draw_posed(canvas, shape, &posed, team);
     true
@@ -2942,6 +2948,15 @@ mod tests {
         let walking = drawn(&mortar);
         mortar.deployed = true;
         assert!(drawn(&mortar) > walking, "set up, it stands beside him");
+        let mut turret = Unit::for_test(1000.0, 1000.0, UnitKind::Tower);
+        turret.role = Role::AtRocketTurret;
+        let standing = drawn(&turret);
+        turret.deployed = true;
+        assert_eq!(
+            drawn(&turret),
+            standing,
+            "a rocket turret's head is always on it"
+        );
     }
 
     #[test]

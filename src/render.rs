@@ -8,8 +8,8 @@ use crate::game::{
     self, Action, Ally, BuildTab, Button, CONFIRM_MESSAGE, CursorLook, Entry, Faction, Game,
     OPPONENT_SLOTS, Outcome, PlaceSquare, STATS_ROW_STEP, STATS_ROW_TOP, Screen, TeamColor,
     buttons, checkbox_size, color_slots, map_items, minimap_rect, modal_rect, opponent_row,
-    opponent_widgets, options_panel, setup_checkboxes, setup_widgets, small_text_px, stats_rect,
-    ui_scale,
+    opponent_widgets, options_panel, players_note, setup_checkboxes, setup_widgets, small_text_px,
+    stats_rect, ui_scale,
 };
 use crate::hud;
 use crate::planet;
@@ -1122,13 +1122,15 @@ fn canvas_of(game: &Game) -> Canvas {
                         TEXT
                     };
                     let px = small_text_px(game.height);
-                    canvas.text_left(
-                        item.label,
-                        item.x + 16.0 * s,
-                        item.y + item.h / 2.0,
-                        px,
-                        color,
-                    );
+                    let cy = item.y + item.h / 2.0;
+                    canvas.text_left(item.label, item.x + 16.0 * s, cy, px, color);
+                    if let Action::SelectMap(map) = item.action
+                        && let Some(map) = crate::maps::list().get(map)
+                    {
+                        let note = players_note(map.players);
+                        let x = item.x + item.w - 16.0 * s - crate::font::text_width(&note) * px;
+                        canvas.text_left(&note, x, cy, px, color);
+                    }
                 }
             }
         }
@@ -4938,6 +4940,13 @@ fn draw_skirmish_setup(canvas: &mut Canvas, game: &Game) {
                 draw_field(canvas, game, b);
                 if let Some(map) = crate::maps::list().get(setup.map) {
                     canvas.text_left(&map.name, b.x + 16.0 * s, cy, px, TEXT);
+                    // Beside the name, before the arrow, where the name leaves room.
+                    let note = players_note(map.players);
+                    let x = b.x + b.w - 48.0 * s - crate::font::text_width(&note) * px;
+                    let name_ends = b.x + 16.0 * s + crate::font::text_width(&map.name) * px;
+                    if x >= name_ends + 16.0 * s {
+                        canvas.text_left(&note, x, cy, px, TEXT);
+                    }
                 }
                 let (ax, half) = (b.x + b.w - 28.0 * s, 10.0 * s);
                 let tip = if game.dropdown_open {

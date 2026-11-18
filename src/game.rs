@@ -1551,6 +1551,14 @@ fn folder_entries(folder: MapFolder) -> impl Iterator<Item = (usize, &'static st
         .map(|(i, map)| (i, map.name.as_str()))
 }
 
+/// What the map dropdown says beside a map's name: how many players it takes.
+pub fn players_note(players: usize) -> String {
+    format!("{players} players")
+}
+
+/// The longest of `players_note`, which every column leaves room for.
+const WIDEST_PLAYERS_NOTE: &str = "8 players";
+
 /// How far down the dropdown's list starts, and how tall each of its rows is, unscaled.
 const LIST_TOP: f32 = 404.0;
 const LIST_ROW: f32 = 52.0;
@@ -1569,7 +1577,7 @@ struct ListLayout {
 
 impl ListLayout {
     /// Columns as tall as the screen leaves room for under the dropdown, and under its
-    /// folders' tabs if it has them, each as wide as the widest label needs: from under the
+    /// folders' tabs if it has them, each as wide as the widest label and its players need: from under the
     /// dropdown on, or as far to its left as keeps them on the screen. More columns than fit
     /// are scrolled to.
     fn new(
@@ -1588,7 +1596,10 @@ impl ListLayout {
             (count + 1, widest.max(width))
         });
         let columns = count.div_ceil(rows).max(1);
-        let wide = (widest + 32.0 * s).max(w / 2.0).min(width - 2.0 * margin);
+        let note = crate::font::text_width(WIDEST_PLAYERS_NOTE) * small_text_px(height);
+        let wide = (widest + note + 48.0 * s)
+            .max(w / 2.0)
+            .min(width - 2.0 * margin);
         let shown = columns.min((((width - 2.0 * margin) / wide) as usize).max(1));
         let left = x.min(width - margin - shown as f32 * wide).max(margin);
         ListLayout {
@@ -12496,14 +12507,20 @@ mod tests {
             let last = items.last().unwrap();
             assert!(last.y + last.h <= h, "at {w}x{h}");
             for item in &items {
-                let width = crate::font::text_width(item.label) * small_text_px(h);
+                let Action::SelectMap(map) = item.action else {
+                    continue;
+                };
+                // The name from the left, and how many players from the right, apart.
+                let text = |text: &str| crate::font::text_width(text) * small_text_px(h);
+                let note = text(&players_note(maps::list()[map].players));
                 assert!(
-                    width + 16.0 * ui_scale(h) < item.w,
+                    text(item.label) + note + 48.0 * ui_scale(h) <= item.w,
                     "{} at {w}x{h}",
                     item.label
                 );
             }
         }
+        assert_eq!(players_note(4), "4 players");
         for map in 0..maps::list().len() {
             let mut game = in_setup();
             click_widget(&mut game, Action::MapDropdown);

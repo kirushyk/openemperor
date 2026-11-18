@@ -93,6 +93,7 @@ fn tokens(line: &[u8]) -> Vec<Token> {
 }
 
 /// The lines of speech a script plays, in the order it names them, each once.
+#[cfg(test)]
 pub fn speeches(lines: &[Vec<Token>]) -> Vec<u16> {
     let mut named = Vec::new();
     for token in lines.iter().flatten() {
@@ -103,6 +104,404 @@ pub fn speeches(lines: &[Vec<Token>]) -> Vec<u16> {
         }
     }
     named
+}
+
+/// The keywords and functions a script is run with, by their numbers. What each does is
+/// worked out from how the original's scripts use them; `docs/tok-format.md` lists them.
+const NEGATIVE: u16 = 143;
+const PLACE: u16 = 139;
+const IF: u16 = 165;
+const ELSE: u16 = 166;
+const END: u16 = 167;
+const EQUAL: u16 = 168;
+const LESS: u16 = 171;
+const AND: u16 = 174;
+const OR: u16 = 175;
+const FALSE: u16 = 176;
+const TRUE: u16 = 177;
+const PLUS: u16 = 178;
+const SET: u16 = 180;
+const NOW: u16 = 0;
+/// Asked before the first reinforcements: whether the battle goes on as usual, it seems.
+const READY: u16 = 2;
+const ENEMY_BASE: u16 = 3;
+const BASE: u16 = 4;
+const SCRIPT_POINT: u16 = 5;
+const SIDE_PLACE: u16 = 6;
+const PLAYER: u16 = 14;
+const NEW_SIDE: u16 = 18;
+const BRING: u16 = 21;
+const DESTROYED: u16 = 23;
+const LEFT: u16 = 35;
+const SAY: u16 = 45;
+const PAY: u16 = 62;
+const WIN: u16 = 83;
+
+/// A value of a script: a number, truth being 1 and falsehood 0; a place on the map; or a thing
+/// on it, if one was made.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Value {
+    Number(i32),
+    Place(f32, f32),
+    Thing(Option<u32>),
+}
+
+impl Value {
+    fn number(self) -> i32 {
+        match self {
+            Value::Number(n) => n,
+            Value::Place(..) => 0,
+            Value::Thing(thing) => i32::from(thing.is_some()),
+        }
+    }
+
+    fn place(self) -> (f32, f32) {
+        match self {
+            Value::Place(x, z) => (x, z),
+            _ => (0.0, 0.0),
+        }
+    }
+
+    fn thing(self) -> Option<u32> {
+        match self {
+            Value::Thing(thing) => thing,
+            _ => None,
+        }
+    }
+}
+
+/// What a script asks of the battle it runs in. Its sides are numbers: the player's 0, and
+/// each new one the next.
+pub trait Battle {
+    /// How many of the script's updates have gone by.
+    fn now(&self) -> i32;
+    fn new_side(&mut self) -> i32;
+    /// Where a side's base is, and where the enemy's main base is.
+    fn base(&self, side: i32) -> (f32, f32);
+    fn enemy_base(&self) -> (f32, f32);
+    /// The map's point for the script of this number.
+    fn script_point(&self, number: i32) -> (f32, f32);
+    /// Puts a thing of a kind of the rules' lists on the map for a side, facing one of four
+    /// ways, and says which it is.
+    fn place(&mut self, side: i32, kind: u16, at: (f32, f32), facing: i32) -> Option<u32>;
+    /// Brings a unit of a kind in for a side, at a place.
+    fn bring(&mut self, side: i32, kind: u16, at: (f32, f32)) -> Option<u32>;
+    /// How many units a side has left.
+    fn left(&self, side: i32) -> i32;
+    fn destroyed(&self, thing: Option<u32>) -> bool;
+    /// Plays a line of speech, by its number.
+    fn say(&mut self, line: u16);
+    fn pay(&mut self, side: i32, money: i32);
+    /// The player has won.
+    fn win(&mut self);
+}
+
+/// A piece of a line as the script reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Piece {
+    Function(u16),
+    Keyword(u16),
+    Variable(u16),
+    Kind(u16),
+    Speech(u16),
+    Number(i32),
+    Open,
+    Close,
+    Comma,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Expression {
+    Number(i32),
+    Variable(u16),
+    Kind(u16),
+    Speech(u16),
+    Call(Piece, Vec<Expression>),
+    Both(u16, Box<Expression>, Box<Expression>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Statement {
+    Nothing,
+    If(Expression),
+    Else,
+    End,
+    Set(u16, Expression),
+    Do(Expression),
+}
+
+/// A mission's script, ready to run: run once an update, all of it, the parts of its `if`s
+/// that do not hold left out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Script {
+    statements: Vec<Statement>,
+    variables: Vec<Value>,
+}
+
+impl Script {
+    pub fn new(lines: &[Vec<Token>]) -> Self {
+        Script {
+            statements: lines.iter().map(|line| statement(&pieces(line))).collect(),
+            variables: Vec::new(),
+        }
+    }
+
+    /// Runs the script once, for the update the battle is at.
+    pub fn run(&mut self, battle: &mut impl Battle) {
+        let (mut depth, mut skipping) = (0usize, None);
+        for at in 0..self.statements.len() {
+            match &self.statements[at] {
+                Statement::If(test) => {
+                    depth += 1;
+                    if skipping.is_none() && self.value(&test.clone(), battle).number() == 0 {
+                        skipping = Some(depth);
+                    }
+                }
+                Statement::Else => {
+                    if skipping == Some(depth) {
+                        skipping = None;
+                    } else if skipping.is_none() {
+                        skipping = Some(depth);
+                    }
+                }
+                Statement::End => {
+                    if skipping == Some(depth) {
+                        skipping = None;
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                _ if skipping.is_some() => {}
+                Statement::Set(variable, expression) => {
+                    let (variable, expression) = (*variable as usize, expression.clone());
+                    let value = self.value(&expression, battle);
+                    if self.variables.len() <= variable {
+                        self.variables.resize(variable + 1, Value::Number(0));
+                    }
+                    self.variables[variable] = value;
+                }
+                Statement::Do(expression) => {
+                    self.value(&expression.clone(), battle);
+                }
+                Statement::Nothing => {}
+            }
+        }
+    }
+
+    fn value(&mut self, expression: &Expression, battle: &mut impl Battle) -> Value {
+        match expression {
+            Expression::Number(n) => Value::Number(*n),
+            Expression::Variable(v) => self
+                .variables
+                .get(*v as usize)
+                .copied()
+                .unwrap_or(Value::Number(0)),
+            Expression::Kind(kind) => Value::Number(i32::from(*kind)),
+            Expression::Speech(line) => Value::Number(i32::from(*line)),
+            Expression::Both(operator, left, right) => {
+                let (left, right) = (self.value(left, battle), self.value(right, battle));
+                let truth = |holds: bool| Value::Number(i32::from(holds));
+                match *operator {
+                    EQUAL => truth(left == right || left.number() == right.number()),
+                    LESS => truth(left.number() < right.number()),
+                    AND => truth(left.number() != 0 && right.number() != 0),
+                    OR => truth(left.number() != 0 || right.number() != 0),
+                    _ => Value::Number(left.number() + right.number()),
+                }
+            }
+            Expression::Call(callee, arguments) => {
+                let values: Vec<Value> = arguments.iter().map(|a| self.value(a, battle)).collect();
+                let at = |n: usize| values.get(n).copied().unwrap_or(Value::Number(0));
+                let number = |n: usize| at(n).number();
+                let kind = |n: usize| match arguments.get(n) {
+                    Some(Expression::Kind(kind)) => Some(*kind),
+                    _ => None,
+                };
+                let place = |(x, z): (f32, f32)| Value::Place(x, z);
+                match *callee {
+                    Piece::Keyword(NEGATIVE) => Value::Number(-number(0)),
+                    Piece::Keyword(PLACE) => {
+                        let Some(kind) = kind(1) else {
+                            return Value::Thing(None);
+                        };
+                        let (x, z) = at(2).place();
+                        let cell = crate::battlefield::CELL_SIDE;
+                        let to = (x + number(3) as f32 * cell, z + number(4) as f32 * cell);
+                        Value::Thing(battle.place(number(0), kind, to, number(5)))
+                    }
+                    Piece::Function(NOW) => Value::Number(battle.now()),
+                    Piece::Function(READY) => Value::Number(1),
+                    Piece::Function(ENEMY_BASE) => place(battle.enemy_base()),
+                    Piece::Function(BASE | SIDE_PLACE) => place(battle.base(number(0))),
+                    Piece::Function(SCRIPT_POINT) => place(battle.script_point(number(0))),
+                    Piece::Function(PLAYER) => Value::Number(0),
+                    Piece::Function(NEW_SIDE) => Value::Number(battle.new_side()),
+                    Piece::Function(BRING) => match kind(1) {
+                        Some(kind) => Value::Thing(battle.bring(number(0), kind, at(2).place())),
+                        None => Value::Thing(None),
+                    },
+                    Piece::Function(DESTROYED) => {
+                        Value::Number(i32::from(battle.destroyed(at(0).thing())))
+                    }
+                    Piece::Function(LEFT) => Value::Number(battle.left(number(0))),
+                    Piece::Function(SAY) => {
+                        if let Some(Expression::Speech(line)) = arguments.first() {
+                            battle.say(*line);
+                        }
+                        Value::Number(0)
+                    }
+                    Piece::Function(PAY) => {
+                        battle.pay(number(0), number(1));
+                        Value::Number(0)
+                    }
+                    Piece::Function(WIN) => {
+                        battle.win();
+                        Value::Number(0)
+                    }
+                    _ => Value::Number(0),
+                }
+            }
+        }
+    }
+}
+
+/// A line's tokens as the pieces the script reads: its text cut into numbers, brackets and
+/// commas.
+fn pieces(line: &[Token]) -> Vec<Piece> {
+    let mut pieces = Vec::new();
+    for token in line {
+        match token {
+            Token::Function(n) => pieces.push(Piece::Function(*n)),
+            Token::Keyword(n) => pieces.push(Piece::Keyword(*n)),
+            Token::Variable(n) => pieces.push(Piece::Variable(*n)),
+            Token::Kind(n) => pieces.push(Piece::Kind(*n)),
+            Token::Speech(n) => pieces.push(Piece::Speech(*n)),
+            Token::Text(text) => {
+                let mut number: Option<i32> = None;
+                for ch in text.chars() {
+                    if let Some(digit) = ch.to_digit(10) {
+                        number = Some(number.unwrap_or(0) * 10 + digit as i32);
+                        continue;
+                    }
+                    if let Some(n) = number.take() {
+                        pieces.push(Piece::Number(n));
+                    }
+                    match ch {
+                        '(' => pieces.push(Piece::Open),
+                        ')' => pieces.push(Piece::Close),
+                        ',' => pieces.push(Piece::Comma),
+                        _ => {}
+                    }
+                }
+                if let Some(n) = number {
+                    pieces.push(Piece::Number(n));
+                }
+            }
+        }
+    }
+    pieces
+}
+
+/// What a line does.
+fn statement(pieces: &[Piece]) -> Statement {
+    match pieces {
+        [] => Statement::Nothing,
+        [Piece::Keyword(IF), rest @ ..] => Statement::If(
+            Reader {
+                pieces: rest,
+                at: 0,
+            }
+            .expression(0),
+        ),
+        [Piece::Keyword(ELSE), ..] => Statement::Else,
+        [Piece::Keyword(END), ..] => Statement::End,
+        [Piece::Variable(v), Piece::Keyword(SET), rest @ ..] => Statement::Set(
+            *v,
+            Reader {
+                pieces: rest,
+                at: 0,
+            }
+            .expression(0),
+        ),
+        _ => Statement::Do(Reader { pieces, at: 0 }.expression(0)),
+    }
+}
+
+/// Reads expressions out of a line's pieces, by how tightly each operator binds.
+struct Reader<'a> {
+    pieces: &'a [Piece],
+    at: usize,
+}
+
+impl Reader<'_> {
+    fn next(&mut self) -> Option<Piece> {
+        let piece = self.pieces.get(self.at).copied();
+        self.at += 1;
+        piece
+    }
+
+    fn peek(&self) -> Option<Piece> {
+        self.pieces.get(self.at).copied()
+    }
+
+    /// An expression whose operators bind at least as tightly as `least`.
+    fn expression(&mut self, least: u8) -> Expression {
+        let mut left = self.single();
+        while let Some(Piece::Keyword(operator)) = self.peek() {
+            let Some(binds) = binding(operator).filter(|&binds| binds >= least) else {
+                break;
+            };
+            self.at += 1;
+            let right = self.expression(binds + 1);
+            left = Expression::Both(operator, Box::new(left), Box::new(right));
+        }
+        left
+    }
+
+    fn single(&mut self) -> Expression {
+        match self.next() {
+            Some(Piece::Number(n)) => Expression::Number(n),
+            Some(Piece::Variable(v)) => Expression::Variable(v),
+            Some(Piece::Kind(kind)) => Expression::Kind(kind),
+            Some(Piece::Speech(line)) => Expression::Speech(line),
+            Some(Piece::Keyword(FALSE)) => Expression::Number(0),
+            Some(Piece::Keyword(TRUE)) => Expression::Number(1),
+            Some(Piece::Open) => {
+                let inside = self.expression(0);
+                if self.peek() == Some(Piece::Close) {
+                    self.at += 1;
+                }
+                inside
+            }
+            Some(callee @ (Piece::Function(_) | Piece::Keyword(_))) => {
+                let mut arguments = Vec::new();
+                if self.peek() == Some(Piece::Open) {
+                    self.at += 1;
+                    while !matches!(self.peek(), None | Some(Piece::Close)) {
+                        arguments.push(self.expression(0));
+                        if self.peek() == Some(Piece::Comma) {
+                            self.at += 1;
+                        } else if !matches!(self.peek(), None | Some(Piece::Close)) {
+                            self.at += 1;
+                        }
+                    }
+                    self.at += 1;
+                }
+                Expression::Call(callee, arguments)
+            }
+            _ => Expression::Number(0),
+        }
+    }
+}
+
+/// How tightly an operator binds, if it is one: `||` least, then `&&`, the comparisons, `+`.
+fn binding(keyword: u16) -> Option<u8> {
+    match keyword {
+        OR => Some(1),
+        AND => Some(2),
+        EQUAL | LESS => Some(3),
+        PLUS => Some(4),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -164,5 +563,141 @@ mod tests {
         let mut wrong = script(&[b"1", b"2"]);
         wrong[4] = 5;
         assert_eq!(read(&wrong), None, "not as many lines as it says");
+    }
+
+    /// A battle that writes down what a script does in it.
+    #[derive(Default)]
+    struct Written {
+        now: i32,
+        sides: i32,
+        placed: Vec<(i32, u16, (f32, f32), i32)>,
+        brought: Vec<(i32, u16)>,
+        said: Vec<u16>,
+        paid: Vec<(i32, i32)>,
+        won: bool,
+    }
+
+    impl Battle for Written {
+        fn now(&self) -> i32 {
+            self.now
+        }
+        fn new_side(&mut self) -> i32 {
+            self.sides += 1;
+            self.sides
+        }
+        fn base(&self, side: i32) -> (f32, f32) {
+            (100.0 * side as f32, 0.0)
+        }
+        fn enemy_base(&self) -> (f32, f32) {
+            (1000.0, 1000.0)
+        }
+        fn script_point(&self, number: i32) -> (f32, f32) {
+            (number as f32, 0.0)
+        }
+        fn place(&mut self, side: i32, kind: u16, at: (f32, f32), facing: i32) -> Option<u32> {
+            self.placed.push((side, kind, at, facing));
+            Some(self.placed.len() as u32)
+        }
+        fn bring(&mut self, side: i32, kind: u16, _: (f32, f32)) -> Option<u32> {
+            self.brought.push((side, kind));
+            None
+        }
+        fn left(&self, _: i32) -> i32 {
+            3
+        }
+        fn destroyed(&self, thing: Option<u32>) -> bool {
+            thing == Some(1)
+        }
+        fn say(&mut self, line: u16) {
+            self.said.push(line);
+        }
+        fn pay(&mut self, side: i32, money: i32) {
+            self.paid.push((side, money));
+        }
+        fn win(&mut self) {
+            self.won = true;
+        }
+    }
+
+    fn text(text: &str) -> Token {
+        Token::Text(text.to_string())
+    }
+
+    #[test]
+    fn a_script_runs_its_ifs_when_they_hold_and_keeps_its_variables() {
+        use Token::{Function as F, Keyword as K, Kind, Speech, Variable as V};
+        let lines = vec![
+            // if (F0() == 0)
+            vec![K(IF), text("("), F(NOW), text("()"), K(EQUAL), text("0)")],
+            // v1 = F18()
+            vec![V(1), K(SET), F(NEW_SIDE), text("()")],
+            // v2 = K139(v1, <kind 5>, F3(), K143(2), 3, 1)
+            vec![
+                V(2),
+                K(SET),
+                K(PLACE),
+                text("("),
+                V(1),
+                text(","),
+                Kind(5),
+                text(","),
+                F(ENEMY_BASE),
+                text("(),"),
+                K(NEGATIVE),
+                text("(2),3,1)"),
+            ],
+            vec![F(PAY), text("("), F(PLAYER), text("(),10000)")],
+            vec![F(SAY), text("("), Speech(642), text(")")],
+            vec![K(END)],
+            // if ((F0() == 49) && (F35(v1) < 5)) bring
+            vec![
+                K(IF),
+                text("(("),
+                F(NOW),
+                text("()"),
+                K(EQUAL),
+                text("49)"),
+                K(AND),
+                text("("),
+                F(LEFT),
+                text("("),
+                V(1),
+                text(")"),
+                K(LESS),
+                text("5))"),
+            ],
+            vec![
+                F(BRING),
+                text("("),
+                V(1),
+                text(","),
+                Kind(9),
+                text(","),
+                F(SCRIPT_POINT),
+                text("(2))"),
+            ],
+            vec![K(END)],
+            vec![K(IF), text("("), F(DESTROYED), text("("), V(2), text("))")],
+            vec![F(WIN), text("("), K(TRUE), text(")")],
+            vec![K(END)],
+        ];
+        let mut script = Script::new(&lines);
+        let mut battle = Written::default();
+        script.run(&mut battle);
+        let cell = crate::battlefield::CELL_SIDE;
+        assert_eq!(
+            battle.placed,
+            [(1, 5, (1000.0 - 2.0 * cell, 1000.0 + 3.0 * cell), 1)]
+        );
+        assert_eq!(battle.paid, [(0, 10000)]);
+        assert_eq!(battle.said, [642]);
+        assert!(battle.won, "the thing it placed is gone");
+        battle.now = 1;
+        script.run(&mut battle);
+        assert_eq!(battle.placed.len(), 1, "only at the start");
+        assert!(battle.brought.is_empty());
+        battle.now = 49;
+        script.run(&mut battle);
+        assert_eq!(battle.brought, [(1, 9)], "with the side it kept");
     }
 }

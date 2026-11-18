@@ -47,10 +47,12 @@ houses, bullets and warheads together make as many.
 
 ### Lines of speech (`0x83`)
 
-The number seems to be the line's place among the sections of the dialogue tables as
-`data\Dialog\Dialog.txt` includes them, `AtreidesDialog.txt` first: 642 and 643, the two
-the start mission plays first, are `KK-M066` and `KK-M068` there, lines of the Atreides
-Mentat. This is not proven: nothing in the script says what the line says.
+The number is 429 more than the line's place in the game's table of what is spoken,
+`E_Output_Pickup.txt` in `data\STRINGS0001.RFD`, counting every line of the file from 0. 642
+is its line 213, `ATstart1`, the Mentat's welcome. The id at the start of that line names its
+recording in `data\Sounds\sounds.txt` (`ATstart1` is `KK-M680E`), and the recording is in a
+dialogue bag under that name without the language's letter: `KK-M680` in the Atreides disc's
+`DIALOG.BAG`. Where 429 comes from is not known; a few numbers land on blank lines.
 
 ## Keywords and functions
 
@@ -67,13 +69,16 @@ Their names are not on the disc. These are what their use in `ATStart.tok` shows
 | `K178` | `+` | `F0() K178 260` |
 | `K180` | `=` | |
 | `K143` | A negative number | `K143(10)` |
-| `K139` | Puts a new object on the map: side, kind, place, tiles across, tiles down, facing | `K139(v0,<ATConYard>,v13,0,0,1)` |
+| `K139` | Puts a new object on the map and gives it: side, kind, place, tiles across, tiles down, facing | `K139(v0,<ATConYard>,v13,0,0,1)` |
 | `K150` | Sets something of a side | `K150(v2,1)` |
 | `K128`, `K131`, `K132`, `K133`, `K156` | Not known | |
 | `F0()` | The battle's time, in updates | compared with 49, 50, 100, 150 … |
 | `F14()` | The player's side | `v0 K180 F14()` |
 | `F18()` | A new side | four of them, the enemy and others |
-| `F3()`, `F4(side)`, `F5(n)`, `F6(side)` | Places on the map: a side's base, the map's numbered entrances | |
+| `F3()` | The enemy's main base: the map's point `Primary` | |
+| `F4(side)`, `F6(side)` | A side's base: the player's at the map's point `Default` | `v13 K180 F4(v0)` |
+| `F5(n)` | The map's point `Script` and the number | `F5(1)` is `Script1` |
+| `F2()` | Asked before the first reinforcements; taken as true | |
 | `F21(side, kind, place)` | Brings a unit of that kind in for the side at a place | reinforcements |
 | `F23(object)` | Whether an object is destroyed | all three of the enemy's main buildings ends the mission |
 | `F35(side)` | How many units a side has left | `F35(v2) K168 0` |
@@ -94,6 +99,21 @@ buzzsaws come in waves by the entrances, and Atreides trikes and Mongooses in an
 Mentat speaks at the start and at updates 430, 490 and 550, and as each wave comes. The
 mission is won when the three Harkonnen main buildings are destroyed.
 
+## Points on the map
+
+A map's `test.xbf` has named areas of named lists of points. Those the scripts use are the
+first point of a list: `Primary` and `Default` in the area `Base`, `Script1` to `Script6` in
+`Mission`, `Script7` on in `MoreScripts`. The Atreides' first map has its `Default` on the
+left, where the script builds their base, and its `Primary` on the right, the Harkonnen's.
+
 ## What we do with them
 
-`src/mission.rs` reads a `.tok` into its lines of tokens. Nothing runs the scripts yet.
+`src/mission.rs` reads a `.tok` into its lines of tokens, and runs them: each line is a
+statement (an `if`, its end, a variable set, or a call), all of them run once an update with
+what is inside an `if` that does not hold left out, as the original's scripts are written to
+be run. The functions and keywords in the table above do what it says; the others do
+nothing yet. The update is taken to be a tenth of a second, which is a guess.
+
+A house's first battle in the campaign runs its start script (`ATStart.tok` for the
+Atreides): the battle starts with nothing but what the script puts down, the sides it makes
+are all the player's enemy, and its lines of speech play off the disc that has them.

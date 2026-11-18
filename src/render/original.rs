@@ -497,6 +497,10 @@ const UPGRADE_ICONS: [(Faction, [(&str, &str); 2]); 3] = [
     ),
 ];
 
+/// What the name of the turret a soldier fires from once dug in has in it.
+const DUG_IN_TURRET: &str = "::1";
+/// How far a gun a soldier sets up moves about at most, in its model's units: it only recoils.
+const SET_UP_GUN_STILL: f32 = 8.0;
 /// What the name of a searchlight's beam has in it.
 const SEARCHLIGHT: &str = "spotlight";
 
@@ -855,6 +859,10 @@ struct Part {
     veils: Vec<Veil>,
     /// Whether it is a searchlight's beam, whose far end lights the ground.
     beam: bool,
+    /// Whether it is the gun a soldier sets up, standing apart from the one he carries: it
+    /// holds the turret of the gun he fires once dug in (`::1`) and stays put but for its recoil,
+    /// and shows only once he is, as a mortar's `Mortorgun01`.
+    set_up: bool,
 }
 
 /// A face drawn over what lies behind it: a light's glow, adding its picture, or a
@@ -1638,6 +1646,17 @@ fn gather(
         lift: !shape.parts.iter().any(|part| part.lift) && object.name.contains("::1"),
         swivel: object.name == SWIVEL,
         beam: object.name.to_ascii_lowercase().contains(SEARCHLIGHT),
+        set_up: object
+            .children
+            .iter()
+            .any(|child| child.name.contains(DUG_IN_TURRET))
+            && object.animation.as_ref().is_some_and(|animation| {
+                let [x, y, z, _] = animation.poses.first().map_or([0.0; 4], |pose| pose[3]);
+                animation.poses.iter().all(|pose| {
+                    let [px, py, pz, _] = pose[3];
+                    (px - x).hypot(py - y).hypot(pz - z) <= SET_UP_GUN_STILL
+                })
+            }),
         muzzle: object
             .name
             .strip_prefix(MUZZLE_MARK)
@@ -2158,6 +2177,7 @@ pub(super) fn draw(canvas: &mut Canvas, unit: &Unit, team: [f32; 3], time: f32) 
         frame,
         slid,
         worlds: pose(shape, unit.tube_pitch, unit.gun_turn, frame),
+        set_up: unit.deployed,
     };
     draw_posed(canvas, shape, &posed, team);
     true
@@ -2171,6 +2191,8 @@ struct Posed {
     frame: usize,
     slid: f32,
     worlds: Vec<[[f32; 4]; 4]>,
+    /// Whether what it sets up is set up, and shows.
+    set_up: bool,
 }
 
 /// Draws a dead soldier with the original's model, as far into its death as it has got, and
@@ -2190,6 +2212,7 @@ pub(super) fn draw_body(canvas: &mut Canvas, body: &Body, team: [f32; 3]) -> boo
         frame,
         slid: 0.0,
         worlds: pose(shape, unit.tube_pitch, unit.gun_turn, frame),
+        set_up: unit.deployed,
     };
     draw_posed(canvas, shape, &posed, team);
     true
@@ -2254,6 +2277,7 @@ pub(super) fn draw_tornado(canvas: &mut Canvas, tornado: &Tornado, time: f32) ->
         frame,
         slid: time * FRAMES_PER_SECOND,
         worlds: pose(shape, 0.0, 0.0, frame),
+        set_up: true,
     };
     draw_posed(canvas, shape, &posed, [0.0; 3]);
     true
@@ -2294,11 +2318,24 @@ fn draw_posed(canvas: &mut Canvas, shape: &Shape, posed: &Posed, team: [f32; 3])
         frame,
         slid,
         ref worlds,
+        set_up,
     } = *posed;
     let pivot = shape.pivot.unwrap_or_default();
     let mut veils = Vec::new();
     let mut model = Model::new(canvas, body);
-    for (part, world) in shape.parts.iter().zip(worlds) {
+    // A part shows if what it is in does, a set-up gun only once set up.
+    let mut shown: Vec<bool> = Vec::with_capacity(shape.parts.len());
+    for part in &shape.parts {
+        let within = part.parent.is_none_or(|parent| shown[parent]);
+        shown.push(within && (set_up || !part.set_up));
+    }
+    for ((part, world), _) in shape
+        .parts
+        .iter()
+        .zip(worlds)
+        .zip(&shown)
+        .filter(|(_, shown)| **shown)
+    {
         let (mut model, from) = if part.head {
             (model.at(head), pivot)
         } else {
@@ -2478,6 +2515,7 @@ mod tests {
             frame: 0,
             slid: 0.0,
             worlds: pose(&shape, 0.0, 0.0, 0),
+            set_up: true,
         };
         let mut canvas = Canvas::default();
         draw_posed(&mut canvas, &shape, &posed, [0.0; 3]);
@@ -2832,6 +2870,37 @@ mod tests {
                 .collect();
             assert!(wind.len() >= 2, "{name}: its two streams of wind");
         }
+    }
+
+    #[test]
+    fn a_mortar_on_the_disc_shows_the_mortar_it_sets_up_only_once_dug_in() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        let mut mortar = Unit::for_test(1000.0, 1000.0, UnitKind::Infantry);
+        mortar.role = Role::OrMortar;
+        let set_up = |unit: &Unit| {
+            shape_of(unit)
+                .unwrap()
+                .parts
+                .iter()
+                .filter(|p| p.set_up)
+                .count()
+        };
+        assert_eq!(set_up(&mortar), 1, "its Mortorgun01");
+        let mut kindjal = mortar;
+        kindjal.role = Role::AtKindjal;
+        assert_eq!(set_up(&kindjal), 0, "a Kindjal carries the gun it sets up");
+        let drawn = |unit: &Unit| {
+            let mut canvas = Canvas::default();
+            draw(&mut canvas, unit, [1.0; 3], 0.0);
+            canvas.objects.len()
+        };
+        let walking = drawn(&mortar);
+        mortar.deployed = true;
+        assert!(drawn(&mortar) > walking, "set up, it stands beside him");
     }
 
     #[test]

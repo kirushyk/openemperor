@@ -2037,6 +2037,36 @@ impl mission::Battle for Game {
         self.decide(Outcome::Victory);
     }
 
+    fn lose(&mut self) {
+        self.decide(Outcome::Defeat);
+    }
+
+    /// A side's are what the script put down for it, and the someone's also what the map has
+    /// of nobody the script made and not nobody's; a construction yard is an MCV dug in, and an
+    /// MCV one that is not.
+    fn count(&self, side: i32, kind: u16) -> i32 {
+        let Some(name) = campaign::kind_name(kind) else {
+            return 0;
+        };
+        let Some((role, _)) = Role::named(name) else {
+            return 0;
+        };
+        let yard = name.ends_with(CONSTRUCTION_YARD);
+        let of_side = |unit: &Unit| match side {
+            0 => unit.owner == 0,
+            _ => {
+                self.script_side_of.contains(&(unit.id, side))
+                    || side == mission::SOMEONE_SIDE
+                        && self.script_side(unit).is_none()
+                        && unit.owner != units::NEUTRAL
+            }
+        };
+        let counted = self.units.iter().filter(|u| {
+            u.alive && u.role == role && (role != Role::Mcv || u.deployed == yard) && of_side(u)
+        });
+        counted.count() as i32
+    }
+
     fn scene(&mut self, playing: bool) {
         self.scene_playing = playing;
     }
@@ -4345,12 +4375,12 @@ impl Game {
             }
         }
         // A battle for a territory runs its own script, where the disc has one for the phase,
-        // and the Heighliner's its own.
+        // and one past the territories its own.
         let script = match mission {
             Mission::Attack(at) => campaign::mission_script(house, phase, false, at),
             Mission::Defend(at, _) => campaign::mission_script(house, phase, true, at),
-            Mission::Heighliner => campaign::heighliner_script(house),
-            _ => None,
+            Mission::Start => None,
+            _ => campaign::battle_script(house, mission),
         };
         if let Some(lines) = script {
             self.start_script(lines);
@@ -4367,10 +4397,12 @@ impl Game {
         self.script_sides = 0;
         self.script_side_of.clear();
         self.script_enemies.clear();
+        // What the map has standing is there before the script first looks: its palace, say,
+        // which a script wins on once it is gone.
+        self.place_map_objects();
         let mut script = Script::new(lines);
         script.run(self);
         self.script = Some(script);
-        self.place_map_objects();
         units::join_walls(&mut self.units);
         if let Some(&Unit { x, z, .. }) = self.units.iter().find(|u| u.owner == 0) {
             self.home = (x, z);

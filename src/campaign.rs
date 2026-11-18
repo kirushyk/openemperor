@@ -289,21 +289,88 @@ pub fn mission_script(
         .map(|(_, script)| script.as_slice())
 }
 
-/// Each house's Heighliner battle's script, by its name on the disc.
-const HEIGHLINER_SCRIPTS: [(Faction, &str); 3] = [
-    (Faction::Atreides, "Atreides Heighliner Mission"),
-    (Faction::Harkonnen, "HHK Heighliner Mission"),
-    (Faction::Ordos, "Ordos Heighliner Mission"),
-];
+/// The scripts of the battles past Arrakis' territories, each a house's, by their names on
+/// the disc: the Heighliner, the homeworlds' defences, the Harkonnen civil war's sides (its
+/// defence on the homeworld for Copec, its attack for Gunseng), the assaults on the others'
+/// homeworlds and the last battle.
+const BATTLE_SCRIPTS: [(Faction, Mission, &str); 16] = {
+    use Faction::{Atreides, Harkonnen, Ordos};
+    [
+        (Atreides, Mission::Heighliner, "Atreides Heighliner Mission"),
+        (Harkonnen, Mission::Heighliner, "HHK Heighliner Mission"),
+        (Ordos, Mission::Heighliner, "Ordos Heighliner Mission"),
+        (Atreides, Mission::HomeDefence, "DAT Save The Duke"),
+        (Ordos, Mission::HomeDefence, "Ordos Homeworld Defense"),
+        (
+            Harkonnen,
+            Mission::CivilWar(Side::Copec),
+            "HHK Civil War Defence Mission",
+        ),
+        (
+            Harkonnen,
+            Mission::CivilWar(Side::Gunseng),
+            "HHK Civil War Attack Mission",
+        ),
+        (
+            Atreides,
+            Mission::Homeworld(Harkonnen),
+            "Harkonnen homeworld assault_AT",
+        ),
+        (
+            Ordos,
+            Mission::Homeworld(Harkonnen),
+            "Harkonnen homeworld assault_OR",
+        ),
+        (
+            Atreides,
+            Mission::Homeworld(Ordos),
+            "Ordos homeworld assault _Atreides",
+        ),
+        (
+            Harkonnen,
+            Mission::Homeworld(Ordos),
+            "Ordos homeworld assault",
+        ),
+        (
+            Harkonnen,
+            Mission::Homeworld(Atreides),
+            "T36 Atreides Homeworld Assault",
+        ),
+        (
+            Ordos,
+            Mission::Homeworld(Atreides),
+            "T36 Atreides Homeworld Assault_OR",
+        ),
+        (Atreides, Mission::Final, "ATENDMission"),
+        (Harkonnen, Mission::Final, "HKENDMission"),
+        (Ordos, Mission::Final, "ORENDMission"),
+    ]
+};
 
-/// The script of a house's Heighliner battle, if the disc has it.
-pub fn heighliner_script(house: Faction) -> Option<&'static [Vec<Token>]> {
-    let (_, name) = HEIGHLINER_SCRIPTS.iter().find(|(of, _)| *of == house)?;
+/// The script of a house's battle past the territories, if the disc has it.
+pub fn battle_script(house: Faction, mission: Mission) -> Option<&'static [Vec<Token>]> {
+    let &(.., name) = BATTLE_SCRIPTS
+        .iter()
+        .find(|&&(of, battle, _)| of == house && battle == mission)?;
     data()?
         .mission_scripts
         .iter()
         .find(|(listed, _)| listed == name)
         .map(|(_, script)| script.as_slice())
+}
+
+/// The phase a battle past the territories is fought in.
+fn phase_of(mission: Mission) -> u32 {
+    match mission {
+        Mission::Heighliner => HEIGHLINER_PHASE,
+        Mission::HomeDefence => HOME_DEFENCE_PHASE,
+        Mission::Homeworld(_) => HOMEWORLD_PHASE,
+        Mission::Final => FINAL_PHASE,
+        Mission::CivilWar(Side::Copec) => COPEC_PHASE,
+        Mission::CivilWar(Side::Gunseng) => GUNSENG_PHASE,
+        Mission::Start => START_PHASE,
+        Mission::Attack(_) | Mission::Defend(..) => FIRST_PHASE,
+    }
 }
 
 /// Whether what ends a territory's script's name says whom the battle is with, in capitals
@@ -314,16 +381,16 @@ fn names_whom(rest: &str) -> bool {
 
 /// The house, the phase and the battle of a script, by its name: `ATP1M7FR` is the
 /// Atreides' attack on territory 7 in phase 1, one of a defence fought against who held the
-/// territory at first; `Atreides Heighliner Mission` is theirs on the Heighliner, and
-/// `ATStart` their first battle.
+/// territory at first; `Atreides Heighliner Mission` is theirs on the Heighliner, as
+/// `BATTLE_SCRIPTS` has those past the territories, and `ATStart` their first battle.
 pub fn named_mission(name: &str) -> Option<(Faction, u32, Mission)> {
-    // The Heighliner's names have spaces, which may be left out on a command line.
+    // Their names may have spaces, which may be left out on a command line.
     let squeezed = |name: &str| name.replace(' ', "").to_lowercase();
-    if let Some(&(house, _)) = HEIGHLINER_SCRIPTS
+    if let Some(&(house, mission, _)) = BATTLE_SCRIPTS
         .iter()
-        .find(|(_, script)| squeezed(script) == squeezed(name))
+        .find(|(.., script)| squeezed(script) == squeezed(name))
     {
-        return Some((house, HEIGHLINER_PHASE, Mission::Heighliner));
+        return Some((house, phase_of(mission), mission));
     }
     if let Some(&(house, _)) = START_SCRIPTS.iter().find(|(_, script)| {
         script
@@ -364,7 +431,7 @@ pub fn named_mission(name: &str) -> Option<(Faction, u32, Mission)> {
 }
 
 /// The names of the battles' scripts on the disc that `named_mission` knows: the houses'
-/// first battles', the territories' and the Heighliner's.
+/// first battles', the territories' and those past them.
 pub fn mission_names() -> Vec<&'static str> {
     data().map_or_else(Vec::new, |data| {
         data.mission_scripts

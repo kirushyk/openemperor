@@ -114,10 +114,24 @@ fn list_missions() {
         eprintln!("No missions found: is the game's first disc mounted?");
         std::process::exit(1);
     }
+    // Quoted where it has spaces, as a shell wants it given.
+    let shown = |name: &str| {
+        if name.contains(' ') {
+            format!("\"{name}\"")
+        } else {
+            name.to_string()
+        }
+    };
+    let width = names
+        .iter()
+        .map(|name| shown(name).len())
+        .max()
+        .unwrap_or(0);
     for name in names {
         if let Some((house, phase, mission)) = campaign::named_mission(name) {
             let title = campaign::Campaign::new(house, 1).title(mission);
-            println!("{name:<12} {}, phase {phase}: {title}", house.label());
+            let name = shown(name);
+            println!("{name:<width$}  {}, phase {phase}: {title}", house.label());
         }
     }
 }

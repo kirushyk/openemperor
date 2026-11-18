@@ -64,6 +64,7 @@ Their names are not on the disc. These are what their use in `ATStart.tok` shows
 | `K165` … `K167` | `if (…)` and its end | `K165(F0() K168 550)` … `K167` |
 | `K168` | `==` | |
 | `K171` | A comparison, `<` it seems | `F35(F14()) K171 5` |
+| `K170`, `K172`, `K173` | `>=`, `>`, `<=` | `F37(F14(),<ATInfantry>) K170 6`: the tutorial's six infantry made |
 | `K174`, `K175` | `&&`, `\|\|` | |
 | `K176`, `K177` | `FALSE`, `TRUE` | |
 | `K178` | `+` | `F0() K178 260` |
@@ -86,7 +87,9 @@ Their names are not on the disc. These are what their use in `ATStart.tok` shows
 | `F45(line)` | Plays a line of speech | |
 | `F60(a, b)` | Makes side `a` an enemy of `b` | given both ways |
 | `F62(side, n)` | Gives a side money | `F62(v0,10000)` |
-| `F83`, `F84` | End the mission, won it seems | after the three buildings are destroyed |
+| `F83(truth)` | Ends the battle, won if true and lost if false | `F83(TRUE)` once the enemy's palace and yards are gone |
+| `F84()` | Not known; follows `F83` | |
+| `F37(side, kind)` | How many things of a kind a side has; for `F16()`, the map's own too | `F37(F16(),<HKPalace>) K168 0` |
 | `F8()` | Where reinforcements come in; taken as the player's base | `F21(F14(),<FRFremen>,F8())` |
 | `F11(place)` | A place near one; taken as that place | `F11(F12(F16()))` |
 | `F12(side)` | Where a side's units arrive; taken as its base | `F21(F14(),<ATMongoose>,F12(F14()))` |

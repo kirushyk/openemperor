@@ -114,7 +114,12 @@ const IF: u16 = 165;
 const ELSE: u16 = 166;
 const END: u16 = 167;
 const EQUAL: u16 = 168;
+/// The comparisons beside `==` and `<`, as the tutorial's checks of how many have been made
+/// and the end missions' of health use them: at least, more than, at most.
+const AT_LEAST: u16 = 170;
 const LESS: u16 = 171;
+const MORE: u16 = 172;
+const AT_MOST: u16 = 173;
 const AND: u16 = 174;
 const OR: u16 = 175;
 const FALSE: u16 = 176;
@@ -135,7 +140,10 @@ const DESTROYED: u16 = 23;
 const LEFT: u16 = 35;
 const SAY: u16 = 45;
 const PAY: u16 = 62;
+/// Ends the battle, won if given true and lost if false.
 const WIN: u16 = 83;
+/// How many of a side's things of a kind there are.
+const COUNT: u16 = 37;
 /// Where reinforcements come in: given to the player's mostly.
 const ENTRANCE: u16 = 8;
 /// A place near one given: taken as that place.
@@ -250,6 +258,12 @@ pub trait Battle {
     fn pay(&mut self, side: i32, money: i32);
     /// The player has won.
     fn win(&mut self);
+    /// The player has lost.
+    fn lose(&mut self) {}
+    /// How many things of a kind a side has standing.
+    fn count(&self, _side: i32, _kind: u16) -> i32 {
+        0
+    }
     /// Where a thing is, if it is still there.
     fn place_of(&self, _thing: Option<u32>) -> Option<(f32, f32)> {
         None
@@ -385,6 +399,9 @@ impl Script {
                 match *operator {
                     EQUAL => truth(left == right || left.number() == right.number()),
                     LESS => truth(left.number() < right.number()),
+                    AT_LEAST => truth(left.number() >= right.number()),
+                    MORE => truth(left.number() > right.number()),
+                    AT_MOST => truth(left.number() <= right.number()),
                     AND => truth(left.number() != 0 && right.number() != 0),
                     OR => truth(left.number() != 0 || right.number() != 0),
                     _ => Value::Number(left.number() + right.number()),
@@ -450,9 +467,17 @@ impl Script {
                         Value::Number(0)
                     }
                     Piece::Function(WIN) => {
-                        battle.win();
+                        if arguments.is_empty() || number(0) != 0 {
+                            battle.win();
+                        } else {
+                            battle.lose();
+                        }
                         Value::Number(0)
                     }
+                    Piece::Function(COUNT) => match kind(1) {
+                        Some(kind) => Value::Number(battle.count(number(0), kind)),
+                        None => Value::Number(0),
+                    },
                     Piece::Function(ENTRANCE) => place(battle.base(0)),
                     Piece::Function(NEAR) => at(0),
                     Piece::Function(ARRIVAL) => place(battle.base(number(0))),
@@ -642,7 +667,7 @@ fn binding(keyword: u16) -> Option<u8> {
     match keyword {
         OR => Some(1),
         AND => Some(2),
-        EQUAL | LESS => Some(3),
+        EQUAL | LESS | AT_LEAST | MORE | AT_MOST => Some(3),
         PLUS => Some(4),
         _ => None,
     }
@@ -724,6 +749,7 @@ mod tests {
         health: Vec<(Option<u32>, i32)>,
         scenes: Vec<bool>,
         shots: Vec<Shot>,
+        lost: bool,
     }
 
     impl Battle for Written {
@@ -782,6 +808,12 @@ mod tests {
         fn scene(&mut self, playing: bool) {
             self.scenes.push(playing);
         }
+        fn lose(&mut self) {
+            self.lost = true;
+        }
+        fn count(&self, side: i32, kind: u16) -> i32 {
+            side * 10 + i32::from(kind)
+        }
         fn camera(&mut self, shot: Shot) {
             self.shots.push(shot);
         }
@@ -789,6 +821,47 @@ mod tests {
 
     fn text(text: &str) -> Token {
         Token::Text(text.to_string())
+    }
+
+    #[test]
+    fn a_battle_ends_won_or_lost_as_told_and_counts_a_sides_things_of_a_kind() {
+        use Token::{Function as F, Keyword as K, Kind, Variable as V};
+        let mut won = Written::default();
+        Script::new(&[vec![F(WIN), text("("), K(TRUE), text(")")]]).run(&mut won);
+        assert!(won.won && !won.lost);
+        let mut lost = Written::default();
+        Script::new(&[vec![F(WIN), text("("), K(FALSE), text(")")]]).run(&mut lost);
+        assert!(lost.lost && !lost.won);
+        // v1 = F37(2, <kind 4>)
+        let lines = vec![vec![
+            V(1),
+            K(SET),
+            F(COUNT),
+            text("(2,"),
+            Kind(4),
+            text(")"),
+        ]];
+        let mut script = Script::new(&lines);
+        script.run(&mut Written::default());
+        assert_eq!(script.variables[1], Value::Number(24));
+    }
+
+    #[test]
+    fn the_comparisons_beside_equal_and_less_are_at_least_more_and_at_most() {
+        use Token::{Keyword as K, Variable as V};
+        let compare = |left: &str, operator: u16, right: &str| {
+            let lines = vec![vec![V(1), K(SET), text(left), K(operator), text(right)]];
+            let mut script = Script::new(&lines);
+            script.run(&mut Written::default());
+            script.variables[1]
+        };
+        let truth = |holds: bool| Value::Number(i32::from(holds));
+        for (left, right) in [("1", "1"), ("2", "1"), ("1", "2")] {
+            let (a, b): (i32, i32) = (left.parse().unwrap(), right.parse().unwrap());
+            assert_eq!(compare(left, AT_LEAST, right), truth(a >= b));
+            assert_eq!(compare(left, MORE, right), truth(a > b));
+            assert_eq!(compare(left, AT_MOST, right), truth(a <= b));
+        }
     }
 
     #[test]

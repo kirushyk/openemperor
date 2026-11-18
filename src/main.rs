@@ -61,7 +61,30 @@ const MUSIC_BAG: &str = "INSTALL/DATA/MUSIC/music.bag";
 #[cfg(target_os = "macos")]
 const MENU_TRACK: &str = "IN_Menu";
 
+/// What `--help` prints.
+const USAGE: &str = "\
+Usage: openemperor [OPTIONS] [MOVIE]
+
+Plays Emperor: Battle for Dune with the original game's data, read off its discs mounted
+under /Volumes (EMPEROR1 installs it; EMPEROR2 to EMPEROR4 add each house's movies, music
+and speech).
+
+Arguments:
+  [MOVIE]            A movie to play in place of the disc's intro
+
+Options:
+  --campaign-maps    List the campaign's maps among the skirmish's
+  -h, --help         Print this help and quit
+";
+
 fn main() {
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--help" || arg == "-h")
+    {
+        print!("{USAGE}");
+        return;
+    }
     let (mut platform, width, height) = match platform::Platform::new(render::TITLE) {
         Ok(opened) => opened,
         Err(message) => {

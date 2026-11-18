@@ -1775,10 +1775,11 @@ fn gather(
         .filter_map(|face| {
             let (layer, glows) = match face.texture.and_then(|n| pictures.get(n).copied()) {
                 Some(Picture::Glow { layer, .. }) if lit => (*layer, true),
-                // A light kept out of sight as a mark glows with its picture, marked to glow
-                // or not, as a windtrap's front and back panels do.
+                // A light kept out of sight as a mark, painted with a picture not marked to
+                // glow, shows it unlit and covering what is behind, as a windtrap's front and
+                // back panels do.
                 Some(Picture::Painted { layer, .. }) if lit && is_marker(&object.name) => {
-                    (*layer, true)
+                    (*layer, false)
                 }
                 Some(Picture::SeeThrough { layer, .. }) if shown => (*layer, false),
                 _ => return None,
@@ -3187,7 +3188,7 @@ mod tests {
     }
 
     #[test]
-    fn a_windtraps_front_and_back_panels_on_the_disc_glow() {
+    fn a_windtraps_front_and_back_panels_on_the_disc_show_unlit_and_hide_what_is_behind() {
         let disc = Path::new("/Volumes/EMPEROR1");
         let Some(index) = archive::from_cabinet(&disc.join(CABINET), INDEX) else {
             return;
@@ -3200,12 +3201,18 @@ mod tests {
         ] {
             let mut pictures = HashMap::new();
             let shape = read_shape(&archive, name, &mut pictures).unwrap();
-            let panels = shape
+            let panels: Vec<&Part> = shape
                 .parts
                 .iter()
-                .filter(|part| part.beam && part.veils.iter().any(|veil| veil.glows))
-                .count();
-            assert!(panels >= 2, "{name}: {panels} glowing panels");
+                .filter(|part| part.beam && !part.veils.is_empty())
+                .collect();
+            assert!(panels.len() >= 2, "{name}: {} panels", panels.len());
+            assert!(
+                panels
+                    .iter()
+                    .all(|part| part.veils.iter().all(|veil| !veil.glows)),
+                "{name}: they cover, not add"
+            );
         }
     }
 

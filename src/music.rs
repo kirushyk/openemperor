@@ -41,6 +41,9 @@ impl Track {
     pub const SIXTEEN_BITS: u32 = 4;
     /// Packed four bits to a sample, as IMA ADPCM.
     pub const PACKED: u32 = 8;
+    /// Kept as MP3, its first frame's head in place of a block's size: most of the
+    /// Mentat's lines on the house discs are.
+    pub const MP3: u32 = 32;
 
     /// Where FFmpeg finds this track inside the bag at `bag`.
     pub fn location(&self, bag: &Path) -> String {

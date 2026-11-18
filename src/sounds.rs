@@ -7,6 +7,7 @@ use crate::archive;
 use crate::game::{Faction, Said, Speech};
 use crate::music::{self, Track};
 use crate::units::{self, Role};
+use crate::video;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -260,6 +261,14 @@ pub fn reply(said: Said, speakers: &[(Role, Faction)], pick: usize) -> Option<Li
 /// The sound of this name out of the bag.
 fn read_line(sounds: &Sounds, name: &str) -> Option<Line> {
     let track = sounds.tracks.get(name)?;
+    if track.format & Track::MP3 != 0 {
+        let samples = video::decode_sound(&track.location(&sounds.bag));
+        return (!samples.is_empty()).then_some(Line {
+            samples,
+            channels: video::SOUND_CHANNELS,
+            rate: video::SOUND_RATE,
+        });
+    }
     let mut bytes = vec![0; track.size as usize];
     let mut bag = File::open(&sounds.bag).ok()?;
     bag.seek(SeekFrom::Start(u64::from(track.offset))).ok()?;
@@ -611,11 +620,19 @@ mod tests {
         );
         let house = Path::new("/Volumes/EMPEROR2").join(HOUSE_DIALOG_BAG);
         if let Some(tracks) = music::list(&house) {
-            assert!(
-                tracks
-                    .iter()
-                    .any(|t| t.name.eq_ignore_ascii_case("KK-M680"))
-            );
+            let sounds = Sounds {
+                bag: house,
+                tracks: tracks
+                    .into_iter()
+                    .map(|track| (track.name.to_lowercase(), track))
+                    .collect(),
+                sections: HashMap::new(),
+                read: Mutex::default(),
+            };
+            // Kept as MP3, the welcome lasts seconds, not the blink raw bytes would.
+            let line = read_line(&sounds, "kk-m680").unwrap();
+            let seconds = line.samples.len() as f32 / (line.channels * line.rate) as f32;
+            assert!(seconds > 2.0, "{seconds} seconds");
         }
     }
 }

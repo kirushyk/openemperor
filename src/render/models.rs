@@ -129,6 +129,15 @@ impl Watchers {
                 && (facing(points, normals, self.eye, true)
                     || self.mirrored && facing(points, normals, [x, -y, z], true))
     }
+
+    /// Whether the camera, or its mirror image, sees the front of a triangle with these
+    /// corners and normals. With no camera, nothing is seen to be hidden.
+    fn see_front(&self, points: &[[f32; 3]; 3], normals: &[[f32; 3]; 3]) -> bool {
+        let [x, y, z] = self.eye;
+        !self.camera
+            || facing(points, normals, self.eye, true)
+            || self.mirrored && facing(points, normals, [x, -y, z], true)
+    }
 }
 
 /// Whether a triangle with these corners and normals faces toward a point, or toward a way
@@ -363,6 +372,14 @@ impl<'a> Model<'a> {
             fine: self.fine,
             place,
         }
+    }
+
+    /// Whether the front of a triangle of the model, with these corners and normals, is seen, as
+    /// it must be for one that shows only its front. With no one watching, it is.
+    pub(super) fn sees_front(&self, points: [[f32; 3]; 3], normals: [[f32; 3]; 3]) -> bool {
+        let points = points.map(|p| self.place.point(p));
+        let normals = normals.map(|n| self.place.normal(n));
+        self.watchers.is_none_or(|w| w.see_front(&points, &normals))
     }
 
     /// How many sides a round part has, fewer for a model made with less detail.

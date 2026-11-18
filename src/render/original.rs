@@ -911,6 +911,7 @@ struct Part {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Veil {
     points: [[f32; 3]; 3],
+    normals: [[f32; 3]; 3],
     layer: usize,
     uv: [[f32; 2]; 3],
     glows: bool,
@@ -1665,6 +1666,7 @@ fn gather(
             };
             Some(Veil {
                 points: face.corners.map(|corner| object.vertices[corner].position),
+                normals: face.corners.map(|corner| object.vertices[corner].normal),
                 layer,
                 uv: face.uv,
                 glows,
@@ -2392,9 +2394,18 @@ fn draw_posed(canvas: &mut Canvas, shape: &Shape, posed: &Posed, team: [f32; 3])
         let slide = part.slide.map(|step| (step * slid).fract());
         let place = if part.head { head } else { body };
         for veil in &part.veils {
+            let points = veil.points.map(|p| {
+                let at = to_place(point(world, p));
+                std::array::from_fn(|i| at[i] - from[i])
+            });
+            // What is seen through shows only its front, as a tornado's funnel does; a glow
+            // shows from both sides.
+            let normals = veil.normals.map(|n| to_place(normal(world, n)));
+            if !veil.glows && !model.sees_front(points, normals) {
+                continue;
+            }
             veils.extend((0..3).map(|n| {
-                let at = to_place(point(world, veil.points[n]));
-                let [x, y, z] = place.point(std::array::from_fn(|i| at[i] - from[i]));
+                let [x, y, z] = place.point(points[n]);
                 let [u, v] = veil.uv[n];
                 WorldVertex {
                     picture: [u + slide[0], v + slide[1], veil.layer as f32],
@@ -2574,6 +2585,23 @@ mod tests {
                 .all(|corner| corner.level == SEEN_THROUGH && corner.picture[2] == 7.0)
         );
         assert!(canvas.decals.iter().any(|corner| corner.y == 900.0));
+        // Seen through, it shows only its front: from one side of it, not from the other.
+        let seen_from = |x: f32| {
+            let mut canvas = Canvas {
+                watchers: Some(super::super::models::Watchers {
+                    eye: [x, 0.0, 0.0],
+                    sun: [0.0, 1.0, 0.0],
+                    camera: true,
+                    mirrored: false,
+                }),
+                ..Canvas::default()
+            };
+            draw_posed(&mut canvas, &shape, &posed, [0.0; 3]);
+            canvas.decals.len()
+        };
+        let mut sides = [seen_from(-1000.0), seen_from(1000.0)];
+        sides.sort();
+        assert_eq!(sides, [0, 3]);
         // Without the disc's models there is none to draw, and ours is drawn.
         let terrain = Terrain::open_with_cliff(0.0, 2715.0, 271.5);
         let mut combat = crate::weapons::Combat::default();

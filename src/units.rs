@@ -5065,6 +5065,38 @@ pub fn can_run_over(squasher: &Unit, victim: &Unit, teams: &[usize]) -> bool {
         && are_enemies(teams, squasher.owner, victim.owner)
 }
 
+/// How near an enemy soldier has to be for a machine that crushes to go and drive over him
+/// rather than stand and fire: four tiles, the original's units.
+pub const RUN_DOWN_REACH: f32 = 4.0 * CELL_SIDE;
+
+/// Sends machines that crush, standing with nothing to do, to drive over the nearest enemy
+/// soldier close by: quicker than shooting a few of them down one by one. Harvesters and
+/// MCVs keep to their work.
+fn run_down_the_near(units: &mut [Unit], teams: &[usize]) {
+    for i in 0..units.len() {
+        let unit = units[i];
+        if !unit.alive
+            || unit.kind != UnitKind::Vehicle
+            || matches!(unit.role, Role::Harvester | Role::Mcv)
+            || unit.target.is_some()
+            || unit.is_moving()
+            || unit.deployed
+            || unit.theft.is_some()
+        {
+            continue;
+        }
+        let away = |u: &Unit| (u.x - unit.x).hypot(u.z - unit.z);
+        let prey = units
+            .iter()
+            .filter(|u| can_run_over(&unit, u, teams) && away(u) <= RUN_DOWN_REACH)
+            .min_by(|a, b| away(a).total_cmp(&away(b)));
+        if let Some(prey) = prey {
+            units[i].target = Some(Target::RunOver(prey.id));
+            units[i].reset_progress();
+        }
+    }
+}
+
 /// Sends repair vehicles with nothing to do to the nearest hurt friend close by.
 fn rush_to_the_hurt(units: &mut [Unit], teams: &[usize]) {
     /// How far off a repair vehicle notices a friend that is hurt.
@@ -6735,6 +6767,7 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
     tend_pads(units, terrain, dt);
     alert_landers(units, teams);
     rush_to_the_hurt(units, teams);
+    run_down_the_near(units, teams);
     keep_guard(units, teams);
     chase_targets(units, terrain, teams);
     // Spheres only start to overlap when something moves.
@@ -6997,15 +7030,33 @@ mod tests {
 
     #[test]
     fn a_vehicle_standing_still_squashes_nobody() {
+        // A soldier who has come right up against it is not squashed by its touch alone.
         let mut units = [
             unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Vehicle),
-            enemy_at(MAP_MIDDLE_X - 135.8, 2715.0, UnitKind::Infantry),
+            enemy_at(MAP_MIDDLE_X - 9.05, 2715.0, UnitKind::Infantry),
         ];
-        units[1].destination = (MAP_MIDDLE_X, 2715.0);
-        for _ in 0..100 {
-            advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
-        }
+        squash(&mut units, &TWO_SIDES);
         assert!(units[1].alive);
+    }
+
+    #[test]
+    fn a_machine_that_crushes_drives_over_a_soldier_close_by_rather_than_shoot_him() {
+        let near = |role: Role, away: f32| {
+            let mut tank = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Vehicle);
+            tank.role = role;
+            let soldier = enemy_at(MAP_MIDDLE_X + away, 2715.0, UnitKind::Infantry);
+            let mut units = [tank, soldier];
+            for _ in 0..100 {
+                advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
+            }
+            units[1].alive
+        };
+        assert!(!near(Role::HkAssault, 90.5), "run over");
+        assert!(
+            near(Role::HkAssault, RUN_DOWN_REACH + 90.5),
+            "too far to go after"
+        );
+        assert!(near(Role::AtTrike, 90.5), "a sand bike does not crush");
     }
 
     #[test]

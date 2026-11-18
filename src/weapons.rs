@@ -2815,9 +2815,14 @@ fn answer_attacker(units: &mut [Unit], victim: usize, attacker_id: u32, teams: &
     if !unit.can_catch(attacker) {
         return;
     }
-    if unit.can_attack(attacker, teams) {
+    // A soldier close by is sooner driven over than shot at, by what crushes.
+    let near = (attacker.x - unit.x).hypot(attacker.z - unit.z) <= crate::units::RUN_DOWN_REACH;
+    let runs_over = crate::units::can_run_over(&unit, attacker, teams);
+    if runs_over && near {
+        units[victim].target = Some(Target::RunOver(attacker_id));
+    } else if unit.can_attack(attacker, teams) {
         units[victim].target = Some(Target::Unit(attacker_id));
-    } else if crate::units::can_run_over(&unit, attacker, teams) {
+    } else if runs_over {
         units[victim].target = Some(Target::RunOver(attacker_id));
     }
 }
@@ -3367,6 +3372,23 @@ mod tests {
         let attacker = Shooter::of(&by_tank[1]);
         hit(&mut by_tank, 0, WeaponKind::Cannon, attacker, &TEAMS);
         assert_eq!(by_tank[0].target, None, "it cannot run over a tank");
+    }
+
+    #[test]
+    fn a_tank_shot_at_by_a_soldier_close_by_drives_over_him_and_fires_back_at_one_far_off() {
+        // Armed with a cannon, and quick enough to catch him.
+        let mut near = fixer_under_fire();
+        near[0].weapon = WeaponKind::Cannon;
+        near[1].x = 90.5;
+        let attacker = Shooter::of(&near[1]);
+        hit(&mut near, 0, WeaponKind::Bullet, attacker, &TEAMS);
+        assert_eq!(near[0].target, Some(Target::RunOver(2)));
+
+        let mut far = fixer_under_fire();
+        far[0].weapon = WeaponKind::Cannon;
+        let attacker = Shooter::of(&far[1]);
+        hit(&mut far, 0, WeaponKind::Bullet, attacker, &TEAMS);
+        assert_eq!(far[0].target, Some(Target::Unit(2)));
     }
 
     #[test]

@@ -47,12 +47,16 @@ houses, bullets and warheads together make as many.
 
 ### Lines of speech (`0x83`)
 
-The number is 429 more than the line's place in the game's table of what is spoken,
-`E_Output_Pickup.txt` in `data\STRINGS0001.RFD`, counting every line of the file from 0. 642
-is its line 213, `ATstart1`, the Mentat's welcome. The id at the start of that line names its
+The number is 502 more than the line's place among the entries of the `MissionMessages`
+sections of the game's table of what is spoken, `E_Output_Pickup.txt` in
+`data\STRINGS0001.RFD`: only those sections count, each from its `MissionMessages` line to its
+`[END]`, and in them only lines with an id, not blank lines or comments. The briefings and
+debriefings before each house's messages do not count, which is why counting every line of
+the file only fitted the Atreides' first mission. 642 is `ATstart1`, the Mentat's welcome, 646
+`ATtutorial1`, 901 `HKstart1` and 1098 `ORstart1`. The id at the start of that line names its
 recording in `data\Sounds\sounds.txt` (`ATstart1` is `KK-M680E`), and the recording is in a
 dialogue bag under that name without the language's letter: `KK-M680` in the Atreides disc's
-`DIALOG.BAG`. Where 429 comes from is not known; a few numbers land on blank lines.
+`DIALOG.BAG`. Numbers below 502 name something else, not known yet.
 
 ## Keywords and functions
 

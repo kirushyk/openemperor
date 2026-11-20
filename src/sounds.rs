@@ -18,13 +18,18 @@ const CABINET: &str = "INSTALL/Game1.cab";
 const BAG: &str = "INSTALL/DATA/SFX/AUDIO.BAG";
 /// The bag of what the battlefield says to the player, on the disc that installs the game.
 const DIALOG_BAG: &str = "INSTALL/DATA/DIALOG/DIALOG.BAG";
-/// The table of what is spoken, in the game's text: a mission's script names a line by the
-/// place of its line in it, the first being `FIRST_SPOKEN`. Its names are those of the
-/// recordings of `sounds.txt`, whose names in the bags leave off the language's letter.
+/// The table of what is spoken, in the game's text: a mission's script names a line by its
+/// place among the entries of the table's `MISSION_MESSAGES` sections, the first being
+/// `FIRST_SPOKEN`; blank lines, comments, briefings and debriefings are not counted. Its names
+/// are those of the recordings of `sounds.txt`, whose names in the bags leave off the
+/// language's letter.
 const TEXT_INDEX: &str = "\\data\\STRINGS0001.RFH";
 const TEXT_DATA: &str = "\\data\\STRINGS0001.RFD";
 const SPOKEN: &str = "E_Output_Pickup.txt";
-const FIRST_SPOKEN: u16 = 429;
+const FIRST_SPOKEN: u16 = 502;
+/// What the table's sections of what missions say start with, and what every section ends with.
+const MISSION_MESSAGES: &str = "MissionMessages";
+const SECTION_END: &str = "[END]";
 const RECORDINGS: &str = "\\data\\Sounds\\sounds.txt";
 const LANGUAGE: char = 'E';
 /// A house disc's bag of what is said in its missions.
@@ -174,8 +179,9 @@ fn spoken_lines(cabinet: &Path) -> Option<Vec<Option<String>>> {
     Some(recorded(&spoken, &String::from_utf8_lossy(&recordings)))
 }
 
-/// The recording of each line of a table of what is spoken, by its name in `sounds.txt`'s
-/// list of names and recordings, without the language's letter.
+/// The recording of each entry of a table of what is spoken that a mission's script can name,
+/// by its name in `sounds.txt`'s list of names and recordings, without the language's letter:
+/// the entries of its sections of what missions say, in order.
 fn recorded(spoken: &str, recordings: &str) -> Vec<Option<String>> {
     let recording = |id: &str| {
         recordings.lines().find_map(|line| {
@@ -186,12 +192,20 @@ fn recorded(spoken: &str, recordings: &str) -> Vec<Option<String>> {
             })
         })
     };
+    let mut inside = false;
     spoken
         .lines()
-        .map(|line| {
-            let (id, _) = line.split_once('\t')?;
-            let id = id.trim();
-            if id.is_empty() { None } else { recording(id) }
+        .map(|line| line.split('\t').next().unwrap_or_default().trim())
+        .filter(|id| !id.is_empty() && !id.starts_with(';'))
+        .filter_map(|id| {
+            if id.eq_ignore_ascii_case(MISSION_MESSAGES) {
+                inside = true;
+            } else if id.eq_ignore_ascii_case(SECTION_END) {
+                inside = false;
+            } else if inside {
+                return Some(recording(id));
+            }
+            None
         })
         .collect()
 }
@@ -604,13 +618,18 @@ mod tests {
 
     #[test]
     fn a_scripts_line_of_speech_is_the_recording_of_its_line_of_the_spoken_table() {
-        let spoken =
-            "\u{feff};Atreides\t\n[END]\t\nATstart1\t\"{Mentat : Welcome}\"\n\nATstart2\t{x}\n";
-        let recordings = "Debriefing\t\nATstart2\tKK-M682E\nATstart1\tKK-M680E\n";
+        let spoken = "\u{feff}Debriefing\t\nATgendebrief1\t{x}\n[END]\t\nMissionMessages\t\n\
+            ATstart1\t\"{Mentat : Welcome}\"\n\n;Tutorial\t\nATtutorial1\t{y}\nATstart2\t{x}\n\
+            [END]\n";
+        let recordings = "ATgendebrief1\tKK-M600E\nATstart2\tKK-M682E\nATstart1\tKK-M680E\n";
         let lines = recorded(spoken, recordings);
-        assert_eq!(lines[2].as_deref(), Some("KK-M680"));
-        assert_eq!(lines[3], None, "a blank line");
-        assert_eq!(lines[4].as_deref(), Some("KK-M682"));
+        assert_eq!(lines.len(), 3, "only what missions say counts");
+        assert_eq!(lines[0].as_deref(), Some("KK-M680"));
+        assert_eq!(
+            lines[1], None,
+            "past a blank line and a comment, a line not recorded"
+        );
+        assert_eq!(lines[2].as_deref(), Some("KK-M682"));
         let disc = Path::new("/Volumes/EMPEROR1");
         if !disc.is_dir() {
             return;
@@ -625,6 +644,16 @@ mod tests {
             lines[usize::from(643 - FIRST_SPOKEN)].as_deref(),
             Some("KK-M682")
         );
+        // The tutorial's welcome, past the blank lines and comment before it, and the other
+        // houses' first missions' welcomes, past the briefings and debriefings of the houses
+        // before them.
+        for (number, recording) in [(646, "UI-T000"), (901, "YK-M678"), (1098, "RA-M834")] {
+            assert_eq!(
+                lines[usize::from(number - FIRST_SPOKEN)].as_deref(),
+                Some(recording),
+                "{number}"
+            );
+        }
         let house = Path::new("/Volumes/EMPEROR2").join(HOUSE_DIALOG_BAG);
         if let Some(tracks) = music::list(&house) {
             let sounds = Sounds {

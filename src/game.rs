@@ -2368,6 +2368,8 @@ pub struct Game {
     script_enemies: Vec<(i32, i32)>,
     /// The script's sides told to go after the player's units, for as long as they have any.
     script_hunting: Vec<i32>,
+    /// The starport's frigate, while it is about.
+    pub frigate: Option<units::Frigate>,
     mission_lines: Vec<u16>,
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
@@ -2512,6 +2514,7 @@ impl Game {
             script_side_of: Vec::new(),
             script_enemies: Vec::new(),
             script_hunting: Vec::new(),
+            frigate: None,
             mission_lines: Vec::new(),
             minimap_dragging: false,
             units: Vec::new(),
@@ -2848,34 +2851,71 @@ impl Game {
         &self.market
     }
 
-    /// Lets the market's time go by, and lands the frigate when its time comes: what it
-    /// brings is set down by the player's starport, or paid back if there is none left.
+    /// Lets the market's time go by, and sends the frigate when its time comes, to be down on
+    /// the player's starport as the countdown runs out; what it brings is paid back if there
+    /// is no starport for it.
     fn run_market(&mut self, dt: f32) {
         self.market.tick(dt);
-        let Some((cargo, left)) = &mut self.market.frigate else {
-            return;
-        };
-        *left -= dt;
-        if *left > 0.0 {
-            return;
-        }
-        let cargo = std::mem::take(cargo);
-        self.market.frigate = None;
         let terrain = battlefield::terrain(self.battle_map);
-        for role in cargo {
-            let starport = self.units.iter().position(|u| {
+        if let Some((cargo, left)) = &mut self.market.frigate {
+            *left -= dt;
+            let starport = self.units.iter().find(|u| {
                 u.alive && u.owner == 0 && u.role == Role::Starport && !u.is_under_construction()
             });
-            let landed = starport.is_some_and(|starport| {
-                units::deliver_at(&mut self.units, terrain, role, starport, self.next_unit_id)
-            });
-            if landed {
+            if self.frigate.is_none()
+                && !cargo.is_empty()
+                && let Some(starport) = starport
+            {
+                let frigate = units::Frigate::bound_for(starport, cargo.clone(), terrain);
+                if frigate.seconds_to_land() >= *left {
+                    cargo.clear();
+                    self.frigate = Some(frigate);
+                }
+            }
+            if *left <= 0.0 {
+                let unsent = std::mem::take(cargo);
+                self.money[0] += unsent.iter().map(|role| role.cost()).sum::<i32>();
+                self.market.frigate = None;
+            }
+        }
+        self.fly_frigate(dt);
+    }
+
+    /// The frigate flies on its way, lets out what it brings by the starport once down, and
+    /// turns back with it, paid back, if the starport is gone.
+    fn fly_frigate(&mut self, dt: f32) {
+        let Some(mut frigate) = self.frigate.take() else {
+            return;
+        };
+        let terrain = battlefield::terrain(self.battle_map);
+        let starport = self
+            .units
+            .iter()
+            .position(|u| u.alive && u.id == frigate.starport && u.owner == frigate.owner);
+        let Some(starport) = starport else {
+            let unsent = frigate.turn_back();
+            self.money[0] += unsent.iter().map(|role| role.cost()).sum::<i32>();
+            if frigate.fly(dt) {
+                self.frigate = Some(frigate);
+            }
+            return;
+        };
+        let was_down = frigate.flight == units::Flight::Down;
+        let still_about = frigate.fly(dt);
+        if !was_down && frigate.flight == units::Flight::Down {
+            self.post_chat("Starport delivery arrived".to_string());
+        }
+        while let Some(role) = frigate.release() {
+            let id = self.next_unit_id;
+            if units::deliver_at(&mut self.units, terrain, role, starport, id) {
                 self.next_unit_id += 1;
             } else {
                 self.money[0] += role.cost();
             }
         }
-        self.post_chat("Starport delivery arrived".to_string());
+        if still_about {
+            self.frigate = Some(frigate);
+        }
     }
 
     /// Whether the player has a building of this role that could be upgraded now.
@@ -4758,6 +4798,7 @@ impl Game {
         self.click_mode = None;
         self.routes.clear();
         self.market = Market::open(self.faction_of(0), self.start_random);
+        self.frigate = None;
         self.speeches.clear();
         self.last_said.clear();
         self.health_seen.clear();
@@ -14912,11 +14953,32 @@ mod tests {
             0,
             "not while a frigate is coming"
         );
-        game.update(FRIGATE_SECONDS - 5.0);
+        // Kept standing against the enemy's attacks while the frigate comes.
+        let run = |game: &mut Game, seconds: f32| {
+            for _ in 0..(seconds * 10.0).round() as usize {
+                game.update(0.1);
+                for starport in game.units.iter_mut().filter(|u| u.role == Role::Starport) {
+                    starport.health = starport.max_health();
+                }
+            }
+        };
+        run(&mut game, FRIGATE_SECONDS - 0.5);
         assert_eq!(trikes(&game), had, "not yet");
-        game.update(6.0);
+        let frigate = game.frigate.as_ref().expect("on its way in");
+        assert!(frigate.cargo == [Role::AtTrike] && frigate.flight != units::Flight::Down);
+        run(&mut game, 0.6);
         assert!(game.market().frigate.is_none());
-        assert_eq!(trikes(&game), had + 1, "set down by the starport");
+        assert!(
+            matches!(
+                game.frigate.as_ref().map(|f| f.flight),
+                Some(units::Flight::Landing | units::Flight::Down)
+            ),
+            "coming down on the starport as the countdown runs out"
+        );
+        run(&mut game, 1.5);
+        assert_eq!(trikes(&game), had + 1, "let out by the starport");
+        run(&mut game, 60.0);
+        assert!(game.frigate.is_none(), "flown off the map");
 
         // No more than six in a delivery.
         for offer in &mut game.market.offers {

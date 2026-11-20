@@ -12,7 +12,9 @@ use crate::battlefield::{self, CELL_SIDE, Terrain, View};
 use crate::fog::Fog;
 use crate::game::{CursorLook, Faction};
 use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
-use crate::units::{CrateKind, Gender, Harvest, Prop, Role, Unit, UnitKind, WallPiece, Wound};
+use crate::units::{
+    CrateKind, Flight, Frigate, Gender, Harvest, Prop, Role, Unit, UnitKind, WallPiece, Wound,
+};
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
 pub(super) use crate::xbf::{point, times};
@@ -273,6 +275,8 @@ const MODELS: &[(Role, Option<Faction>, &str)] = {
 
 /// The original's model of a tornado.
 const TORNADO: &str = "Units\\IN_Tornado_H0.xbf";
+/// The original's model of the starport's frigate, the rules' `[Frigate]`.
+const FRIGATE: &str = "Units\\G_Frigate_H0.xbf";
 
 /// The picture on the build button of each role, for every house or for one, and the grey one
 /// it shows while it cannot be made, as the original's `ArtIni.txt` names them. Ordos have no
@@ -1367,7 +1371,7 @@ fn read_shapes(disc: &Path) -> Option<Original> {
     let names = MODELS.iter().map(|&(_, _, name)| name);
     let names = names.chain(CONSTRUCTION_YARDS.iter().map(|&(_, name)| name));
     let names = names.chain(WALLS.iter().flat_map(|(_, pieces)| pieces.iter().copied()));
-    let names = names.chain([TORNADO]);
+    let names = names.chain([TORNADO, FRIGATE]);
     let names = names.chain(SCENERY.iter().map(|&(_, name)| name));
     let names = names.chain(EXTRAS.iter().map(|&(_, name)| name));
     let names = names.chain(CRATES.iter().map(|&(_, name)| name));
@@ -2532,6 +2536,61 @@ pub(super) fn draw_tornado(canvas: &mut Canvas, tornado: &Tornado, time: f32) ->
     };
     draw_posed(canvas, shape, &posed, [0.0; 3]);
     true
+}
+
+/// Draws the original's frigate in its house color, as it is in its visit at this time of the
+/// battle, if it has been read: its model's sequence for each stage, the ones between flying
+/// and hovering, and landing and taking off, played out as far as the stage has got.
+pub(super) fn draw_frigate(
+    canvas: &mut Canvas,
+    frigate: &Frigate,
+    team: [f32; 3],
+    time: f32,
+) -> bool {
+    let Some(shape) = ORIGINAL
+        .get()
+        .and_then(|original| original.shapes.get(FRIGATE))
+    else {
+        return false;
+    };
+    let frame = frigate_frame(shape, frigate, time);
+    let body = Place::turned(frigate.at, frigate.heading);
+    let posed = Posed {
+        body,
+        head: body,
+        frame,
+        slid: time * FRAMES_PER_SECOND,
+        worlds: pose(shape, 0.0, 0.0, frame),
+        set_up: true,
+    };
+    draw_posed(canvas, shape, &posed, team);
+    true
+}
+
+/// Which frame of its model the frigate is at in its visit.
+fn frigate_frame(shape: &Shape, frigate: &Frigate, time: f32) -> usize {
+    let (name, looping) = match frigate.flight {
+        Flight::Coming | Flight::Leaving => ("Fly", true),
+        Flight::Slowing => ("FlyToHover", false),
+        Flight::Descending | Flight::Climbing => ("Hover", true),
+        Flight::Landing => ("Land", false),
+        Flight::Down => ("Stationary", true),
+        Flight::TakingOff => ("Takeoff", false),
+        Flight::Speeding => ("HoverToFly", false),
+    };
+    let Some(ranges) = shape
+        .sequences
+        .iter()
+        .find(|sequence| sequence.name == name)
+        .map(|sequence| sequence.ranges.as_slice())
+    else {
+        return 0;
+    };
+    match (looping, ranges) {
+        (true, _) => looped(ranges, (time * FRAMES_PER_SECOND) as usize),
+        (false, &[(first, last), ..]) => first + ((last - first) as f32 * frigate.share()) as usize,
+        _ => 0,
+    }
 }
 
 /// Draws the original's model of a crate of this kind lying here, if it has been read.

@@ -2252,6 +2252,11 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     for wisp in game.combat.wisps.iter().filter(|w| seen(w.position)) {
         draw_wisp(canvas, view, wisp);
     }
+    // The starport's frigate, as the disc has it.
+    if let Some(frigate) = game.frigate.as_ref() {
+        let [r, g, b, _] = team_color(frigate.color);
+        original::draw_frigate(canvas, frigate, [r, g, b], game.battle_time());
+    }
     // The disc's tornado where it is mounted, ours where it is not.
     for tornado in game.combat.tornados.iter().filter(|t| seen(t.at)) {
         if !original::draw_tornado(canvas, tornado, game.battle_time()) {

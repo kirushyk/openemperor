@@ -7461,6 +7461,276 @@ pub fn lightning_points(
         .collect()
 }
 
+/// The starport's frigate, as the rules' `[Frigate]` has it: `Speed` 12 and `TurnRate` 0.1 an
+/// update, and a `HeightOffset` of 50 where other aircraft have 8.
+const FRIGATE_SPEED: f32 = 12.0 * UPDATES_PER_SECOND;
+const FRIGATE_TURN: f32 = 0.1 * UPDATES_PER_SECOND;
+const FRIGATE_ALTITUDE: f32 = CRUISE_ALTITUDE + 50.0 - 8.0;
+/// How long the stages of its visit its model plays take, at 25 frames a second: `FlyToHover`
+/// and `HoverToFly` 10 frames, `Land` and `Takeoff` 21.
+const FRIGATE_SLOWING_SECONDS: f32 = 0.4;
+const FRIGATE_LANDING_SECONDS: f32 = 0.84;
+/// How far below its middle the frigate's legs reach once down, and how high the starports'
+/// decks are, all three alike: both from their models.
+const FRIGATE_LEGS: f32 = 27.3;
+const STARPORT_DECK_HEIGHT: f32 = 8.0;
+/// Where the middle of a starport's deck is in its model, across and along it: before its
+/// tower.
+const STARPORT_DECK: (f32, f32) = (0.0, -16.0);
+/// How long it takes to let each of what it brings out.
+const FRIGATE_RELEASE_SECONDS: f32 = 1.0;
+/// How far off the map it comes from and goes back to.
+const FRIGATE_OFF_MAP: f32 = 4.0 * CELL_SIDE;
+
+/// Where the frigate is in its visit, in the order of its model's sequences.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flight {
+    /// Flying in from off the map to over the starport.
+    Coming,
+    /// Coming to a hover over it.
+    Slowing,
+    /// Hovering down onto its deck.
+    Descending,
+    /// Setting its legs down.
+    Landing,
+    /// Standing on the deck, letting out what it brought.
+    Down,
+    /// Taking its legs up.
+    TakingOff,
+    /// Hovering up again.
+    Climbing,
+    /// Getting under way.
+    Speeding,
+    /// Flying off the map.
+    Leaving,
+}
+
+/// The frigate that brings what was bought at a starport: it flies in from the nearest edge
+/// of the map, comes down onto the starport's deck, lets out what it brings one by one, and
+/// flies off the way it came. It is nobody's to command and cannot be hurt.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Frigate {
+    pub at: [f32; 3],
+    pub heading: f32,
+    pub flight: Flight,
+    /// Seconds into the stage of its flight.
+    pub stage: f32,
+    /// What it brings, still on board.
+    pub cargo: Vec<Role>,
+    /// The starport it comes to, by id, and whose it is.
+    pub starport: u32,
+    pub owner: usize,
+    pub color: TeamColor,
+    /// Where it stands once down, and facing which way: the starport's way.
+    deck: [f32; 3],
+    deck_heading: f32,
+    /// Where off the map it comes from and goes back to.
+    away: (f32, f32),
+    /// Where it was as it began to slow down.
+    slowing_from: [f32; 3],
+    /// Until the next of its cargo is let out.
+    release_in: f32,
+}
+
+impl Frigate {
+    /// A frigate setting out for this starport with what it brings, from off the edge of the
+    /// map nearest it.
+    pub fn bound_for(starport: &Unit, cargo: Vec<Role>, terrain: &Terrain) -> Self {
+        let deck_heading = starport.facing.turn() + FRAC_PI_2;
+        let (sin, cos) = deck_heading.sin_cos();
+        let (across, along) = STARPORT_DECK;
+        let (x, z) = (
+            starport.x + cos * across - sin * along,
+            starport.z + sin * across + cos * along,
+        );
+        let deck = [
+            x,
+            terrain.height_at(x, z) + STARPORT_DECK_HEIGHT + FRIGATE_LEGS,
+            z,
+        ];
+        let away = nearest_way_off(terrain, (x, z));
+        let heading = (z - away.1).atan2(x - away.0);
+        Frigate {
+            at: [away.0, deck[1].max(FRIGATE_ALTITUDE), away.1],
+            heading,
+            flight: Flight::Coming,
+            stage: 0.0,
+            cargo,
+            starport: starport.id,
+            owner: starport.owner,
+            color: starport.color,
+            deck,
+            deck_heading,
+            away,
+            slowing_from: [0.0; 3],
+            release_in: FRIGATE_RELEASE_SECONDS,
+        }
+    }
+
+    /// Seconds from setting out until it is down on the starport's deck.
+    pub fn seconds_to_land(&self) -> f32 {
+        let (dx, dz) = (self.deck[0] - self.at[0], self.deck[2] - self.at[2]);
+        let coming = (dx.hypot(dz) - self.slowing_distance()).max(0.0) / FRIGATE_SPEED;
+        let down = (self.at[1] - self.deck[1]).max(0.0) / CLIMB_SPEED;
+        coming + FRIGATE_SLOWING_SECONDS + down + FRIGATE_LANDING_SECONDS
+    }
+
+    /// How far out it begins to slow down, to come to a stop over the deck.
+    fn slowing_distance(&self) -> f32 {
+        FRIGATE_SPEED * FRIGATE_SLOWING_SECONDS / 2.0
+    }
+
+    /// How far through a stage its model plays out is, from 0 to 1.
+    pub fn share(&self) -> f32 {
+        let length = match self.flight {
+            Flight::Slowing | Flight::Speeding => FRIGATE_SLOWING_SECONDS,
+            Flight::Landing | Flight::TakingOff => FRIGATE_LANDING_SECONDS,
+            _ => return 0.0,
+        };
+        (self.stage / length).min(1.0)
+    }
+
+    /// Whether the next of its cargo is to be let out now, and which: once down, one each
+    /// `FRIGATE_RELEASE_SECONDS`.
+    pub fn release(&mut self) -> Option<Role> {
+        if self.flight != Flight::Down || self.release_in > 0.0 || self.cargo.is_empty() {
+            return None;
+        }
+        self.release_in = FRIGATE_RELEASE_SECONDS;
+        Some(self.cargo.remove(0))
+    }
+
+    /// Flies on for `dt` seconds. Once down with nothing left on board it takes off again.
+    /// Returns whether it is still about, not gone off the map.
+    pub fn fly(&mut self, dt: f32) -> bool {
+        self.stage += dt;
+        let next = |frigate: &mut Frigate, flight: Flight| {
+            frigate.flight = flight;
+            frigate.stage = 0.0;
+        };
+        match self.flight {
+            Flight::Coming => {
+                let (dx, dz) = (self.deck[0] - self.at[0], self.deck[2] - self.at[2]);
+                let to_go = dx.hypot(dz) - self.slowing_distance();
+                if to_go <= 0.0 {
+                    self.slowing_from = self.at;
+                    next(self, Flight::Slowing);
+                } else {
+                    self.head_for(dz.atan2(dx), dt);
+                    self.go_on((FRIGATE_SPEED * dt).min(to_go));
+                }
+            }
+            Flight::Slowing => {
+                // Slowing evenly to a stop over the deck.
+                let share = self.share();
+                let eased = share * (2.0 - share);
+                for k in [0, 2] {
+                    self.at[k] =
+                        self.slowing_from[k] + (self.deck[k] - self.slowing_from[k]) * eased;
+                }
+                if share >= 1.0 {
+                    next(self, Flight::Descending);
+                }
+            }
+            Flight::Descending => {
+                self.head_for(self.deck_heading, dt);
+                self.at[1] = (self.at[1] - CLIMB_SPEED * dt).max(self.deck[1]);
+                if self.at[1] <= self.deck[1] {
+                    self.heading = self.deck_heading;
+                    next(self, Flight::Landing);
+                }
+            }
+            Flight::Landing => {
+                if self.share() >= 1.0 {
+                    next(self, Flight::Down);
+                }
+            }
+            Flight::Down => {
+                self.release_in -= dt;
+                if self.cargo.is_empty() && self.release_in <= 0.0 {
+                    next(self, Flight::TakingOff);
+                }
+            }
+            Flight::TakingOff => {
+                if self.share() >= 1.0 {
+                    next(self, Flight::Climbing);
+                }
+            }
+            Flight::Climbing => {
+                let (dx, dz) = (self.away.0 - self.at[0], self.away.1 - self.at[2]);
+                self.head_for(dz.atan2(dx), dt);
+                self.at[1] = (self.at[1] + CLIMB_SPEED * dt).min(FRIGATE_ALTITUDE);
+                if self.at[1] >= FRIGATE_ALTITUDE {
+                    next(self, Flight::Speeding);
+                }
+            }
+            Flight::Speeding => {
+                let (dx, dz) = (self.away.0 - self.at[0], self.away.1 - self.at[2]);
+                self.head_for(dz.atan2(dx), dt);
+                let share = self.share();
+                self.go_on(FRIGATE_SPEED * share * dt);
+                if share >= 1.0 {
+                    next(self, Flight::Leaving);
+                }
+            }
+            Flight::Leaving => {
+                let (dx, dz) = (self.away.0 - self.at[0], self.away.1 - self.at[2]);
+                if dx.hypot(dz) <= FRIGATE_SPEED * dt {
+                    return false;
+                }
+                self.head_for(dz.atan2(dx), dt);
+                self.go_on(FRIGATE_SPEED * dt);
+            }
+        }
+        true
+    }
+
+    /// Gives up on landing, with what is still on board: the starport is gone.
+    pub fn turn_back(&mut self) -> Vec<Role> {
+        if !matches!(
+            self.flight,
+            Flight::TakingOff | Flight::Climbing | Flight::Speeding | Flight::Leaving
+        ) {
+            self.flight = if self.flight == Flight::Down || self.flight == Flight::Landing {
+                Flight::TakingOff
+            } else {
+                Flight::Climbing
+            };
+            self.stage = 0.0;
+        }
+        std::mem::take(&mut self.cargo)
+    }
+
+    /// Turns towards a heading as fast as it turns.
+    fn head_for(&mut self, heading: f32, dt: f32) {
+        let most = FRIGATE_TURN * dt;
+        self.heading += turn_between(self.heading, heading).clamp(-most, most);
+    }
+
+    /// Goes this far along its heading.
+    fn go_on(&mut self, distance: f32) {
+        let (sin, cos) = self.heading.sin_cos();
+        self.at[0] += cos * distance;
+        self.at[2] += sin * distance;
+    }
+}
+
+/// The point just off the edge of the map nearest a point on it.
+fn nearest_way_off(terrain: &Terrain, (x, z): (f32, f32)) -> (f32, f32) {
+    let (width, depth) = terrain.extent();
+    let ways = [
+        (x, -FRIGATE_OFF_MAP, z),
+        (x, depth + FRIGATE_OFF_MAP, depth - z),
+        (-FRIGATE_OFF_MAP, z, x),
+        (width + FRIGATE_OFF_MAP, z, width - x),
+    ];
+    let (wx, wz, _) = ways
+        .into_iter()
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .unwrap_or((x, z, 0.0));
+    (wx, wz)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12114,6 +12384,68 @@ mod tests {
                 "facing {number}"
             );
         }
+    }
+
+    #[test]
+    fn the_frigate_flies_in_from_the_nearest_edge_lands_on_the_deck_lets_out_its_cargo_and_leaves()
+    {
+        let terrain = open_ground();
+        let mut starport = unit_at(MAP_MIDDLE_X, 400.0, UnitKind::Building);
+        starport.role = Role::Starport;
+        let cargo = vec![Role::AtTrike, Role::AtMongoose];
+        let mut frigate = Frigate::bound_for(&starport, cargo, terrain);
+        assert!(frigate.at[2] < 0.0, "off the map's near edge, the nearest");
+        assert_eq!(frigate.at[1], FRIGATE_ALTITUDE);
+        let mut seconds = 0.0;
+        let dt = 0.04;
+        while frigate.flight != Flight::Down {
+            assert!(frigate.fly(dt));
+            seconds += dt;
+            assert!(seconds < 60.0, "{:?}", frigate.flight);
+        }
+        assert!(
+            (seconds - frigate_reckoning(&starport, terrain)).abs() < 0.5,
+            "down when it reckoned: {seconds}"
+        );
+        let deck_heading = starport.facing.turn() + FRAC_PI_2;
+        assert_eq!(frigate.heading, deck_heading, "facing the starport's way");
+        assert!((frigate.at[0] - starport.x).abs() < CELL_SIDE);
+        let ground = terrain.height_at(frigate.at[0], frigate.at[2]);
+        assert_eq!(frigate.at[1], ground + STARPORT_DECK_HEIGHT + FRIGATE_LEGS);
+
+        // One out each second, then it takes off and goes back off the map.
+        let mut out = Vec::new();
+        for _ in 0..(3.0 / dt) as usize {
+            assert!(frigate.fly(dt));
+            out.extend(frigate.release());
+        }
+        assert_eq!(out, [Role::AtTrike, Role::AtMongoose]);
+        assert_ne!(frigate.flight, Flight::Down, "off again with nothing left");
+        let mut gone = false;
+        for _ in 0..(60.0 / dt) as usize {
+            if !frigate.fly(dt) {
+                gone = true;
+                break;
+            }
+        }
+        assert!(gone, "flown off the map");
+    }
+
+    /// How long a frigate setting out for this starport reckons it takes to be down.
+    fn frigate_reckoning(starport: &Unit, terrain: &Terrain) -> f32 {
+        Frigate::bound_for(starport, Vec::new(), terrain).seconds_to_land()
+    }
+
+    #[test]
+    fn a_frigate_whose_starport_is_gone_turns_back_with_its_cargo() {
+        let terrain = open_ground();
+        let mut starport = unit_at(MAP_MIDDLE_X, 400.0, UnitKind::Building);
+        starport.role = Role::Starport;
+        let mut frigate = Frigate::bound_for(&starport, vec![Role::AtTrike], terrain);
+        frigate.fly(0.5);
+        assert_eq!(frigate.turn_back(), [Role::AtTrike]);
+        assert!(frigate.cargo.is_empty());
+        assert_ne!(frigate.flight, Flight::Coming);
     }
 
     #[test]

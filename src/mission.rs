@@ -113,13 +113,16 @@ const PLACE: u16 = 139;
 const IF: u16 = 165;
 const ELSE: u16 = 166;
 const END: u16 = 167;
+/// The comparisons, in the order of their numbers: `==`, `!=`, `>=`, `<=`, `>` and `<`. The
+/// tutorial goes on to its next step at a count of exactly the one it is at (`<=`), a capture
+/// is asked of whose a building is not (`!=`), and a time before one or after another (`<`,
+/// `>`).
 const EQUAL: u16 = 168;
-/// The comparisons beside `==` and `<`, as the tutorial's checks of how many have been made
-/// and the end missions' of health use them: at least, more than, at most.
+const NOT_EQUAL: u16 = 169;
 const AT_LEAST: u16 = 170;
-const LESS: u16 = 171;
+const AT_MOST: u16 = 171;
 const MORE: u16 = 172;
-const AT_MOST: u16 = 173;
+const LESS: u16 = 173;
 const AND: u16 = 174;
 const OR: u16 = 175;
 const FALSE: u16 = 176;
@@ -186,6 +189,28 @@ const GLIDE_BACK: u16 = 113;
 /// The same in the midst of the battle.
 const LOOK_AT_TOO: u16 = 114;
 const GLIDE_TO_TOO: u16 = 115;
+/// A thing's health, and the most it has.
+const HEALTH: u16 = 29;
+const FULL_HEALTH: u16 = 30;
+/// Whether a side has a unit at a thing: the tutorial's beacons reached.
+const REACHED: u16 = 24;
+/// How many buildings a side has left.
+const BUILDINGS_LEFT: u16 = 36;
+/// Whether a side's units have got where they were sent.
+const ARRIVED: u16 = 38;
+/// Whether a side has lost any of what the script gave it; the tutorial asks it of the player
+/// and its enemy's wave, to tell a wave fought from one only the worm met.
+const FOUGHT: u16 = 42;
+/// A side's units go after the player's.
+const HUNT: u16 = 64;
+/// A side's units are sent to a place.
+const SEND: u16 = 71;
+/// The tutorial is over, and done.
+const DONE: u16 = 84;
+/// Takes a thing off the map.
+const REMOVE: u16 = 135;
+/// A step of the tutorial, as the number it is; what else it does is not known.
+const STEP: u16 = 144;
 /// What `SOMEONE` is as a side.
 pub const SOMEONE_SIDE: i32 = -1;
 
@@ -287,6 +312,32 @@ pub trait Battle {
     fn hurt_by(&self, _thing: Option<u32>, _side: i32) -> bool {
         false
     }
+    /// A thing's health and the most it has, if it stands.
+    fn health(&self, _thing: Option<u32>) -> Option<(f32, f32)> {
+        None
+    }
+    /// Whether a side has a unit at a thing.
+    fn reached(&self, _thing: Option<u32>, _side: i32) -> bool {
+        false
+    }
+    /// How many buildings a side has left.
+    fn buildings_left(&self, _side: i32) -> i32 {
+        0
+    }
+    /// Whether a side has units, all of them where they were sent.
+    fn arrived(&self, _side: i32) -> bool {
+        false
+    }
+    /// Whether a side has lost any of what the script gave it.
+    fn has_lost(&self, _side: i32) -> bool {
+        false
+    }
+    /// Sends a side's units to a place.
+    fn send(&mut self, _side: i32, _to: (f32, f32)) {}
+    /// Has a side's units go after the player's.
+    fn hunt(&mut self, _side: i32) {}
+    /// Takes a thing off the map.
+    fn remove(&mut self, _thing: Option<u32>) {}
     /// A scene begins, which the player watches, or ends.
     fn scene(&mut self, _playing: bool) {}
     fn camera(&mut self, _shot: Shot) {}
@@ -398,6 +449,7 @@ impl Script {
                 let truth = |holds: bool| Value::Number(i32::from(holds));
                 match *operator {
                     EQUAL => truth(left == right || left.number() == right.number()),
+                    NOT_EQUAL => truth(left != right && left.number() != right.number()),
                     LESS => truth(left.number() < right.number()),
                     AT_LEAST => truth(left.number() >= right.number()),
                     MORE => truth(left.number() > right.number()),
@@ -514,6 +566,41 @@ impl Script {
                     Piece::Function(STOP_CIRCLING) => film(battle, Some(Shot::StopCircling)),
                     Piece::Function(KEEP_VIEW) => film(battle, Some(Shot::Keep)),
                     Piece::Function(GLIDE_BACK) => film(battle, Some(Shot::GlideBack(number(0)))),
+                    Piece::Function(HEALTH) => Value::Number(
+                        battle
+                            .health(at(0).thing())
+                            .map_or(0, |(health, _)| health as i32),
+                    ),
+                    Piece::Function(FULL_HEALTH) => Value::Number(
+                        battle
+                            .health(at(0).thing())
+                            .map_or(0, |(_, most)| most as i32),
+                    ),
+                    Piece::Function(REACHED) => {
+                        Value::Number(i32::from(battle.reached(at(0).thing(), number(1))))
+                    }
+                    Piece::Function(BUILDINGS_LEFT) => {
+                        Value::Number(battle.buildings_left(number(0)))
+                    }
+                    Piece::Function(ARRIVED) => Value::Number(i32::from(battle.arrived(number(0)))),
+                    Piece::Function(FOUGHT) => Value::Number(i32::from(battle.has_lost(number(1)))),
+                    Piece::Function(HUNT) => {
+                        battle.hunt(number(0));
+                        Value::Number(0)
+                    }
+                    Piece::Function(SEND) => {
+                        battle.send(number(0), at(1).place());
+                        Value::Number(0)
+                    }
+                    Piece::Function(DONE) => {
+                        battle.win();
+                        Value::Number(0)
+                    }
+                    Piece::Keyword(REMOVE) => {
+                        battle.remove(at(0).thing());
+                        Value::Number(0)
+                    }
+                    Piece::Keyword(STEP) => Value::Number(number(0)),
                     Piece::Function(FRIENDS | ENEMIES) => {
                         battle.relate(number(0), number(1), *callee == Piece::Function(ENEMIES));
                         Value::Number(0)
@@ -667,7 +754,7 @@ fn binding(keyword: u16) -> Option<u8> {
     match keyword {
         OR => Some(1),
         AND => Some(2),
-        EQUAL | LESS | AT_LEAST | MORE | AT_MOST => Some(3),
+        EQUAL | NOT_EQUAL | LESS | AT_LEAST | MORE | AT_MOST => Some(3),
         PLUS => Some(4),
         _ => None,
     }
@@ -750,6 +837,9 @@ mod tests {
         scenes: Vec<bool>,
         shots: Vec<Shot>,
         lost: bool,
+        sent: Vec<(i32, (f32, f32))>,
+        hunting: Vec<i32>,
+        removed: Vec<Option<u32>>,
     }
 
     impl Battle for Written {
@@ -814,6 +904,30 @@ mod tests {
         fn count(&self, side: i32, kind: u16) -> i32 {
             side * 10 + i32::from(kind)
         }
+        fn health(&self, thing: Option<u32>) -> Option<(f32, f32)> {
+            (thing == Some(2)).then_some((300.0, 600.0))
+        }
+        fn reached(&self, thing: Option<u32>, side: i32) -> bool {
+            thing == Some(2) && side == 0
+        }
+        fn buildings_left(&self, side: i32) -> i32 {
+            side + 3
+        }
+        fn arrived(&self, side: i32) -> bool {
+            side == 2
+        }
+        fn has_lost(&self, side: i32) -> bool {
+            side == 3
+        }
+        fn send(&mut self, side: i32, to: (f32, f32)) {
+            self.sent.push((side, to));
+        }
+        fn hunt(&mut self, side: i32) {
+            self.hunting.push(side);
+        }
+        fn remove(&mut self, thing: Option<u32>) {
+            self.removed.push(thing);
+        }
         fn camera(&mut self, shot: Shot) {
             self.shots.push(shot);
         }
@@ -847,7 +961,57 @@ mod tests {
     }
 
     #[test]
-    fn the_comparisons_beside_equal_and_less_are_at_least_more_and_at_most() {
+    fn the_tutorials_calls_ask_the_battle_of_health_beacons_sides_and_its_end() {
+        use Token::{Function as F, Keyword as K, Kind, Variable as V};
+        let put = |variable: u16| {
+            let open = text("(0,");
+            let rest = [text(","), F(SCRIPT_POINT), text("(1),0,0,0)")];
+            [
+                vec![V(variable), K(SET), K(PLACE), open, Kind(1)],
+                rest.to_vec(),
+            ]
+            .concat()
+        };
+        let set = |variable: u16, call: Vec<Token>| [vec![V(variable), K(SET)], call].concat();
+        let lines = vec![
+            put(0),
+            put(1),
+            set(2, vec![F(HEALTH), text("("), V(1), text(")")]),
+            set(3, vec![F(FULL_HEALTH), text("("), V(1), text(")")]),
+            set(
+                4,
+                vec![
+                    F(REACHED),
+                    text("("),
+                    V(1),
+                    text(","),
+                    F(PLAYER),
+                    text("())"),
+                ],
+            ),
+            set(5, vec![F(BUILDINGS_LEFT), text("(2)")]),
+            set(6, vec![F(ARRIVED), text("(2)")]),
+            set(7, vec![F(FOUGHT), text("("), F(PLAYER), text("(),3)")]),
+            vec![F(SEND), text("(2,"), F(SCRIPT_POINT), text("(4))")],
+            vec![F(HUNT), text("(4)")],
+            vec![K(REMOVE), text("("), V(0), text(")")],
+            set(8, vec![K(STEP), text("(11)")]),
+            vec![F(DONE), text("()")],
+        ];
+        let mut battle = Written::default();
+        let mut script = Script::new(&lines);
+        script.run(&mut battle);
+        let numbers: Vec<Value> = (2..=8).map(|v| script.variables[v]).collect();
+        let n = Value::Number;
+        assert_eq!(numbers, [n(300), n(600), n(1), n(5), n(1), n(1), n(11)]);
+        assert_eq!(battle.sent, [(2, battle.script_point(4))]);
+        assert_eq!(battle.hunting, [4]);
+        assert_eq!(battle.removed, [Some(1)]);
+        assert!(battle.won, "the tutorial done");
+    }
+
+    #[test]
+    fn the_comparisons_go_by_their_numbers_from_equal_to_less() {
         use Token::{Keyword as K, Variable as V};
         let compare = |left: &str, operator: u16, right: &str| {
             let lines = vec![vec![V(1), K(SET), text(left), K(operator), text(right)]];
@@ -861,7 +1025,10 @@ mod tests {
             assert_eq!(compare(left, AT_LEAST, right), truth(a >= b));
             assert_eq!(compare(left, MORE, right), truth(a > b));
             assert_eq!(compare(left, AT_MOST, right), truth(a <= b));
+            assert_eq!(compare(left, LESS, right), truth(a < b));
+            assert_eq!(compare(left, NOT_EQUAL, right), truth(a != b));
         }
+        assert_eq!((NOT_EQUAL, AT_MOST, LESS), (169, 171, 173));
     }
 
     #[test]

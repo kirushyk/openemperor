@@ -1962,6 +1962,9 @@ fn territory_buttons(width: f32, height: f32) -> Vec<Button> {
 /// the Atreides' first reinforcements in at five seconds and the Mentat's call to prepare at
 /// forty-three.
 const SCRIPT_UPDATES_PER_SECOND: f32 = 10.0;
+/// How near a script's place a unit's side is to have reached it: three squares, as a vehicle
+/// sent to a beacon stops within, big as an MCV is.
+const REACH_OF_A_PLACE: f32 = 3.0 * battlefield::CELL_SIDE;
 /// The points of a map where the player's base and the enemy's main base stand.
 const PLAYER_BASE_POINT: &str = "Default";
 const ENEMY_BASE_POINT: &str = "Primary";
@@ -2005,18 +2008,73 @@ impl mission::Battle for Game {
     }
 
     fn left(&self, side: i32) -> i32 {
-        let of_side = |unit: &Unit| {
-            if side == 0 {
-                unit.owner == 0
-            } else {
-                self.script_side_of.contains(&(unit.id, side))
-            }
-        };
         let left = self
             .units
             .iter()
-            .filter(|u| u.alive && !u.kind.is_building() && of_side(u));
+            .filter(|u| u.alive && !u.kind.is_building() && self.is_of_side(u, side));
         left.count() as i32
+    }
+
+    fn buildings_left(&self, side: i32) -> i32 {
+        let left = self
+            .units
+            .iter()
+            .filter(|u| u.alive && u.kind.is_building() && self.is_of_side(u, side));
+        left.count() as i32
+    }
+
+    fn health(&self, thing: Option<u32>) -> Option<(f32, f32)> {
+        let unit = self.units.iter().find(|u| Some(u.id) == thing && u.alive)?;
+        Some((unit.health, unit.max_health()))
+    }
+
+    /// Within a few squares of it, as a vehicle sent next to a beacon stops.
+    fn reached(&self, thing: Option<u32>, side: i32) -> bool {
+        let Some((x, z)) = self.place_of(thing) else {
+            return false;
+        };
+        self.units.iter().any(|u| {
+            u.alive
+                && Some(u.id) != thing
+                && self.is_of_side(u, side)
+                && (u.x - x).hypot(u.z - z) - u.radius() <= REACH_OF_A_PLACE
+        })
+    }
+
+    fn arrived(&self, side: i32) -> bool {
+        let mut units = self
+            .units
+            .iter()
+            .filter(|u| u.alive && !u.kind.is_building() && self.is_of_side(u, side))
+            .peekable();
+        units.peek().is_some() && units.all(|u| !u.is_moving())
+    }
+
+    fn has_lost(&self, side: i32) -> bool {
+        self.script_side_of
+            .iter()
+            .any(|&(id, of)| of == side && !self.units.iter().any(|u| u.id == id && u.alive))
+    }
+
+    fn send(&mut self, side: i32, to: (f32, f32)) {
+        let terrain = battlefield::terrain(self.battle_map);
+        for index in 0..self.units.len() {
+            let unit = &self.units[index];
+            if unit.alive && !unit.kind.is_building() && self.is_of_side(unit, side) {
+                units::send_to_spot(&mut self.units, index, to, terrain);
+            }
+        }
+    }
+
+    fn hunt(&mut self, side: i32) {
+        if !self.script_hunting.contains(&side) {
+            self.script_hunting.push(side);
+        }
+        self.go_hunting(side);
+    }
+
+    fn remove(&mut self, thing: Option<u32>) {
+        self.units.retain(|u| Some(u.id) != thing);
     }
 
     fn destroyed(&self, thing: Option<u32>) -> bool {
@@ -2103,9 +2161,14 @@ impl mission::Battle for Game {
         })
     }
 
+    /// None left is gone: a beacon put out once reached.
     fn set_health(&mut self, thing: Option<u32>, health: i32) {
         if let Some(unit) = self.units.iter_mut().find(|u| Some(u.id) == thing) {
             unit.health = (health as f32).min(unit.max_health());
+            if health <= 0 {
+                unit.alive = false;
+                unit.selected = false;
+            }
         }
     }
 
@@ -2159,6 +2222,40 @@ impl mission::Battle for Game {
 }
 
 impl Game {
+    /// Each of a side's units with nothing to do goes after the nearest of the player's units,
+    /// or buildings if none are left.
+    fn go_hunting(&mut self, side: i32) {
+        for index in 0..self.units.len() {
+            let unit = self.units[index];
+            let idle = unit.target.is_none() && !unit.is_moving();
+            if !unit.alive || unit.kind.is_building() || !idle || !self.is_of_side(&unit, side) {
+                continue;
+            }
+            let distance = |u: &Unit| (u.x - unit.x).hypot(u.z - unit.z);
+            let prey = self
+                .units
+                .iter()
+                .filter(|u| u.alive && u.owner == 0 && unit.can_attack(u, &self.teams))
+                .min_by(|a, b| {
+                    (a.kind.is_building(), distance(a))
+                        .partial_cmp(&(b.kind.is_building(), distance(b)))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            if let Some(id) = prey.map(|u| u.id) {
+                self.units[index].go_after(id);
+            }
+        }
+    }
+
+    /// Whether a thing is on a script's side: the player's own for the player's.
+    fn is_of_side(&self, unit: &Unit, side: i32) -> bool {
+        if side == 0 {
+            unit.owner == 0
+        } else {
+            self.script_side_of.contains(&(unit.id, side))
+        }
+    }
+
     /// Whether the script has made these two of its sides enemies.
     fn script_enemies_of(&self, a: i32, b: i32) -> bool {
         self.script_enemies.contains(&(a.min(b), a.max(b)))
@@ -2269,6 +2366,8 @@ pub struct Game {
     script_side_of: Vec<(u32, i32)>,
     /// The pairs of the script's sides it has made enemies.
     script_enemies: Vec<(i32, i32)>,
+    /// The script's sides told to go after the player's units, for as long as they have any.
+    script_hunting: Vec<i32>,
     mission_lines: Vec<u16>,
     /// Pressed on the battlefield minimap and not yet released.
     minimap_dragging: bool,
@@ -2412,6 +2511,7 @@ impl Game {
             script_sides: 0,
             script_side_of: Vec::new(),
             script_enemies: Vec::new(),
+            script_hunting: Vec::new(),
             mission_lines: Vec::new(),
             minimap_dragging: false,
             units: Vec::new(),
@@ -4397,6 +4497,7 @@ impl Game {
         self.script_sides = 0;
         self.script_side_of.clear();
         self.script_enemies.clear();
+        self.script_hunting.clear();
         // What the map has standing is there before the script first looks: its palace, say,
         // which a script wins on once it is gone.
         self.place_map_objects();
@@ -4473,6 +4574,9 @@ impl Game {
             self.script_clock -= 1.0;
             self.script_updates += 1;
             script.run(self);
+            for side in self.script_hunting.clone() {
+                self.go_hunting(side);
+            }
         }
         self.script = Some(script);
     }
@@ -4511,8 +4615,10 @@ impl Game {
         let name = campaign::kind_name(kind)?;
         let thing = Role::named(name)?;
         let (owner, color) = self.side_owner(side)?;
-        let dug_in = facing.is_some() && name.ends_with(CONSTRUCTION_YARD);
-        let anchor = if dug_in {
+        // A construction yard is one dug in, put down or brought; only one put down stands
+        // about its back row.
+        let dug_in = name.ends_with(CONSTRUCTION_YARD);
+        let anchor = if dug_in && facing.is_some() {
             units::Anchor::Yard
         } else {
             units::Anchor::Corner
@@ -4530,6 +4636,10 @@ impl Game {
         )?;
         self.next_unit_id += 1;
         self.script_side_of.push((placed, side));
+        // A refinery the script puts down brings no harvester: the script puts its own down.
+        if thing.0 == Role::Refinery {
+            self.refineries_served.push(placed);
+        }
         Some(placed)
     }
 
@@ -4671,6 +4781,19 @@ impl Game {
             self.screen,
             Screen::Intro | Screen::Movie(_) | Screen::Opening(_)
         );
+    }
+
+    /// Starts the tutorial: the original's, on its own map as its script has it, where the
+    /// disc has both; on the first map otherwise.
+    fn start_tutorial(&mut self) {
+        let map = maps::by_id(campaign::TUTORIAL_MAP);
+        match map.zip(campaign::tutorial_script()) {
+            Some((map, lines)) => {
+                self.start_battle(map, None, BattleKind::Tutorial);
+                self.start_script(lines);
+            }
+            None => self.start_battle(0, None, BattleKind::Tutorial),
+        }
     }
 
     /// Starts a house's campaign with its first battle.
@@ -5013,17 +5136,22 @@ impl Game {
             }
             if self.screen == Screen::InGame {
                 self.settle_casualties();
+                // The original's tutorial has its enemy do only what its script says.
+                let opponents_play =
+                    self.battle_kind != BattleKind::Tutorial || self.script.is_none();
                 if self.outcome.is_none() {
-                    self.run_opponents();
-                    for (owner, plan) in (1..).zip(&mut self.strategies) {
-                        let money = &mut self.money[owner];
-                        if let Some(building) =
-                            plan.grow(&mut self.units, terrain, money, dt, self.next_unit_id)
-                        {
-                            self.units.push(building);
-                            self.next_unit_id += 1;
+                    if opponents_play {
+                        self.run_opponents();
+                        for (owner, plan) in (1..).zip(&mut self.strategies) {
+                            let money = &mut self.money[owner];
+                            if let Some(building) =
+                                plan.grow(&mut self.units, terrain, money, dt, self.next_unit_id)
+                            {
+                                self.units.push(building);
+                                self.next_unit_id += 1;
+                            }
+                            plan.think(&mut self.units, terrain, &self.teams, dt);
                         }
-                        plan.think(&mut self.units, terrain, &self.teams, dt);
                     }
                     units::settle_power(&mut self.units);
                     self.listen_to_the_base();
@@ -5433,7 +5561,7 @@ impl Game {
             Action::Tab(Tab::Credits) => self.set_screen(Screen::Credits),
             Action::Tab(tab) => self.tab = tab,
             Action::Toggle(toggle) => self.flip(toggle),
-            Action::Tutorial => self.start_battle(0, None, BattleKind::Tutorial),
+            Action::Tutorial => self.start_tutorial(),
             Action::LeaveBattleStats => self.leave_battle_stats(),
             Action::ExitGame => self.leave_battle(),
             Action::ReturnToGame => self.set_screen(Screen::InGame),
@@ -6349,6 +6477,96 @@ mod tests {
         assert_eq!(owner(&game, 1), Some(units::NEUTRAL), "a prisoner, say");
         game.relate(1, 2, true);
         assert_eq!(owner(&game, 1), Some(0), "fighting the player's enemy");
+    }
+
+    /// The first of an owner's units that are not buildings, put on a script's side.
+    fn on_side(game: &mut Game, owner: usize, side: i32) -> usize {
+        let index = game
+            .units
+            .iter()
+            .position(|u| u.alive && u.owner == owner && !u.kind.is_building())
+            .unwrap();
+        game.script_sides = game.script_sides.max(side);
+        game.script_side_of.push((game.units[index].id, side));
+        index
+    }
+
+    #[test]
+    fn a_scripts_side_is_sent_arrives_and_hunts_the_player_for_as_long_as_it_is_told() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let enemy = on_side(&mut game, 1, 2);
+        let (x, z) = (game.units[enemy].x, game.units[enemy].z);
+        let to = (x + 10.0 * battlefield::CELL_SIDE, z);
+        game.send(2, to);
+        let going = game.units[enemy].destination;
+        assert!((going.0 - to.0).hypot(going.1 - to.1) < 3.0 * battlefield::CELL_SIDE);
+        assert!(!game.arrived(2), "on its way");
+        (game.units[enemy].x, game.units[enemy].z) = going;
+        assert!(game.arrived(2));
+        assert!(!game.arrived(3), "a side with no units has not");
+
+        game.hunt(2);
+        let prey = |game: &Game| match game.units[enemy].target {
+            Some(units::Target::Unit(id)) => {
+                game.units.iter().find(|u| u.id == id).map(|u| u.owner)
+            }
+            _ => None,
+        };
+        assert_eq!(prey(&game), Some(0));
+        game.units[enemy].target = None;
+        game.script = Some(Script::new(&[]));
+        game.run_script(1.0 / SCRIPT_UPDATES_PER_SECOND);
+        assert_eq!(prey(&game), Some(0), "still hunting once its prey is gone");
+    }
+
+    #[test]
+    fn a_script_asks_of_a_things_health_and_whether_a_side_has_reached_it() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let enemy = on_side(&mut game, 1, 2);
+        let thing = Some(game.units[enemy].id);
+        game.units[enemy].health = 100.0;
+        let most = game.units[enemy].max_health();
+        assert_eq!(game.health(thing), Some((100.0, most)));
+        let ours = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && !u.kind.is_building());
+        let ours = ours.unwrap();
+        let (x, z) = (game.units[enemy].x, game.units[enemy].z);
+        (game.units[ours].x, game.units[ours].z) = (x + 20.0 * battlefield::CELL_SIDE, z);
+        assert!(!game.reached(thing, 0));
+        let beside = game.units[ours].radius() + 2.0 * battlefield::CELL_SIDE;
+        (game.units[ours].x, game.units[ours].z) = (x + beside, z);
+        assert!(game.reached(thing, 0));
+        assert!(!game.has_lost(2));
+        game.set_health(thing, 0);
+        assert!(
+            game.destroyed(thing),
+            "none left is gone, as a beacon put out"
+        );
+        assert!(game.has_lost(2));
+        game.remove(thing);
+        assert!(
+            game.units.iter().all(|u| Some(u.id) != thing),
+            "off the map"
+        );
+    }
+
+    #[test]
+    fn a_refinery_a_script_puts_down_brings_no_harvester_and_a_yard_it_brings_stands_dug_in() {
+        use mission::Battle;
+        let mut game = in_battle();
+        game.relate(1, 0, true);
+        let (x, z) = game.home;
+        let refinery = game.place(1, 3, (x + 400.0, z + 400.0), 0);
+        let yard = game.bring(1, 4, (x - 400.0, z + 400.0));
+        assert!(refinery.is_some() && yard.is_some());
+        assert!(game.refineries_served.contains(&refinery.unwrap()));
+        let yard = game.units.iter().find(|u| Some(u.id) == yard).unwrap();
+        assert!(yard.deployed && yard.kind.is_building());
+        assert_eq!(game.buildings_left(1), 2);
     }
 
     #[test]

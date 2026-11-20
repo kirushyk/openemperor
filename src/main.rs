@@ -256,9 +256,15 @@ fn main() {
     // The battlefield's sounds of firing and dying, waiting their turn and playing.
     #[cfg(target_os = "macos")]
     let mut effects = sounds::Effects::default();
-    // Until when the mission's Mentat speaks, whom nothing else said cuts off.
+    // Until when the mission's Mentat speaks, whom nothing else said cuts off; what the
+    // Mentat says now; and the lines waiting their turn. A line already said or waiting is not
+    // asked for again, as a script asks for one each update for as long as what it says holds.
     #[cfg(target_os = "macos")]
     let mut mentat_until = Instant::now();
+    #[cfg(target_os = "macos")]
+    let mut mentat_saying: Option<u16> = None;
+    #[cfg(target_os = "macos")]
+    let mut mentat_waiting: std::collections::VecDeque<u16> = Default::default();
     // The volumes last given to the backend, to give them again only when they change.
     let mut volumes = None;
     let mut last = Instant::now();
@@ -305,10 +311,24 @@ fn main() {
         }
         // What the mission's Mentat says, off whichever disc has it.
         #[cfg(target_os = "macos")]
+        if now >= mentat_until {
+            mentat_saying = None;
+        }
+        if !game.in_battle {
+            mentat_waiting.clear();
+        }
         for number in game.take_mission_lines() {
+            if mentat_saying != Some(number) && !mentat_waiting.contains(&number) {
+                mentat_waiting.push_back(number);
+            }
+        }
+        while mentat_saying.is_none()
+            && let Some(number) = mentat_waiting.pop_front()
+        {
             if let Some(line) = sounds::mission_line(number) {
                 platform.play_line(&line.samples, line.channels, line.rate);
                 mentat_until = now + std::time::Duration::from_secs_f32(line.seconds());
+                mentat_saying = Some(number);
             }
         }
         // What the player's units answer is said over the music.

@@ -67,8 +67,8 @@ Their names are not on the disc. These are what their use in `ATStart.tok` shows
 | `K162`, `K163`, `K164` | Declarations of variables, of three types | `K162(v0)` at the top |
 | `K165` … `K167` | `if (…)` and its end | `K165(F0() K168 550)` … `K167` |
 | `K168` | `==` | |
-| `K171` | A comparison, `<` it seems | `F35(F14()) K171 5` |
-| `K170`, `K172`, `K173` | `>=`, `>`, `<=` | `F37(F14(),<ATInfantry>) K170 6`: the tutorial's six infantry made |
+| `K169` | `!=` | `F17(v27) K169 F14()`: a building not the player's |
+| `K170`, `K171`, `K172`, `K173` | `>=`, `<=`, `>`, `<` | `v32 K171 25`: the tutorial's step once it is 25; `F0() K173 15000`: before update 15000 |
 | `K174`, `K175` | `&&`, `\|\|` | |
 | `K176`, `K177` | `FALSE`, `TRUE` | |
 | `K178` | `+` | `F0() K178 260` |
@@ -92,7 +92,6 @@ Their names are not on the disc. These are what their use in `ATStart.tok` shows
 | `F60(a, b)` | Makes side `a` an enemy of `b` | given both ways |
 | `F62(side, n)` | Gives a side money | `F62(v0,10000)` |
 | `F83(truth)` | Ends the battle, won if true and lost if false | `F83(TRUE)` once the enemy's palace and yards are gone |
-| `F84()` | Not known; follows `F83` | |
 | `F37(side, kind)` | How many things of a kind a side has; for `F16()`, the map's own too | `F37(F16(),<HKPalace>) K168 0` |
 | `F8()` | Where reinforcements come in; taken as the player's base | `F21(F14(),<FRFremen>,F8())` |
 | `F11(place)` | A place near one; taken as that place | `F11(F12(F16()))` |
@@ -107,6 +106,18 @@ Their names are not on the disc. These are what their use in `ATStart.tok` shows
 | `F54(thing, n)` | Sets a thing's health | a camp's windtraps at 90 to 320 |
 | `F57(thing, kind, side)` | Turns a thing into a kind, for a side | prisoners freed as Fremen |
 | `F59(a, b)` | Makes side `a` a friend of `b` | given both ways |
+| `F24(thing, side)` | Whether a side has a unit at a thing; taken as within three squares of its edge | `F24(v61,F14())`: the tutorial's beacon reached |
+| `F29(thing)`, `F30(thing)` | A thing's health and the most it has | `F29(v0) K168 F30(v0)`: the tutorial's windtrap mended |
+| `F36(side)` | How many buildings a side has left | with `F35`, the tutorial's enemy base gone |
+| `F38(side)` | Whether a side's units have all got where they were sent | after `F71` |
+| `F42(a, b)` | Taken as: whether `b` has lost any of what the script gave it, to `a` | the tutorial's wave fought, not only met by the worm |
+| `F64(side)` | A side's units go after the player's, and keep at it | the wave the worm left |
+| `F71(side, place)` | Sends a side's units to a place | |
+| `F82(place)` | A worm comes up at a place; not done yet, as there are no worms | `F82(F12(v43))` |
+| `F84()` | The tutorial is over and done; taken as won | 27.5 s after its last line |
+| `K135(thing)` | Takes a thing off the map | the tutorial's walls opened for the wave |
+| `K144(n)` | A step of the tutorial, as the number; what else it does is not known | `v32 K180 K144(11)` |
+| `F63`, `F85`, `F96`, `F97`, `F107`, `F108` | Not known; the tutorial runs without them | `F97(v35,20)` as a beacon goes down |
 | `F100(place)`, `F114(place)` | The camera looks at a place; the second in the midst of the battle | `F100(v13)`: the player's base |
 | `F101(place, n)`, `F115(place, n)` | The camera glides to a place over `n` updates | `F101(v16,50)`: to the enemy's base |
 | `F105(degrees, way)` | The camera circles where it looks, so many degrees an update, `1` one way and `2` the other | `F105(2,1)`: once round in the 180 updates before `F113` |

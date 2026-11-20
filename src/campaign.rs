@@ -348,6 +348,19 @@ const BATTLE_SCRIPTS: [(Faction, Mission, &str); 16] = {
 };
 
 /// The script of a house's battle past the territories, if the disc has it.
+/// The original's tutorial: its map and its script.
+pub const TUTORIAL_MAP: &str = "#x1";
+const TUTORIAL_SCRIPT: &str = "ATTutorial";
+
+/// The tutorial's script, if the disc has it.
+pub fn tutorial_script() -> Option<&'static [Vec<Token>]> {
+    data()?
+        .mission_scripts
+        .iter()
+        .find(|(listed, _)| listed == TUTORIAL_SCRIPT)
+        .map(|(_, script)| script.as_slice())
+}
+
 pub fn battle_script(house: Faction, mission: Mission) -> Option<&'static [Vec<Token>]> {
     let &(.., name) = BATTLE_SCRIPTS
         .iter()
@@ -1195,7 +1208,9 @@ pub(crate) mod tests {
             tech,
             new_units,
             start_scripts: vec![(Faction::Atreides, start)],
-            kinds: ["ATConYard", "HKPalace", "MCV"].map(String::from).to_vec(),
+            kinds: ["ATConYard", "HKPalace", "MCV", "ATRefinery", "HKConYard"]
+                .map(String::from)
+                .to_vec(),
             // The one that fails listed first, as the disc may.
             mission_scripts: vec![
                 (

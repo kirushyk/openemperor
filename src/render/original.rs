@@ -2367,8 +2367,11 @@ fn ends_of(shape: &Shape, unit: &Unit) -> Vec<(f32, f32, f32)> {
 /// the far end of each beam, as it is posed now. None without the disc's model, or for a
 /// building.
 pub fn searchlight_spots(unit: &Unit, time: f32) -> Vec<[f32; 3]> {
-    // A building's lights, such as a windtrap's glowing panels, light only themselves.
-    let Some(shape) = shape_of(unit).filter(|_| unit.kind != UnitKind::Building) else {
+    // A building's lights, such as a windtrap's glowing panels, light only themselves; but a
+    // searchlight's beam, as the Harkonnen compound's of the Atreides' first battle, lights
+    // where it points.
+    let lights_ground = unit.kind != UnitKind::Building || unit.role == Role::Prop(Prop::Spotlight);
+    let Some(shape) = shape_of(unit).filter(|_| lights_ground) else {
         return Vec::new();
     };
     let (body, head) = places(shape, unit);
@@ -3414,6 +3417,35 @@ mod tests {
                 .filter(|&&y| (y - crate::units::pad_top()).abs() < 1.0);
             assert!(deck.count() >= 4, "{name}: {heights:?}");
         }
+    }
+
+    #[test]
+    fn a_searchlight_on_the_disc_lights_the_ground_where_its_beam_sweeps() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        let mut light = Unit::for_test(1000.0, 1000.0, UnitKind::Building);
+        light.role = Role::Prop(Prop::Spotlight);
+        let (first, later) = (
+            searchlight_spots(&light, 0.0),
+            searchlight_spots(&light, 2.0),
+        );
+        assert_eq!((first.len(), later.len()), (1, 1));
+        let [x, y, z] = first[0];
+        assert!(
+            (x - light.x).hypot(z - light.z) > 100.0,
+            "out where it points"
+        );
+        assert!(y < 20.0, "on the ground");
+        assert!((later[0][0] - x).hypot(later[0][2] - z) > 30.0, "sweeping");
+        let mut windtrap = Unit::for_test(1000.0, 1000.0, UnitKind::Building);
+        windtrap.role = Role::Windtrap;
+        assert!(
+            searchlight_spots(&windtrap, 0.0).is_empty(),
+            "lights only itself"
+        );
     }
 
     #[test]

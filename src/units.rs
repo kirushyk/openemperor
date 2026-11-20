@@ -1901,6 +1901,24 @@ impl Role {
         !matches!(self, Role::Wall | Role::Windtrap | Role::Prop(_)) && !self.is_incidental()
     }
 
+    /// The crate it leaves where it stood once destroyed, of those we have: the rules'
+    /// `ObjectTypeWhenGone`, a money crate for each wreck and a projector's crate, holding an
+    /// infiltrator, for an Ixian transport.
+    pub fn crate_when_gone(self) -> Option<CrateKind> {
+        let name = match self {
+            Role::Prop(prop) => prop.rules_name(),
+            Role::Extra(extra) => extra.rules_name(),
+            _ => return None,
+        };
+        match name {
+            "INBuggyWreck" | "INHarvesterWreck" | "INMedicalWreck" | "INSandCrawlerWreck" => {
+                Some(CrateKind::Money)
+            }
+            "IXTransport" => Some(CrateKind::Infiltrator),
+            _ => None,
+        }
+    }
+
     /// Whether it is nobody's: a prop or an extra kind of no side's, as a map puts it down.
     pub fn is_incidental(self) -> bool {
         match self {

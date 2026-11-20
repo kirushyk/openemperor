@@ -4416,6 +4416,23 @@ impl Game {
     fn settle_casualties(&mut self) {
         let mut lost_names = Vec::new();
         let mut lost_speeches = Vec::new();
+        // What leaves a crate behind leaves it where it stood, to lie there until found.
+        let left_behind: Vec<units::Crate> = self
+            .units
+            .iter()
+            .filter(|u| !u.alive)
+            .filter_map(|u| {
+                let kind = u.role.crate_when_gone()?;
+                Some(units::Crate {
+                    x: u.x,
+                    z: u.z,
+                    kind,
+                    gift: kind.gift(),
+                    left: f32::INFINITY,
+                })
+            })
+            .collect();
+        self.crates.extend(left_behind);
         for unit in self.units.iter().filter(|u| !u.alive) {
             // Up in the air and not hit hard, it comes down in one piece. Otherwise it goes up
             // here, the harder it was hit past dead the more so.
@@ -9718,6 +9735,27 @@ mod tests {
             Some(Faction::Harkonnen),
             "a Harkonnen MCV"
         );
+    }
+
+    #[test]
+    fn a_wreck_destroyed_leaves_a_money_crate_where_it_stood_and_other_props_none() {
+        let mut game = in_battle();
+        let terrain = battlefield::terrain(game.battle_map);
+        let (x, z) = game.home;
+        let at = |dx: f32| (x + dx, z + 600.0);
+        let side = (units::NEUTRAL, TeamColor::Yellow);
+        let crates_before = game.crates.len();
+        for (dx, prop) in [(0.0, units::Prop::BuggyWreck), (200.0, units::Prop::Barrel)] {
+            let mut prop = units::new_building(terrain, at(dx), Role::Prop(prop), side, 7_000);
+            prop.id += dx as u32;
+            prop.alive = false;
+            game.units.push(prop);
+        }
+        game.update(0.05);
+        let left: Vec<_> = game.crates[crates_before..].to_vec();
+        assert_eq!(left.len(), 1, "only the wreck's");
+        assert_eq!(left[0].kind, units::CrateKind::Money);
+        assert!((left[0].x - at(0.0).0).abs() < 1.0 && (left[0].z - at(0.0).1).abs() < 1.0);
     }
 
     #[test]

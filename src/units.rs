@@ -2885,6 +2885,9 @@ pub struct Unit {
     /// The carryall that has hold of it, if one has: an enemy's stealing it, or for a
     /// harvester one of its own side's carrying it.
     pub theft: Option<Theft>,
+    /// Whether it is the primary of its owner's buildings of its kind and house: the one that
+    /// makes what they make. Where none is, the first of them put down is.
+    pub primary: bool,
     /// How it is getting on with going somewhere.
     stall: Stall,
     /// The most it goes at while marching with others, at the pace of the slowest of them.
@@ -3033,11 +3036,6 @@ impl Unit {
         let making = self.making.iter().filter(|(making, _)| *making == role);
         let waiting = self.queue.iter().flatten().filter(|&&waits| waits == role);
         making.count() + waiting.count()
-    }
-
-    /// How many units it has waiting behind the one it is making.
-    fn waiting(&self) -> usize {
-        self.queue.iter().flatten().count()
     }
 
     /// Moves on to the next unit waiting, if there is one.
@@ -3934,6 +3932,7 @@ impl Unit {
             deployment: Deployment::Idle,
             reloading: 0.0,
             theft: None,
+            primary: false,
             stall: Stall::NOT_STALLED,
             load: 0.0,
             harvest: Harvest::Idle,
@@ -4096,6 +4095,7 @@ fn place_unit(
         deployment: Deployment::Idle,
         reloading: 0.0,
         theft: None,
+        primary: false,
         stall: Stall::NOT_STALLED,
         load: 0.0,
         harvest: if role == Role::Harvester {
@@ -4152,27 +4152,67 @@ fn produce(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, owner: usize, i
     produce_at(units, terrain, role, &maker, id)
 }
 
-/// Whether an owner has a building of the right kind with nothing to do.
-pub fn has_free_maker(units: &[Unit], role: Role, owner: usize) -> bool {
+/// Whether an owner's primary building of the right kind, of this house if one is given, has
+/// nothing to do.
+pub fn has_free_maker(units: &[Unit], role: Role, owner: usize, house: Option<Faction>) -> bool {
     role.made_in().is_some()
-        && units
-            .iter()
-            .any(|u| u.owner == owner && u.can_make(role) && u.making.is_none())
+        && primary_maker(units, role, owner, house).is_some_and(|at| units[at].making.is_none())
 }
 
-/// Gives a role to the owner's building of the right kind that has the least to do: at once if
-/// it is free, otherwise at the end of its queue. Returns whether one could take it.
-pub fn start_making(units: &mut [Unit], role: Role, owner: usize) -> bool {
+/// Which of an owner's buildings makes a role, of this house if one is given: of those that
+/// can, the one made primary, or else the first put down. Only it makes them; the others of
+/// its kind stand by.
+pub fn primary_maker(
+    units: &[Unit],
+    role: Role,
+    owner: usize,
+    house: Option<Faction>,
+) -> Option<usize> {
+    (0..units.len())
+        .filter(|&i| {
+            let u = &units[i];
+            u.owner == owner && u.can_make(role) && house.is_none_or(|house| u.house == house)
+        })
+        .min_by_key(|&i| (!units[i].primary, units[i].id))
+}
+
+/// Whether a building is the primary of two or more of its owner's of its kind and house that
+/// make units.
+pub fn is_primary_of_several(units: &[Unit], unit: &Unit) -> bool {
+    let mut kin = units.iter().filter(|u| {
+        u.alive
+            && !u.is_under_construction()
+            && u.owner == unit.owner
+            && u.role == unit.role
+            && u.house == unit.house
+            && u.role.makes_units()
+    });
+    let first = kin.clone().min_by_key(|u| (!u.primary, u.id));
+    kin.nth(1).is_some() && first.is_some_and(|first| first.id == unit.id)
+}
+
+/// Makes a building the primary of its owner's of its kind and house.
+pub fn make_primary(units: &mut [Unit], index: usize) {
+    let chosen = units[index];
+    for unit in units
+        .iter_mut()
+        .filter(|u| u.owner == chosen.owner && u.role == chosen.role && u.house == chosen.house)
+    {
+        unit.primary = unit.id == chosen.id;
+    }
+}
+
+/// Gives a role to the owner's primary building of the right kind, of this house if one is
+/// given: at once if it is free, otherwise at the end of its queue. Returns whether it could
+/// take it.
+pub fn start_making(units: &mut [Unit], role: Role, owner: usize, house: Option<Faction>) -> bool {
     if role.made_in().is_none() {
         return false;
     }
-    let least_busy = units
-        .iter_mut()
-        .filter(|u| u.owner == owner && u.can_make(role))
-        .min_by_key(|u| (u.making.is_some(), u.waiting()));
-    let Some(building) = least_busy else {
+    let Some(at) = primary_maker(units, role, owner, house) else {
         return false;
     };
+    let building = &mut units[at];
     if building.making.is_none() {
         building.making = Some((role, role.build_seconds()));
         return true;
@@ -4187,10 +4227,16 @@ pub fn start_making(units: &mut [Unit], role: Role, owner: usize) -> bool {
 /// Calls off one order of a role from the owner's building with the most waiting: the last of
 /// them waiting, wherever it is in the queue, or else the one being made, whose money so far
 /// comes back, and then the next one starts. Returns whether there was one.
-pub fn cancel_making(units: &mut [Unit], role: Role, owner: usize, money: &mut i32) -> bool {
+pub fn cancel_making(
+    units: &mut [Unit],
+    role: Role,
+    (owner, house): (usize, Option<Faction>),
+    money: &mut i32,
+) -> bool {
     let building = units
         .iter_mut()
         .filter(|u| u.alive && u.owner == owner && u.orders_for(role) > 0)
+        .filter(|u| house.is_none_or(|house| u.house == house))
         .max_by_key(|u| u.orders_for(role));
     let Some(building) = building else {
         return false;
@@ -5654,6 +5700,7 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                         (units[other_index].owner, units[other_index].color) =
                             (units[i].owner, units[i].color);
                         units[other_index].selected = false;
+                        units[other_index].primary = false;
                         units[other_index].gathering = None;
                         units[other_index].making = None;
                         units[other_index].queue = [None; QUEUE_ROOM];
@@ -9455,10 +9502,13 @@ mod tests {
                 .into_iter()
                 .chain([Role::Scout, Role::Engineer, Role::Mcv])
             {
-                assert!(has_free_maker(&units, role, 0), "{house:?} {role:?}");
+                assert!(has_free_maker(&units, role, 0, None), "{house:?} {role:?}");
             }
-            assert!(!has_free_maker(&units, other, 0), "{house:?} {other:?}");
-            assert!(!start_making(&mut units, other, 0));
+            assert!(
+                !has_free_maker(&units, other, 0, None),
+                "{house:?} {other:?}"
+            );
+            assert!(!start_making(&mut units, other, 0, None));
             let new = units.len();
             assert!(produce(&mut units, open_ground(), own[1], 0, 70));
             assert_eq!(units[new].house, house, "made by its house");
@@ -9665,14 +9715,14 @@ mod tests {
         let mut units = base_of(0);
         let barracks = units.iter().position(|u| u.role == Role::Barracks).unwrap();
         let known = units.len();
-        assert!(start_making(&mut units, Role::Scout, 0));
+        assert!(start_making(&mut units, Role::Scout, 0, None));
         assert!(
-            start_making(&mut units, Role::AtSniper, 0),
+            start_making(&mut units, Role::AtSniper, 0, None),
             "it waits its turn"
         );
         assert_eq!(units[barracks].orders_for(Role::AtSniper), 1);
         assert!(
-            start_making(&mut units, Role::AtTrike, 0),
+            start_making(&mut units, Role::AtTrike, 0, None),
             "the factory is not"
         );
         assert_eq!(units.len(), known, "nothing appears yet");
@@ -9692,8 +9742,8 @@ mod tests {
             "the next one starts"
         );
         assert_eq!(units[barracks].orders_for(Role::AtSniper), 1);
-        assert_eq!(units[barracks].waiting(), 0);
-        assert!(!has_free_maker(&units, Role::Scout, 0));
+        assert!(units[barracks].queue.iter().all(Option::is_none));
+        assert!(!has_free_maker(&units, Role::Scout, 0, None));
         work_on_making(
             &mut units,
             &mut [100_000; 8],
@@ -9701,7 +9751,7 @@ mod tests {
         );
         finish_making(&mut units, open_ground(), barracks, 51).unwrap();
         assert_eq!(units[barracks].making, None, "nothing left");
-        assert!(has_free_maker(&units, Role::Scout, 0));
+        assert!(has_free_maker(&units, Role::Scout, 0, None));
     }
 
     #[test]
@@ -9716,7 +9766,7 @@ mod tests {
             Role::AtSniper,
         ];
         for role in order {
-            assert!(start_making(&mut units, role, 0));
+            assert!(start_making(&mut units, role, 0, None));
         }
         let mut made = Vec::new();
         for id in 0..order.len() as u32 {
@@ -9727,11 +9777,14 @@ mod tests {
         }
         assert_eq!(made, order);
 
-        assert!(start_making(&mut units, Role::Scout, 0), "making it");
+        assert!(start_making(&mut units, Role::Scout, 0, None), "making it");
         for _ in 0..QUEUE_ROOM {
-            assert!(start_making(&mut units, Role::Scout, 0));
+            assert!(start_making(&mut units, Role::Scout, 0, None));
         }
-        assert!(!start_making(&mut units, Role::Scout, 0), "no more room");
+        assert!(
+            !start_making(&mut units, Role::Scout, 0, None),
+            "no more room"
+        );
     }
 
     #[test]
@@ -9746,13 +9799,13 @@ mod tests {
             Role::Engineer,
         ];
         for role in order {
-            start_making(&mut units, role, 0);
+            start_making(&mut units, role, 0, None);
         }
         work_on_making(&mut units, &mut [100_000; 8], 1.0);
         let left = units[barracks].making.unwrap().1;
 
         // From the middle of the queue, with what is being made carrying on.
-        assert!(cancel_making(&mut units, Role::AtSniper, 0, &mut 0));
+        assert!(cancel_making(&mut units, Role::AtSniper, (0, None), &mut 0));
         assert_eq!(units[barracks].orders_for(Role::AtSniper), 1);
         assert_eq!(units[barracks].making, Some((Role::Scout, left)));
         assert_eq!(
@@ -9766,7 +9819,7 @@ mod tests {
         );
 
         // The one being made: the next starts from the beginning.
-        assert!(cancel_making(&mut units, Role::Scout, 0, &mut 0));
+        assert!(cancel_making(&mut units, Role::Scout, (0, None), &mut 0));
         assert_eq!(
             units[barracks].making,
             Some((Role::AtSniper, Role::AtSniper.build_seconds()))
@@ -9774,32 +9827,43 @@ mod tests {
         assert_eq!(units[barracks].orders_for(Role::Scout), 0);
 
         assert!(
-            !cancel_making(&mut units, Role::Scout, 0, &mut 0),
+            !cancel_making(&mut units, Role::Scout, (0, None), &mut 0),
             "none left"
         );
-        assert!(cancel_making(&mut units, Role::AtSniper, 0, &mut 0));
-        assert!(cancel_making(&mut units, Role::Engineer, 0, &mut 0));
-        assert!(cancel_making(&mut units, Role::Engineer, 0, &mut 0));
+        assert!(cancel_making(&mut units, Role::AtSniper, (0, None), &mut 0));
+        assert!(cancel_making(&mut units, Role::Engineer, (0, None), &mut 0));
+        assert!(cancel_making(&mut units, Role::Engineer, (0, None), &mut 0));
         assert_eq!(units[barracks].making, None);
-        assert!(has_free_maker(&units, Role::Scout, 0));
+        assert!(has_free_maker(&units, Role::Scout, 0, None));
     }
 
     #[test]
-    fn with_two_buildings_of_a_kind_the_work_goes_to_the_one_with_less_to_do() {
+    fn with_two_buildings_of_a_kind_only_the_primary_makes_and_the_first_is_it_until_another_is() {
         let mut units = base_of(0);
-        let mut second = *units.iter().find(|u| u.role == Role::Barracks).unwrap();
+        let first = units.iter().position(|u| u.role == Role::Barracks).unwrap();
+        let mut second = units[first];
         second.x += 452.5;
         second.id = 40;
         units.push(second);
+        let second = units.len() - 1;
+        let orders =
+            |units: &[Unit]| [first, second].map(|at: usize| units[at].orders_for(Role::Scout));
         for _ in 0..4 {
-            assert!(start_making(&mut units, Role::Scout, 0));
+            assert!(start_making(&mut units, Role::Scout, 0, None));
         }
-        let orders: Vec<usize> = units
-            .iter()
-            .filter(|u| u.role == Role::Barracks)
-            .map(|u| u.orders_for(Role::Scout))
-            .collect();
-        assert_eq!(orders, [2, 2]);
+        assert_eq!(orders(&units), [4, 0], "the first put down");
+        assert!(is_primary_of_several(&units, &units[first]));
+        make_primary(&mut units, second);
+        assert!(!is_primary_of_several(&units, &units[first]));
+        assert!(start_making(&mut units, Role::Scout, 0, None));
+        assert_eq!(orders(&units), [4, 1], "the one made primary");
+        units[second].alive = false;
+        assert_eq!(
+            primary_maker(&units, Role::Scout, 0, None),
+            Some(first),
+            "taking over"
+        );
+        assert!(!is_primary_of_several(&units, &units[first]), "alone now");
     }
 
     #[test]
@@ -11717,7 +11781,7 @@ mod tests {
         let mut units = base_of(0);
         let barracks = units.iter().position(|u| u.role == Role::Barracks).unwrap();
         let (cost, seconds) = (Role::Engineer.cost(), Role::Engineer.build_seconds());
-        start_making(&mut units, Role::Engineer, 0);
+        start_making(&mut units, Role::Engineer, 0, None);
         let mut money = [cost / 4];
         work_on_making(&mut units, &mut money, seconds / 2.0);
         assert_eq!(money[0], 0, "it spends what there is");
@@ -11741,17 +11805,27 @@ mod tests {
     #[test]
     fn calling_off_what_is_being_made_gives_back_what_was_paid_for_it() {
         let mut units = base_of(0);
-        start_making(&mut units, Role::Engineer, 0);
-        start_making(&mut units, Role::Scout, 0);
+        start_making(&mut units, Role::Engineer, 0, None);
+        start_making(&mut units, Role::Scout, 0, None);
         let mut money = [10_000];
         work_on_making(&mut units, &mut money, Role::Engineer.build_seconds() / 2.0);
         let paid = 10_000 - money[0];
         assert_eq!(paid, Role::Engineer.cost() / 2);
         let owed = Role::Engineer.cost() - paid + Role::Scout.cost();
         assert_eq!(still_owed(&units, 0), owed);
-        assert!(cancel_making(&mut units, Role::Scout, 0, &mut money[0]));
+        assert!(cancel_making(
+            &mut units,
+            Role::Scout,
+            (0, None),
+            &mut money[0]
+        ));
         assert_eq!(money[0], 10_000 - paid, "nothing was paid for what waited");
-        assert!(cancel_making(&mut units, Role::Engineer, 0, &mut money[0]));
+        assert!(cancel_making(
+            &mut units,
+            Role::Engineer,
+            (0, None),
+            &mut money[0]
+        ));
         assert_eq!(money[0], 10_000);
     }
 

@@ -33,7 +33,10 @@ const PICK_RADIUS: f32 = 25.0;
 /// What a cell of a build menu holds: something to make, or the palace's superweapon to fire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entry {
+    /// Something the player's own house makes.
     Make(Role),
+    /// Something another house makes, in a building of that house the player has taken.
+    MakeOf(Role, Faction),
     Superweapon,
     /// An upgrade of the player's building of this role.
     Upgrade(Role),
@@ -1961,6 +1964,8 @@ fn territory_buttons(width: f32, height: f32) -> Vec<Button> {
 /// How many of a mission script's updates go by in a second of battle: a guess, which puts
 /// the Atreides' first reinforcements in at five seconds and the Mentat's call to prepare at
 /// forty-three.
+/// How soon a second click on the same building counts as a double click.
+const DOUBLE_CLICK_SECONDS: f32 = 0.4;
 const SCRIPT_UPDATES_PER_SECOND: f32 = 10.0;
 /// How near a script's place a unit's side is to have reached it: three squares, as a vehicle
 /// sent to a beacon stops within, big as an MCV is.
@@ -2381,6 +2386,11 @@ pub struct Game {
     /// What the player's units have just answered, and who answered, until it is heard.
     reply: Option<(Said, Vec<(Role, Faction)>)>,
     pub site: Site,
+    /// Whose house the building on its way is of: the player's, or the house of a
+    /// construction yard of another's the player has taken.
+    site_house: Faction,
+    /// The building last picked with a click, and when, to tell a second click on it.
+    last_pick: Option<(u32, f32)>,
     /// Seconds until opponents next build something.
     opponent_random: u32,
     /// Which way what is being placed will look.
@@ -2522,6 +2532,8 @@ impl Game {
             following: None,
             reply: None,
             site: Site::Idle,
+            site_house: Faction::Atreides,
+            last_pick: None,
             opponent_random: 1,
             start_random: 1,
             placing_facing: units::Facing::default(),
@@ -2780,11 +2792,12 @@ impl Game {
     }
 
     /// What a build menu shows, as the original's does: of what the player's house and their
-    /// allies make there, in its order, what can be made now or is being made, one to a cell.
+    /// allies make there, in its order, what can be made now or is being made, one to a cell;
+    /// and after it, what each other house whose buildings the player has taken makes there.
     pub fn menu(&self, tab: BuildTab) -> Vec<Entry> {
         let house = self.faction_of(0);
         let allies = self.player_allies();
-        let listed: Vec<Entry> = match tab {
+        let own: Vec<Entry> = match tab {
             BuildTab::Infantry => infantry_order(house)
                 .iter()
                 .copied()
@@ -2810,20 +2823,60 @@ impl Game {
                 .chain([Entry::Purchase, Entry::CancelOrder])
                 .collect(),
         };
-        listed
-            .into_iter()
+        let others = self.houses_taken().into_iter().flat_map(|other| {
+            let made: Vec<Role> = match tab {
+                BuildTab::Infantry => infantry_order(other).to_vec(),
+                BuildTab::Vehicles => vehicle_order(other)
+                    .iter()
+                    .filter_map(|&entry| match entry {
+                        Entry::Make(role) => Some(role),
+                        _ => None,
+                    })
+                    .collect(),
+                BuildTab::Buildings => building_order(other)
+                    .filter(|role| !matches!(role, Role::Palace(_)) || self.superweapon_allowed())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            made.into_iter().map(move |role| Entry::MakeOf(role, other))
+        });
+        own.into_iter()
+            .chain(others)
             .filter(|&entry| match entry {
                 Entry::Superweapon => self.superweapon().is_some(),
                 Entry::Upgrade(role) => {
                     self.can_upgrade(role) || self.upgrade_progress(role).is_some()
                 }
                 Entry::Order(_) | Entry::Purchase | Entry::CancelOrder => self.has_starport(),
-                Entry::Make(role) => {
-                    self.can_produce(role)
-                        || self.making_progress(role).is_some()
-                        || self.queue_badge(role).is_some()
-                        || self.is_ready_to_place(role)
-                }
+                Entry::Make(role) => self.is_on_offer(role, house),
+                Entry::MakeOf(role, other) => self.is_on_offer(role, other),
+            })
+            .collect()
+    }
+
+    /// Whether a house's role shows in a menu: it can be made now, or is being made, waits,
+    /// or is ready to be put down.
+    fn is_on_offer(&self, role: Role, house: Faction) -> bool {
+        self.can_produce_of(role, house)
+            || self.making_progress_of(role, house).is_some()
+            || self.queue_badge_of(role, house).is_some()
+            || self.is_ready_to_place_of(role, house)
+    }
+
+    /// The other houses than the player's whose buildings that make something the player has
+    /// taken, in the order of the houses.
+    fn houses_taken(&self) -> Vec<Faction> {
+        let own = self.faction_of(0);
+        [Faction::Atreides, Faction::Harkonnen, Faction::Ordos]
+            .into_iter()
+            .filter(|&house| {
+                house != own
+                    && self.units.iter().any(|u| {
+                        u.alive
+                            && u.owner == 0
+                            && u.house == house
+                            && (u.role.makes_units() || (u.role == Role::Mcv && u.deployed))
+                    })
             })
             .collect()
     }
@@ -2835,8 +2888,14 @@ impl Game {
 
     /// What a cell of a build menu makes.
     pub fn build_role(&self, tab: BuildTab, cell: usize) -> Option<Role> {
+        self.build_make(tab, cell).map(|(role, _)| role)
+    }
+
+    /// What a cell of a build menu makes, and of which house.
+    pub fn build_make(&self, tab: BuildTab, cell: usize) -> Option<(Role, Faction)> {
         match self.build_entry(tab, cell)? {
-            Entry::Make(role) => Some(role),
+            Entry::Make(role) => Some((role, self.faction_of(0))),
+            Entry::MakeOf(role, house) => Some((role, house)),
             _ => None,
         }
     }
@@ -3015,7 +3074,7 @@ impl Game {
             let mut spare = money - saving - units::still_owed(&self.units, owner);
             while standing < OPPONENT_UNITS_AT_MOST {
                 let affordable = |role: Role| {
-                    role.cost() <= spare && units::has_free_maker(&self.units, role, owner)
+                    role.cost() <= spare && units::has_free_maker(&self.units, role, owner, None)
                 };
                 let refineries = has(&self.units, Role::Refinery);
                 let short = OPPONENT_ECONOMY.into_iter().find(|&(role, each)| {
@@ -3035,7 +3094,7 @@ impl Game {
                         can_build[(x.abs() * 22.1) as usize % can_build.len()]
                     }
                 };
-                units::start_making(&mut self.units, role, owner);
+                units::start_making(&mut self.units, role, owner, None);
                 spare -= role.cost();
                 standing += 1;
             }
@@ -3184,15 +3243,22 @@ impl Game {
 
     /// How much of this role the player's building has made so far, from 0 to 1, if it is
     /// making one.
+    #[cfg(test)]
     pub fn making_progress(&self, role: Role) -> Option<f32> {
+        self.making_progress_of(role, self.faction_of(0))
+    }
+
+    /// How much of this role of this house the player's building has made so far.
+    pub fn making_progress_of(&self, role: Role, house: Faction) -> Option<f32> {
         if let Site::Building(on_site, left) = self.site
             && on_site == role
+            && self.site_house == house
         {
             return Some(1.0 - left / role.build_seconds());
         }
         self.units
             .iter()
-            .filter(|u| u.alive && u.owner == 0)
+            .filter(|u| u.alive && u.owner == 0 && u.house == house)
             .find_map(|u| match u.making {
                 Some((making, left)) if making == role => {
                     Some(1.0 - left / role.build_seconds().max(0.001))
@@ -3203,18 +3269,24 @@ impl Game {
 
     /// The number to show on this role's button: how many are ordered, once there is more than
     /// the one its dimming already shows.
+    #[cfg(test)]
     pub fn queue_badge(&self, role: Role) -> Option<usize> {
+        self.queue_badge_of(role, self.faction_of(0))
+    }
+
+    /// The number to show on the button of this role of this house.
+    pub fn queue_badge_of(&self, role: Role, house: Faction) -> Option<usize> {
         // Walls show how many squares are still to go up, the one on its way among them.
-        if role == Role::Wall && self.wall_plan.len() > 1 {
+        if role == Role::Wall && self.wall_plan.len() > 1 && self.site_house == house {
             return Some(self.wall_plan.len());
         }
         let orders: usize = self
             .units
             .iter()
-            .filter(|u| u.alive && u.owner == 0)
+            .filter(|u| u.alive && u.owner == 0 && u.house == house)
             .map(|u| u.orders_for(role))
             .sum();
-        let shown_by_dimming = usize::from(self.making_progress(role).is_some());
+        let shown_by_dimming = usize::from(self.making_progress_of(role, house).is_some());
         (orders > shown_by_dimming).then_some(orders)
     }
 
@@ -3298,7 +3370,15 @@ impl Game {
     /// Whether the player has what makes this: the building it is made in, or for a building a
     /// deployed MCV, and what else it needs standing.
     pub fn can_produce(&self, role: Role) -> bool {
-        self.units.iter().any(|u| u.owner == 0 && u.can_make(role))
+        self.can_produce_of(role, self.faction_of(0))
+    }
+
+    /// Whether the player has a building of this house that can make this role now, with
+    /// what it needs standing.
+    pub fn can_produce_of(&self, role: Role, house: Faction) -> bool {
+        self.units
+            .iter()
+            .any(|u| u.owner == 0 && u.house == house && u.can_make(role))
             && role.needs().is_none_or(|needed| self.has_standing(needed))
     }
 
@@ -3374,7 +3454,7 @@ impl Game {
         let side = (0, self.player_color());
         let at = battlefield::grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
         let mut wall = units::new_building(terrain, at, Role::Wall, side, self.next_unit_id);
-        wall.house = self.faction_of(0);
+        wall.house = self.site_house;
         wall.constructing = units::CONSTRUCTION_SECONDS;
         self.units.push(wall);
         self.next_unit_id += 1;
@@ -3456,14 +3536,19 @@ impl Game {
 
     /// A click on a building's button: starts it, or takes it up to place once it is ready.
     /// A wall is placed first, and then built a square at a time.
-    fn click_building(&mut self, role: Role) {
+    fn click_building(&mut self, role: Role, house: Faction) {
+        if self.site != Site::Idle && self.site_house != house {
+            return;
+        }
         match self.site {
             Site::Idle if role == Role::Wall => {
+                self.site_house = house;
                 self.aiming_strike = false;
                 self.site = Site::Placing(role);
                 self.wall_start = None;
             }
             Site::Idle => {
+                self.site_house = house;
                 self.site = Site::Building(role, role.build_seconds());
                 self.announce(Speech::ConstructionStarted);
             }
@@ -3494,8 +3579,15 @@ impl Game {
     }
 
     /// Whether this building is done and waiting to be placed.
+    #[cfg(test)]
     pub fn is_ready_to_place(&self, role: Role) -> bool {
-        self.site == Site::Ready(role) || self.site == Site::Placing(role)
+        self.is_ready_to_place_of(role, self.faction_of(0))
+    }
+
+    /// Whether this building of this house is done and waiting to be placed.
+    pub fn is_ready_to_place_of(&self, role: Role, house: Faction) -> bool {
+        self.site_house == house
+            && (self.site == Site::Ready(role) || self.site == Site::Placing(role))
     }
 
     /// The building waiting to be placed and the grid squares it would take with the cursor
@@ -3608,13 +3700,29 @@ impl Game {
         let side = (0, self.stats_rows().first()?.color);
         let mut building =
             units::new_building(terrain, plot.center(), role, side, self.next_unit_id);
-        building.house = self.faction_of(0);
+        building.house = self.site_house;
         building.facing = self.placing_facing;
         let can = self
             .placing_squares()
             .iter()
             .all(|&(_, square)| square != PlaceSquare::Blocked);
         Some((building, can))
+    }
+
+    /// A second click on one of the player's buildings that make units, soon after the first,
+    /// makes it the primary of its kind: the one that makes them.
+    fn pick_twice_for_primary(&mut self, picked: usize) {
+        let unit = self.units[picked];
+        let now = self.screen_elapsed;
+        let twice = self
+            .last_pick
+            .is_some_and(|(id, at)| id == unit.id && now - at <= DOUBLE_CLICK_SECONDS);
+        self.last_pick = Some((unit.id, now));
+        let makes = unit.role.makes_units() && unit.kind.is_building();
+        if twice && makes && unit.owner == 0 && !unit.primary {
+            units::make_primary(&mut self.units, picked);
+            self.post_chat(format!("{} is now primary", unit.name()));
+        }
     }
 
     /// The tip text for what the cursor is over: a button making something, or a unit.
@@ -4104,6 +4212,7 @@ impl Game {
                 let stays = adding && unit.selected && !unit.kind.is_building();
                 unit.selected = i == picked || stays;
             }
+            self.pick_twice_for_primary(picked);
         } else if adding {
             // Nothing picked, nothing to add.
         } else if let Some(target) = self.land_under_cursor() {
@@ -5421,11 +5530,11 @@ impl Game {
                     if let Some(Entry::Order(role)) = self.build_entry(self.build_tab, cell) {
                         self.market.take_off(role);
                     }
-                    if let Some(role) = self.build_role(self.build_tab, cell) {
+                    if let Some((role, house)) = self.build_make(self.build_tab, cell) {
                         if self.site == Site::Placing(Role::Wall) && role == Role::Wall {
                             // Nothing is paid for a wall until it is placed.
                             self.call_off_wall();
-                        } else if self.site_of(role) {
+                        } else if self.site_of(role) && self.site_house == house {
                             self.money[0] += match self.site {
                                 Site::Building(_, left) => units::paid_for(role, left),
                                 _ => role.cost(),
@@ -5435,7 +5544,8 @@ impl Game {
                                 self.wall_plan.clear();
                             }
                         } else {
-                            units::cancel_making(&mut self.units, role, 0, &mut self.money[0]);
+                            let maker = (0, Some(house));
+                            units::cancel_making(&mut self.units, role, maker, &mut self.money[0]);
                         }
                     }
                 } else if self.site == Site::Placing(Role::Wall) {
@@ -5729,10 +5839,10 @@ impl Game {
 
     /// Makes what the cell makes, or gets the superweapon ready to aim.
     fn activate_build_cell(&mut self, cell: usize) {
-        if let Some(role) = self.build_role(self.build_tab, cell) {
+        if let Some((role, house)) = self.build_make(self.build_tab, cell) {
             if role.kind().is_building() {
-                if self.can_produce(role) {
-                    self.click_building(role);
+                if self.can_produce_of(role, house) {
+                    self.click_building(role, house);
                 }
                 return;
             }
@@ -5740,7 +5850,7 @@ impl Game {
             if self.player_money() <= 0 {
                 self.announce(Speech::InsufficientFunds);
             }
-            if units::start_making(&mut self.units, role, 0) {
+            if units::start_making(&mut self.units, role, 0, Some(house)) {
                 self.announce(Speech::Training);
             }
         } else if let Some(Entry::Upgrade(role)) = self.build_entry(self.build_tab, cell) {
@@ -7144,7 +7254,7 @@ mod tests {
         let mut game = in_battle();
         game.skirmish.crates = false;
         game.money[0] = 0;
-        units::start_making(&mut game.units, Role::AtTrike, 0);
+        units::start_making(&mut game.units, Role::AtTrike, 0, None);
         game.update(Role::AtTrike.build_seconds());
         assert_eq!(game.making_progress(Role::AtTrike), Some(0.0));
         game.money[0] = Role::AtTrike.cost();
@@ -9567,18 +9677,73 @@ mod tests {
     }
 
     #[test]
-    fn taking_a_factory_lets_the_player_make_vehicles_again() {
+    fn taking_another_houses_factory_offers_what_that_house_makes_its_mcv_among_them() {
         let mut game = in_battle();
+        assert_eq!(game.faction_of(0), Faction::Atreides);
         game.units
             .retain(|u| u.role != Role::Factory || u.owner != 0);
-        assert!(!game.can_produce(Role::HkAssault));
+        assert!(!game.can_produce(Role::Mcv));
         let theirs = game
             .units
-            .iter_mut()
-            .find(|u| u.role == Role::Factory)
+            .iter()
+            .position(|u| u.role == Role::Factory)
             .unwrap();
-        theirs.owner = 0;
-        assert!(game.can_produce(Role::HkAssault));
+        game.units[theirs].house = Faction::Harkonnen;
+        game.units[theirs].owner = 0;
+        let menu = game.menu(BuildTab::Vehicles);
+        for role in [Role::HkAssault, Role::Mcv] {
+            assert!(
+                menu.contains(&Entry::MakeOf(role, Faction::Harkonnen)),
+                "{role:?}"
+            );
+        }
+        assert!(
+            !menu.contains(&Entry::Make(Role::Mcv)),
+            "no Atreides factory"
+        );
+        let cell = menu
+            .iter()
+            .position(|&entry| entry == Entry::MakeOf(Role::Mcv, Faction::Harkonnen))
+            .unwrap();
+        game.build_tab = BuildTab::Vehicles;
+        game.money[0] = 100_000;
+        let before: Vec<u32> = game.units.iter().map(|u| u.id).collect();
+        click_hud(&mut game, Action::BuildCell(cell));
+        let made = game
+            .units
+            .iter()
+            .find(|u| u.role == Role::Mcv && u.owner == 0 && !before.contains(&u.id));
+        assert_eq!(
+            made.map(|u| u.house),
+            Some(Faction::Harkonnen),
+            "a Harkonnen MCV"
+        );
+    }
+
+    #[test]
+    fn a_second_click_on_a_building_makes_it_the_primary_of_its_kind() {
+        let mut game = in_battle();
+        let first = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role == Role::Barracks)
+            .unwrap();
+        let mut second = game.units[first];
+        second.id = 9_999;
+        second.x += 300.0;
+        game.units.push(second);
+        let second = game.units.len() - 1;
+        assert!(units::is_primary_of_several(
+            &game.units,
+            &game.units[first]
+        ));
+        game.pick_twice_for_primary(second);
+        assert!(!game.units[second].primary, "one click only selects");
+        game.pick_twice_for_primary(second);
+        assert!(units::is_primary_of_several(
+            &game.units,
+            &game.units[second]
+        ));
     }
 
     #[test]

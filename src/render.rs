@@ -1724,6 +1724,7 @@ fn draw_map_objects(canvas: &mut Canvas, game: &Game) {
         draw_pips(canvas, game, &view, unit);
         draw_medals(canvas, game, &view, unit);
         draw_group_number(canvas, game, &view, unit);
+        draw_primary(canvas, game, &view, unit);
     });
     for wreck in game
         .combat
@@ -2778,6 +2779,19 @@ fn draw_pips(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
         let px = x - width / 2.0 + f32::from(i) * (pip + gap);
         canvas.rect(px, top, pip, pip, color);
     }
+}
+
+/// "Primary" over the player's selected building that makes the units of its kind, once there
+/// is more than one of them.
+fn draw_primary(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &Unit) {
+    if !unit.selected || unit.owner != 0 || !units::is_primary_of_several(&game.units, unit) {
+        return;
+    }
+    let Some((x, y)) = view.project(unit.x, unit.pick_height() + 45.25, unit.z) else {
+        return;
+    };
+    let s = ui_scale(game.height);
+    canvas.text_centered("Primary", x, y - 12.0 * s, chat_px(game), GOLD);
 }
 
 /// One gold V for each rank above the first, stacked above where a health bar goes.
@@ -4340,16 +4354,19 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
             _ => {}
         }
         // Tip text gives the full name of what it makes.
-        let makes = game.build_role(game.build_tab, i);
-        let can_make =
-            makes.is_some_and(|role| game.can_produce(role) && !game.is_held_up_by_site(role));
-        // The disc's picture of what it makes, grey while it cannot be made, inside a ring of
-        // the button that still lights up; or else a symbol and a short name.
-        let icon = makes.and_then(|role| original_icon(role, game.faction_of(0), !can_make));
+        let made = game.build_make(game.build_tab, i);
+        let makes = made.map(|(role, _)| role);
+        let can_make = made.is_some_and(|(role, house)| {
+            game.can_produce_of(role, house) && !game.is_held_up_by_site(role)
+        });
+        // The disc's picture of what it makes, of the house that makes it, grey while it
+        // cannot be made, inside a ring of the button that still lights up; or else a symbol
+        // and a short name.
+        let icon = made.and_then(|(role, house)| original_icon(role, house, !can_make));
+        let ready = made.is_some_and(|(role, house)| game.is_ready_to_place_of(role, house));
         if let Some(layer) = icon {
             let half = cell.w / 2.0 - border_px(game.height) * 2.0;
             // A building made and waiting to be put down shows green, as the original's does.
-            let ready = makes.is_some_and(|role| game.is_ready_to_place(role));
             let tint = if ready { READY_TINT } else { [1.0; 4] };
             canvas.picture_tinted((cx, cy), half, layer, tint);
         } else {
@@ -4370,12 +4387,13 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
                 },
             );
         }
-        if let Some(progress) = makes.and_then(|role| game.making_progress(role)) {
+        if let Some(progress) = made.and_then(|(role, house)| game.making_progress_of(role, house))
+        {
             for wedge in making_dim_wedges((cell.x, cell.y, cell.w, cell.h), progress) {
                 canvas.triangle(wedge, MAKING_DIM);
             }
         }
-        if makes.is_some_and(|role| game.is_ready_to_place(role)) {
+        if ready {
             canvas.text_centered("Ready", cx, cell.y + cell.h - 12.0 * s, chat_px(game), GOLD);
         } else if let Some(role) = makes {
             // Its price, dimmed while there is not that much money.
@@ -4385,7 +4403,7 @@ fn draw_sidebar(canvas: &mut Canvas, game: &Game) {
             let y = cell.y + cell.h - 12.0 * s;
             canvas.text_left(&price, cell.x + 6.0 * s, y, chat_px(game), color);
         }
-        if let Some(count) = makes.and_then(|role| game.queue_badge(role)) {
+        if let Some(count) = made.and_then(|(role, house)| game.queue_badge_of(role, house)) {
             let px = small_text_px(game.height);
             let (x, y) = (cell.x + cell.w - 12.0 * s, cell.y + cell.h - 12.0 * s);
             canvas.text_centered(&count.to_string(), x, y, px, GOLD);

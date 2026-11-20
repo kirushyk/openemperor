@@ -47,9 +47,8 @@ we are missing is in [units.md](units.md). This list is about everything else.
   and −90°…30° up (`ORKobraDeployedGun`) are not kept, nor its 4° an update for raising.
 - **Lower-detail models**: only the `_H0` models are read.
 - **Invisible units**: their own side sees them painted with the disc's `hackedstealth0–7`
-  shimmer, one frame per update and seen through as much as it shows. The original also draws
-  two copies first, each blended with what is behind it (`DESTCOLOR`) and jittered by 1 and
-  then 2 units; we don't draw those.
+  shimmer, one frame per update and seen through as much as it shows. The original's shimmer
+  also wavers a little, which we don't draw.
 
 ## Lights
 
@@ -58,7 +57,7 @@ we are missing is in [units.md](units.md). This list is about everything else.
   there, at full white as a light of the original's Direct3D adds itself, and on top of the
   ground's wash. There are more beams than the 16 lights the backends take: those nearest
   where the camera looks go first, after fire. How bright and wide the original's are is our
-  guess, and whether it lights them by day as well: its numbers are in `GAME.EXE`'s code.
+  guess, and whether it lights them by day as well: the disc's data does not say.
 
 - **The glow of the original's lights** is drawn: searchlight beams, the spots they throw,
   lamps and flares. They do not light anything around them. Only explosions, fires, eruptions
@@ -118,7 +117,7 @@ and its warhead's share against each armour from `[WarheadTypes]`, and each turr
 - **By house**: the original gives the Harkonnen engineer 600 health (ours 400 for every
   house) and the Atreides outpost 100 (ours 2500). A deployed MCV keeps the MCV's 4500 rather
   than the construction yard's 4000, though it is armoured as the yard.
-- **The exe**: none of this was read from `GAME.EXE`; only `Rules.txt`.
+- **Where these come from**: only `Rules.txt`.
 
 ## Power and upgrades
 
@@ -131,8 +130,8 @@ build windtraps to stay powered and upgrade once they have a few fighters. Not k
 done:
 
 - **What else low power does**: ours halves the pace of building, making and upgrading, and
-  puts out the outpost's radar. The original's rule is in `GAME.EXE` and was not read; its
-  strings name `PowerDown`, `LowPower` and `RadarOff`.
+  puts out the outpost's radar. The original's rule is not in its data files, which only
+  name sounds and effects for it, `PowerDown`, `LowPower` and `RadarOff`.
 - **How long an upgrade takes**: only the refinery pad has an `UpgradeBuildTime` (720); the
   others take as long as building the building.
 - **Which building is upgraded**: the original speaks of the *primary* building of a kind.
@@ -159,8 +158,8 @@ square, then of the wall. The squares then go up one after another, 20 credits a
 seconds each, as `Rules.txt`'s `Cost` and `BuildTime` scaled. Each square shows the disc's
 piece for how it joins its owner's walls beside it. Not done yet:
 
-- **How the original routes a wall**: its `GAME.EXE` places walls in a cursor mode
-  (`WallSection`, `WallPlacement`) that was not read through. Ours takes the shortest way
+- **How the original routes a wall**: the original places walls in a cursor mode of its
+  own, which is not known. Ours takes the shortest way
   over free rock the player has seen, turning as few times as it can, and goes up to 12
   squares beyond the box round its two ends to get round what is in the way. Only its first
   square has to be near one of the player's buildings.
@@ -286,8 +285,7 @@ straight on without the disc, then starts its first battle on the original's map
   Sardaukar's, which hold a unit) are left out, and battles without a script get none. The
   two bytes after a square's column are not known; they run 0 to 3. A building stands with
   its front row on its point and its squares running to one side, a construction yard to
-  both; worked out from the first battle's yard and frigate and their walls, not from the
-  original's code.
+  both; worked out from the first battle's yard and frigate and their walls.
 - **Mission scripts** of later battles are not run either: each is fought on the
   original's map for it as a skirmish is, against the house it is against.
 

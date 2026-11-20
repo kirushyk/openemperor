@@ -24,5 +24,5 @@ The user recalls the original's sun as weaker than the Mongoose searchlights; ou
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-4b97e9e: models lit by test.lit's second, darker pair; searchlights at full white; burning lights added on top of the ground's wash, which used to halve them. The original's searchlight numbers are in GAME.EXE code; documented as a guess.
+4b97e9e: models lit by test.lit's second, darker pair; searchlights at full white; burning lights added on top of the ground's wash, which used to halve them. The original's searchlight numbers are not in its data; documented as a guess.
 <!-- SECTION:FINAL_SUMMARY:END -->

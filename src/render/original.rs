@@ -29,7 +29,7 @@ const INDEX: &str = "\\data\\3DDATA0001.RFH";
 const DATA: &str = "INSTALL/DATA/3DDATA0001.RFD";
 const TEXTURES: &str = "Textures\\";
 /// The picture the original lays its spice on the ground with, and how it lays it, as its
-/// `spice.ini` and `GAME.EXE` have it.
+/// `spice.ini` has it.
 const SPICE: &str = "spicetga_32.tga";
 /// How far from its middle each corner of a patch of spice is, give or take `SPICE_REACH_JITTER`.
 const SPICE_REACH: f32 = 35.0;
@@ -574,9 +574,9 @@ const SEARCHLIGHT: &str = "spotlight";
 /// The part of a Kobra's model that swings its raised cannon round.
 const SWIVEL: &str = "gunpivot";
 
-/// Each house's pieces of wall, in the order of `WallPiece`: named as the original's
-/// `GAME.EXE` names them, its `Xaf` and then "", "_End", "_Middle", "_Corner", "_TJoin" or
-/// "_Cross" before the detail and damage letters.
+/// Each house's pieces of wall, in the order of `WallPiece`: named as the disc's models of
+/// them are, its `Xaf` and then "", "_End", "_Middle", "_Corner", "_TJoin" or "_Cross" before
+/// the detail and damage letters.
 const WALLS: [(Faction, [&str; 6]); 3] = [
     (
         Faction::Atreides,

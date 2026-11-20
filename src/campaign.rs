@@ -10,8 +10,8 @@
 //! who holds each at the start and its shape, in the original's campaign screen
 //! `frontend\campaign.xbf`; the phases' and tech levels' rules in `PhaseRules.txt`; the houses'
 //! jump points in `Forced Missions.txt`; and the new units of each tech level in
-//! `NEWUNITS.INI`. What the original keeps in its program, which phase means which mission, is
-//! here as the program's messages tell it.
+//! `NEWUNITS.INI`. Which phase means which mission, which the data does not say, is here as
+//! the game's own messages about the phases tell it.
 
 use crate::archive;
 use crate::battlefield::next_random;
@@ -76,7 +76,7 @@ const JUMP_POINTS: [(&str, Faction); 3] = [
     ("ORJumpPoint", Faction::Ordos),
 ];
 
-/// The phases the original's program gives a meaning: the first battle, the three on
+/// The phases the original gives a meaning: the first battle, the three on
 /// Arrakis, and the missions they jump to.
 const START_PHASE: u32 = 0;
 const FIRST_PHASE: u32 = 1;

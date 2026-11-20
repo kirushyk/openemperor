@@ -13,7 +13,7 @@ ordinal: 58000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The original .exe animates the menu background; menu music should come from the mounted discs 1-4.
+The original animates the menu background; menu music should come from the mounted discs 1-4.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

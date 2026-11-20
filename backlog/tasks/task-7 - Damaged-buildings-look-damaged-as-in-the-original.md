@@ -26,5 +26,5 @@ If the original shows buildings damaged, copy how.
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-The original shows damage with its own models: each building and tower has _H1 and _H2 models beside its whole _H0, made with _D_ pictures (cracked, burnt), plus _H3 (Explode) and _HC (Construct). GAME.EXE names their states 'Damage State 1' and 'Damage State 2'. render/original.rs reads H1 and H2 for all 29 buildings and towers we draw (259 picture layers in all) and shows H1 below half health and H2 below a quarter. The disc gives no thresholds; these are Westwood's usual yellow and red. DamageEffect fire in Rules.txt is only for vehicles, so not part of this.
+The original shows damage with its own models: each building and tower has _H1 and _H2 models beside its whole _H0, made with _D_ pictures (cracked, burnt), plus _H3 (Explode) and _HC (Construct). render/original.rs reads H1 and H2 for all 29 buildings and towers we draw (259 picture layers in all) and shows H1 below half health and H2 below a quarter. The disc gives no thresholds; these are Westwood's usual yellow and red. DamageEffect fire in Rules.txt is only for vehicles, so not part of this.
 <!-- SECTION:FINAL_SUMMARY:END -->

@@ -121,15 +121,6 @@ impl UnitKind {
         matches!(self, UnitKind::Tower | UnitKind::Building)
     }
 
-    /// The experience its killer gets.
-    pub fn kill_value(self) -> u32 {
-        match self {
-            UnitKind::Infantry => 1,
-            UnitKind::Vehicle | UnitKind::Aircraft => 2,
-            UnitKind::Tower | UnitKind::Building => 3,
-        }
-    }
-
     pub fn flies(self) -> bool {
         self == UnitKind::Aircraft
     }
@@ -278,12 +269,273 @@ pub const STRUGGLE_SECONDS: f32 = 4.0;
 /// Radians it leans into the sharpest turn, and how quickly it gets there, per second.
 const MOST_BANK: f32 = 0.6;
 const BANK_RATE: f32 = 4.0;
-/// Experience needed for each rank above the first.
-const RANK_EXPERIENCE: [u32; 3] = [2, 5, 10];
-/// What each rank adds, as a share of the unit's usual health, attack and speed.
-const RANK_HEALTH: f32 = 0.25;
-const RANK_ATTACK: f32 = 0.2;
-const RANK_SPEED: f32 = 0.1;
+
+/// One of the three levels of veterancy a kind of unit can reach, as its block in the rules
+/// sets it: the score that reaches it, and what it changes. A level keeps what the levels
+/// below it set, unless it sets that again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Level {
+    /// The score that reaches it: the rules' `VeterancyLevel`.
+    score: u32,
+    /// Its `Health`, the most it has.
+    health: Option<f32>,
+    /// Its `Speed`, in the original's coordinates per update.
+    speed: Option<f32>,
+    /// Its `ExtraDamage`, the share more harm every weapon of it does, in hundredths.
+    damage: Option<f32>,
+    /// Its `ExtraArmour`, the share less harm it takes, in hundredths.
+    armour: Option<f32>,
+    /// Its `ExtraRange`, the share farther it fires, in hundredths.
+    range: Option<f32>,
+    /// Its `CanSelfRepair`, the health it wins back each update.
+    repair: Option<f32>,
+    /// Its `StealthedWhenStill`: it goes invisible.
+    stealthed: bool,
+}
+
+impl Level {
+    /// The score that reaches it.
+    #[cfg(test)]
+    pub fn score(&self) -> u32 {
+        self.score
+    }
+
+    const fn at(score: u32) -> Self {
+        Level {
+            score,
+            health: None,
+            speed: None,
+            damage: None,
+            armour: None,
+            range: None,
+            repair: None,
+            stealthed: false,
+        }
+    }
+
+    const fn health(self, health: f32) -> Self {
+        Level {
+            health: Some(health),
+            ..self
+        }
+    }
+
+    const fn speed(self, speed: f32) -> Self {
+        Level {
+            speed: Some(speed),
+            ..self
+        }
+    }
+
+    const fn damage(self, damage: f32) -> Self {
+        Level {
+            damage: Some(damage),
+            ..self
+        }
+    }
+
+    const fn armour(self, armour: f32) -> Self {
+        Level {
+            armour: Some(armour),
+            ..self
+        }
+    }
+
+    const fn range(self, range: f32) -> Self {
+        Level {
+            range: Some(range),
+            ..self
+        }
+    }
+
+    /// The rules give every unit that repairs itself `CanSelfRepair = 1`.
+    const fn repairs(self) -> Self {
+        Level {
+            repair: Some(1.0),
+            ..self
+        }
+    }
+
+    const fn stealthed(self) -> Self {
+        Level {
+            stealthed: true,
+            ..self
+        }
+    }
+}
+
+/// The levels most of the Harkonnen's and the Emperor's tank take: more damage, then repair,
+/// then more damage still and armour.
+const fn harder_then_mended(scores: [u32; 3]) -> [Level; 3] {
+    [
+        Level::at(scores[0]).damage(25.0),
+        Level::at(scores[1]).repairs(),
+        Level::at(scores[2]).damage(50.0).armour(50.0),
+    ]
+}
+
+/// The levels the sub-houses', the Fremen and the Guild's take: more damage, then armour, then
+/// repair.
+const fn harder_then_armoured(scores: [u32; 3]) -> [Level; 3] {
+    [
+        Level::at(scores[0]).damage(50.0),
+        Level::at(scores[1]).armour(50.0),
+        Level::at(scores[2]).repairs(),
+    ]
+}
+
+/// The levels the Ordos soldiers take: repair, then armour, then more damage.
+const fn mended_then_armoured(scores: [u32; 3]) -> [Level; 3] {
+    [
+        Level::at(scores[0]).repairs(),
+        Level::at(scores[1]).armour(50.0),
+        Level::at(scores[2]).damage(50.0),
+    ]
+}
+
+/// The levels the carriers take: armour, then speed, then more armour.
+const fn carrier(speed: f32) -> [Level; 3] {
+    [
+        Level::at(8).armour(50.0),
+        Level::at(20).speed(speed),
+        Level::at(40).armour(75.0),
+    ]
+}
+
+const VEHICLE_SCORES: [u32; 3] = [10, 24, 48];
+const HK_TANK: [Level; 3] = harder_then_mended(VEHICLE_SCORES);
+const AT_KINDJAL: [Level; 3] = [
+    Level::at(2).health(800.0).damage(50.0),
+    Level::at(10).repairs(),
+    Level::at(20).damage(100.0),
+];
+const AT_INFANTRY: [Level; 3] = [
+    Level::at(5).health(800.0).damage(50.0),
+    Level::at(10).repairs(),
+    Level::at(20).armour(50.0),
+];
+const AT_SNIPER: [Level; 3] = [
+    Level::at(4).armour(50.0),
+    Level::at(12).repairs(),
+    Level::at(30).stealthed(),
+];
+const HK_LIGHT_INF: [Level; 3] = harder_then_mended([3, 10, 20]);
+const HK_INFANTRY: [Level; 3] = harder_then_mended([4, 10, 20]);
+const HK_ENGINEER: [Level; 3] = [
+    Level::at(2).armour(25.0),
+    Level::at(6).armour(50.0),
+    Level::at(12).armour(75.0),
+];
+const OR_MORTAR: [Level; 3] = mended_then_armoured([4, 10, 20]);
+const OR_CHEMICAL: [Level; 3] = mended_then_armoured([3, 10, 20]);
+const GENERAL: [Level; 3] = harder_then_mended([5, 10, 20]);
+const HK_DEVASTATOR: [Level; 3] = harder_then_mended([13, 30, 60]);
+const HK_BUZZSAW: [Level; 3] = [
+    Level::at(8).speed(12.0),
+    Level::at(20).repairs(),
+    Level::at(40).damage(50.0).armour(50.0),
+];
+const AT_TRIKE: [Level; 3] = [
+    Level::at(8).armour(50.0),
+    Level::at(20).speed(20.0),
+    Level::at(40).damage(50.0).range(50.0),
+];
+const AT_MONGOOSE: [Level; 3] = [
+    Level::at(10).damage(50.0).armour(50.0),
+    Level::at(24).range(50.0),
+    Level::at(48).damage(75.0),
+];
+const AT_ORNI: [Level; 3] = [
+    Level::at(10).damage(25.0),
+    Level::at(24).speed(30.0),
+    Level::at(48).damage(50.0).armour(50.0),
+];
+/// The Atreides air drone's, and the Guild's NIAP's after it.
+const AT_ADP: [Level; 3] = [
+    Level::at(10).damage(25.0).armour(50.0),
+    Level::at(24).range(50.0),
+    Level::at(48).damage(50.0),
+];
+const AT_SONIC_TANK: [Level; 3] = [
+    Level::at(13).damage(50.0),
+    Level::at(30).armour(50.0),
+    Level::at(60).damage(25.0).range(50.0),
+];
+const AT_MINOTAURUS: [Level; 3] = [
+    Level::at(10).armour(50.0).damage(50.0),
+    Level::at(24).armour(75.0),
+    Level::at(48).damage(75.0),
+];
+const OR_LASER_TANK: [Level; 3] = [
+    Level::at(10).armour(50.0),
+    Level::at(24).range(50.0),
+    Level::at(48).damage(50.0),
+];
+const OR_DUST_SCOUT: [Level; 3] = [
+    Level::at(8).armour(50.0),
+    Level::at(20).armour(75.0),
+    Level::at(40).damage(50.0).range(50.0),
+];
+const OR_KOBRA: [Level; 3] = [
+    Level::at(13).armour(50.0),
+    Level::at(30).damage(50.0),
+    Level::at(60).speed(12.0).damage(75.0),
+];
+const OR_DEVIATOR: [Level; 3] = [
+    Level::at(10).armour(50.0),
+    Level::at(24).range(25.0),
+    Level::at(48).armour(75.0),
+];
+const TL_CONTAMINATOR: [Level; 3] = [
+    Level::at(4).armour(25.0),
+    Level::at(10).armour(50.0),
+    Level::at(20).armour(75.0),
+];
+const SUB_HOUSE_SMALL: [Level; 3] = harder_then_armoured([4, 8, 16]);
+const SARDAUKAR: [Level; 3] = harder_then_armoured([6, 16, 32]);
+const FREMEN: [Level; 3] = harder_then_armoured([4, 14, 28]);
+const GU_NIAB_TANK: [Level; 3] = harder_then_armoured([18, 20, 40]);
+const SM_QUAD: [Level; 3] = harder_then_armoured([6, 14, 28]);
+
+/// What killing one of these earns, the rules' `Score`, for those the rules name and that are
+/// no part of ours.
+const SCORES: [(&str, u32); 35] = [
+    ("HKFactoryFrigate", 3),
+    ("ATFactoryFrigate", 3),
+    ("ORFactoryFrigate", 3),
+    ("TLTurret", 3),
+    ("IXMegaCannon", 3),
+    ("GUMegaCannon", 3),
+    ("IXRefinery", 4),
+    ("GPINSpotlight", 3),
+    ("INBuggyWreck", 3),
+    ("INHarvesterWreck", 3),
+    ("INMedicalWreck", 3),
+    ("INSandCrawlerWreck", 3),
+    ("IXWindtrap", 2),
+    ("INTLWindtrap", 2),
+    ("ORAATrooper", 2),
+    ("ORGeneral", 4),
+    ("ATGeneral", 4),
+    ("DukeAchillus", 4),
+    ("IMGeneral", 4),
+    ("IXScientist", 4),
+    ("GUAdvisor", 4),
+    ("TLScientist", 4),
+    ("IXSlave", 2),
+    ("CubScout", 1),
+    ("ATMilitia", 2),
+    ("ATSonicTank", 4),
+    ("ORDeviator", 4),
+    ("StuntFrigate", 3),
+    ("TLINFlyer", 3),
+    ("GUScavenger", 3),
+    ("IMAPC", 3),
+    ("IMTank", 4),
+    ("GUNIAP", 2),
+    ("SMQuad", 3),
+    ("StuntATADVCarryall", 3),
+];
 
 /// Every role but the palaces, which are one a house.
 const ALL_ROLES: [Role; 63] = [
@@ -1297,6 +1549,130 @@ impl Role {
             Role::Outpost => 2500.0,
             Role::ImBarracks => 3200.0,
         }
+    }
+
+    /// What killing one earns its killer: the rules' `Score`. What the rules give none earns
+    /// nothing.
+    pub fn score(self) -> u32 {
+        let named = |name: &str| {
+            SCORES
+                .iter()
+                .find(|(named, _)| *named == name)
+                .map_or(0, |&(_, score)| score)
+        };
+        match self {
+            Role::Extra(extra) => named(extra.rules_name()),
+            Role::Prop(prop) => named(prop.rules_name()),
+            Role::Scout => 1,
+            Role::Windtrap
+            | Role::Helipad
+            | Role::AtKindjal
+            | Role::AtInfantry
+            | Role::AtSniper
+            | Role::Engineer
+            | Role::HkLightInf
+            | Role::HkFlamer
+            | Role::HkTrooper
+            | Role::OrMortar
+            | Role::OrChemical
+            | Role::OrSaboteur
+            | Role::HkBuzzsaw
+            | Role::HkAdp
+            | Role::AtTrike
+            | Role::AtAdp
+            | Role::OrDustScout
+            | Role::OrAdp => 2,
+            Role::Barracks
+            | Role::HkFlameTurret
+            | Role::HkGunTurret
+            | Role::Outpost
+            | Role::AtPillbox
+            | Role::AtRocketTurret
+            | Role::OrPopUpTurret
+            | Role::OrGasTurret
+            | Role::Carryall
+            | Role::AdvCarryall
+            | Role::HkFlame
+            | Role::HkMissile
+            | Role::HkGunship
+            | Role::HkInkVine
+            | Role::AtApc
+            | Role::AtRepairUnit
+            | Role::AtMongoose
+            | Role::AtOrni
+            | Role::OrLaserTank
+            | Role::OrApc
+            | Role::OrEits => 3,
+            Role::Mcv
+            | Role::Harvester
+            | Role::Refinery
+            | Role::Factory
+            | Role::Hanger
+            | Role::Starport
+            | Role::Palace(_)
+            | Role::TlFleshVat
+            | Role::IxResCentre
+            | Role::GuPalace
+            | Role::ImBarracks
+            | Role::FrCamp
+            | Role::HkGeneral
+            | Role::HkDevastator
+            | Role::HkAssault
+            | Role::AtMinotaurus
+            | Role::OrKobra => 4,
+            _ => 0,
+        }
+    }
+
+    /// The three levels of veterancy one of this house's can reach, as the rules give them, if
+    /// it has any: only the Harkonnen's engineer does of the engineers.
+    pub fn veterancy(self, house: Faction) -> Option<&'static [Level; 3]> {
+        Some(match self {
+            Role::AtKindjal => &AT_KINDJAL,
+            Role::AtInfantry => &AT_INFANTRY,
+            Role::AtSniper => &AT_SNIPER,
+            Role::HkLightInf => &HK_LIGHT_INF,
+            Role::HkFlamer | Role::HkTrooper => &HK_INFANTRY,
+            Role::Engineer if house == Faction::Harkonnen => &HK_ENGINEER,
+            Role::OrMortar => &OR_MORTAR,
+            Role::OrChemical => &OR_CHEMICAL,
+            Role::HkDevastator => &HK_DEVASTATOR,
+            Role::HkFlame
+            | Role::HkMissile
+            | Role::HkAssault
+            | Role::HkGunship
+            | Role::HkAdp
+            | Role::HkInkVine => &HK_TANK,
+            Role::HkBuzzsaw => &HK_BUZZSAW,
+            Role::AtTrike => &AT_TRIKE,
+            Role::AtApc => const { &carrier(12.0) },
+            Role::OrApc => const { &carrier(20.0) },
+            Role::AtMongoose => &AT_MONGOOSE,
+            Role::AtOrni => &AT_ORNI,
+            Role::AtAdp => &AT_ADP,
+            Role::AtMinotaurus => &AT_MINOTAURUS,
+            Role::OrLaserTank => &OR_LASER_TANK,
+            Role::OrDustScout => &OR_DUST_SCOUT,
+            Role::OrKobra => &OR_KOBRA,
+            Role::TlContaminator => &TL_CONTAMINATOR,
+            Role::ImSardaukar => &SARDAUKAR,
+            Role::FrFremen | Role::FrAdvFremen => &FREMEN,
+            Role::GuMaker => &SARDAUKAR,
+            Role::Extra(extra) => match extra.rules_name() {
+                "ORAATrooper" => &OR_MORTAR,
+                "ATGeneral" | "DukeAchillus" => &GENERAL,
+                "ATSonicTank" => &AT_SONIC_TANK,
+                "ORDeviator" => &OR_DEVIATOR,
+                "TLLeech" | "IXProjector" => &SUB_HOUSE_SMALL,
+                "IMTank" => &HK_TANK,
+                "IMADVSardaukar" => &SARDAUKAR,
+                "GUNIABTank" => &GU_NIAB_TANK,
+                "GUNIAP" => &AT_ADP,
+                "SMQuad" => &SM_QUAD,
+                _ => return None,
+            },
+            _ => return None,
+        })
     }
 
     /// What one of this house's is made of, which decides how much each warhead hurts it: the
@@ -2397,7 +2773,7 @@ pub enum Wound {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Unit {
     pub role: Role,
-    /// Earned by killing enemies, and what decides its rank.
+    /// Its score: what killing enemies earned it, which decides its level of veterancy.
     pub experience: u32,
     /// Whether Kindjal infantry has dug in with its cannon, unable to move.
     pub deployed: bool,
@@ -2755,20 +3131,22 @@ impl Unit {
     }
 
     /// How far it fires on flat ground: as far as its weapon does, or as far as the original
-    /// lets this kind of unit fire it.
+    /// lets this kind of unit fire it, and farther with its levels' extra range.
     pub fn range(&self) -> f32 {
         let tiles = match (self.role, self.weapon) {
-            (Role::AtTrike | Role::OrDustScout, WeaponKind::Bullet) => 7.0,
-            (Role::HkTrooper, WeaponKind::Missile) => 8.0,
-            (Role::OrApc, WeaponKind::TowerRockets) => 10.0,
-            (Role::AtOrni, WeaponKind::Rockets) => 12.0,
-            (Role::OrKobra, WeaponKind::Cannon) => 8.0,
-            (Role::AtKindjal, WeaponKind::Cannon) => 12.0,
-            (Role::HkFlameTurret, WeaponKind::Flame) => 8.0,
-            (Role::OrMortar, WeaponKind::Mortar) => 15.0,
-            _ => return self.weapon.range(),
+            (Role::AtTrike | Role::OrDustScout, WeaponKind::Bullet) => Some(7.0),
+            (Role::HkTrooper, WeaponKind::Missile) => Some(8.0),
+            (Role::OrApc, WeaponKind::TowerRockets) => Some(10.0),
+            (Role::AtOrni, WeaponKind::Rockets) => Some(12.0),
+            (Role::OrKobra, WeaponKind::Cannon) => Some(8.0),
+            (Role::AtKindjal, WeaponKind::Cannon) => Some(12.0),
+            (Role::HkFlameTurret, WeaponKind::Flame) => Some(8.0),
+            (Role::OrMortar, WeaponKind::Mortar) => Some(15.0),
+            _ => None,
         };
-        tiles * CELL_SIDE
+        let range = tiles.map_or(self.weapon.range(), |tiles| tiles * CELL_SIDE);
+        let extra = self.from_levels(|level| level.range).unwrap_or(0.0);
+        range * (1.0 + extra / 100.0)
     }
 
     /// How far it sees from where it stands: farther the higher it is above the lowest ground.
@@ -2781,16 +3159,40 @@ impl Unit {
         self.range() * high_ground(self.y - height)
     }
 
-    /// From 0, with no medal, up to 3.
+    /// From 0, with no medal, up to 3: how many of its levels its score has reached.
     pub fn rank(&self) -> u32 {
-        RANK_EXPERIENCE
-            .iter()
-            .filter(|&&needed| self.experience >= needed)
-            .count() as u32
+        self.levels().len() as u32
+    }
+
+    /// The levels of veterancy it has reached.
+    fn levels(&self) -> &'static [Level] {
+        self.role.veterancy(self.house).map_or(&[], |levels| {
+            let reached = levels
+                .iter()
+                .take_while(|level| self.experience >= level.score)
+                .count();
+            &levels[..reached]
+        })
+    }
+
+    /// What the highest of its levels to set it sets.
+    fn from_levels<T>(&self, set: impl Fn(&Level) -> Option<T>) -> Option<T> {
+        self.levels().iter().rev().find_map(set)
     }
 
     pub fn max_health(&self) -> f32 {
-        self.role.max_health() * (1.0 + RANK_HEALTH * self.rank() as f32)
+        self.from_levels(|level| level.health)
+            .unwrap_or(self.role.max_health())
+    }
+
+    /// What harm done to it is multiplied by: less with its levels' extra armour.
+    pub fn harm_taken(&self) -> f32 {
+        1.0 - self.from_levels(|level| level.armour).unwrap_or(0.0) / 100.0
+    }
+
+    /// The health it wins back by itself each second, from its levels.
+    pub fn self_repair(&self) -> f32 {
+        self.from_levels(|level| level.repair).unwrap_or(0.0) * UPDATES_PER_SECOND
     }
 
     /// What it is made of: a deployed MCV as the original's construction yard. It keeps the
@@ -2803,13 +3205,17 @@ impl Unit {
         }
     }
 
-    /// What its damage is multiplied by.
+    /// What its damage is multiplied by: more with its levels' extra damage.
     pub fn attack_power(&self) -> f32 {
-        1.0 + RANK_ATTACK * self.rank() as f32
+        1.0 + self.from_levels(|level| level.damage).unwrap_or(0.0) / 100.0
     }
 
     pub fn speed(&self) -> f32 {
-        let speed = self.role.speed(self.house) * (1.0 + RANK_SPEED * self.rank() as f32);
+        let speed = self
+            .from_levels(|level| level.speed)
+            .map_or(self.role.speed(self.house), |per_update| {
+                per_update * UPDATES_PER_SECOND
+            });
         self.pace.map_or(speed, |pace| speed.min(pace))
     }
 
@@ -2819,11 +3225,11 @@ impl Unit {
         other.speed() <= self.speed()
     }
 
-    /// Adds experience. Reaching a new rank adds the health that rank brings to what it has.
+    /// Adds to its score. Reaching a new level keeps the share of its health it had.
     pub fn gain_experience(&mut self, points: u32) {
-        let before = self.max_health();
+        let share = self.health / self.max_health();
         self.experience += points;
-        self.health += self.max_health() - before;
+        self.health = self.max_health() * share;
     }
 
     /// Whether a repair vehicle can work on it: a vehicle, or an aircraft while it is grounded.
@@ -3028,12 +3434,13 @@ impl Unit {
         })
     }
 
-    /// Whether it can go invisible: a scout, an Atreides APC, and a sniper with all three medals.
+    /// Whether it can go invisible: a scout, an Atreides APC, and what its levels make
+    /// stealthy, as a sniper with all three medals.
     pub fn can_cloak(&self) -> bool {
         matches!(
             self.role,
             Role::Scout | Role::AtApc | Role::FrFremen | Role::FrAdvFremen | Role::IxInfiltrator
-        ) || (self.role == Role::AtSniper && self.rank() >= 3)
+        ) || self.levels().iter().any(|level| level.stealthed)
     }
 
     /// Whether it is invisible now: it shows for a while each time it opens fire.
@@ -5514,7 +5921,7 @@ fn squash(units: &mut [Unit], teams: &[usize]) {
                 units[b].wound = Wound::RunOver;
                 units[b].alive = false;
                 units[b].selected = false;
-                let value = units[b].kind.kill_value();
+                let value = units[b].role.score();
                 units[a].gain_experience(value);
             }
         }
@@ -8085,22 +8492,55 @@ mod tests {
     }
 
     #[test]
-    fn experience_gives_four_ranks_with_more_health_power_and_speed() {
-        let mut unit = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Vehicle);
-        let (health, power, speed) = (unit.max_health(), unit.attack_power(), unit.speed());
-        assert_eq!(unit.rank(), 0);
-        for (rank, needed) in (0..).zip(RANK_EXPERIENCE) {
-            unit.experience = needed - 1;
-            assert_eq!(unit.rank(), rank, "not yet at {needed}");
-            unit.experience = needed;
-            assert_eq!(unit.rank(), rank + 1);
+    fn a_unit_climbs_the_three_levels_its_rules_give_it_and_keeps_what_each_set() {
+        // The rules' Atreides infantry: 800 health and half as much damage again at a score
+        // of 5, repair at 10, and half the harm at 20.
+        let mut unit = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Infantry);
+        assert_eq!(unit.role, Role::AtInfantry);
+        let steps = [(0, 0, 600.0, 1.0, 0.0, 1.0), (4, 0, 600.0, 1.0, 0.0, 1.0)];
+        let levels = [
+            (5, 1, 800.0, 1.5, 0.0, 1.0),
+            (10, 2, 800.0, 1.5, UPDATES_PER_SECOND, 1.0),
+            (20, 3, 800.0, 1.5, UPDATES_PER_SECOND, 0.5),
+            (1000, 3, 800.0, 1.5, UPDATES_PER_SECOND, 0.5),
+        ];
+        for (score, rank, health, power, repair, harm) in steps.into_iter().chain(levels) {
+            unit.experience = score;
+            assert_eq!(unit.rank(), rank, "at {score}");
+            assert_eq!(unit.max_health(), health, "at {score}");
+            assert_eq!(unit.attack_power(), power, "at {score}");
+            assert_eq!(unit.self_repair(), repair, "at {score}");
+            assert_eq!(unit.harm_taken(), harm, "at {score}");
         }
-        assert_eq!(unit.rank(), 3, "the highest");
-        unit.experience = 1000;
-        assert_eq!(unit.rank(), 3, "and no higher");
-        assert!(unit.max_health() > health);
-        assert!(unit.attack_power() > power);
-        assert!(unit.speed() > speed);
+    }
+
+    #[test]
+    fn levels_set_speed_and_range_where_the_rules_say_and_some_units_have_none() {
+        let mut trike = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Vehicle);
+        trike.role = Role::AtTrike;
+        trike.weapon = WeaponKind::Bullet;
+        let (speed, range) = (trike.speed(), trike.range());
+        trike.experience = 20;
+        assert_eq!(trike.speed(), 20.0 * UPDATES_PER_SECOND);
+        assert_eq!(trike.range(), range);
+        trike.experience = 40;
+        assert_eq!(trike.range(), range * 1.5);
+        assert!(trike.speed() > speed);
+        let mut scout = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Infantry);
+        scout.role = Role::Scout;
+        scout.experience = 1000;
+        assert_eq!(scout.rank(), 0, "scouts have no levels");
+        assert_eq!(Role::Engineer.veterancy(Faction::Atreides), None);
+        assert!(Role::Engineer.veterancy(Faction::Harkonnen).is_some());
+    }
+
+    #[test]
+    fn a_kill_scores_what_the_rules_give_the_one_killed() {
+        assert_eq!(Role::Scout.score(), 1);
+        assert_eq!(Role::AtInfantry.score(), 2);
+        assert_eq!(Role::HkAssault.score(), 4);
+        assert_eq!(Role::Refinery.score(), 4);
+        assert_eq!(Role::Wall.score(), 0, "the rules give walls none");
     }
 
     #[test]
@@ -8121,20 +8561,21 @@ mod tests {
     }
 
     #[test]
-    fn a_new_rank_brings_its_extra_health_at_once() {
+    fn a_new_level_keeps_the_share_of_health_it_had() {
         let mut unit = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Infantry);
-        unit.health = 40.0;
-        unit.gain_experience(1);
-        assert_eq!(unit.health, 40.0, "no new rank yet");
+        unit.health = 300.0;
+        unit.gain_experience(4);
+        assert_eq!(unit.health, 300.0, "no new level yet");
         unit.gain_experience(1);
         assert_eq!(unit.rank(), 1);
-        assert_eq!(unit.health, 40.0 + 600.0 * RANK_HEALTH);
+        assert_eq!(unit.health, 400.0, "half of 800, as it had half of 600");
     }
 
     #[test]
     fn experienced_units_get_there_faster() {
         let run_for = |experience: u32| {
             let mut units = [unit_at(MAP_MIDDLE_X - 905.1, 2715.0, UnitKind::Vehicle)];
+            units[0].role = Role::HkBuzzsaw;
             units[0].experience = experience;
             units[0].heading = 0.0;
             units[0].destination = (MAP_MIDDLE_X + 905.1, 2715.0);
@@ -8143,7 +8584,7 @@ mod tests {
             }
             units[0].x
         };
-        assert!(run_for(10) > run_for(0));
+        assert!(run_for(8) > run_for(0));
     }
 
     #[test]
@@ -8158,7 +8599,7 @@ mod tests {
             advance(&mut units, open_ground(), &TWO_SIDES, 0.05);
         }
         assert!(!units[1].alive);
-        assert_eq!(units[0].experience, UnitKind::Infantry.kill_value());
+        assert_eq!(units[0].experience, Role::AtInfantry.score());
     }
 
     #[test]

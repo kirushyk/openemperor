@@ -83,8 +83,6 @@ const SPRAY_SECONDS: f32 = 0.3;
 
 /// Health a repair vehicle gives back with each pulse, in the original's health.
 const REPAIR_HEALTH: f32 = 72.0;
-/// Health per second that experienced units win back, for each rank.
-const VETERAN_HEALING: f32 = 6.0;
 
 const BEAM_SECONDS: f32 = 0.2;
 const FLARE_SECONDS: f32 = 0.1;
@@ -2785,7 +2783,7 @@ fn harm(units: &mut [Unit], victim: usize, damage: f32, shooter: Shooter, teams:
     let was_alive = units[victim].alive;
     hurt(&mut units[victim], damage);
     if was_alive && !units[victim].alive && are_enemies(teams, shooter.owner, units[victim].owner) {
-        let value = units[victim].kind.kill_value();
+        let value = units[victim].role.score();
         if let Some(killer) = units.iter_mut().find(|u| u.alive && u.id == shooter.id) {
             killer.gain_experience(value);
         }
@@ -2835,28 +2833,20 @@ fn ease_recoil(units: &mut [Unit], dt: f32) {
     }
 }
 
-/// Units with a medal slowly win health back by themselves.
+/// Units whose levels let them repair themselves win health back by themselves, up to the
+/// most they have.
 fn heal_veterans(units: &mut [Unit], dt: f32) {
     for unit in units.iter_mut().filter(|u| u.alive) {
-        let healing = veteran_healing(unit);
-        if healing > 0.0 {
-            unit.health = (unit.health + healing * dt).min(unit.max_health());
+        let (healing, most) = (unit.self_repair(), unit.max_health());
+        if healing > 0.0 && unit.health < most {
+            unit.health = (unit.health + healing * dt).min(most);
         }
     }
 }
 
-/// How much health a unit gets back each second: from two medals up, or already from one in
-/// House Ordos, and a good deal more with all three.
-fn veteran_healing(unit: &Unit) -> f32 {
-    match (unit.rank(), unit.house) {
-        (0, _) | (1, Faction::Atreides | Faction::Harkonnen) => 0.0,
-        (3.., _) => VETERAN_HEALING * 4.5,
-        (rank, _) => VETERAN_HEALING * rank as f32,
-    }
-}
-
+/// Takes health off a unit, less for the armour its levels give it.
 fn hurt(unit: &mut Unit, damage: f32) {
-    unit.health -= damage;
+    unit.health -= damage * unit.harm_taken();
     if unit.health <= 0.0 {
         unit.alive = false;
         unit.selected = false;
@@ -3594,11 +3584,12 @@ mod tests {
     }
 
     #[test]
-    fn house_ordos_units_heal_from_their_first_medal() {
+    fn an_ordos_mortar_repairs_itself_from_its_first_level() {
         let mut unit = shooter(WeaponKind::Unarmed);
-        unit.experience = 2;
-        unit.health = 50.0;
+        unit.role = Role::OrMortar;
         unit.house = Faction::Ordos;
+        unit.experience = 4;
+        unit.health = 50.0;
         let mut units = [unit];
         let mut combat = Combat::default();
         run(&mut combat, &mut units, 10.0);
@@ -5515,9 +5506,10 @@ mod tests {
 
     #[test]
     fn a_kill_earns_experience_by_what_was_killed_and_a_hit_alone_earns_none() {
-        for kind in [UnitKind::Infantry, UnitKind::Vehicle, UnitKind::Tower] {
+        for role in [Role::AtInfantry, Role::HkAssault, Role::AtRocketTurret] {
+            let kind = role.kind();
             let mut enemy = target_at(90.5, 2715.0);
-            enemy.kind = kind;
+            (enemy.role, enemy.kind) = (role, kind);
             // Two shots' worth.
             enemy.health = WeaponKind::Bullet.bullet().damage_to(enemy.armour()) * 1.5;
             let mut units = [shooter(WeaponKind::Bullet), enemy];
@@ -5527,7 +5519,7 @@ mod tests {
             assert_eq!(units[0].experience, 0, "{kind:?} only hit");
             run(&mut combat, &mut units, 1.5);
             assert!(!units[1].alive, "{kind:?}");
-            assert_eq!(units[0].experience, kind.kill_value(), "{kind:?}");
+            assert_eq!(units[0].experience, role.score(), "{kind:?}");
         }
     }
 
@@ -5552,7 +5544,7 @@ mod tests {
             (WeaponKind::Flame, 90.51),
             (WeaponKind::Gas, 90.51),
         ] {
-            assert_eq!(kill_with(weapon, x), 1, "{weapon:?}");
+            assert_eq!(kill_with(weapon, x), Role::AtInfantry.score(), "{weapon:?}");
         }
     }
 
@@ -5594,13 +5586,16 @@ mod tests {
             combat.advance(&mut units, &TEAMS, flat(), 0.05);
             FULL - units[1].health
         };
+        // The rules' Atreides infantry does half as much damage again from its first level.
         assert_eq!(damage_by(0), WeaponKind::Bullet.damage());
-        assert!(damage_by(2) > damage_by(0));
-        assert!(damage_by(10) > damage_by(5));
+        assert_eq!(damage_by(4), damage_by(0));
+        assert_eq!(damage_by(5), damage_by(0) * 1.5);
     }
 
     #[test]
-    fn units_with_a_medal_slowly_heal_and_others_do_not() {
+    fn units_whose_level_repairs_them_heal_and_others_do_not() {
+        // The rules' Atreides infantry repairs itself from its second level, at a score of 10,
+        // by a health each update.
         let hurt_for_ten_seconds = |experience: u32| {
             let mut unit = shooter(WeaponKind::Unarmed);
             unit.experience = experience;
@@ -5611,19 +5606,15 @@ mod tests {
             units[0].health
         };
         assert_eq!(hurt_for_ten_seconds(0), 300.0);
-        assert_eq!(hurt_for_ten_seconds(2), 300.0, "one medal is not enough");
-        let (two_medals, three) = (hurt_for_ten_seconds(5), hurt_for_ten_seconds(10));
+        assert_eq!(hurt_for_ten_seconds(5), 300.0, "one level is not enough");
+        let healed = hurt_for_ten_seconds(10) - 300.0;
         assert!(
-            two_medals > 300.0 && two_medals < 450.0,
-            "slowly: {two_medals}"
-        );
-        assert!(
-            three - 300.0 > (two_medals - 300.0) * 1.5,
-            "much faster with all three"
+            (healed - 10.0 * UPDATES_PER_SECOND).abs() < 1.0,
+            "a health an update: {healed}"
         );
 
         let mut unit = shooter(WeaponKind::Unarmed);
-        unit.experience = 5;
+        unit.experience = 10;
         unit.health = unit.max_health() - 0.01;
         let mut units = [unit];
         let mut combat = Combat::default();

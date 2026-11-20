@@ -11351,18 +11351,29 @@ mod tests {
         let mut game = in_battle();
         assert_eq!(medals(&game), 0, "no medal at first");
         let (enemy, _) = enemy_beside_first_group(&mut game);
-        for (experience, rank) in [(2, 1), (5, 2), (10, 3)] {
-            game.units[0].experience = experience;
-            assert_eq!(game.units[0].rank(), rank);
+        let ours = game
+            .units
+            .iter()
+            .position(|u| u.owner == 0 && u.role.veterancy(u.house).is_some())
+            .unwrap();
+        let levels = game.units[ours]
+            .role
+            .veterancy(game.units[ours].house)
+            .unwrap();
+        for (rank, level) in (1..).zip(levels) {
+            let experience = level.score();
+            game.units[ours].experience = experience;
+            assert_eq!(game.units[ours].rank(), rank);
             assert_eq!(
                 medals(&game),
                 12 * rank as usize,
                 "two strokes of two triangles each"
             );
         }
-        game.units[0].experience = 0;
-        game.units[enemy].experience = 2;
-        assert_eq!(medals(&game), 12);
+        game.units[ours].experience = 0;
+        game.units[enemy].experience = 1000;
+        assert_eq!(game.units[enemy].rank(), 3);
+        assert_eq!(medals(&game), 36);
     }
 
     #[test]

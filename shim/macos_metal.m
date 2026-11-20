@@ -1084,12 +1084,17 @@ static void encode_world(id<MTLCommandBuffer> commands, id<MTLTexture> target, u
         }
         bind_world(encoder, empty_texture(), models_lit(&sky, world), MATERIAL_OBJECTS);
         draw_list(encoder, buffer, offsets[1], world->objects_count);
-        /* After all that is solid, which hides what lies behind it, and writing no depth. */
+        /* After all that is solid, which hides what lies behind it, and writing no depth. Drawn
+         * a little nearer than they are, the more so the more they slant away, so that where a
+         * lamp's beam meets the ground at a low angle it shows steadily over it rather than in
+         * and out with it from pixel to pixel as the lamp moves. */
         if (world->decals_count) {
             [encoder setRenderPipelineState:g_decal_pipeline];
             [encoder setDepthStencilState:g_depth_read];
+            [encoder setDepthBias:-1.0 slopeScale:-2.0 clamp:0.0];
             bind_world(encoder, empty_texture(), &sky, MATERIAL_DECALS);
             draw_list(encoder, buffer, offsets[5], world->decals_count);
+            [encoder setDepthBias:0.0 slopeScale:0.0 clamp:0.0];
         }
     }
     if (g_backdrop) {

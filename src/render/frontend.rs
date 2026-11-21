@@ -152,7 +152,18 @@ fn build(
                 light: name.starts_with(LIGHT),
             };
             for (across, down) in (0..tiles * tiles).map(|n| (n % tiles, n / tiles)) {
-                pictures.extend(tile(&image, tiles, (across, down)));
+                let mut tile = tile(&image, tiles, (across, down));
+                // Light adds only as much as its picture shows: none where it is see-through,
+                // as round the triangle of the hourglass's and the pointer's pictures.
+                if picture.light {
+                    for texel in tile.chunks_exact_mut(4) {
+                        let shown = u16::from(texel[3]);
+                        for channel in &mut texel[..3] {
+                            *channel = (u16::from(*channel) * shown / 255) as u8;
+                        }
+                    }
+                }
+                pictures.extend(tile);
             }
             *layers += tiles * tiles;
             picture
@@ -481,7 +492,26 @@ impl Scene {
         scale: f32,
         time: f32,
     ) {
+        self.draw_tilted(vertices, (x, y), scale, time, 0.0);
+    }
+
+    /// The same, lying scenes seen tipped this many radians towards the viewer about their
+    /// across, so that what turns over end to end, as the hourglass does, is seen to.
+    pub(super) fn draw_tilted(
+        &self,
+        vertices: &mut Vec<Vertex>,
+        (x, y): (f32, f32),
+        scale: f32,
+        time: f32,
+        tilt: f32,
+    ) {
+        let (sin, cos) = tilt.sin_cos();
         let mut faces = self.posed(time);
+        for face in &mut faces {
+            face.corners = face
+                .corners
+                .map(|[cx, cy, cz]| [cx, cy * cos - cz * sin, cy * sin + cz * cos]);
+        }
         let span = |axis: usize| {
             let along = faces.iter().flat_map(|face| face.corners.map(|c| c[axis]));
             let (low, high) = along.fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(v), h.max(v)));

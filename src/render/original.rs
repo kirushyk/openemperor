@@ -1564,9 +1564,18 @@ pub(super) fn draw_cursor(
     let Some(Some(cursor)) = found.and_then(|n| original.cursors.get(n)) else {
         return false;
     };
-    cursor.draw_flat(vertices, at, scale, time);
+    // The hourglass is seen tipped towards the viewer, so that it is seen to turn over.
+    let tilt = if look == CursorLook::Wait {
+        WAIT_TILT
+    } else {
+        0.0
+    };
+    cursor.draw_tilted(vertices, at, scale, time, tilt);
     true
 }
+
+/// How far the hourglass is seen tipped towards the viewer, in radians: our choice.
+const WAIT_TILT: f32 = std::f32::consts::FRAC_PI_4;
 
 /// Draws the original's sidebar frame stretched over a box (x, y, w, h), once the disc's is
 /// read.
@@ -3931,13 +3940,14 @@ mod tests {
                 "about the pointer"
             );
         }
-        let xs = |vertices: &[Vertex]| vertices.iter().map(|v| v.x).collect::<Vec<_>>();
-        let ys = |vertices: &[Vertex]| vertices.iter().map(|v| v.y).collect::<Vec<_>>();
-        assert_ne!(
-            (xs(&first), ys(&first)),
-            (xs(&later), ys(&later)),
-            "it turns over"
-        );
+        // Its egg's bigger end is above the pointer one way up, and below it the other.
+        let reach = |vertices: &[Vertex]| {
+            let above = vertices.iter().map(|v| 400.0 - v.y).fold(0.0, f32::max);
+            let below = vertices.iter().map(|v| v.y - 400.0).fold(0.0, f32::max);
+            above - below
+        };
+        let (one, other) = (reach(&first), reach(&later));
+        assert!((one - other).abs() > 1.0, "it turns over: {one} {other}");
     }
 
     #[test]

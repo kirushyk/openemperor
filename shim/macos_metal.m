@@ -468,12 +468,12 @@ static NSString *const kShader = @
     "  /* Land still wet from the sea, darker just above it. */\n"
     "  if (sky.material == 1) color *= mix(0.62, 1.0, smoothstep(0.0, 0.12, level));\n"
     "  float3 lit = light_on(color, in.world, normal, in_sun, sky);\n"
-    /* The ground sunlit, as much under its wash as the wash's alpha says, the sun being in
-     * the wash already; what burns on the map lights it on top of the wash. */
+    /* The ground's color as much its wash's as the wash's alpha says, the wash being the
+     * colors of the map's sand and rock with no light in them; and then lit as all the ground
+     * is, by the map's light, blue on a map lit blue, and by what burns on it. */
     "  if (sky.material == 0 && sky.wash.x > 0.0) {\n"
     "    float4 over = wash.sample(smooth, in.world.xz / sky.wash);\n"
-    "    lit = mix(sun_light_on(color, normal, in_sun, sky), over.rgb, over.a)\n"
-    "          + color * lights_on(in.world, normal, sky);\n"
+    "    lit = light_on(mix(color, over.rgb, over.a), in.world, normal, in_sun, sky);\n"
     "  }\n"
     /* Objects, drawn as material 8, say how much they shine in their level; soot takes it away. */
     "  if (sky.material == 8 && in.level > 0.0)\n"

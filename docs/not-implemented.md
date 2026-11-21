@@ -62,12 +62,12 @@ we are missing is in [units.md](units.md). This list is about everything else.
 - **The glow of the original's lights** is drawn: searchlight beams, the spots they throw,
   lamps and flares. They do not light anything around them. Only explosions, fires, eruptions
   and gunfire do.
-- **Ground lighting**: on maps with a blue light, buildings take its hue, but the ground stays
-  orange. The cause is not found yet.
 - **The map's light file**: lines 4 and 5 of `test.lit` light the models, taken as their
-  ambient light and sunlight; lines 2 and 3 the ground. That is our reading: on every map the
-  second pair is darker than the first in the same hue, and the ground's own light is baked
-  into its wash. The names are not on the disc.
+  ambient light and sunlight; lines 2 and 3 the ground, wash and all. That is our reading: on
+  every map the second pair is darker than the first in the same hue, and the wash (`test.CPT`)
+  holds only the colors of the sand and rock, with no shading in it, so it is lit as the
+  ground is: blue on a map lit blue, such as the Atreides' first. The names are not on the
+  disc.
 
 ## Maps
 

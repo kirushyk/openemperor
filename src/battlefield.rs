@@ -186,9 +186,9 @@ pub struct Light {
 impl Light {
     /// A map's light as its `test.lit` has it: the way to the sun as x, y and z, with z the
     /// other way along from ours, then the ambient light and the sunlight, each as red, green
-    /// and blue from 0 to 255; then, darker on every map in the same hue, the two the models
-    /// are lit by, it seems, the ground's being baked into its wash. A map without them lights
-    /// its models as its ground.
+    /// and blue from 0 to 255, by which the ground and its wash are lit; then, darker on every
+    /// map in the same hue, the two the models are lit by. A map without them lights its models
+    /// as its ground.
     pub fn read(text: &str) -> Option<Self> {
         let mut lines = text.lines().map(|line| {
             line.split_whitespace()

@@ -1,9 +1,10 @@
 ---
 id: TASK-46
 title: Play the original's tutorial
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-18T11:25:00Z'
+updated_date: '2026-11-21T05:24:00Z'
 labels: []
 dependencies: []
 ordinal: 46000
@@ -21,3 +22,9 @@ The Tutorial button plays our stand-in: skirmish map 0 with no house. The disc h
 - [ ] #2 Every function and keyword the script uses does what its use shows, or is documented as unknown in docs/tok-format.md
 - [ ] #3 The tutorial can be played from start to its end
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Duplicate of task 83, under which the original tutorial now runs on #x1 by ATTutorial.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1206,6 +1206,12 @@ fn read_land(original: &Original, map: usize) -> Option<Land> {
     for object in &model.objects {
         gather_land(object, &IDENTITY, &used, &seas, &mut pieces);
     }
+    // The walls it hangs down from its edges, all one point of their picture, show past the
+    // map as its edge stretched far down: they are left out.
+    let extent = battlefield::terrain(map).extent();
+    for piece in &mut pieces {
+        piece.faces.retain(|face| !hangs_from_edge(face, extent));
+    }
     let sea = pieces
         .iter()
         .flat_map(|piece| &piece.faces)
@@ -1220,6 +1226,16 @@ fn read_land(original: &Original, map: usize) -> Option<Land> {
         pictures: images,
         wash,
     })
+}
+
+/// Whether a face of a map's ground is in a wall down from one of its edges, of a map that
+/// reaches this far along x and along z: all its corners on that edge.
+fn hangs_from_edge(face: &LandFace, (right, bottom): (f32, f32)) -> bool {
+    const NEAR: f32 = 0.5;
+    let all = |on: &dyn Fn([f32; 3]) -> bool| face.points.iter().all(|&point| on(point));
+    [(0, 0.0), (0, right), (2, 0.0), (2, bottom)]
+        .iter()
+        .any(|&(axis, at)| all(&|point| (point[axis] - at).abs() < NEAR))
 }
 
 /// Adds the faces of a piece of a map's ground and what is in it, placed by `above`. The
@@ -2791,6 +2807,40 @@ pub(super) const SEEN_THROUGH: f32 = 1.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_walls_down_from_a_maps_edges_are_left_out_and_its_ground_kept() {
+        let face = |points| LandFace {
+            points,
+            normals: [[0.0, 1.0, 0.0]; 3],
+            color: [0.0; 3],
+            picture: [NO_PICTURE; 3],
+            sea: false,
+        };
+        let extent = (4608.0, 3072.0);
+        let walls = [
+            [
+                [4608.0, 47.7, 4448.4],
+                [4608.0, -500.0, 4448.4],
+                [4608.0, -500.0, 4427.2],
+            ],
+            [[0.0, 20.0, 64.0], [0.0, -500.0, 64.0], [0.0, -500.0, 32.0]],
+            [
+                [128.0, 30.0, 3072.0],
+                [128.0, -500.0, 3072.0],
+                [96.0, -500.0, 3072.0],
+            ],
+        ];
+        for points in walls {
+            assert!(hangs_from_edge(&face(points), extent), "{points:?}");
+        }
+        // Ground in a corner touches two edges, but lies along neither.
+        let corner = [[0.0, 10.0, 0.0], [32.0, 10.0, 0.0], [0.0, 10.0, 32.0]];
+        let inside = [[64.0, 10.0, 64.0], [96.0, 10.0, 64.0], [64.0, 10.0, 96.0]];
+        for points in [corner, inside] {
+            assert!(!hangs_from_edge(&face(points), extent), "{points:?}");
+        }
+    }
 
     #[test]
     fn a_building_shows_damaged_below_half_its_health_and_badly_below_a_quarter() {

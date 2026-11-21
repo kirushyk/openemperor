@@ -1706,8 +1706,9 @@ pub fn edge_direction(mouse: (f32, f32), width: f32, height: f32) -> (f32, f32) 
     }
 }
 
-/// How far in from the map's edges its land darkens, down to black at them.
-const EDGE_FADE: f32 = 4.0 * CELL_SIDE;
+/// How far in from the map's edges its land darkens, down to black at them: a square, our
+/// guess, as the disc gives no figure.
+const EDGE_FADE: f32 = CELL_SIDE;
 
 /// How much of its light the land lets out at a place on a map reaching this far: all of it
 /// but near the edges, where it fades smoothly to none.

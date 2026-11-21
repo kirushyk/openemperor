@@ -4854,10 +4854,10 @@ impl Game {
         // A construction yard is one dug in, put down or brought; only one put down stands
         // about its back row.
         let dug_in = name.ends_with(CONSTRUCTION_YARD);
-        let anchor = if dug_in && facing.is_some() {
-            units::Anchor::Yard
-        } else {
-            units::Anchor::Corner
+        let anchor = match facing {
+            Some(_) if dug_in => units::Anchor::Yard,
+            Some(_) => units::Anchor::Corner,
+            None => units::Anchor::Nearest,
         };
         let terrain = battlefield::terrain(self.battle_map);
         let id = self.next_unit_id;
@@ -6805,6 +6805,41 @@ mod tests {
         let yard = game.units.iter().find(|u| Some(u.id) == yard).unwrap();
         assert!(yard.deployed && yard.kind.is_building());
         assert_eq!(game.buildings_left(1), 2);
+    }
+
+    #[test]
+    fn buildings_a_script_brings_to_one_point_each_stand_on_their_own_squares_near_it() {
+        use mission::Battle;
+        let mut game = in_battle();
+        game.relate(1, 0, true);
+        let (x, z) = game.home;
+        let at = (x + 600.0, z + 600.0);
+        let brought: Vec<_> = [3, 4, 3, 4]
+            .into_iter()
+            .filter_map(|kind| game.bring(1, kind, at))
+            .collect();
+        assert_eq!(brought.len(), 4);
+        let plots: Vec<_> = brought
+            .iter()
+            .map(|&id| {
+                game.units
+                    .iter()
+                    .find(|u| u.id == id)
+                    .unwrap()
+                    .plot()
+                    .unwrap()
+            })
+            .collect();
+        for (n, a) in plots.iter().enumerate() {
+            for b in &plots[n + 1..] {
+                assert!(
+                    !a.cells().any(|cell| b.cells().any(|other| other == cell)),
+                    "{a:?} {b:?}"
+                );
+            }
+            let (cx, cz) = a.center();
+            assert!((cx - at.0).hypot(cz - at.1) < 12.0 * battlefield::CELL_SIDE);
+        }
     }
 
     #[test]

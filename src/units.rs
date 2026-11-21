@@ -4667,6 +4667,11 @@ pub fn put(
             .unwrap_or_default()
             .turned((across * CELL_SIDE, ahead * CELL_SIDE));
         (at.0 + dx, at.1 + dz)
+    } else if stands && anchor == Anchor::Nearest {
+        let facing = facing.unwrap_or_default();
+        free_plot_near(units, terrain, (role, house), facing, at)
+            .unwrap_or_else(|| role.plot_facing(house, at, facing))
+            .center()
     } else if stands {
         // Its squares as it faces, from the one the point is in across and down; a building
         // that would reach past the map's edge stands in from it, as the tutorial's refinery.
@@ -4710,6 +4715,57 @@ pub fn put(
 pub enum Anchor {
     Corner,
     Yard,
+    /// The free squares nearest the point, for what a script brings in rather than puts.
+    Nearest,
+}
+
+/// How many squares out from a point a building is looked for room for, ring by ring, and
+/// how many squares it leaves between itself and the buildings around it.
+const ROOM_RINGS: i32 = 16;
+const BROUGHT_LANE: i32 = 2;
+
+/// The free squares nearest a point that a building facing this way fits on, on rock if
+/// there are such within `ROOM_RINGS`, else on any ground it can stand on there.
+fn free_plot_near(
+    units: &[Unit],
+    terrain: &Terrain,
+    (role, house): (Role, Faction),
+    facing: Facing,
+    (x, z): (f32, f32),
+) -> Option<Plot> {
+    let first = role.plot_facing(house, (x, z), facing);
+    let away = |plot: &Plot| {
+        let (cx, cz) = plot.center();
+        (cx - x).hypot(cz - z)
+    };
+    let clear = |plot: Plot| {
+        plot.cells().all(|(u, v)| {
+            let (cx, cz) = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+            terrain.can_walk(cx, cz)
+                && units
+                    .iter()
+                    .filter(|unit| unit.alive)
+                    .filter_map(Unit::plot)
+                    .all(|theirs| !theirs.contains((u, v)))
+        })
+    };
+    let nearest = |fits: &dyn Fn(Plot) -> bool| {
+        (0..=ROOM_RINGS).find_map(|ring| {
+            let around = (-ring..=ring).flat_map(|du| (-ring..=ring).map(move |dv| (du, dv)));
+            around
+                .filter(|&(du, dv)| du.abs() == ring || dv.abs() == ring)
+                .map(|(du, dv)| Plot {
+                    u: first.u + du,
+                    v: first.v + dv,
+                    ..first
+                })
+                .filter(|&plot| fits(plot))
+                .min_by(|a, b| away(a).total_cmp(&away(b)))
+        })
+    };
+    let roomy = |plot: Plot| leaves_lanes(units, plot, BROUGHT_LANE);
+    nearest(&|plot| can_place_building(units, terrain, plot) && roomy(plot))
+        .or_else(|| nearest(&|plot| clear(plot) && roomy(plot)))
 }
 
 /// Sends a unit to its own free spot near a point, if there is one.

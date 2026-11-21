@@ -186,6 +186,10 @@ const CIRCLE: u16 = 105;
 const STOP_CIRCLING: u16 = 106;
 const KEEP_VIEW: u16 = 112;
 const GLIDE_BACK: u16 = 113;
+/// The camera follows a thing, as the tutorial's opening has it follow its harvester, and
+/// stops following it.
+const FOLLOW: u16 = 107;
+const STOP_FOLLOWING: u16 = 108;
 /// The same in the midst of the battle.
 const LOOK_AT_TOO: u16 = 114;
 const GLIDE_TO_TOO: u16 = 115;
@@ -257,6 +261,9 @@ pub enum Shot {
     Circle(i32, i32),
     StopCircling,
     GlideBack(i32),
+    /// Stays on a thing wherever it goes, or on what carries it.
+    Follow(u32),
+    StopFollowing,
 }
 
 /// What a script asks of the battle it runs in. Its sides are numbers: the player's 0, and
@@ -566,6 +573,8 @@ impl Script {
                     Piece::Function(STOP_CIRCLING) => film(battle, Some(Shot::StopCircling)),
                     Piece::Function(KEEP_VIEW) => film(battle, Some(Shot::Keep)),
                     Piece::Function(GLIDE_BACK) => film(battle, Some(Shot::GlideBack(number(0)))),
+                    Piece::Function(FOLLOW) => film(battle, at(0).thing().map(Shot::Follow)),
+                    Piece::Function(STOP_FOLLOWING) => film(battle, Some(Shot::StopFollowing)),
                     Piece::Function(HEALTH) => Value::Number(
                         battle
                             .health(at(0).thing())
@@ -1050,6 +1059,21 @@ mod tests {
             vec![K(SCENE_ENDS), text("()")],
             vec![F(LOOK_AT_TOO), text("("), V(20), text(")")],
             vec![F(GLIDE_TO_TOO), text("("), V(13), text(",80)")],
+            // As the tutorial's opening: v1 = K139(...); F107(v1); ... F108(); and the camera
+            // sent after a thing there is not does nothing.
+            vec![
+                V(1),
+                K(SET),
+                K(PLACE),
+                text("(0,"),
+                Token::Kind(1),
+                text(","),
+                V(13),
+                text(",0,0,0)"),
+            ],
+            vec![F(FOLLOW), text("("), V(1), text(")")],
+            vec![F(STOP_FOLLOWING), text("()")],
+            vec![F(FOLLOW), text("("), V(30), text(")")],
         ];
         let mut battle = Written::default();
         Script::new(&lines).run(&mut battle);
@@ -1064,6 +1088,8 @@ mod tests {
                 Shot::StopCircling,
                 Shot::GlideBack(60),
                 Shot::GlideTo((13.0, 0.0), 80),
+                Shot::Follow(1),
+                Shot::StopFollowing,
             ]
         );
     }

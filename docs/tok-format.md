@@ -117,7 +117,8 @@ Their names are not on the disc. These are what their use in `ATStart.tok` shows
 | `F84()` | The tutorial is over and done; taken as won | 27.5 s after its last line |
 | `K135(thing)` | Takes a thing off the map | the tutorial's walls opened for the wave |
 | `K144(n)` | A step of the tutorial, as the number; what else it does is not known | `v32 K180 K144(11)` |
-| `F63`, `F85`, `F96`, `F97`, `F107`, `F108` | Not known; the tutorial runs without them | `F97(v35,20)` as a beacon goes down |
+| `F63`, `F85`, `F96`, `F97` | Not known; the tutorial runs without them | `F97(v35,20)` as a beacon goes down |
+| `F107(thing)`, `F108()` | The camera follows a thing, or what carries it, and stops following | `F107(v1)`: the tutorial's harvester, at its start |
 | `F100(place)`, `F114(place)` | The camera looks at a place; the second in the midst of the battle | `F100(v13)`: the player's base |
 | `F101(place, n)`, `F115(place, n)` | The camera glides to a place over `n` updates | `F101(v16,50)`: to the enemy's base |
 | `F105(degrees, way)` | The camera circles where it looks, so many degrees an update, `1` one way and `2` the other | `F105(2,1)`: once round in the 180 updates before `F113` |

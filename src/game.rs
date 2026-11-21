@@ -2150,6 +2150,8 @@ impl mission::Battle for Game {
             }
             mission::Shot::StopCircling => self.camera.circle(0.0),
             mission::Shot::GlideBack(updates) => self.camera.glide_back(seconds(updates)),
+            mission::Shot::Follow(thing) => self.following = Some(thing),
+            mission::Shot::StopFollowing => self.following = None,
         }
     }
 
@@ -3310,7 +3312,15 @@ impl Game {
         let Some(id) = self.following else {
             return;
         };
-        match self.units.iter().find(|u| u.alive && u.id == id) {
+        // A vehicle a carryall holds goes along with it.
+        let carried = self.carried.iter().map(|load| &load.vehicle);
+        match self
+            .units
+            .iter()
+            .filter(|u| u.alive)
+            .chain(carried)
+            .find(|u| u.id == id)
+        {
             Some(unit) if !unit.kind.is_building() => self.camera.look_at(unit.x, unit.z),
             _ => self.following = None,
         }
@@ -7317,6 +7327,48 @@ mod tests {
         game.update(Role::AtTrike.build_seconds() / 2.0);
         let progress = game.making_progress(Role::AtTrike).unwrap();
         assert!((progress - 0.5).abs() < 0.01, "{progress}");
+    }
+
+    #[test]
+    fn a_script_has_the_camera_follow_a_harvester_its_carryall_brings_until_it_says_stop() {
+        use mission::{Battle, Shot};
+        let mut game = in_battle();
+        game.skirmish.crates = false;
+        game.site = Site::Placing(Role::Refinery);
+        let (x, y) = buildable_spot_on_screen(&mut game);
+        click_at(&mut game, x, y);
+        game.update(units::CONSTRUCTION_SECONDS + 0.1);
+        let brought = game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.role == Role::Harvester && u.theft.is_some())
+            .map(|u| u.id)
+            .expect("a harvester on its way");
+        game.camera(Shot::Follow(brought));
+        let at = |game: &Game| {
+            let carried = game.carried.iter().map(|load| &load.vehicle);
+            let harvester = game.units.iter().chain(carried).find(|u| u.id == brought);
+            harvester.map(|u| (u.x, u.z)).unwrap()
+        };
+        // Brought in from past the map's edge, it is followed once over the map.
+        let mut followed = 0;
+        for _ in 0..100 {
+            game.update(0.1);
+            let (x, z) = at(&game);
+            if x < 0.0 || z < 0.0 {
+                continue;
+            }
+            followed += 1;
+            assert!(
+                (game.camera.x - x).hypot(game.camera.z - z) < 1.0,
+                "the camera on the harvester, carried or not"
+            );
+        }
+        assert!(followed > 50);
+        game.camera(Shot::StopFollowing);
+        let kept = (game.camera.x, game.camera.z);
+        game.update(1.0);
+        assert_eq!((game.camera.x, game.camera.z), kept, "left where it was");
     }
 
     #[test]

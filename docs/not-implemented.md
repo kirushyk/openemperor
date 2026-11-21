@@ -91,6 +91,10 @@ we are missing is in [units.md](units.md). This list is about everything else.
 
 ## Units at work
 
+- **Harvesting**: a harvester stops on each spot and eats it for 6 seconds, its scoop going
+  down, eating and coming up by its "Harv Eat Start", "Hold" and "End", then drives on to the
+  nearest spot a short way ahead. It fills in 30 seconds of eating. Both times are guesses:
+  the rules give no rate, and the sand is not used up.
 - **Unreachable spice**: a harvester looks for the nearest spice it can drive onto, not the
   nearest it can get to. Spice cut off from it, such as on a rise of its own, keeps drawing
   it back.

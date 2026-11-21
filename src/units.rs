@@ -164,8 +164,10 @@ impl UnitKind {
 const BUILDING_RADIUS: f32 = 54.31;
 /// How much substance a harvester holds when full.
 pub const HARVESTER_LOAD: f32 = 100.0;
-/// Seconds of driving over the sand it takes a harvester to fill up.
-const HARVEST_SECONDS: f32 = 60.0;
+/// Seconds of eating the sand it takes a harvester to fill up, and how long it eats each spot
+/// before it moves on to the next: our guesses, as the rules give no rate.
+const HARVEST_SECONDS: f32 = 30.0;
+pub const EAT_SECONDS: f32 = 6.0;
 /// What each unit of substance is worth at a refinery, in credits.
 const CREDITS_PER_SUBSTANCE: f32 = 7.0;
 /// Seconds a harvester takes to empty a full load at a refinery.
@@ -2910,6 +2912,8 @@ pub struct Unit {
     pub revealed: f32,
     /// Seconds one that goes invisible only standing still stays seen after it last moved.
     seen_moving: f32,
+    /// Seconds a harvester has been eating the spot it stands on.
+    pub eating: f32,
     /// Whether a soldier is cheering his side's win.
     pub cheering: bool,
     /// How far a pop-up turret has come up: 0 sunk in the ground, 1 ready to fire. For a
@@ -3847,9 +3851,9 @@ impl Unit {
         })
     }
 
-    /// Whether a harvester is driving over the sand scooping it up.
+    /// Whether a harvester stands on the sand eating it, its scoop down.
     pub fn is_harvesting(&self) -> bool {
-        self.alive && self.harvest == Harvest::Collecting && self.is_moving()
+        self.alive && self.harvest == Harvest::Collecting && !self.is_moving() && self.eating > 0.0
     }
 
     /// Where gunfire comes out: at the end of the barrel, outside its body.
@@ -3980,6 +3984,7 @@ impl Unit {
             pace: None,
             revealed: 0.0,
             seen_moving: 0.0,
+            eating: 0.0,
             cheering: false,
             popped: 0.0,
             gun_turn: 0.0,
@@ -4144,6 +4149,7 @@ fn place_unit(
         pace: None,
         revealed: 0.0,
         seen_moving: 0.0,
+        eating: 0.0,
         cheering: false,
         popped: 0.0,
         gun_turn: 0.0,
@@ -6995,16 +7001,10 @@ impl Claims {
     }
 }
 
-/// Somewhere else on the sand for a harvester to drive to next: one of the cells with
-/// substance around where it harvests, or once there are none far enough from it there, the
-/// nearest elsewhere.
+/// Somewhere else on the sand for a harvester to drive to next: the nearest of the cells with
+/// substance around where it harvests, ahead of it if it can, or once there are none far
+/// enough from it there, the nearest elsewhere.
 fn roam(terrain: &Terrain, unit: &Unit, claims: &Claims) -> Option<(f32, f32)> {
-    // Where it stands counts too, so one that could not get to where it went picks again.
-    let mut random = (unit.id.wrapping_mul(0x9E37_79B1)
-        ^ unit.stride.to_bits()
-        ^ unit.x.to_bits().rotate_left(11)
-        ^ unit.z.to_bits())
-        | 1;
     let away = |&(x, z): &(f32, f32)| (x - unit.x).hypot(z - unit.z);
     let usable = |at: &(f32, f32)| away(at) >= HARVEST_LEAST_STEP && has_substance(terrain, *at);
     let around: Vec<(f32, f32)> = terrain
@@ -7014,9 +7014,15 @@ fn roam(terrain: &Terrain, unit: &Unit, claims: &Claims) -> Option<(f32, f32)> {
         .filter(usable)
         .filter(|&at| !claims.taken(at))
         .collect();
-    if !around.is_empty() {
-        let pick = (next_random(&mut random) * around.len() as f32) as usize;
-        return around.get(pick.min(around.len() - 1)).copied();
+    // The nearest spot a short way on, ahead of it where there is one, so that it works its
+    // way across the field rather than darting about it.
+    let (sin, cos) = unit.heading.sin_cos();
+    let ahead = |&(x, z): &&(f32, f32)| (x - unit.x) * cos + (z - unit.z) * sin > 0.0;
+    let nearest = |spots: &mut dyn Iterator<Item = &(f32, f32)>| {
+        spots.min_by(|a, b| away(a).total_cmp(&away(b))).copied()
+    };
+    if let Some(next) = nearest(&mut around.iter().filter(ahead)).or(nearest(&mut around.iter())) {
+        return Some(next);
     }
     let (width, height) = terrain.extent();
     let elsewhere: Vec<(f32, f32)> = terrain
@@ -7162,16 +7168,21 @@ pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32],
                     head_for(&mut units[i], wait);
                 }
             }
-            (Harvest::Collecting, _) if unit.is_moving() => {
-                if on_sand {
-                    let rate = HARVESTER_LOAD / HARVEST_SECONDS;
-                    unit.load = (unit.load + rate * dt).min(HARVESTER_LOAD);
-                }
+            // On its way to the next spot, its scoop up.
+            (Harvest::Collecting, _) if unit.is_moving() => unit.eating = 0.0,
+            (Harvest::Collecting, _) if !on_sand => {
+                unit.eating = 0.0;
+                unit.harvest = Harvest::Seeking;
+            }
+            // Stopped on the sand, it lowers its scoop, eats the spot and raises it again.
+            (Harvest::Collecting, _) if unit.eating < EAT_SECONDS => {
+                unit.eating += dt;
+                let rate = HARVESTER_LOAD / HARVEST_SECONDS;
+                unit.load = (unit.load + rate * dt).min(HARVESTER_LOAD);
             }
             (Harvest::Collecting, _) => {
-                if !on_sand {
-                    unit.harvest = Harvest::Seeking;
-                } else if let Some(next) = roam(terrain, unit, &claims) {
+                unit.eating = 0.0;
+                if let Some(next) = roam(terrain, unit, &claims) {
                     // Off to another field: it harvests about that one from now on.
                     if (next.0 - unit.field.0).hypot(next.1 - unit.field.1) > HARVEST_ROAM {
                         unit.field = next;
@@ -11945,7 +11956,7 @@ mod tests {
     }
 
     #[test]
-    fn a_harvester_fills_up_only_driving_over_the_sand_and_stops_harvesting_when_sent_off() {
+    fn a_harvester_fills_up_only_eating_the_sand_and_stops_harvesting_when_sent_off() {
         let mut units = refinery_and_harvesters(1);
         units[1].load = 0.0;
         let mut money = [0];
@@ -11972,6 +11983,35 @@ mod tests {
             tend_harvesters(&mut alone, &Terrain::open_rock(), &mut money, 0.05);
         }
         assert_eq!(alone[0].load, 0.0, "nothing on the upper ground");
+    }
+
+    #[test]
+    fn a_harvester_eats_one_spot_after_another_standing_and_moves_on_a_short_way_each_time() {
+        let mut units = refinery_and_harvesters(1);
+        units[1].load = 0.0;
+        let mut money = [0];
+        let (mut eating, mut spots) = (0.0, vec![(units[1].x, units[1].z)]);
+        const DT: f32 = 0.05;
+        while units[1].load < HARVESTER_LOAD {
+            work(&mut units, &mut money, DT);
+            if units[1].is_harvesting() {
+                eating += DT;
+                let at = (units[1].x, units[1].z);
+                if spots.last() != Some(&at) {
+                    spots.push(at);
+                }
+            }
+            assert!(eating < 60.0, "it fills up");
+        }
+        assert!(
+            (eating - HARVEST_SECONDS).abs() < 1.0,
+            "full after {eating} s of eating"
+        );
+        assert!(spots.len() >= 4, "{} spots", spots.len());
+        for pair in spots[1..].windows(2) {
+            let hop = (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+            assert!(hop < 4.0 * CELL_SIDE, "a short way on: {hop}");
+        }
     }
 
     #[test]

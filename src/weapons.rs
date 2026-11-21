@@ -1806,10 +1806,15 @@ impl Combat {
             |u: &Unit| u.role == Role::Refinery && u.alive && !u.is_under_construction();
         let raises_dust = |u: &Unit| u.role.rolls() && u.is_moving() && !terrain.is_rock(u.x, u.z);
         let flares = |u: &Unit| u.alive && u.flare_top().is_some();
-        if !units
-            .iter()
-            .any(|u| leaves_vapor(u) || raises_dust(u) || smokes(u) || stacks_smoke(u) || flares(u))
-        {
+        let eats = |u: &Unit| u.is_harvesting() && !terrain.is_rock(u.x, u.z);
+        if !units.iter().any(|u| {
+            leaves_vapor(u)
+                || raises_dust(u)
+                || smokes(u)
+                || stacks_smoke(u)
+                || flares(u)
+                || eats(u)
+        }) {
             return;
         }
         let dust = dust_color();
@@ -1882,7 +1887,7 @@ impl Combat {
                     });
                 }
             }
-            if raises_dust(unit) && unit.is_harvesting() {
+            if eats(unit) {
                 // Thrown up and out in front of the scoop, billowing over the harvester.
                 let (sin, cos) = unit.heading.sin_cos();
                 let reach = unit.radius() * 1.25;

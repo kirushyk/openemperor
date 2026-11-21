@@ -13,7 +13,8 @@ use crate::fog::Fog;
 use crate::game::{CursorLook, Faction};
 use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
 use crate::units::{
-    CrateKind, Flight, Frigate, Gender, Harvest, Prop, Role, Unit, UnitKind, WallPiece, Wound,
+    CrateKind, EAT_SECONDS, Flight, Frigate, Gender, Harvest, Prop, Role, Unit, UnitKind,
+    WallPiece, Wound,
 };
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
@@ -2305,11 +2306,32 @@ fn frame(shape: &Shape, unit: &Unit, time: f32) -> usize {
     {
         return frame;
     }
+    // A harvester eating a spot lowers its scoop, eats and raises it again over the time it
+    // eats there.
+    if unit.role == Role::Harvester
+        && unit.is_harvesting()
+        && let (Some(&[start, ..]), Some(&[hold, ..]), Some(&[end, ..])) = (
+            find("Harv Eat Start"),
+            find("Harv Eat Hold"),
+            find("Harv Eat End"),
+        )
+    {
+        let eaten = (unit.eating * FRAMES_PER_SECOND) as usize;
+        let end_from = ((EAT_SECONDS * FRAMES_PER_SECOND) as usize)
+            .saturating_sub(length(end))
+            .max(length(start));
+        return if eaten < length(start) {
+            start.0 + eaten
+        } else if eaten >= end_from {
+            end.0 + (eaten - end_from).min(length(end) - 1)
+        } else {
+            looped(&[hold], eaten - length(start))
+        };
+    }
     let moving = unit.is_moving();
     let names: &[&str] = match unit.harvest {
         _ if unit.kind == UnitKind::Aircraft && unit.altitude > 0.0 && moving => &["Fly", "Move"],
         _ if unit.kind == UnitKind::Aircraft && unit.altitude > 0.0 => &["Hover", "Stationary"],
-        Harvest::Collecting if unit.role == Role::Harvester => &["Harv Eat Hold"],
         Harvest::Dumping(_) if unit.role == Role::Harvester => &["Harv Unload Hold"],
         _ if unit.deployed => &["Deployed Idle 0", "Deploy Gun Hold"],
         _ if moving => &["Move"],
@@ -3308,7 +3330,9 @@ mod tests {
                 sequence("Stationary", 100, 110),
                 sequence("Move", 20, 40),
                 sequence("Fire 0", 60, 70),
+                sequence("Harv Eat Start", 64, 84),
                 sequence("Harv Eat Hold", 84, 97),
+                sequence("Harv Eat End", 97, 114),
             ],
             ..Shape::default()
         };
@@ -3322,7 +3346,17 @@ mod tests {
         assert_eq!(frame(&shape, &unit, 0.2), 65);
         unit.revealed = 0.0;
         unit.harvest = Harvest::Collecting;
-        assert_eq!(frame(&shape, &unit, 0.2), 89);
+        assert_eq!(frame(&shape, &unit, 0.2), 25, "on its way to a spot");
+        unit.destination = (unit.x, unit.z);
+        // Stopped on a spot: its scoop down, eating, and up again.
+        let eating = |unit: &mut Unit, seconds: f32| {
+            unit.eating = seconds;
+            frame(&shape, unit, 0.2)
+        };
+        assert_eq!(eating(&mut unit, 0.2), 69);
+        assert_eq!(eating(&mut unit, 1.0), 89);
+        assert_eq!(eating(&mut unit, EAT_SECONDS - 0.04), 113);
+        unit.eating = 0.0;
         unit.kind = UnitKind::Building;
         assert_eq!(
             frame(&shape, &unit, 0.2),

@@ -845,10 +845,11 @@ pub fn build_frame(game: &Game) -> Frame {
     }
 }
 
-/// How far above where a searchlight's beam ends its light hangs, how far it reaches, and its
-/// pale white.
+/// How far above where a searchlight's beam ends its light hangs, how far it reaches at least
+/// and for how wide that end is, to light all of it, and its pale white.
 const SEARCHLIGHT_ABOVE: f32 = 18.1;
 const SEARCHLIGHT_REACH: f32 = 90.51;
+const SEARCHLIGHT_SPREAD: f32 = 1.5;
 pub const SEARCHLIGHT_COLOR: [f32; 3] = [1.0, 1.0, 0.92];
 
 /// What burns on the map right now and lights what is around it: eruptions, flickering, then
@@ -904,29 +905,19 @@ fn lights_of(game: &Game) -> Vec<PointLight> {
         .units
         .iter()
         .filter(|unit| unit.alive && game.shows(unit))
-        .flat_map(|unit| {
-            let mut spots = original::searchlight_spots(unit, game.battle_time());
-            if spots.is_empty() && unit.role == Role::Mcv {
-                let beam = models::mcv_searchlight(unit, unit.house, game.battle_time());
-                let (x, y, z) = beam.lens;
-                spots.push(std::array::from_fn(|i| {
-                    [x, y, z][i] + beam.ahead[i] * beam.reach
-                }));
-            }
-            spots
-        })
-        .filter(|&[x, _, z]| seen((x, 0.0, z)))
+        .flat_map(|unit| original::searchlight_spots(unit, game.battle_time()))
+        .filter(|&([x, _, z], _)| seen((x, 0.0, z)))
         .collect::<Vec<_>>();
     // There are more than lights to go round: those nearest where the camera looks first.
     let (look_x, look_z) = (game.camera.x, game.camera.z);
     let mut beams = beams;
     beams.sort_by(|a, b| {
-        let away = |p: &[f32; 3]| (p[0] - look_x).hypot(p[2] - look_z);
+        let away = |(p, _): &([f32; 3], f32)| (p[0] - look_x).hypot(p[2] - look_z);
         away(a).total_cmp(&away(b))
     });
-    let beams = beams.into_iter().map(|[x, y, z]| PointLight {
+    let beams = beams.into_iter().map(|([x, y, z], spread)| PointLight {
         place: [x, y + SEARCHLIGHT_ABOVE, z],
-        radius: SEARCHLIGHT_REACH,
+        radius: (spread * SEARCHLIGHT_SPREAD).max(SEARCHLIGHT_REACH),
         color: SEARCHLIGHT_COLOR,
         unused: 0.0,
     });

@@ -15274,7 +15274,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deployed_mcvs_sweeping_searchlight_lights_the_ground_where_it_points() {
+    fn a_deployed_mcv_throws_no_searchlight_on_the_ground() {
         let mut game = in_battle();
         game.fog = None;
         let mcv = *game
@@ -15284,12 +15284,10 @@ mod tests {
             .unwrap();
         game.camera.look_at(mcv.x, mcv.z);
         let frame = crate::render::build_frame(&game);
-        let pale = frame.lights.iter().find(|light| {
-            let [r, g, b] = light.color;
-            (r - g).abs() < 0.01
-                && b > 0.4
-                && (light.place[0] - mcv.x).hypot(light.place[2] - mcv.z) > 30.0
-        });
-        assert!(pale.is_some(), "{:?}", frame.lights);
+        let pale = frame
+            .lights
+            .iter()
+            .any(|light| light.color == crate::render::SEARCHLIGHT_COLOR);
+        assert!(!pale, "{:?}", frame.lights);
     }
 }

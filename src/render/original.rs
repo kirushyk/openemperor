@@ -2370,9 +2370,9 @@ fn ends_of(shape: &Shape, unit: &Unit) -> Vec<(f32, f32, f32)> {
 }
 
 /// Where the searchlights of the unit's model throw their light, at this time of the battle:
-/// the far end of each beam, as it is posed now. None without the disc's model, or for a
-/// building.
-pub fn searchlight_spots(unit: &Unit, time: f32) -> Vec<[f32; 3]> {
+/// the middle of the far end of each beam, as it is posed now, and how far out from it that
+/// end spreads. None without the disc's model, or for a building.
+pub fn searchlight_spots(unit: &Unit, time: f32) -> Vec<([f32; 3], f32)> {
     // A building's lights, such as a windtrap's glowing panels, light only themselves; but a
     // searchlight's beam, as the Harkonnen compound's of the Atreides' first battle, lights
     // where it points.
@@ -2380,14 +2380,30 @@ pub fn searchlight_spots(unit: &Unit, time: f32) -> Vec<[f32; 3]> {
     let Some(shape) = shape_of(unit).filter(|_| lights_ground) else {
         return Vec::new();
     };
+    // Between the frame it is at and the next, for the light to sweep on smoothly.
+    let played = time * FRAMES_PER_SECOND;
+    let (at, between) = (played.floor(), played.fract());
+    // From the middle of a frame's time, to be sure of which frame it is.
+    let at_frame = |n: f32| frame(shape, unit, (n + 0.5) / FRAMES_PER_SECOND);
+    let now = beam_ends(shape, unit, at_frame(at));
+    let next = beam_ends(shape, unit, at_frame(at + 1.0));
+    now.into_iter()
+        .zip(next)
+        .map(|((at, spread), (to, spread_to))| {
+            (
+                std::array::from_fn(|i| at[i] + (to[i] - at[i]) * between),
+                spread + (spread_to - spread) * between,
+            )
+        })
+        .collect()
+}
+
+/// The middle of the far end of each beam of the unit's model at a frame, and how far out
+/// from it its corners are.
+fn beam_ends(shape: &Shape, unit: &Unit, frame: usize) -> Vec<([f32; 3], f32)> {
     let (body, head) = places(shape, unit);
     let pivot = shape.pivot.unwrap_or_default();
-    let worlds = pose(
-        shape,
-        unit.tube_pitch,
-        unit.gun_turn,
-        frame(shape, unit, time),
-    );
+    let worlds = pose(shape, unit.tube_pitch, unit.gun_turn, frame);
     shape
         .parts
         .iter()
@@ -2399,18 +2415,34 @@ pub fn searchlight_spots(unit: &Unit, time: f32) -> Vec<[f32; 3]> {
             } else {
                 (body, [0.0; 3])
             };
-            // The corner of its beam farthest out from the unit.
-            part.veils
-                .iter()
-                .flat_map(|veil| veil.points)
+            // Its lens is where it shines from, nearest the part's middle; its far end the
+            // corners well out from there.
+            let gap = |a: [f32; 3], b: [f32; 3]| (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>();
+            let all = || part.veils.iter().flat_map(|veil| veil.points);
+            let lens = all().min_by(|&a, &b| gap(a, [0.0; 3]).total_cmp(&gap(b, [0.0; 3])))?;
+            let reach = all().map(|corner| gap(corner, lens)).fold(0.0, f32::max);
+            let mut corners: Vec<[f32; 3]> = Vec::new();
+            // Squared, half as far out is a quarter.
+            for corner in all().filter(|&corner| gap(corner, lens) > reach / 4.0) {
+                if !corners.contains(&corner) {
+                    corners.push(corner);
+                }
+            }
+            let corners: Vec<[f32; 3]> = corners
+                .into_iter()
                 .map(|corner| {
                     let at = to_place(point(world, corner));
                     place.point(std::array::from_fn(|i| at[i] - from[i]))
                 })
-                .max_by(|a, b| {
-                    let out = |p: &[f32; 3]| (p[0] - unit.x).hypot(p[2] - unit.z);
-                    out(a).total_cmp(&out(b))
-                })
+                .collect();
+            let count = corners.len() as f32;
+            let middle: [f32; 3] =
+                std::array::from_fn(|i| corners.iter().map(|c| c[i]).sum::<f32>() / count);
+            let spread = corners
+                .iter()
+                .map(|c| (c[0] - middle[0]).hypot(c[2] - middle[2]))
+                .fold(0.0, f32::max);
+            Some((middle, spread))
         })
         .collect()
 }
@@ -3439,13 +3471,24 @@ mod tests {
             searchlight_spots(&light, 2.0),
         );
         assert_eq!((first.len(), later.len()), (1, 1));
-        let [x, y, z] = first[0];
+        let ([x, y, z], spread) = first[0];
         assert!(
             (x - light.x).hypot(z - light.z) > 100.0,
             "out where it points"
         );
         assert!(y < 20.0, "on the ground");
-        assert!((later[0][0] - x).hypot(later[0][2] - z) > 30.0, "sweeping");
+        assert!(spread > 100.0, "as wide as its beam's end: {spread}");
+        assert!(
+            (later[0].0[0] - x).hypot(later[0].0[2] - z) > 30.0,
+            "sweeping"
+        );
+        // It sweeps on evenly, never leaping, between frames as well as at them.
+        let steps = (0..200).map(|i| searchlight_spots(&light, i as f32 * 0.01)[0].0);
+        let steps: Vec<[f32; 3]> = steps.collect();
+        for pair in steps.windows(2) {
+            let step = (pair[1][0] - pair[0][0]).hypot(pair[1][2] - pair[0][2]);
+            assert!(step < 2.0, "a step of {step}");
+        }
         let mut windtrap = Unit::for_test(1000.0, 1000.0, UnitKind::Building);
         windtrap.role = Role::Windtrap;
         assert!(
@@ -3467,7 +3510,7 @@ mod tests {
             mongoose.heading = heading;
             let spots = searchlight_spots(&mongoose, 0.0);
             assert_eq!(spots.len(), 1);
-            let [x, _, z] = spots[0];
+            let ([x, _, z], _) = spots[0];
             let way = (z - mongoose.z).atan2(x - mongoose.x);
             assert!(
                 crate::units::turn_between(way, heading).abs() < 0.6,

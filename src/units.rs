@@ -168,6 +168,9 @@ const BUILDING_RADIUS: f32 = 54.31;
 /// `50, InfRock` has it, and how many tiles farther they reach there: `InfRockRangeBonus`.
 const INF_ROCK_HARM: f32 = 0.5;
 const INF_ROCK_RANGE_BONUS: f32 = 2.0;
+/// Seconds what the deviator's gas hits fights for the deviator's side: the rules'
+/// `DeviateDuration` of 400 updates.
+const DEVIATE_SECONDS: f32 = 16.0;
 /// How many tiles a building sees: the rules' `ViewRange` of every one but the turrets.
 const BUILDING_VIEW: f32 = 10.0;
 /// How much substance a harvester holds when full.
@@ -835,7 +838,7 @@ const EXTRAS: [ExtraKind; 50] = [
     ExtraKind { rules_name: "IXSlave", name: "Slave", kind: UnitKind::Infantry, house: None, incidental: false, health: 300.0, speed: 2.0, turn: 0.2, armour: Armour::None, view: 7.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
     ExtraKind { rules_name: "IXWindtrap", name: "Windtrap", kind: UnitKind::Building, house: None, incidental: false, health: 3000.0, speed: 0.0, turn: 0.0, armour: Armour::Building, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (2, 2), roof: 70.0 },
     ExtraKind { rules_name: "ORAATrooper", name: "AA Trooper", kind: UnitKind::Infantry, house: Some(Faction::Ordos), incidental: false, health: 300.0, speed: 4.0, turn: 0.2, armour: Armour::None, view: 8.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
-    ExtraKind { rules_name: "ORDeviator", name: "Deviator", kind: UnitKind::Vehicle, house: Some(Faction::Ordos), incidental: false, health: 1300.0, speed: 8.0, turn: 0.05, armour: Armour::Light, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "ORDeviator", name: "Deviator", kind: UnitKind::Vehicle, house: Some(Faction::Ordos), incidental: false, health: 1300.0, speed: 8.0, turn: 0.05, armour: Armour::Light, view: 4.0, crushes: false, weapon: WeaponKind::Deviate, plot: (1, 1), roof: 80.0 },
     ExtraKind { rules_name: "SMQuad", name: "Quad", kind: UnitKind::Vehicle, house: None, incidental: true, health: 1000.0, speed: 6.0, turn: 0.175, armour: Armour::Light, view: 4.0, crushes: false, weapon: WeaponKind::TowerRockets, plot: (1, 1), roof: 80.0 },
     ExtraKind { rules_name: "StuntATADVCarryall", name: "Carryall", kind: UnitKind::Vehicle, house: Some(Faction::Atreides), incidental: false, health: 900.0, speed: 17.0, turn: 0.1, armour: Armour::Medium, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
     ExtraKind { rules_name: "TLINGreenhouse", name: "Greenhouse", kind: UnitKind::Building, house: None, incidental: true, health: 10.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 0.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (4, 4), roof: 80.0 },
@@ -2942,6 +2945,9 @@ pub struct Unit {
     /// Whether it is a soldier standing on infantry rock, dug in there: harder to hurt, able
     /// to reach farther, and not to be run over.
     pub on_inf_rock: bool,
+    /// For one the deviator's gas has turned: whose it was, in what color, and how many
+    /// seconds more it fights for its new side.
+    deviated: Option<(usize, TeamColor, f32)>,
     /// Whether a soldier is cheering his side's win.
     pub cheering: bool,
     /// How far a pop-up turret has come up: 0 sunk in the ground, 1 ready to fire. For a
@@ -3252,6 +3258,34 @@ impl Unit {
                 0.0
             };
         range * (1.0 + extra / 100.0) + rock
+    }
+
+    /// Turns it to fight for another side for the rules' `DeviateDuration`, as the deviator's
+    /// gas does; hit again meanwhile, the time starts over, and it still goes back to whose it
+    /// was at first. It drops what it was doing.
+    pub fn deviate(&mut self, (owner, color): (usize, TeamColor)) {
+        let first = self
+            .deviated
+            .map_or((self.owner, self.color), |(o, c, _)| (o, c));
+        self.deviated = Some((first.0, first.1, DEVIATE_SECONDS));
+        (self.owner, self.color) = (owner, color);
+        self.stand_down();
+        self.selected = false;
+    }
+
+    /// Counts down a deviated unit's time with its new side, and gives it back once it is up.
+    fn come_back(&mut self, dt: f32) {
+        let Some((owner, color, left)) = self.deviated else {
+            return;
+        };
+        if left > dt {
+            self.deviated = Some((owner, color, left - dt));
+            return;
+        }
+        self.deviated = None;
+        (self.owner, self.color) = (owner, color);
+        self.stand_down();
+        self.selected = false;
     }
 
     /// How far it sees from where it stands: farther the higher it is above the lowest ground.
@@ -4047,6 +4081,7 @@ impl Unit {
             seen_moving: 0.0,
             eating: 0.0,
             on_inf_rock: false,
+            deviated: None,
             cheering: false,
             popped: 0.0,
             gun_turn: 0.0,
@@ -4213,6 +4248,7 @@ fn place_unit(
         seen_moving: 0.0,
         eating: 0.0,
         on_inf_rock: false,
+        deviated: None,
         cheering: false,
         popped: 0.0,
         gun_turn: 0.0,
@@ -7736,6 +7772,7 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
         unit.constructing = (unit.constructing - dt).max(0.0);
         go_on_deploying(unit, dt);
         set_up_or_pack(unit, dt);
+        unit.come_back(dt);
         unit.on_inf_rock = unit.kind == UnitKind::Infantry
             && unit.altitude <= 0.0
             && terrain.ground_at(unit.x, unit.z) == Ground::InfRock;
@@ -12890,6 +12927,12 @@ mod tests {
         assert_eq!(yard.sight() / CELL_SIDE, 12.0, "an MCV");
         yard.deployed = true;
         assert_eq!(yard.sight() / CELL_SIDE, 10.0, "a construction yard");
+    }
+
+    #[test]
+    fn the_deviator_carries_its_gas() {
+        let (deviator, _) = Role::named("ORDeviator").unwrap();
+        assert_eq!(deviator.weapon(), WeaponKind::Deviate);
     }
 
     #[test]

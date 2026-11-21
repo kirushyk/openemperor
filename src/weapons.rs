@@ -5,7 +5,7 @@
 //! ahead first turns to face its target.
 
 use crate::battlefield::{self, CELL_SIDE, Terrain, next_random};
-use crate::game::Faction;
+use crate::game::{Faction, TeamColor};
 use std::f32::consts::{PI, TAU};
 
 use crate::units::{
@@ -233,6 +233,8 @@ pub enum WeaponKind {
     Bomb,
     /// Fixes friendly vehicles nearby instead of harming anyone.
     Repair,
+    /// The Ordos deviator's gas, flying straight: what it hits fights for its side a while.
+    Deviate,
     /// Carries nothing.
     Unarmed,
 }
@@ -257,6 +259,7 @@ impl WeaponKind {
             WeaponKind::AirMissile => 15.0,
             WeaponKind::Flame => 4.0,
             WeaponKind::Gas => 3.0,
+            WeaponKind::Deviate => 8.0,
             // The original's repair vehicle reaches only what comes to it.
             WeaponKind::Repair => return 135.8,
             WeaponKind::Bomb | WeaponKind::Unarmed => 0.0,
@@ -361,6 +364,7 @@ impl WeaponKind {
             WeaponKind::AirMissile => 3.0,
             WeaponKind::Flame | WeaponKind::Gas => 0.15,
             WeaponKind::Repair => 0.4,
+            WeaponKind::Deviate => 6.0,
             WeaponKind::Bomb | WeaponKind::Unarmed => RETARGET_SECONDS,
         }
     }
@@ -412,6 +416,7 @@ impl WeaponKind {
             WeaponKind::Flame => Bullet::new(250, Flame, 30),
             WeaponKind::Gas => Bullet::new(250, Flame, 40),
             WeaponKind::Bomb => Bullet::new(400, Howitzer, 30).bursts(64.0),
+            WeaponKind::Deviate => Bullet::new(250, Deviate, 150).flies(16.0, 0.0),
             WeaponKind::Repair | WeaponKind::Unarmed => Bullet::new(0, Whole, 30),
         }
     }
@@ -428,6 +433,8 @@ impl WeaponKind {
 pub struct Shooter {
     id: u32,
     owner: usize,
+    /// Its owner's color, which what it deviates takes for a while.
+    color: TeamColor,
     power: f32,
     /// What it fired.
     bullet: Bullet,
@@ -438,6 +445,7 @@ impl Shooter {
         Shooter {
             id: unit.id,
             owner: unit.owner,
+            color: unit.color,
             power: unit.attack_power(),
             bullet: bullet_of(unit),
         }
@@ -466,6 +474,7 @@ pub enum Warhead {
     PopUp,
     DevPlasma,
     DevRocket,
+    Deviate,
     /// What a bullet with no warhead of its own does: all of its damage to anyone.
     Whole,
 }
@@ -490,6 +499,7 @@ impl Warhead {
             Warhead::PopUp => [8, 8, 5, 65, 90, 100, 100, 75, 40, 25, 50, 0, 65],
             Warhead::DevPlasma => [40, 40, 25, 60, 100, 100, 100, 100, 75, 40, 100, 0, 60],
             Warhead::DevRocket => [10, 10, 8, 50, 80, 100, 100, 70, 40, 20, 50, 0, 80],
+            Warhead::Deviate => [20, 20, 10, 20, 20, 20, 100, 20, 20, 10, 20, 0, 20],
             Warhead::Whole => [100; 13],
         };
         f32::from(percent[armour as usize]) / 100.0
@@ -2215,12 +2225,14 @@ impl Combat {
             | WeaponKind::Rockets
             | WeaponKind::HeavyRockets
             | WeaponKind::TowerRockets
-            | WeaponKind::Plasma => {
+            | WeaponKind::Plasma
+            | WeaponKind::Deviate => {
                 // From the ground it is launched upward, so that it visibly rises and turns
                 // towards its target. From the air it has a clear shot.
                 let (dx, dz) = (to.0 - from.0, to.2 - from.2);
                 let flat = dx.hypot(dz).max(0.004525);
-                let direction = if units[i].altitude > 0.0 || weapon == WeaponKind::Plasma {
+                let straight = matches!(weapon, WeaponKind::Plasma | WeaponKind::Deviate);
+                let direction = if units[i].altitude > 0.0 || straight {
                     direction_to(from, to)
                 } else if units[i].role == Role::AtRocketTurret {
                     // A tower's missiles leave the way its tubes point.
@@ -2819,6 +2831,15 @@ fn hit(units: &mut [Unit], victim: usize, weapon: WeaponKind, shooter: Shooter, 
     let damage = shooter.damage_to(units[victim].armour());
     units[victim].wound = weapon.wound();
     harm(units, victim, damage, shooter, teams);
+    // The deviator's gas has an enemy machine or soldier it hits fight for its side a while.
+    let struck = &mut units[victim];
+    if weapon == WeaponKind::Deviate
+        && struck.alive
+        && matches!(struck.kind, UnitKind::Vehicle | UnitKind::Infantry)
+        && are_enemies(teams, shooter.owner, struck.owner)
+    {
+        struck.deviate((shooter.owner, shooter.color));
+    }
 }
 
 /// Hurts a unit on someone's account. Whoever kills an enemy gains experience, if they
@@ -4390,6 +4411,35 @@ mod tests {
         for _ in 0..(seconds / 0.05).round() as usize {
             combat.advance(units, &TEAMS, flat(), 0.05);
         }
+    }
+
+    #[test]
+    fn a_deviators_gas_has_an_enemy_machine_fight_for_its_side_a_while_then_go_back() {
+        let (deviator_role, _) = Role::named("ORDeviator").unwrap();
+        let mut deviator = Unit::for_test(0.0, 2715.0, UnitKind::Vehicle);
+        (deviator.role, deviator.weapon, deviator.id) = (deviator_role, WeaponKind::Deviate, 1);
+        deviator.color = TeamColor::Red;
+        let mut tank = Unit::for_test(200.0, 2715.0, UnitKind::Vehicle);
+        (tank.role, tank.weapon, tank.id, tank.owner) = (Role::HkAssault, WeaponKind::Cannon, 2, 1);
+        tank.color = TeamColor::Blue;
+        tank.health = 100_000.0;
+        deviator.go_after(2);
+        let mut units = [deviator, tank];
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 3.0);
+        assert_eq!(
+            (units[1].owner, units[1].color),
+            (0, TeamColor::Red),
+            "turned"
+        );
+        crate::units::advance(&mut units, flat(), &TEAMS, 15.0);
+        assert_eq!(units[1].owner, 0, "for a while");
+        crate::units::advance(&mut units, flat(), &TEAMS, 1.1);
+        assert_eq!(
+            (units[1].owner, units[1].color),
+            (1, TeamColor::Blue),
+            "and back"
+        );
     }
 
     fn under_way(role: Role, kind: UnitKind) -> Unit {

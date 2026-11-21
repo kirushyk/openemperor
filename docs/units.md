@@ -58,7 +58,7 @@ Without the disc, everything we have is drawn with our own models.
 | ORLaserTank | Ordos | Laser Tank | Ordos | Disc | |
 | ORKobra | Ordos | Kobra | Ordos | Disc | |
 | ORAPC | Ordos | APC | Ordos | Disc | |
-| ORDeviator | Ordos | — | — | — | The Deviator. The disc has its model (OR_Deviator). |
+| ORDeviator | Ordos | — | — | — | The Deviator. The disc has its model (OR_Deviator). Where a map or script puts one, it fires its gas (`Deviate_B`, 8 tiles), turning an enemy machine or soldier it hits to its side for `DeviateDuration` (16 s). Not built, and without its shield. |
 
 ## Aircraft
 

@@ -38,6 +38,8 @@ const EDGE_REACH: f32 = 2.0;
 pub struct Fog {
     now: Vec<f32>,
     ever: Vec<f32>,
+    /// What a mission's script has opened up, seen from then on as if someone were there.
+    opened: Vec<f32>,
 }
 
 impl Fog {
@@ -45,12 +47,13 @@ impl Fog {
         Fog {
             now: vec![-EDGE_REACH; GRID_POINTS],
             ever: vec![-EDGE_REACH; GRID_POINTS],
+            opened: vec![-EDGE_REACH; GRID_POINTS],
         }
     }
 
     /// Sees anew from these units, each the farther the higher it stands above the floor.
     pub fn update<'a>(&mut self, seers: impl Iterator<Item = &'a Unit>, floor: f32) {
-        self.now.fill(-EDGE_REACH);
+        self.now.copy_from_slice(&self.opened);
         for seer in seers {
             self.see_around(seer, floor);
         }
@@ -63,9 +66,11 @@ impl Fog {
         spread(&mut self.now, (seer.x, seer.z), seer.sight_over(floor));
     }
 
-    /// Uncovers the land this far round a place, as known from now on, though not seen.
+    /// Opens up the land this far round a place, seen from now on.
     pub fn uncover(&mut self, at: (f32, f32), radius: f32) {
-        spread(&mut self.ever, at, radius);
+        for points in [&mut self.opened, &mut self.now, &mut self.ever] {
+            spread(points, at, radius);
+        }
     }
 
     /// The whole map is in view now.
@@ -148,12 +153,13 @@ mod tests {
     }
 
     #[test]
-    fn land_uncovered_round_a_place_stays_known_but_unseen() {
+    fn land_uncovered_round_a_place_stays_open_with_nobody_there() {
         let mut fog = Fog::new();
         fog.uncover((1600.0, 1600.0), 20.0 * CELL_SIDE);
+        assert_eq!(fog.at(1600.0, 1600.0), Sight::Visible, "at once");
         fog.update(std::iter::empty(), 0.0);
-        assert_eq!(fog.at(1600.0, 1600.0), Sight::Explored);
-        assert_eq!(fog.at(1600.0 + 19.0 * CELL_SIDE, 1600.0), Sight::Explored);
+        assert_eq!(fog.at(1600.0, 1600.0), Sight::Visible);
+        assert_eq!(fog.at(1600.0 + 19.0 * CELL_SIDE, 1600.0), Sight::Visible);
         assert_eq!(fog.at(1600.0 + 22.0 * CELL_SIDE, 1600.0), Sight::Unexplored);
     }
 

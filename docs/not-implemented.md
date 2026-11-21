@@ -77,6 +77,9 @@ we are missing is in [units.md](units.md). This list is about everything else.
 
 ## Maps
 
+- **The map's edges**: the land fades smoothly to black over the last 4 squares to each
+  edge. The width is our guess. Units and buildings standing there are not darkened, and only
+  the Metal backend draws it.
 - **The sea** (faces painted `sea.tga` or `icesea.tga`) is drawn with our own water shader,
   not the original's picture. The disc's maps have no sea bed, so the sea is drawn as
   `SEA_DEPTH` deep everywhere and doesn't grow shallow near the shore. Its mirror lies at the

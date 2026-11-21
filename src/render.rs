@@ -1672,6 +1672,7 @@ fn draw_plain_land(
                 let mut corner =
                     WorldVertex::solid((x, terrain.height_at(x, z), z), [0.0, 1.0, 0.0], color);
                 corner.fog = battlefield::fog_at(fog, x, z);
+                corner.seen = battlefield::edge_light(terrain.extent(), x, z);
                 corner
             };
             let (a, b, c, d) = (

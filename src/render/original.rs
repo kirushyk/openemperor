@@ -958,7 +958,7 @@ impl Spice {
                     r: 1.0,
                     g: 1.0,
                     b: 1.0,
-                    seen: 1.0,
+                    seen: battlefield::edge_light(terrain.extent(), x, z),
                     level: 1.0,
                     stain: [0.0; 3],
                     picture: [pu, pv, self.layer as f32],
@@ -1302,7 +1302,7 @@ fn gather_land(
 /// under which the color of its picture lies deep.
 fn lay(
     face: &LandFace,
-    fog: Option<&Fog>,
+    (fog, extent): (Option<&Fog>, (f32, f32)),
     ground: &mut Vec<WorldVertex>,
     water: &mut Vec<WorldVertex>,
 ) {
@@ -1318,7 +1318,7 @@ fn lay(
             r,
             g,
             b,
-            seen: 1.0,
+            seen: battlefield::edge_light(extent, x, z),
             level: if face.sea { -SEA_DEPTH } else { y },
             stain: [0.0; 3],
             picture: if face.sea {
@@ -1348,6 +1348,7 @@ pub(super) fn draw_land(
     let Some(land) = land(map) else {
         return false;
     };
+    let extent = battlefield::terrain(map).extent();
     let seen = view.ground_seen(width, height);
     let shows = |&(x0, z0, x1, z1): &(f32, f32, f32, f32)| {
         seen.is_none_or(|(sx0, sz0, sx1, sz1)| {
@@ -1356,7 +1357,7 @@ pub(super) fn draw_land(
     };
     for piece in land.pieces.iter().filter(|piece| shows(&piece.covers)) {
         for face in &piece.faces {
-            lay(face, fog, ground, water);
+            lay(face, (fog, extent), ground, water);
         }
     }
     true
@@ -3259,7 +3260,7 @@ mod tests {
         }
         let (mut ground, mut water) = (Vec::new(), Vec::new());
         for face in pieces.iter().flat_map(|piece| &piece.faces) {
-            lay(face, None, &mut ground, &mut water);
+            lay(face, (None, (4608.0, 3072.0)), &mut ground, &mut water);
         }
         assert_eq!((ground.len(), water.len()), (3, 3));
         assert!(

@@ -1706,6 +1706,17 @@ pub fn edge_direction(mouse: (f32, f32), width: f32, height: f32) -> (f32, f32) 
     }
 }
 
+/// How far in from the map's edges its land darkens, down to black at them.
+const EDGE_FADE: f32 = 4.0 * CELL_SIDE;
+
+/// How much of its light the land lets out at a place on a map reaching this far: all of it
+/// but near the edges, where it fades smoothly to none.
+pub fn edge_light((right, bottom): (f32, f32), x: f32, z: f32) -> f32 {
+    let inside = x.min(right - x).min(z).min(bottom - z);
+    let t = (inside / EDGE_FADE).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// How far into what is seen now and what was ever seen a place lies, for a corner of the
 /// ground to be shaded by: all clear with no fog.
 pub fn fog_at(fog: Option<&Fog>, x: f32, z: f32) -> [f32; 2] {
@@ -1716,6 +1727,29 @@ pub fn fog_at(fog: Option<&Fog>, x: f32, z: f32) -> [f32; 2] {
 mod tests {
     use super::*;
     use std::f32::consts::FRAC_PI_2;
+
+    #[test]
+    fn the_land_fades_smoothly_to_black_at_the_maps_edges() {
+        let extent = (2048.0, 3584.0);
+        let light = |x, z| edge_light(extent, x, z);
+        assert_eq!(light(1024.0, 1792.0), 1.0, "in the middle");
+        assert_eq!(light(1024.0, EDGE_FADE), 1.0);
+        for edge in [
+            light(0.0, 1792.0),
+            light(2048.0, 1792.0),
+            light(1024.0, 3584.0),
+        ] {
+            assert_eq!(edge, 0.0, "at an edge");
+        }
+        let steps: Vec<f32> = (0..=16)
+            .map(|n| light(n as f32 * EDGE_FADE / 16.0, 1792.0))
+            .collect();
+        assert!(
+            steps
+                .windows(2)
+                .all(|pair| pair[1] > pair[0] && pair[1] - pair[0] < 0.15)
+        );
+    }
 
     const W: f32 = 2880.0;
     const H: f32 = 1800.0;

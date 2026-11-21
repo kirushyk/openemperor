@@ -1066,6 +1066,11 @@ struct Part {
     /// Where in it a light shines, for a box that only marks where, as the starports' landing
     /// lights and the Atreides factory's lights.
     glint: Option<[f32; 3]>,
+    /// For a light that marks where it shines and stays still, its name without its number,
+    /// and the number: those of one name glow one after another, by their numbers.
+    numbered_light: Option<(String, u32)>,
+    /// Which of its turn of lights it is, and how many glow in turn, for one that takes turns.
+    turn: Option<(usize, usize)>,
     /// Whether it is the gun a soldier sets up, standing apart from the one he carries: it
     /// holds the turret of the gun he fires once dug in (`::1`) and stays put but for its recoil,
     /// and shows only once he is, as a mortar's `Mortorgun01`.
@@ -1754,6 +1759,7 @@ fn read_shape(
     for object in &model.objects {
         gather(object, None, &IDENTITY, false, &used, &mut shape);
     }
+    take_turns(&mut shape.parts);
     // With no part to lift its barrel, it is what holds the end of its first weapon that does.
     if !shape.parts.iter().any(|part| part.lift)
         && let Some(holder) = shape
@@ -1911,6 +1917,20 @@ fn gather(
         swivel: object.name == SWIVEL,
         beam: object.name.to_ascii_lowercase().contains(SEARCHLIGHT),
         glint: glint_of(object),
+        numbered_light: glint_of(object)
+            .filter(|_| {
+                object
+                    .animation
+                    .as_ref()
+                    .is_none_or(|animation| animation.poses.len() <= 1)
+            })
+            .and_then(|_| {
+                let name = object.name.to_ascii_lowercase();
+                let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+                let number = name[stem.len()..].parse().ok()?;
+                Some((stem.to_string(), number))
+            }),
+        turn: None,
         set_up: object
             .children
             .iter()
@@ -1958,6 +1978,36 @@ fn glint_of(object: &Object) -> Option<[f32; 3]> {
         std::array::from_fn(|i| object.vertices.iter().map(|v| v.position[i]).sum::<f32>() / count)
     })
 }
+
+/// Has the still lights of one name glow one after another by their numbers, as those round
+/// the top of the Atreides construction yard, where there are two or more.
+fn take_turns(parts: &mut [Part]) {
+    let lights: Vec<(usize, &(String, u32))> = parts
+        .iter()
+        .enumerate()
+        .filter_map(|(at, part)| Some((at, part.numbered_light.as_ref()?)))
+        .collect();
+    let turns: Vec<(usize, (usize, usize))> = lights
+        .iter()
+        .filter_map(|&(at, (stem, number))| {
+            let same = lights.iter().filter(|(_, (other, _))| other == stem);
+            let count = same.clone().count();
+            let before = same.filter(|(_, (_, other))| other < number).count();
+            (count > 1).then_some((at, (before, count)))
+        })
+        .collect();
+    for (at, turn) in turns {
+        parts[at].turn = Some(turn);
+    }
+}
+
+/// Whether a light that takes its turn with others glows at this time of the battle.
+fn has_turn((place, count): (usize, usize), time: f32) -> bool {
+    (time / LIGHT_TURN_SECONDS) as usize % count == place
+}
+
+/// How long each light of a turn of them glows.
+const LIGHT_TURN_SECONDS: f32 = 0.2;
 
 /// The way a triangle's front faces by the way its corners go round, as long as it is big.
 fn winding_normal([a, b, c]: &[[f32; 3]; 3]) -> [f32; 3] {
@@ -2451,6 +2501,7 @@ pub fn glints(unit: &Unit, time: f32) -> Vec<(f32, f32, f32)> {
         .parts
         .iter()
         .zip(&worlds)
+        .filter(|(part, _)| part.turn.is_none_or(|turn| has_turn(turn, time)))
         .filter_map(|(part, world)| {
             let place = to_place(point(world, part.glint?));
             let [x, y, z] = if part.head {
@@ -3721,7 +3772,9 @@ mod tests {
         (factory.role, factory.house) = (Role::Factory, Faction::Atreides);
         let mut starport = factory;
         starport.role = Role::Starport;
-        for (unit, lights) in [(factory, 8), (starport, 8)] {
+        // Those of its numbered lights that stay still glow one at a time, in turn with the
+        // others of their name; those that move glow all the time.
+        for (unit, lights) in [(factory, 6), (starport, 6)] {
             let glints = glints(&unit, 0.0);
             assert_eq!(glints.len(), lights, "{:?}", unit.role);
             for (x, _, z) in glints {
@@ -3744,6 +3797,32 @@ mod tests {
                 .iter()
                 .any(|part| part.veils.iter().any(|veil| !veil.glows))
         );
+    }
+
+    #[test]
+    fn the_lights_round_the_top_of_a_deployed_atreides_yard_glow_one_after_another() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        let mut yard = Unit::for_test(1000.0, 1000.0, UnitKind::Building);
+        (yard.role, yard.house, yard.deployed) = (Role::Mcv, Faction::Atreides, true);
+        // Its nine still lights in turn, besides the two that sweep and the one that turns.
+        let lit: Vec<_> = (0..9)
+            .map(|step| glints(&yard, step as f32 * LIGHT_TURN_SECONDS + 0.01))
+            .collect();
+        assert!(lit.iter().all(|glints| glints.len() == 4), "{:?}", lit[0]);
+        let mut turning: Vec<_> = lit
+            .iter()
+            .map(|glints| {
+                let low = glints.iter().filter(|(_, y, _)| *y < 1000.0);
+                format!("{:?}", low.collect::<Vec<_>>())
+            })
+            .collect();
+        turning.sort();
+        turning.dedup();
+        assert!(turning.len() >= 9, "each in its turn");
     }
 
     #[test]

@@ -811,7 +811,7 @@ const EXTRAS: [ExtraKind; 50] = [
     ExtraKind { rules_name: "GUbubble", name: "Guild Bubble", kind: UnitKind::Building, house: None, incidental: false, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (3, 5), roof: 80.0 },
     ExtraKind { rules_name: "Guglasstank", name: "Glass Tank", kind: UnitKind::Building, house: None, incidental: false, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (3, 6), roof: 80.0 },
     ExtraKind { rules_name: "GUMegaCannon", name: "Mega Cannon", kind: UnitKind::Tower, house: None, incidental: false, health: 2700.0, speed: 0.0, turn: 0.0, armour: Armour::Heavy, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (4, 4), roof: 20.0 },
-    ExtraKind { rules_name: "GUNIAP", name: "NIAP", kind: UnitKind::Aircraft, house: None, incidental: false, health: 1200.0, speed: 6.0, turn: 0.05, armour: Armour::Aircraft, view: 4.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
+    ExtraKind { rules_name: "GUNIAP", name: "NIAP", kind: UnitKind::Aircraft, house: None, incidental: false, health: 1200.0, speed: 6.0, turn: 0.05, armour: Armour::Aircraft, view: 4.0, crushes: false, weapon: WeaponKind::Missile, plot: (1, 1), roof: 80.0 },
     ExtraKind { rules_name: "GUpyramid", name: "Guild Pyramid", kind: UnitKind::Building, house: None, incidental: false, health: 1000.0, speed: 0.0, turn: 0.0, armour: Armour::Light, view: 10.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (6, 6), roof: 80.0 },
     ExtraKind { rules_name: "IMADVSardaukar", name: "Elite Sardaukar", kind: UnitKind::Infantry, house: None, incidental: false, health: 1800.0, speed: 7.0, turn: 0.2, armour: Armour::Bpv, view: 12.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
     ExtraKind { rules_name: "IMGeneral", name: "Imperial General", kind: UnitKind::Infantry, house: None, incidental: false, health: 750.0, speed: 4.0, turn: 0.2, armour: Armour::None, view: 7.0, crushes: false, weapon: WeaponKind::Unarmed, plot: (1, 1), roof: 80.0 },
@@ -2651,7 +2651,14 @@ impl Role {
 
     /// Whether it must keep flying forward, unable to hang in the air.
     fn never_stops(self) -> bool {
-        self == Role::AtAdp
+        match self {
+            Role::AtAdp => true,
+            // The others the rules mark `Circles`, but for the carryalls.
+            Role::Extra(extra) => {
+                ["GUNIAP", "GUScavenger", "TLINFlyer", "StuntFrigate"].contains(&extra.rules_name())
+            }
+            _ => false,
+        }
     }
 
     /// Whether the player can send it anywhere: a carryall goes about by itself.
@@ -3240,6 +3247,9 @@ impl Unit {
             (Role::TlContaminator, WeaponKind::Pistol) => Some(1.0),
             (Role::FrAdvFremen, WeaponKind::Sniper) => Some(5.0),
             (Role::GuMaker, WeaponKind::Mortar) => Some(9.0),
+            (Role::Extra(extra), WeaponKind::Missile) if extra.rules_name() == "GUNIAP" => {
+                Some(7.0)
+            }
             (Role::Extra(extra), _) => match extra.rules_name() {
                 "ATGeneral" => Some(9.0),
                 "SMQuad" => Some(10.0),
@@ -12927,6 +12937,18 @@ mod tests {
         assert_eq!(yard.sight() / CELL_SIDE, 12.0, "an MCV");
         yard.deployed = true;
         assert_eq!(yard.sight() / CELL_SIDE, 10.0, "a construction yard");
+    }
+
+    #[test]
+    fn the_guilds_flying_niap_circles_as_an_air_drone_and_fires_its_rockets() {
+        let (niap, _) = Role::named("GUNIAP").unwrap();
+        assert!(niap.never_stops(), "the rules' Circles");
+        assert!(Role::AtAdp.never_stops());
+        assert!(!Role::AtOrni.never_stops());
+        let mut unit = Unit::for_test(0.0, 0.0, UnitKind::Aircraft);
+        (unit.role, unit.weapon) = (niap, niap.weapon());
+        assert_eq!(unit.weapon, WeaponKind::Missile);
+        assert_eq!(unit.range() / CELL_SIDE, 7.0, "GuildRocket_B's MaxRange");
     }
 
     #[test]

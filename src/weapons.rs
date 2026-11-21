@@ -603,6 +603,9 @@ impl Bullet {
     }
 }
 
+/// The rules' name of the Guild's flying gunship, which fires its own `GuildRocket_B`.
+const NIAP: &str = "GUNIAP";
+
 /// What a unit fires with the weapon it has now: its own turret's bullet in the original, or
 /// for one we arm otherwise, that weapon's usual one.
 pub fn bullet_of(unit: &Unit) -> Bullet {
@@ -631,6 +634,9 @@ pub fn bullet_of(unit: &Unit) -> Bullet {
             Some(Bullet::new(600, DevRocket, 80).flies(28.0, 0.3))
         }
         (Role::AtOrni, _) => Some(Bullet::new(200, HeatAir, 30).flies(28.0, 0.3)),
+        (Role::Extra(extra), WeaponKind::Missile) if extra.rules_name() == NIAP => {
+            Some(Bullet::new(300, HeatAir, 30).flies(28.0, 0.3))
+        }
         (Role::HkTrooper, _) => Some(Bullet::new(375, HeatInf, 100).flies(20.0, 0.3)),
         (Role::OrApc, _) => Some(Bullet::new(200, Heat, 50).flies(28.0, 0.3)),
         (Role::AtMongoose, _) => Some(Bullet::new(425, Heat, 30).flies(28.0, 0.3)),

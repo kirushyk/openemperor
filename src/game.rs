@@ -2091,8 +2091,18 @@ impl mission::Battle for Game {
         thing.is_some_and(|id| !self.units.iter().any(|u| u.id == id && u.alive))
     }
 
+    /// Plays a line of speech, and writes what it says in the chat, as the original does.
     fn say(&mut self, line: u16) {
         self.mission_lines.push(line);
+        if let Some(text) = crate::sounds::mission_text(line) {
+            let (width, px) = (
+                hud::chat_width(self.width, self.height),
+                hud::chat_text_px(self.height),
+            );
+            for row in crate::font::wrapped(text, width, px) {
+                self.post_chat(row);
+            }
+        }
     }
 
     fn pay(&mut self, side: i32, money: i32) {
@@ -7338,6 +7348,42 @@ mod tests {
         game.update(Role::AtTrike.build_seconds() / 2.0);
         let progress = game.making_progress(Role::AtTrike).unwrap();
         assert!((progress - 0.5).abs() < 0.01, "{progress}");
+    }
+
+    #[test]
+    fn what_a_mission_says_is_written_in_the_chat_too_each_row_fitting_beside_the_sidebar() {
+        use mission::Battle;
+        let disc = std::path::Path::new("/Volumes/EMPEROR1");
+        if !disc.is_dir() {
+            return;
+        }
+        crate::sounds::load(disc);
+        let mut game = in_battle();
+        game.say(646);
+        assert!(
+            game.chat[0]
+                .text
+                .starts_with("Welcome to the wastes of Arrakis"),
+            "{:?}",
+            game.chat[0].text
+        );
+        game.chat.clear();
+        game.say(643);
+        assert!(game.chat.len() > 1, "a long line over rows");
+        assert!(
+            game.chat[0]
+                .text
+                .starts_with("Mentat : All of the political")
+        );
+        let (width, px) = (
+            hud::chat_width(game.width, game.height),
+            hud::chat_text_px(game.height),
+        );
+        assert!(
+            game.chat
+                .iter()
+                .all(|row| crate::font::text_width(&row.text) * px <= width)
+        );
     }
 
     #[test]

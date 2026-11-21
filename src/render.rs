@@ -1396,7 +1396,7 @@ fn draw_campaign_map(canvas: &mut Canvas, game: &Game) {
     let left = px0 + 24.0 * s;
     let mut y = py0 + 40.0 * s;
     let mut line = |canvas: &mut Canvas, text: &str, color: Color| {
-        for row in wrapped(text, pw - 48.0 * s, px) {
+        for row in font::wrapped(text, pw - 48.0 * s, px) {
             canvas.text_left(&row, left, y, px, color);
             y += 40.0 * s;
         }
@@ -1442,7 +1442,7 @@ fn draw_question(canvas: &mut Canvas, game: &Game) {
     canvas.bordered_rect((x, y, w, h), border, GOLD, PANEL);
     let text = game.question_text().unwrap_or_default();
     let px = small_text_px(game.height);
-    for (n, row) in wrapped(&text, w - 60.0 * s, px).iter().enumerate() {
+    for (n, row) in font::wrapped(&text, w - 60.0 * s, px).iter().enumerate() {
         let row_y = y + (70.0 + n as f32 * 40.0) * s;
         canvas.text_centered(row, x + w / 2.0, row_y, px, TEXT);
     }
@@ -1495,27 +1495,12 @@ fn draw_new_units(canvas: &mut Canvas, game: &Game) {
     for unit in units {
         canvas.text_left(&unit.name, left, y, px, GOLD);
         y += 40.0 * s;
-        for row in wrapped(&unit.about, width, px) {
+        for row in font::wrapped(&unit.about, width, px) {
             canvas.text_left(&row, left, y, px, TEXT);
             y += 34.0 * s;
         }
         y += 20.0 * s;
     }
-}
-
-/// Text broken into rows at its spaces, none wider than `width` in letters `px` big.
-fn wrapped(text: &str, width: f32, px: f32) -> Vec<String> {
-    let mut rows: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
-        match rows.last_mut() {
-            Some(row) if font::text_width(&format!("{row} {word}")) * px <= width => {
-                row.push(' ');
-                row.push_str(word);
-            }
-            _ => rows.push(word.to_string()),
-        }
-    }
-    rows
 }
 
 fn draw_options_panel(canvas: &mut Canvas, game: &Game) {

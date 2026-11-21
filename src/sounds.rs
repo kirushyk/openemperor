@@ -113,6 +113,8 @@ static HOUSE_DIALOG: OnceLock<Vec<Sounds>> = OnceLock::new();
 /// The recording of each line of what is spoken, by the line's place in its table: none for
 /// a line that names none.
 static SPOKEN_LINES: OnceLock<Vec<Option<String>>> = OnceLock::new();
+/// What each line of what is spoken says, by its place in its table.
+static SPOKEN_TEXTS: OnceLock<Vec<Option<String>>> = OnceLock::new();
 
 /// Reads the sounds and their tables from the disc mounted at `disc`. Without it, nothing
 /// plays.
@@ -138,7 +140,9 @@ pub fn load(disc: &Path) {
         sections,
         read: Mutex::default(),
     });
-    let _ = SPOKEN_LINES.set(spoken_lines(&cabinet).unwrap_or_default());
+    let (recorded, written) = spoken_lines(&cabinet).unwrap_or_default();
+    let _ = SPOKEN_LINES.set(recorded);
+    let _ = SPOKEN_TEXTS.set(written);
     let dialog = disc.join(DIALOG_BAG);
     if let Some(tracks) = music::list(&dialog) {
         let _ = DIALOG_READ.set(Sounds {
@@ -174,20 +178,22 @@ pub fn load_house_dialog(discs: &[PathBuf]) {
     let _ = HOUSE_DIALOG.set(bags);
 }
 
-/// The recording of each line of the table of what is spoken, as the cabinet has them.
-fn spoken_lines(cabinet: &Path) -> Option<Vec<Option<String>>> {
+/// The recording of each line of the table of what is spoken, as the cabinet has them, and
+/// what each says.
+fn spoken_lines(cabinet: &Path) -> Option<(Vec<Option<String>>, Vec<Option<String>>)> {
     let index = archive::from_cabinet(cabinet, TEXT_INDEX)?;
     let data = archive::from_cabinet(cabinet, TEXT_DATA)?;
     let spoken = crate::maps::utf16(&archive::read_in(&index, &data, SPOKEN)?);
     let recordings = archive::from_cabinet(cabinet, RECORDINGS)?;
-    Some(recorded(&spoken, &String::from_utf8_lossy(&recordings)))
+    let recorded = recorded(&spoken, &String::from_utf8_lossy(&recordings));
+    Some((recorded, written(&spoken)))
 }
 
 /// The recording of each entry of a table of what is spoken that a mission's script can name,
 /// by its name in `sounds.txt`'s list of names and recordings, without the language's letter:
 /// the entries of its sections of what missions say, in order.
 fn recorded(spoken: &str, recordings: &str) -> Vec<Option<String>> {
-    let recording = |id: &str| {
+    let recording = |(id, _): (&str, &str)| {
         recordings.lines().find_map(|line| {
             let (name, file) = line.split_once('\t')?;
             name.trim().eq_ignore_ascii_case(id).then(|| {
@@ -196,22 +202,49 @@ fn recorded(spoken: &str, recordings: &str) -> Vec<Option<String>> {
             })
         })
     };
+    mission_entries(spoken).map(recording).collect()
+}
+
+/// What each entry of a table of what is spoken that a mission's script can name says, as
+/// the table writes it after its name, between braces.
+fn written(spoken: &str) -> Vec<Option<String>> {
+    mission_entries(spoken)
+        .map(|(_, text)| {
+            let (_, text) = text.split_once('{')?;
+            let (text, _) = text.rsplit_once('}')?;
+            Some(text.split_whitespace().collect::<Vec<_>>().join(" "))
+        })
+        .collect()
+}
+
+/// The entries of the sections of what missions say of a table of what is spoken, in order:
+/// each its name and what follows it.
+fn mission_entries(spoken: &str) -> impl Iterator<Item = (&str, &str)> {
     let mut inside = false;
     spoken
         .lines()
-        .map(|line| line.split('\t').next().unwrap_or_default().trim())
-        .filter(|id| !id.is_empty() && !id.starts_with(';'))
-        .filter_map(|id| {
+        .map(|line| {
+            let (id, rest) = line.split_once('\t').unwrap_or((line, ""));
+            (id.trim(), rest)
+        })
+        .filter(|(id, _)| !id.is_empty() && !id.starts_with(';'))
+        .filter(move |&(id, _)| {
             if id.eq_ignore_ascii_case(MISSION_MESSAGES) {
                 inside = true;
             } else if id.eq_ignore_ascii_case(SECTION_END) {
                 inside = false;
-            } else if inside {
-                return Some(recording(id));
+            } else {
+                return inside;
             }
-            None
+            false
         })
-        .collect()
+}
+
+/// What the line of speech a mission's script names by this number says, as the game's
+/// text writes it: "Mentat : Welcome Commander, …".
+pub fn mission_text(number: u16) -> Option<&'static str> {
+    let at = usize::from(number.checked_sub(FIRST_SPOKEN)?);
+    SPOKEN_TEXTS.get()?.get(at)?.as_deref()
 }
 
 /// The line of speech a mission's script names by this number, from whichever disc has it.
@@ -642,11 +675,18 @@ mod tests {
             "past a blank line and a comment, a line not recorded"
         );
         assert_eq!(lines[2].as_deref(), Some("KK-M682"));
+        let said = written(spoken);
+        assert_eq!(
+            said[0].as_deref(),
+            Some("Mentat : Welcome"),
+            "out of its braces"
+        );
+        assert_eq!(said[1].as_deref(), Some("y"));
         let disc = Path::new("/Volumes/EMPEROR1");
         if !disc.is_dir() {
             return;
         }
-        let lines = spoken_lines(&disc.join(CABINET)).unwrap();
+        let (lines, _) = spoken_lines(&disc.join(CABINET)).unwrap();
         // The two lines the Atreides' first mission says first, its Mentat's welcome.
         assert_eq!(
             lines[usize::from(642 - FIRST_SPOKEN)].as_deref(),

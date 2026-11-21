@@ -193,6 +193,12 @@ pub fn chat_text_px(height: f32) -> f32 {
     (2.0 * ui_scale(height)).round().max(1.0)
 }
 
+/// How wide a chat line may run: from its left end to short of the build tabs.
+pub fn chat_width(width: f32, height: f32) -> f32 {
+    let s = ui_scale(height);
+    panel_x(width, height) - (GAP + TAB_W + 2.0 * MARGIN) * s
+}
+
 /// The left end and vertical center of a chat line.
 pub fn chat_line(line: usize, height: f32) -> (f32, f32) {
     let s = ui_scale(height);

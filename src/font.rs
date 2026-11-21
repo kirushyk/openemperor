@@ -51,3 +51,18 @@ pub fn text_width(text: &str) -> f32 {
         n * ADVANCE - (ADVANCE - GLYPH_WIDTH)
     }
 }
+
+/// Text broken into rows at its spaces, none wider than `width` in letters `px` big.
+pub fn wrapped(text: &str, width: f32, px: f32) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match rows.last_mut() {
+            Some(row) if text_width(&format!("{row} {word}")) * px <= width => {
+                row.push(' ');
+                row.push_str(word);
+            }
+            _ => rows.push(word.to_string()),
+        }
+    }
+    rows
+}

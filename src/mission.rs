@@ -186,6 +186,9 @@ const CIRCLE: u16 = 105;
 const STOP_CIRCLING: u16 = 106;
 const KEEP_VIEW: u16 = 112;
 const GLIDE_BACK: u16 = 113;
+/// Uncovers the fog so many squares round a place, as the tutorial does where it shows a
+/// beacon and the enemy's base.
+const UNCOVER: u16 = 97;
 /// The camera follows a thing, as the tutorial's opening has it follow its harvester, and
 /// stops following it.
 const FOLLOW: u16 = 107;
@@ -345,6 +348,8 @@ pub trait Battle {
     fn hunt(&mut self, _side: i32) {}
     /// Takes a thing off the map.
     fn remove(&mut self, _thing: Option<u32>) {}
+    /// Uncovers the fog so many squares round a place for the player.
+    fn uncover(&mut self, _at: (f32, f32), _squares: i32) {}
     /// A scene begins, which the player watches, or ends.
     fn scene(&mut self, _playing: bool) {}
     fn camera(&mut self, _shot: Shot) {}
@@ -573,6 +578,10 @@ impl Script {
                     Piece::Function(STOP_CIRCLING) => film(battle, Some(Shot::StopCircling)),
                     Piece::Function(KEEP_VIEW) => film(battle, Some(Shot::Keep)),
                     Piece::Function(GLIDE_BACK) => film(battle, Some(Shot::GlideBack(number(0)))),
+                    Piece::Function(UNCOVER) => {
+                        battle.uncover(at(0).place(), number(1));
+                        Value::Number(0)
+                    }
                     Piece::Function(FOLLOW) => film(battle, at(0).thing().map(Shot::Follow)),
                     Piece::Function(STOP_FOLLOWING) => film(battle, Some(Shot::StopFollowing)),
                     Piece::Function(HEALTH) => Value::Number(
@@ -849,6 +858,7 @@ mod tests {
         sent: Vec<(i32, (f32, f32))>,
         hunting: Vec<i32>,
         removed: Vec<Option<u32>>,
+        uncovered: Vec<((f32, f32), i32)>,
     }
 
     impl Battle for Written {
@@ -906,6 +916,9 @@ mod tests {
         }
         fn scene(&mut self, playing: bool) {
             self.scenes.push(playing);
+        }
+        fn uncover(&mut self, at: (f32, f32), squares: i32) {
+            self.uncovered.push((at, squares));
         }
         fn lose(&mut self) {
             self.lost = true;
@@ -1074,6 +1087,8 @@ mod tests {
             vec![F(FOLLOW), text("("), V(1), text(")")],
             vec![F(STOP_FOLLOWING), text("()")],
             vec![F(FOLLOW), text("("), V(30), text(")")],
+            // F97(v13,20), as the tutorial shows its beacon.
+            vec![F(UNCOVER), text("("), V(13), text(",20)")],
         ];
         let mut battle = Written::default();
         Script::new(&lines).run(&mut battle);
@@ -1092,6 +1107,7 @@ mod tests {
                 Shot::StopFollowing,
             ]
         );
+        assert_eq!(battle.uncovered, [((13.0, 0.0), 20)]);
     }
 
     #[test]

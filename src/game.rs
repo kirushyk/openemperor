@@ -2139,6 +2139,12 @@ impl mission::Battle for Game {
         self.scene_playing = playing;
     }
 
+    fn uncover(&mut self, at: (f32, f32), squares: i32) {
+        if let Some(fog) = &mut self.fog {
+            fog.uncover(at, squares as f32 * battlefield::CELL_SIDE);
+        }
+    }
+
     fn camera(&mut self, shot: mission::Shot) {
         let seconds = |updates: i32| updates as f32 / SCRIPT_UPDATES_PER_SECOND;
         match shot {

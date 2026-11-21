@@ -60,22 +60,12 @@ impl Fog {
     }
 
     fn see_around(&mut self, seer: &Unit, floor: f32) {
-        let radius = seer.sight_over(floor);
-        let (u, v) = world_to_grid(seer.x, seer.z);
-        let reach = radius / CELL_SIDE + EDGE_REACH;
-        let span = |center: f32| {
-            let low = (center - reach).floor().max(0.0) as usize;
-            let high = ((center + reach).ceil().max(0.0) as usize).min(MOST_CELLS);
-            low..=high
-        };
-        for point_v in span(v) {
-            for point_u in span(u) {
-                let (x, z) = grid_to_world(point_u as f32, point_v as f32);
-                let into = (radius - (x - seer.x).hypot(z - seer.z)) / CELL_SIDE;
-                let now = &mut self.now[grid_index(point_u, point_v)];
-                *now = now.max(into.clamp(-EDGE_REACH, EDGE_REACH));
-            }
-        }
+        spread(&mut self.now, (seer.x, seer.z), seer.sight_over(floor));
+    }
+
+    /// Uncovers the land this far round a place, as known from now on, though not seen.
+    pub fn uncover(&mut self, at: (f32, f32), radius: f32) {
+        spread(&mut self.ever, at, radius);
     }
 
     /// The whole map is in view now.
@@ -128,6 +118,26 @@ impl Fog {
     }
 }
 
+/// Marks every grid point this far round a place as that far inside it, where it was not
+/// already further in.
+fn spread(points: &mut [f32], (x, z): (f32, f32), radius: f32) {
+    let (u, v) = world_to_grid(x, z);
+    let reach = radius / CELL_SIDE + EDGE_REACH;
+    let span = |center: f32| {
+        let low = (center - reach).floor().max(0.0) as usize;
+        let high = ((center + reach).ceil().max(0.0) as usize).min(MOST_CELLS);
+        low..=high
+    };
+    for point_v in span(v) {
+        for point_u in span(u) {
+            let (px, pz) = grid_to_world(point_u as f32, point_v as f32);
+            let into = (radius - (px - x).hypot(pz - z)) / CELL_SIDE;
+            let point = &mut points[grid_index(point_u, point_v)];
+            *point = point.max(into.clamp(-EDGE_REACH, EDGE_REACH));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +145,16 @@ mod tests {
 
     fn unit_at(x: f32, z: f32) -> Unit {
         Unit::for_test(x, z, UnitKind::Infantry)
+    }
+
+    #[test]
+    fn land_uncovered_round_a_place_stays_known_but_unseen() {
+        let mut fog = Fog::new();
+        fog.uncover((1600.0, 1600.0), 20.0 * CELL_SIDE);
+        fog.update(std::iter::empty(), 0.0);
+        assert_eq!(fog.at(1600.0, 1600.0), Sight::Explored);
+        assert_eq!(fog.at(1600.0 + 19.0 * CELL_SIDE, 1600.0), Sight::Explored);
+        assert_eq!(fog.at(1600.0 + 22.0 * CELL_SIDE, 1600.0), Sight::Unexplored);
     }
 
     #[test]

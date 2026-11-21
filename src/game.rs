@@ -13728,6 +13728,22 @@ mod tests {
         };
         let (wide, tall) = cursor(120.0);
         assert!(tall < wide * 0.85, "{wide} {tall}");
+        // However the camera is turned, it stays as it was, as wide as it is drawn.
+        let cursor = |game: &Game| {
+            let (mx, my) = game.mouse;
+            let drawn = crate::render::build(game);
+            let around = drawn.iter().rev().take(600);
+            let xs = around
+                .filter(|v| (v.x - mx).hypot(v.y - my) < 300.0)
+                .map(|v| v.x);
+            let (low, high) = xs.fold((f32::MAX, f32::MIN), |(a, b), c| (a.min(c), b.max(c)));
+            high - low
+        };
+        for _ in 0..8 {
+            game.camera.turn(std::f32::consts::FRAC_PI_4);
+            let turned = cursor(&game);
+            assert!((turned - wide).abs() < wide * 0.15, "{turned} {wide}");
+        }
     }
 
     #[test]

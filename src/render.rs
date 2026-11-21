@@ -1182,13 +1182,38 @@ fn lay_cursor_on_map(canvas: &mut Canvas, game: &Game, drawn: usize) {
         return;
     };
     let y = terrain.height_at(x, z);
-    let (Some(middle), Some(east)) = (view.project(x, y, z), view.project(x + 45.25, y, z)) else {
+    const STEP: f32 = 45.25;
+    let (Some(middle), Some(east), Some(south)) = (
+        view.project(x, y, z),
+        view.project(x + STEP, y, z),
+        view.project(x, y, z + STEP),
+    ) else {
         return;
     };
-    let world_per_pixel = 45.25 / (east.0 - middle.0).abs().max(1.0);
+    // How far the screen moves a step east and a step south on the land, and from that the
+    // ways on the land that go across the screen and down it, however the camera is turned.
+    let (ex, ey) = (east.0 - middle.0, east.1 - middle.1);
+    let (sx, sy) = (south.0 - middle.0, south.1 - middle.1);
+    let det = ex * sy - sx * ey;
+    if det.abs() < 1e-6 {
+        return;
+    }
+    let way = |(px, py): (f32, f32)| {
+        let (wx, wz) = ((sy * px - sx * py) / det, (ex * py - ey * px) / det);
+        let steps = wx.hypot(wz);
+        (wx / steps, wz / steps, steps * STEP)
+    };
+    let (across_x, across_z, world_per_pixel) = way((1.0, 0.0));
+    let (down_x, down_z, _) = way((0.0, 1.0));
     for vertex in &mut canvas.vertices[drawn..] {
-        let (dx, dz) = (vertex.x - game.mouse.0, vertex.y - game.mouse.1);
-        let (px, pz) = (x + dx * world_per_pixel, z + dz * world_per_pixel);
+        let (dx, dy) = (
+            (vertex.x - game.mouse.0) * world_per_pixel,
+            (vertex.y - game.mouse.1) * world_per_pixel,
+        );
+        let (px, pz) = (
+            x + across_x * dx + down_x * dy,
+            z + across_z * dx + down_z * dy,
+        );
         if let Some((screen_x, screen_y)) = view.project(px, y, pz) {
             (vertex.x, vertex.y) = (screen_x, screen_y);
         }

@@ -3107,6 +3107,11 @@ fn draw_unit(canvas: &mut Canvas, game: &Game, view: &battlefield::View, unit: &
         draw_red_glares(canvas, view, &glares, game.battle_time());
     }
     draw_seen_model(canvas, game, unit, seen);
+    if matches!(seen, Seen::Near | Seen::Far) && !unit.is_under_construction() {
+        for glint in original::glints(unit, game.battle_time()) {
+            draw_glare(canvas, view, glint, GLINT_SIZE, GLINT_COLOR);
+        }
+    }
     if matches!(seen, Seen::Near | Seen::Far) {
         if unit.role == Role::AtAdp {
             draw_jet_flame(canvas, game, view, unit, models::DRONE_NOZZLE);
@@ -3385,6 +3390,10 @@ fn draw_palace_lights(canvas: &mut Canvas, game: &Game, view: &battlefield::View
     }
     draw_red_glares(canvas, view, &RED.map(at), game.battle_time());
 }
+
+/// How big the glow is where a model marks a light, and its warm white.
+const GLINT_SIZE: f32 = 9.051;
+const GLINT_COLOR: [f32; 3] = [1.0, 0.92, 0.75];
 
 /// A round glow of light, brightest in its middle.
 fn draw_glare(canvas: &mut Canvas, view: &battlefield::View, at: Point, size: f32, glow: [f32; 3]) {

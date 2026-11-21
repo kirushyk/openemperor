@@ -1061,6 +1061,9 @@ struct Part {
     veils: Vec<Veil>,
     /// Whether it is a searchlight's beam, whose far end lights the ground.
     beam: bool,
+    /// Where in it a light shines, for a box that only marks where, as the starports' landing
+    /// lights and the Atreides factory's lights.
+    glint: Option<[f32; 3]>,
     /// Whether it is the gun a soldier sets up, standing apart from the one he carries: it
     /// holds the turret of the gun he fires once dug in (`::1`) and stays put but for its recoil,
     /// and shows only once he is, as a mortar's `Mortorgun01`.
@@ -1868,8 +1871,10 @@ fn gather(
                 Some(Picture::Glow { layer, .. }) if lit => (*layer, true),
                 // A light kept out of sight as a mark, painted with a picture not marked to
                 // glow, shows it unlit and covering what is behind, as a windtrap's front and
-                // back panels do.
-                Some(Picture::Painted { layer, .. }) if lit && is_marker(&object.name) => {
+                // back panels do; a box that only marks where a light is, `#`, shows nothing.
+                Some(Picture::Painted { layer, .. })
+                    if lit && object.name.starts_with(LIGHT_FACE_MARK) =>
+                {
                     (*layer, false)
                 }
                 Some(Picture::SeeThrough { layer, .. }) if shown => (*layer, false),
@@ -1900,6 +1905,7 @@ fn gather(
         lift: !shape.parts.iter().any(|part| part.lift) && object.name.contains("::1"),
         swivel: object.name == SWIVEL,
         beam: object.name.to_ascii_lowercase().contains(SEARCHLIGHT),
+        glint: glint_of(object),
         set_up: object
             .children
             .iter()
@@ -1925,6 +1931,23 @@ fn gather(
     for child in &object.children {
         gather(child, Some(this), &world, head, pictures, shape);
     }
+}
+
+/// What a light's mark that shows its faces is named with, as a windtrap's panels; a light's
+/// mark named with `GLINT_MARK` is only a box where it shines.
+const LIGHT_FACE_MARK: char = '?';
+const GLINT_MARK: char = '#';
+
+/// The middle of a box that marks where a light shines, as `#light01`, in the object's own
+/// space: none for anything else, or a mark with nothing to show where.
+fn glint_of(object: &Object) -> Option<[f32; 3]> {
+    if !object.name.starts_with(GLINT_MARK) || !is_light(&object.name) {
+        return None;
+    }
+    let count = object.vertices.len() as f32;
+    (count > 0.0).then(|| {
+        std::array::from_fn(|i| object.vertices.iter().map(|v| v.position[i]).sum::<f32>() / count)
+    })
 }
 
 /// The way a triangle's front faces by the way its corners go round, as long as it is big.
@@ -2383,6 +2406,36 @@ fn ends_of(shape: &Shape, unit: &Unit) -> Vec<(f32, f32, f32)> {
         .collect();
     ends.sort_by_key(|&(n, _)| n);
     ends.into_iter().map(|(_, end)| end).collect()
+}
+
+/// Where the lights its model marks with boxes shine on the battlefield, as the starports'
+/// landing lights and the Atreides factory's do, at this time of the battle.
+pub fn glints(unit: &Unit, time: f32) -> Vec<(f32, f32, f32)> {
+    let Some(shape) = shape_of(unit) else {
+        return Vec::new();
+    };
+    let (body, head) = places(shape, unit);
+    let pivot = shape.pivot.unwrap_or_default();
+    let worlds = pose(
+        shape,
+        unit.tube_pitch,
+        unit.gun_turn,
+        frame(shape, unit, time),
+    );
+    shape
+        .parts
+        .iter()
+        .zip(&worlds)
+        .filter_map(|(part, world)| {
+            let place = to_place(point(world, part.glint?));
+            let [x, y, z] = if part.head {
+                head.point(std::array::from_fn(|i| place[i] - pivot[i]))
+            } else {
+                body.point(place)
+            };
+            Some((x, y, z))
+        })
+        .collect()
 }
 
 /// Where the searchlights of the unit's model throw their light, at this time of the battle:
@@ -3544,6 +3597,42 @@ mod tests {
         assert!(
             searchlight_spots(&windtrap, 0.0).is_empty(),
             "lights only itself"
+        );
+    }
+
+    #[test]
+    fn the_atreides_factorys_and_a_starports_lights_glow_where_their_marks_are_not_as_boxes() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        let mut factory = Unit::for_test(1000.0, 1000.0, UnitKind::Building);
+        (factory.role, factory.house) = (Role::Factory, Faction::Atreides);
+        let mut starport = factory;
+        starport.role = Role::Starport;
+        for (unit, lights) in [(factory, 8), (starport, 8)] {
+            let glints = glints(&unit, 0.0);
+            assert_eq!(glints.len(), lights, "{:?}", unit.role);
+            for (x, _, z) in glints {
+                assert!((x - unit.x).hypot(z - unit.z) < 200.0, "on it");
+            }
+            let shape = shape_of(&unit).unwrap();
+            let marks = shape.parts.iter().filter(|part| part.glint.is_some());
+            assert!(
+                marks
+                    .into_iter()
+                    .all(|part| part.faces.is_empty() && part.veils.is_empty())
+            );
+        }
+        let mut windtrap = factory;
+        windtrap.role = Role::Windtrap;
+        let shape = shape_of(&windtrap).unwrap();
+        assert!(
+            shape
+                .parts
+                .iter()
+                .any(|part| part.veils.iter().any(|veil| !veil.glows))
         );
     }
 

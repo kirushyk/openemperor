@@ -596,6 +596,9 @@ pub enum Said {
     Moving,
     /// They have been told to attack.
     Attacking,
+    /// They have begun to deploy, or to pack up again.
+    Deploying,
+    PackingUp,
 }
 
 /// The three playable factions: A is blue, H red, O cyan. Each is shown as its planet.
@@ -3410,9 +3413,43 @@ impl Game {
     /// where it stands.
     fn toggle_deploy(&mut self) {
         let terrain = battlefield::terrain(self.battle_map);
+        let before = self.deploy_states();
         if units::toggle_deploy(&mut self.units, terrain) {
             self.post_chat(CANNOT_DEPLOY.to_string());
         }
+        self.answer_deploying(&before);
+    }
+
+    /// Whether each unit is deployed, and how far along an MCV is with it.
+    fn deploy_states(&self) -> Vec<(bool, units::Deployment)> {
+        let states = self.units.iter().map(|u| (u.deployed, u.deployment));
+        states.collect()
+    }
+
+    /// Has those of the player's units that have just begun to deploy, or to pack up, since
+    /// these states say so: the first one's way, by all that went its way.
+    fn answer_deploying(&mut self, before: &[(bool, units::Deployment)]) {
+        let changed: Vec<(&Unit, bool)> = self
+            .units
+            .iter()
+            .zip(before)
+            .filter(|(u, was)| u.owner == 0 && (u.deployed, u.deployment) != **was)
+            .map(|(u, &(was_deployed, _))| (u, was_deployed))
+            .collect();
+        let Some(&(_, packing)) = changed.first() else {
+            return;
+        };
+        let speakers = changed
+            .iter()
+            .filter(|&&(_, was)| was == packing)
+            .map(|(u, _)| (u.role, u.house))
+            .collect();
+        let said = if packing {
+            Said::PackingUp
+        } else {
+            Said::Deploying
+        };
+        self.reply = Some((said, speakers));
     }
 
     /// Moves along the building on its way, while the player has a deployed MCV to build it and
@@ -4196,7 +4233,9 @@ impl Game {
             units::unload(&mut self.units, terrain, apc);
         } else if let Some(unit) = self.deployable_under_cursor().filter(|_| !adding) {
             // So two clicks on one that is not selected yet select it, then switch it.
+            let before = self.deploy_states();
             units::start_deploying(&mut self.units[unit]);
+            self.answer_deploying(&before);
         } else if let Some(pad) = self.pad_under_cursor().filter(|_| !adding) {
             units::order_land(&mut self.units, pad);
         } else if let Some(refinery) = self.refinery_under_cursor().filter(|_| !adding) {
@@ -8642,6 +8681,24 @@ mod tests {
             .unwrap();
         game.handle(Event::MouseMove(px, py));
         (game, index)
+    }
+
+    #[test]
+    fn a_kindjal_says_it_deploys_and_packs_up_by_key_and_by_its_cursor() {
+        let (mut game, kindjal) = at_kindjal_under_cursor();
+        game.units[kindjal].selected = true;
+        game.take_reply();
+        let speakers = vec![(Role::AtKindjal, Faction::Atreides)];
+        game.handle(Event::KeyDown(Key::Char('d')));
+        assert!(game.units[kindjal].deployed);
+        assert_eq!(game.take_reply(), Some((Said::Deploying, speakers.clone())));
+        game.handle(Event::KeyDown(Key::Char('d')));
+        assert_eq!(game.take_reply(), Some((Said::PackingUp, speakers.clone())));
+        assert_eq!(game.cursor_look(), CursorLook::Deploy);
+        game.handle(Event::MouseDown);
+        game.handle(Event::MouseUp);
+        assert!(game.units[kindjal].deployed);
+        assert_eq!(game.take_reply(), Some((Said::Deploying, speakers)));
     }
 
     #[test]

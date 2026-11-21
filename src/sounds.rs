@@ -57,6 +57,10 @@ fn ending(said: Said) -> &'static str {
         Said::Selected => "Selection",
         Said::Moving => "Move",
         Said::Attacking => "Attack",
+        // As an MCV, a mortar or a Kindjal says it deploys, and a mortar or a Kindjal that it
+        // packs up.
+        Said::Deploying => "Special0",
+        Said::PackingUp => "Special1",
     }
 }
 
@@ -538,6 +542,14 @@ mod tests {
         assert_eq!(
             sections_for(Said::Selected, &[(Role::AtKindjal, Atreides)]),
             ["ATKindjalSelection"]
+        );
+        assert_eq!(
+            sections_for(Said::Deploying, &[(Role::AtKindjal, Atreides)]),
+            ["ATKindjalSpecial0"]
+        );
+        assert_eq!(
+            sections_for(Said::PackingUp, &[(Role::AtKindjal, Atreides)]),
+            ["ATKindjalSpecial1"]
         );
         assert_eq!(
             sections_for(

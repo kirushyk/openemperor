@@ -1,6 +1,8 @@
 //! Placeholder units, buildings among them, and the geometry of selecting them.
 
-use crate::battlefield::{CELL_SIDE, Going, Terrain, grid_to_world, next_random, world_to_grid};
+use crate::battlefield::{
+    CELL_SIDE, Going, Ground, Terrain, grid_to_world, next_random, world_to_grid,
+};
 use crate::game::{Faction, TeamColor};
 use crate::weapons::WeaponKind;
 use std::cmp::Ordering;
@@ -162,6 +164,10 @@ impl UnitKind {
 }
 
 const BUILDING_RADIUS: f32 = 54.31;
+/// How much of what hits them soldiers on infantry rock take, as their rules' `Armour`'s
+/// `50, InfRock` has it, and how many tiles farther they reach there: `InfRockRangeBonus`.
+const INF_ROCK_HARM: f32 = 0.5;
+const INF_ROCK_RANGE_BONUS: f32 = 2.0;
 /// How many tiles a building sees: the rules' `ViewRange` of every one but the turrets.
 const BUILDING_VIEW: f32 = 10.0;
 /// How much substance a harvester holds when full.
@@ -1505,8 +1511,25 @@ impl Role {
         }
     }
 
-    /// How many tiles it sees, as the original's `ViewRange`. A machine's has a second figure
-    /// given with `InfRock`, larger, that it is not known what for; its first is taken.
+    /// How many tiles a machine sees onto infantry rock: the second figure its `ViewRange`
+    /// gives with `InfRock`. None for what has none.
+    fn rock_view_range(self) -> Option<f32> {
+        match self {
+            Role::Harvester => Some(6.0),
+            Role::Mcv => Some(14.0),
+            Role::HkMissile => Some(14.0),
+            Role::HkInkVine | Role::OrKobra | Role::OrEits => Some(16.0),
+            Role::Extra(extra) => match extra.rules_name() {
+                "SMQuad" => Some(14.0),
+                "FakeHarvester" => Some(6.0),
+                _ => (self.kind() == UnitKind::Vehicle).then_some(8.0),
+            },
+            role => (role.kind() == UnitKind::Vehicle).then_some(8.0),
+        }
+    }
+
+    /// How many tiles it sees, as the first figure of the original's `ViewRange`. A machine's
+    /// second, given with `InfRock`, is how far it sees onto infantry rock.
     fn view_range(self) -> f32 {
         match self {
             Role::Extra(extra) => extra.kind().view,
@@ -2916,6 +2939,9 @@ pub struct Unit {
     seen_moving: f32,
     /// Seconds a harvester has been eating the spot it stands on.
     pub eating: f32,
+    /// Whether it is a soldier standing on infantry rock, dug in there: harder to hurt, able
+    /// to reach farther, and not to be run over.
+    pub on_inf_rock: bool,
     /// Whether a soldier is cheering his side's win.
     pub cheering: bool,
     /// How far a pop-up turret has come up: 0 sunk in the ground, 1 ready to fire. For a
@@ -3217,12 +3243,28 @@ impl Unit {
         };
         let range = tiles.map_or(self.weapon.range(), |tiles| tiles * CELL_SIDE);
         let extra = self.from_levels(|level| level.range).unwrap_or(0.0);
-        range * (1.0 + extra / 100.0)
+        // Dug in on infantry rock, a soldier reaches the rules' `InfRockRangeBonus` farther;
+        // the contaminator, which only touches, not (`GetsInfRockRangeBonus`).
+        let rock =
+            if self.on_inf_rock && self.weapon.is_armed() && self.role != Role::TlContaminator {
+                INF_ROCK_RANGE_BONUS * CELL_SIDE
+            } else {
+                0.0
+            };
+        range * (1.0 + extra / 100.0) + rock
     }
 
     /// How far it sees from where it stands: farther the higher it is above the lowest ground.
     pub fn sight_over(&self, floor: f32) -> f32 {
         self.sight() * high_ground(self.y - floor)
+    }
+
+    /// How far a machine sees onto infantry rock from where it stands, if farther than it sees
+    /// elsewhere.
+    pub fn rock_sight_over(&self, floor: f32) -> Option<f32> {
+        let tiles = self.role.rock_view_range().filter(|_| !self.deployed)?;
+        let sight = tiles * CELL_SIDE * high_ground(self.y - floor);
+        (sight > self.sight_over(floor)).then_some(sight)
     }
 
     /// How far it can fire at what stands at this height: farther down onto lower ground.
@@ -3258,7 +3300,8 @@ impl Unit {
 
     /// What harm done to it is multiplied by: less with its levels' extra armour.
     pub fn harm_taken(&self) -> f32 {
-        1.0 - self.from_levels(|level| level.armour).unwrap_or(0.0) / 100.0
+        let rock = if self.on_inf_rock { INF_ROCK_HARM } else { 1.0 };
+        rock * (1.0 - self.from_levels(|level| level.armour).unwrap_or(0.0) / 100.0)
     }
 
     /// The health it wins back by itself each second, from its levels.
@@ -4003,6 +4046,7 @@ impl Unit {
             revealed: 0.0,
             seen_moving: 0.0,
             eating: 0.0,
+            on_inf_rock: false,
             cheering: false,
             popped: 0.0,
             gun_turn: 0.0,
@@ -4168,6 +4212,7 @@ fn place_unit(
         revealed: 0.0,
         seen_moving: 0.0,
         eating: 0.0,
+        on_inf_rock: false,
         cheering: false,
         popped: 0.0,
         gun_turn: 0.0,
@@ -5896,6 +5941,7 @@ pub fn can_run_over(squasher: &Unit, victim: &Unit, teams: &[usize]) -> bool {
         && squasher.alive
         && victim.alive
         && victim.kind == UnitKind::Infantry
+        && !victim.on_inf_rock
         && !victim.hidden_from(squasher.owner, teams)
         && are_enemies(teams, squasher.owner, victim.owner)
 }
@@ -5963,6 +6009,7 @@ fn can_squash(squasher: &Unit, victim: &Unit, teams: &[usize]) -> bool {
         && squasher.role.crushes()
         && squasher.is_moving()
         && victim.kind == UnitKind::Infantry
+        && !victim.on_inf_rock
         && are_enemies(teams, squasher.owner, victim.owner)
 }
 
@@ -7689,6 +7736,9 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
         unit.constructing = (unit.constructing - dt).max(0.0);
         go_on_deploying(unit, dt);
         set_up_or_pack(unit, dt);
+        unit.on_inf_rock = unit.kind == UnitKind::Infantry
+            && unit.altitude <= 0.0
+            && terrain.ground_at(unit.x, unit.z) == Ground::InfRock;
         unit.seen_moving = if unit.role.stealthed_when_still() && unit.is_moving() {
             STEALTH_DELAY
         } else {
@@ -10839,6 +10889,46 @@ mod tests {
         let mut units = [unit];
         order_move(&mut units, water, terrain, &[]);
         assert!(terrain.can_walk(units[0].destination.0, units[0].destination.1));
+    }
+
+    #[test]
+    fn a_soldier_dug_in_on_infantry_rock_is_harder_to_hurt_reaches_farther_and_is_not_run_over() {
+        // A band of infantry rock across the map at rows 50 to 53.
+        let terrain = &Terrain::open().with_ground(Ground::InfRock, (0, 50), (256, 4));
+        let (x, z) = grid_to_world(128.5, 51.5);
+        let mut soldier = unit_at(x, z, UnitKind::Infantry);
+        soldier.weapon = WeaponKind::Bullet;
+        soldier.owner = 1;
+        let plain = soldier;
+        let mut units = [soldier];
+        advance(&mut units, terrain, &[0, 1], 0.02);
+        let soldier = units[0];
+        assert!(soldier.on_inf_rock);
+        assert_eq!(soldier.harm_taken(), plain.harm_taken() * 0.5);
+        assert_eq!(soldier.range() - plain.range(), 2.0 * CELL_SIDE);
+        let mut tank = unit_at(x + 40.0, z, UnitKind::Vehicle);
+        tank.role = Role::HkAssault;
+        tank.heavy = true;
+        assert!(can_run_over(&tank, &plain, &[0, 1]));
+        assert!(!can_run_over(&tank, &soldier, &[0, 1]));
+        tank.destination = (x - 400.0, z);
+        assert!(!can_squash(&tank, &soldier, &[0, 1]));
+        assert!(can_squash(&tank, &plain, &[0, 1]));
+    }
+
+    #[test]
+    fn a_machine_sees_onto_infantry_rock_as_far_as_the_second_figure_of_its_view_range() {
+        let mut tank = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Vehicle);
+        tank.role = Role::AtMongoose;
+        tank.weapon = WeaponKind::Missile;
+        let sight = tank.sight_over(0.0);
+        assert_eq!(
+            tank.rock_sight_over(0.0),
+            Some(8.0 * CELL_SIDE).filter(|&r| r > sight)
+        );
+        let mut soldier = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Infantry);
+        soldier.role = Role::HkLightInf;
+        assert_eq!(soldier.rock_sight_over(0.0), None);
     }
 
     #[test]

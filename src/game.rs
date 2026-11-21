@@ -2681,12 +2681,14 @@ impl Game {
                 return;
             }
             let teams = &self.teams;
-            fog.update(
+            let terrain = battlefield::terrain(self.battle_map);
+            let seers = || {
                 self.units
                     .iter()
-                    .filter(|u| u.alive && units::are_friends(teams, 0, u.owner)),
-                battlefield::terrain(self.battle_map).floor(),
-            );
+                    .filter(|u| u.alive && units::are_friends(teams, 0, u.owner))
+            };
+            fog.update(seers(), terrain.floor());
+            fog.see_rock(seers(), terrain);
         }
     }
 

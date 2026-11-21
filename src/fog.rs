@@ -1,7 +1,7 @@
 //! What the player knows of the map: nothing, what was once seen, or what is seen right now.
 
 use crate::battlefield::{
-    CELL_SIDE, GRID_POINTS, MOST_CELLS, grid_index, grid_to_world, world_to_grid,
+    CELL_SIDE, GRID_POINTS, Ground, MOST_CELLS, Terrain, grid_index, grid_to_world, world_to_grid,
 };
 use crate::units::Unit;
 
@@ -66,6 +66,20 @@ impl Fog {
         spread(&mut self.now, (seer.x, seer.z), seer.sight_over(floor));
     }
 
+    /// Sees onto infantry rock from these units, as far as each machine sees onto it, past
+    /// where it sees elsewhere: after `update`.
+    pub fn see_rock<'a>(&mut self, seers: impl Iterator<Item = &'a Unit>, terrain: &Terrain) {
+        let rock = |x: f32, z: f32| terrain.ground_at(x, z) == Ground::InfRock;
+        for seer in seers {
+            if let Some(radius) = seer.rock_sight_over(terrain.floor()) {
+                spread_where(&mut self.now, (seer.x, seer.z), radius, &rock);
+            }
+        }
+        for (ever, now) in self.ever.iter_mut().zip(&self.now) {
+            *ever = ever.max(*now);
+        }
+    }
+
     /// Opens up the land this far round a place, seen from now on.
     pub fn uncover(&mut self, at: (f32, f32), radius: f32) {
         for points in [&mut self.opened, &mut self.now, &mut self.ever] {
@@ -126,6 +140,16 @@ impl Fog {
 /// Marks every grid point this far round a place as that far inside it, where it was not
 /// already further in.
 fn spread(points: &mut [f32], (x, z): (f32, f32), radius: f32) {
+    spread_where(points, (x, z), radius, &|_, _| true);
+}
+
+/// The same, only at the points where `keep` holds.
+fn spread_where(
+    points: &mut [f32],
+    (x, z): (f32, f32),
+    radius: f32,
+    keep: &dyn Fn(f32, f32) -> bool,
+) {
     let (u, v) = world_to_grid(x, z);
     let reach = radius / CELL_SIDE + EDGE_REACH;
     let span = |center: f32| {
@@ -136,6 +160,9 @@ fn spread(points: &mut [f32], (x, z): (f32, f32), radius: f32) {
     for point_v in span(v) {
         for point_u in span(u) {
             let (px, pz) = grid_to_world(point_u as f32, point_v as f32);
+            if !keep(px, pz) {
+                continue;
+            }
             let into = (radius - (px - x).hypot(pz - z)) / CELL_SIDE;
             let point = &mut points[grid_index(point_u, point_v)];
             *point = point.max(into.clamp(-EDGE_REACH, EDGE_REACH));
@@ -150,6 +177,31 @@ mod tests {
 
     fn unit_at(x: f32, z: f32) -> Unit {
         Unit::for_test(x, z, UnitKind::Infantry)
+    }
+
+    #[test]
+    fn a_machine_sees_farther_onto_infantry_rock_than_onto_other_ground() {
+        use crate::units::Role;
+        // Infantry rock from column 40 on, a harvester on the sand four tiles before it.
+        let terrain = Terrain::open().with_ground(Ground::InfRock, (40, 0), (20, 128));
+        let mut harvester = Unit::for_test(36.0 * CELL_SIDE, 64.0 * CELL_SIDE, UnitKind::Vehicle);
+        harvester.role = Role::Harvester;
+        harvester.weapon = crate::weapons::WeaponKind::Unarmed;
+        let mut fog = Fog::new();
+        fog.update([harvester].iter(), 0.0);
+        fog.see_rock([harvester].iter(), &terrain);
+        let at = |tiles: f32| fog.at((36.0 + tiles) * CELL_SIDE, 64.0 * CELL_SIDE);
+        assert_eq!(
+            at(-5.0),
+            Sight::Unexplored,
+            "5 tiles off on the sand: out of its 4"
+        );
+        assert_eq!(
+            at(5.0),
+            Sight::Visible,
+            "5 tiles off on the rock: within its 6"
+        );
+        assert_eq!(at(8.0), Sight::Unexplored, "past its 6 on the rock too");
     }
 
     #[test]

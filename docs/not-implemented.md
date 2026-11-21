@@ -120,10 +120,13 @@ and its warhead's share against each armour from `[WarheadTypes]`, and each turr
 - **Our own numbers** are still used for the gas a cistern leaves, the Tleilaxu's poison, the
   buzzsaw's saw, and the superweapons (`DeathHandBomb`, `Hawk_B` and the Ordos beam).
 - **Sight and reach**: each unit sees as far as the first figure of its rules' `ViewRange`
-  (a construction yard 10, as other buildings) and fires as far as its bullet's `MaxRange`.
-  Not done: the second figure, which the rules give with `InfRock` (a machine's 8, say),
-  seemingly its sight on that kind of rock; `InfRockRangeBonus` (2 tiles more reach for
-  infantry there); and ours always sees at least as far as it can fire.
+  (a construction yard 10, as other buildings) and fires as far as its bullet's `MaxRange`;
+  ours always sees at least as far as it can fire.
+- **Infantry rock**: only soldiers go onto it. There they take half of what hits them (their
+  `Armour`'s `50, InfRock`), reach `InfRockRangeBonus` (2) tiles farther, the contaminator
+  aside, and machines cannot run them over. A machine sees onto it as far as the second
+  figure of its `ViewRange` (8 for most, a harvester 6, an MCV 14): our reading of a figure
+  the rules give only to machines, which never stand there.
 - **Projectiles** fly and burst as their bullets: missiles at their `Speed` and `TurnRate`
   per update, straight until their `HomingDelay` and straight for good if not `Homing` (the
   Devastator's plasma); bursts as far as `BlastRadius`, weaker outwards unless
@@ -131,8 +134,6 @@ and its warhead's share against each armour from `[WarheadTypes]`, and each turr
   ours: how fast shells and bombs fly (their bullets have no `Speed`, or the bomb's 8 we do
   not use), the arc they take, `MinRange`, and the bursts of bullets that strike at once (the
   Kindjal's and the Kobra's 64 on its tracks), which hurt only what they hit.
-- **Infantry on rock** take less damage in the original: their armour `None, 50, InfRock`
-  halves it there.
 - **Shields**: the laser tank's `ShieldHealth` 300 and its self-repair.
 - **The repair vehicle** heals by our own rate; the original's `RepairRate` is 12.
 - **By house**: the original gives the Harkonnen engineer 600 health (ours 400 for every

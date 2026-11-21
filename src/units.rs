@@ -168,6 +168,9 @@ const BUILDING_RADIUS: f32 = 54.31;
 /// `50, InfRock` has it, and how many tiles farther they reach there: `InfRockRangeBonus`.
 const INF_ROCK_HARM: f32 = 0.5;
 const INF_ROCK_RANGE_BONUS: f32 = 2.0;
+/// How near beyond touching a saboteur or infiltrator sent at something comes before it
+/// blows itself up: well inside its blast.
+const BOMB_MARGIN: f32 = 16.0;
 /// Seconds what the deviator's gas hits fights for the deviator's side: the rules'
 /// `DeviateDuration` of 400 updates.
 const DEVIATE_SECONDS: f32 = 16.0;
@@ -3698,9 +3701,24 @@ impl Unit {
             && are_friends(teams, self.owner, other.owner)
     }
 
-    /// Whether it would go to another unit to fix it or pick it up.
+    /// Whether it would go to another unit to fix it, pick it up or blow itself up beside it.
     pub fn can_tend(&self, other: &Unit, teams: &[usize]) -> bool {
-        self.can_fix(other, teams) || self.can_lift(other, teams) || self.can_steal(other, teams)
+        self.can_fix(other, teams)
+            || self.can_lift(other, teams)
+            || self.can_steal(other, teams)
+            || self.can_bomb(other, teams)
+    }
+
+    /// Whether it could go up to this enemy and blow itself up beside it: a saboteur or an
+    /// Ixian infiltrator, at what stands on the ground.
+    pub fn can_bomb(&self, other: &Unit, teams: &[usize]) -> bool {
+        matches!(self.role, Role::OrSaboteur | Role::IxInfiltrator)
+            && self.alive
+            && !self.deployed
+            && other.alive
+            && other.altitude <= 0.0
+            && !other.hidden_from(self.owner, teams)
+            && are_enemies(teams, self.owner, other.owner)
     }
 
     /// Whether it could take hold of this enemy vehicle and carry it off.
@@ -5952,6 +5970,17 @@ fn chase_targets(units: &mut [Unit], terrain: &Terrain, teams: &[usize]) {
                         units[other_index].making = None;
                         units[other_index].queue = [None; QUEUE_ROOM];
                         units[i].stand_down();
+                    } else {
+                        units[i].destination = (other.x, other.z);
+                    }
+                    continue;
+                }
+                if matches!(target, Target::Unit(_)) && units[i].can_bomb(&other, teams) {
+                    // Up to it, and there it blows itself up.
+                    let touching = units[i].radius() + other.radius() + BOMB_MARGIN;
+                    if (other.x - x).hypot(other.z - z) <= touching {
+                        units[i].stand_down();
+                        switch_deployed(&mut units[i]);
                     } else {
                         units[i].destination = (other.x, other.z);
                     }

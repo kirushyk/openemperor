@@ -3894,7 +3894,9 @@ impl Game {
         let selected = self.selected_units();
         let look_at = |u: &Unit| {
             let armed = |s: &&Unit| {
-                s.can_attack_when_told(u, &self.teams) || (self.control_held && s.can_fire_on(u))
+                s.can_attack_when_told(u, &self.teams)
+                    || s.can_bomb(u, &self.teams)
+                    || (self.control_held && s.can_fire_on(u))
             };
             if selected.iter().any(armed) {
                 CursorLook::Attack
@@ -9130,6 +9132,65 @@ mod tests {
     fn line_vertices(game: &Game, color: [f32; 4]) -> usize {
         let is_color = |v: &&crate::platform::Vertex| **v == Vertex::new((v.x, v.y), color);
         crate::render::build(game).iter().filter(is_color).count()
+    }
+
+    #[test]
+    fn a_saboteur_and_an_infiltrator_take_the_attack_cursor_and_blow_up_by_what_they_are_sent_at() {
+        for bomber in [Role::OrSaboteur, Role::IxInfiltrator] {
+            let mut game = in_battle();
+            game.fog = None;
+            let (enemy, (x, y)) = enemy_beside_first_group(&mut game);
+            // Only the bomber does harm.
+            for unit in &mut game.units {
+                unit.selected = false;
+                if unit.owner == 0 {
+                    unit.weapon = crate::weapons::WeaponKind::Unarmed;
+                }
+            }
+            let mut saboteur = *game
+                .units
+                .iter()
+                .find(|u| u.owner == 0 && u.kind == UnitKind::Infantry)
+                .unwrap();
+            (saboteur.role, saboteur.kind) = (bomber, bomber.kind());
+            saboteur.weapon = crate::weapons::WeaponKind::Unarmed;
+            saboteur.id = game.next_unit_id;
+            game.next_unit_id += 1;
+            saboteur.selected = true;
+            saboteur.deployed = false;
+            // On the far side of the enemy from the player's crowd.
+            let (gx, gz) = (game.camera.x, game.camera.z);
+            let (ex, ez) = (game.units[enemy].x, game.units[enemy].z);
+            let away = (ex - gx).hypot(ez - gz).max(1.0);
+            (saboteur.x, saboteur.z) =
+                (ex + (ex - gx) / away * 200.0, ez + (ez - gz) / away * 200.0);
+            saboteur.destination = (saboteur.x, saboteur.z);
+            game.units.push(saboteur);
+            let id = saboteur.id;
+            let enemy_id = game.units[enemy].id;
+            game.handle(Event::MouseMove(x, y));
+            assert_eq!(game.cursor_look(), CursorLook::Attack, "{bomber:?}");
+            click_at(&mut game, x, y);
+            let gone = |game: &Game| !game.units.iter().any(|u| u.id == id && u.alive);
+            // Its target stays where it is.
+            let (ex, ez) = (game.units[enemy].x, game.units[enemy].z);
+            for _ in 0..400 {
+                if let Some(target) = game.units.iter_mut().find(|u| u.id == enemy_id) {
+                    (target.x, target.z, target.destination) = (ex, ez, (ex, ez));
+                    target.target = None;
+                }
+                game.update(0.05);
+                if gone(&game) {
+                    break;
+                }
+            }
+            assert!(gone(&game), "{bomber:?} blew itself up");
+            let target = game.units.iter().find(|u| u.id == enemy_id);
+            assert!(
+                target.is_none_or(|t| !t.alive || t.health < t.max_health()),
+                "{bomber:?}: what it was sent at is hurt or gone"
+            );
+        }
     }
 
     #[test]

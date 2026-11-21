@@ -2943,13 +2943,25 @@ fn turn_to_aim(units: &mut [Unit], index: usize, aim: Option<Aim>, dt: f32) -> b
                 units[index].heading += TOWER_IDLE_TURN * dt;
                 pop_turret(&mut units[index], false, dt);
             }
+            // A weapon that swings on its own comes round to face ahead again.
+            if let Some(rate) = units[index].role.turret_swing() {
+                let unit = &mut units[index];
+                let most = rate * dt;
+                unit.gun_turn -= turn_between(0.0, unit.gun_turn).clamp(-most, most);
+            }
             pitch_tubes(&mut units[index], 0.0, dt);
             return false;
         }
     };
     let (dx, dz) = (goal.0 - units[index].x, goal.2 - units[index].z);
     let unit = &mut units[index];
-    let (turn, turned) = if swings_gun(unit) {
+    let (turn, turned) = if let Some(rate) = unit.role.turret_swing() {
+        let turn = turn_between(unit.heading + unit.gun_turn, dz.atan2(dx));
+        let most = rate * dt;
+        let turned = turn.clamp(-most, most);
+        unit.gun_turn += turned;
+        (turn, turned)
+    } else if swings_gun(unit) {
         let turn = turn_between(unit.heading + unit.gun_turn, dz.atan2(dx));
         let most = crate::units::OR_KOBRA_GUN_TURN * dt;
         let turned = turn.clamp(-most, most);
@@ -6177,6 +6189,29 @@ mod tests {
         let mut combat = Combat::default();
         combat.advance(&mut units, &TEAMS, flat(), 0.05);
         assert!(units[1].health < FULL);
+    }
+
+    #[test]
+    fn a_mongoose_fires_its_rockets_on_the_move() {
+        let mut mongoose = shooter(WeaponKind::Missile);
+        mongoose.role = Role::AtMongoose;
+        mongoose.kind = UnitKind::Vehicle;
+        mongoose.heading = std::f32::consts::FRAC_PI_2;
+        mongoose.destination = (mongoose.x, mongoose.z + 2000.0);
+        let mut target = target_at(271.5, 2715.0);
+        target.health = 100_000.0;
+        let mut units = [mongoose, target];
+        let mut combat = Combat::default();
+        let mut fired_moving = false;
+        for _ in 0..80 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+            crate::units::advance(&mut units, flat(), &TEAMS, 0.05);
+            let moving = units[0].is_moving();
+            if moving && (!combat.missiles.is_empty() || units[1].health < 100_000.0) {
+                fired_moving = true;
+            }
+        }
+        assert!(fired_moving, "fired while walking");
     }
 
     fn enemy_barracks_at(x: f32, z: f32) -> Unit {

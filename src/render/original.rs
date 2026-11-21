@@ -2286,9 +2286,15 @@ fn places(shape: &Shape, unit: &Unit) -> (Place, Place) {
             }
             (body, Place::turned(point, unit.heading))
         }
+        // A machine whose weapon swings round on its own, as a Mongoose's launcher, has its
+        // head turned so.
         UnitKind::Vehicle | UnitKind::Infantry => {
             let body = Place::level(unit);
-            (body, body.moved(pivot))
+            let head = body.moved(pivot);
+            match unit.role.turret_swing() {
+                Some(_) => (body, head.yawed(unit.gun_turn)),
+                None => (body, head),
+            }
         }
     }
 }

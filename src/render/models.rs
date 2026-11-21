@@ -261,6 +261,17 @@ impl Place {
         ]
     }
 
+    /// The same place turned about its own up by an angle, the way a unit turns.
+    pub(super) fn yawed(self, angle: f32) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        let (along, across) = (self.along, self.across);
+        Place {
+            along: [0, 1, 2].map(|i| along[i] * cos + across[i] * sin),
+            across: [0, 1, 2].map(|i| across[i] * cos - along[i] * sin),
+            ..self
+        }
+    }
+
     /// The same place with its origin moved by [along, up, across].
     pub(super) fn moved(self, by: [f32; 3]) -> Self {
         Place {

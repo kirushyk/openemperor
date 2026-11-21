@@ -1919,6 +1919,16 @@ impl Role {
         }
     }
 
+    /// How fast, in radians a second, it swings its weapon round on its own while its body
+    /// goes its way, if it does: a Mongoose's launcher, the rules' `ATMongooseMissile` turret,
+    /// 3° an update all the way round.
+    pub fn turret_swing(self) -> Option<f32> {
+        match self {
+            Role::AtMongoose => Some(3.0_f32.to_radians() * UPDATES_PER_SECOND),
+            _ => None,
+        }
+    }
+
     /// Whether it is nobody's: a prop or an extra kind of no side's, as a map puts it down.
     pub fn is_incidental(self) -> bool {
         match self {

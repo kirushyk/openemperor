@@ -7537,10 +7537,11 @@ pub fn lightning_points(
 }
 
 /// The starport's frigate, as the rules' `[Frigate]` has it: `Speed` 12 and `TurnRate` 0.1 an
-/// update, and a `HeightOffset` of 50 where other aircraft have 8.
+/// update, and a `HeightOffset` of 50 where other aircraft have 8, so it flies that much
+/// higher than they do.
 const FRIGATE_SPEED: f32 = 12.0 * UPDATES_PER_SECOND;
 const FRIGATE_TURN: f32 = 0.1 * UPDATES_PER_SECOND;
-const FRIGATE_ALTITUDE: f32 = CRUISE_ALTITUDE + 50.0 - 8.0;
+const FRIGATE_ALTITUDE: f32 = CRUISE_ALTITUDE * 50.0 / 8.0;
 /// How long the stages of its visit its model plays take, at 25 frames a second: `FlyToHover`
 /// and `HoverToFly` 10 frames, `Land` and `Takeoff` 21.
 const FRIGATE_SLOWING_SECONDS: f32 = 0.4;

@@ -2212,6 +2212,13 @@ impl Role {
                 CELL_SIDE * 1.5
             }
             Role::Refinery => 126.7,
+            // Extras of the rules' `Size` 3, as big as a harvester.
+            Role::Extra(extra)
+                if ["IXProjector", "StuntATADVCarryall", "FakeHarvester"]
+                    .contains(&extra.rules_name()) =>
+            {
+                CELL_SIDE * 1.5
+            }
             Role::Palace(Faction::Harkonnen) => 117.7,
             Role::Outpost => 67.88,
             Role::Barracks => 90.51,
@@ -12978,6 +12985,26 @@ mod tests {
         (unit.role, unit.weapon) = (niap, niap.weapon());
         assert_eq!(unit.weapon, WeaponKind::Missile);
         assert_eq!(unit.range() / CELL_SIDE, 7.0, "GuildRocket_B's MaxRange");
+    }
+
+    #[test]
+    fn every_unit_collides_as_wide_as_its_rules_size_in_tiles() {
+        let sized = [
+            ("ATInfantry", 1.0),
+            ("HKAssault", 2.0),
+            ("ATOrni", 2.0),
+            ("Harvester", 3.0),
+            ("ORKobra", 3.0),
+            ("HKADVCarryall", 3.0),
+            ("IXProjector", 3.0),
+            ("StuntATADVCarryall", 3.0),
+            ("FakeHarvester", 3.0),
+            ("ORDeviator", 2.0),
+        ];
+        for (name, size) in sized {
+            let (role, _) = Role::named(name).unwrap();
+            assert_eq!(role.radius() * 2.0 / CELL_SIDE, size, "{name}");
+        }
     }
 
     #[test]

@@ -29,7 +29,8 @@ enum {
                                * Comes as well as the OE_EVENT_KEY_DOWN for that key. */
     OE_EVENT_MAGNIFY = 12,    /* y = how much bigger a trackpad pinch makes things: 0.1 for a
                                * tenth bigger, below 0 for smaller */
-    OE_EVENT_ROTATE = 13      /* y = degrees fingers turn on a trackpad, anticlockwise */
+    OE_EVENT_ROTATE = 13      /* y = degrees fingers turn on a trackpad, anticlockwise, or
+                               * sweep sideways across it */
 };
 
 enum {

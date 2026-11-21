@@ -754,6 +754,14 @@ static int32_t translate(NSEvent *e, OeEvent *out) {
             out->y = g_mouse_y;
             return 1;
         case NSEventTypeScrollWheel: {
+            /* Two fingers swept sideways on a trackpad turn the camera, as twisting them does:
+               a third of a degree for each of its fine deltas. */
+            float across = (float)e.scrollingDeltaX;
+            if (e.hasPreciseScrollingDeltas && fabsf(across) > fabsf((float)e.scrollingDeltaY)) {
+                out->kind = OE_EVENT_ROTATE;
+                out->y = across / 3.0f;
+                return 1;
+            }
             /* Trackpads report fine pixel deltas; about 40 of them feel like one notch. */
             float notches = (float)e.scrollingDeltaY;
             if (e.hasPreciseScrollingDeltas) notches /= 40.0f;

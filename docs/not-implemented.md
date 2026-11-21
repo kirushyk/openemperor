@@ -119,6 +119,11 @@ and its warhead's share against each armour from `[WarheadTypes]`, and each turr
   hit is the share of the original's shot that falls in its time.
 - **Our own numbers** are still used for the gas a cistern leaves, the Tleilaxu's poison, the
   buzzsaw's saw, and the superweapons (`DeathHandBomb`, `Hawk_B` and the Ordos beam).
+- **Sight and reach**: each unit sees as far as the first figure of its rules' `ViewRange`
+  (a construction yard 10, as other buildings) and fires as far as its bullet's `MaxRange`.
+  Not done: the second figure, which the rules give with `InfRock` (a machine's 8, say),
+  seemingly its sight on that kind of rock; `InfRockRangeBonus` (2 tiles more reach for
+  infantry there); and ours always sees at least as far as it can fire.
 - **Projectiles** fly and burst as their bullets: missiles at their `Speed` and `TurnRate`
   per update, straight until their `HomingDelay` and straight for good if not `Homing` (the
   Devastator's plasma); bursts as far as `BlastRadius`, weaker outwards unless

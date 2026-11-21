@@ -162,6 +162,8 @@ impl UnitKind {
 }
 
 const BUILDING_RADIUS: f32 = 54.31;
+/// How many tiles a building sees: the rules' `ViewRange` of every one but the turrets.
+const BUILDING_VIEW: f32 = 10.0;
 /// How much substance a harvester holds when full.
 pub const HARVESTER_LOAD: f32 = 100.0;
 /// Seconds of eating the sand it takes a harvester to fill up, and how long it eats each spot
@@ -1524,7 +1526,7 @@ impl Role {
             Role::OrMortar | Role::OrSaboteur | Role::OrChemical => 8.0,
             Role::AtInfantry | Role::HkGeneral => 7.0,
             Role::Engineer | Role::HkLightInf => 6.0,
-            role if role.kind().is_building() => 10.0,
+            role if role.kind().is_building() => BUILDING_VIEW,
             _ => 4.0,
         }
     }
@@ -3170,7 +3172,13 @@ impl Unit {
 
     /// How far it sees along the ground: its rules' `ViewRange`, and always as far as it can hit.
     pub fn sight(&self) -> f32 {
-        (self.role.view_range() * CELL_SIDE).max(self.range() + 45.25)
+        // Dug in, an MCV is a construction yard, which sees as far as the other buildings.
+        let tiles = if self.role == Role::Mcv && self.deployed {
+            BUILDING_VIEW
+        } else {
+            self.role.view_range()
+        };
+        (tiles * CELL_SIDE).max(self.range() + 45.25)
     }
 
     /// The way a landing pad's deck lies lengthwise, from its front to its back, as a heading.
@@ -3195,6 +3203,16 @@ impl Unit {
             (Role::AtKindjal, WeaponKind::Cannon) => Some(12.0),
             (Role::HkFlameTurret, WeaponKind::Flame) => Some(8.0),
             (Role::OrMortar, WeaponKind::Mortar) => Some(15.0),
+            (Role::HkBuzzsaw, WeaponKind::Bullet) => Some(7.0),
+            (Role::ImSardaukar, WeaponKind::Bullet) => Some(9.0),
+            (Role::TlContaminator, WeaponKind::Pistol) => Some(1.0),
+            (Role::FrAdvFremen, WeaponKind::Sniper) => Some(5.0),
+            (Role::GuMaker, WeaponKind::Mortar) => Some(9.0),
+            (Role::Extra(extra), _) => match extra.rules_name() {
+                "ATGeneral" => Some(9.0),
+                "SMQuad" => Some(10.0),
+                _ => None,
+            },
             _ => None,
         };
         let range = tiles.map_or(self.weapon.range(), |tiles| tiles * CELL_SIDE);
@@ -12751,6 +12769,37 @@ mod tests {
         put(&mut units, &terrain, at, refinery, side, facing, 0).unwrap();
         let plot = units[0].plot().unwrap();
         assert_eq!((plot.u, plot.v, plot.cols, plot.rows), (53, 100, 11, 7));
+    }
+
+    #[test]
+    fn units_see_and_fire_as_far_as_the_rules_viewrange_and_bullets_maxrange_say() {
+        // Each with its weapon as made, and the tiles its rules give.
+        let fire = [
+            (Role::HkBuzzsaw, 7.0),
+            (Role::ImSardaukar, 9.0),
+            (Role::TlContaminator, 1.0),
+            (Role::FrAdvFremen, 5.0),
+            (Role::GuMaker, 9.0),
+            (Role::AtTrike, 7.0),
+            (Role::AtMongoose, 10.0),
+            (Role::HkInkVine, 20.0),
+            (Role::AtSniper, 12.0),
+            (Role::HkLightInf, 5.0),
+            (Role::HkTrooper, 8.0),
+            (Role::OrApc, 10.0),
+            (Role::AtOrni, 12.0),
+            (Role::AtAdp, 15.0),
+        ];
+        for (role, tiles) in fire {
+            let mut unit = Unit::for_test(0.0, 0.0, role.kind());
+            (unit.role, unit.weapon) = (role, role.weapon());
+            assert_eq!(unit.range() / CELL_SIDE, tiles, "{role:?}");
+        }
+        let mut yard = Unit::for_test(0.0, 0.0, UnitKind::Vehicle);
+        yard.role = Role::Mcv;
+        assert_eq!(yard.sight() / CELL_SIDE, 12.0, "an MCV");
+        yard.deployed = true;
+        assert_eq!(yard.sight() / CELL_SIDE, 10.0, "a construction yard");
     }
 
     #[test]

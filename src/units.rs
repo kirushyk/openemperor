@@ -6865,23 +6865,92 @@ pub fn has_substance(terrain: &Terrain, (x, z): (f32, f32)) -> bool {
 
 /// The place itself if it has substance, or else the middle of the nearest cell with
 /// substance that a harvester can drive onto.
-fn sand_near(terrain: &Terrain, at: (f32, f32)) -> Option<(f32, f32)> {
-    if has_substance(terrain, at) {
+fn sand_near(terrain: &Terrain, at: (f32, f32), claims: &Claims) -> Option<(f32, f32)> {
+    if has_substance(terrain, at) && !claims.taken(at) {
         return Some(at);
     }
     let (width, height) = terrain.extent();
     let away = |&(x, z): &(f32, f32)| (x - at.0).hypot(z - at.1);
-    terrain
+    let sand: Vec<(f32, f32)> = terrain
         .fields_within(at, width.max(height))
         .into_iter()
         .filter(|&cell| has_substance(terrain, cell))
-        .min_by(|a, b| away(a).total_cmp(&away(b)))
+        .collect();
+    claims.free_first(sand, away)
+}
+
+/// Where the other harvesters are working, or going to work: each the spot it heads for on
+/// the sand, and where it stands there, so that harvesters share out a field between them,
+/// each to its own spot, rather than all making for one.
+struct Claims {
+    /// Each spot, how far its harvester still is from it, and its harvester's id.
+    spots: Vec<((f32, f32), f32, u32)>,
+    /// How near another's spot one is taken.
+    reach: f32,
+}
+
+impl Claims {
+    /// Those of the harvesters but this one that are on the sand or on their way to it.
+    fn of_others(units: &[Unit], harvester: &Unit) -> Self {
+        let others = units.iter().filter(|u| {
+            u.alive
+                && u.id != harvester.id
+                && u.role == Role::Harvester
+                && matches!(u.harvest, Harvest::Seeking | Harvest::Collecting)
+        });
+        let to_go = |u: &Unit| (u.destination.0 - u.x).hypot(u.destination.1 - u.z);
+        Claims {
+            spots: others
+                .flat_map(|u| [(u.destination, to_go(u), u.id), ((u.x, u.z), 0.0, u.id)])
+                .collect(),
+            reach: harvester.radius() * 2.0,
+        }
+    }
+
+    #[cfg(test)]
+    fn none() -> Self {
+        Claims {
+            spots: Vec::new(),
+            reach: 0.0,
+        }
+    }
+
+    fn taken(&self, at: (f32, f32)) -> bool {
+        self.near(at).next().is_some()
+    }
+
+    /// Whether a harvester this far from this spot, of this id, is to leave it to another
+    /// making for it too: one nearer, or as near and come first.
+    fn yields(&self, at: (f32, f32), to_go: f32, id: u32) -> bool {
+        self.near(at)
+            .any(|&(_, theirs, other)| (theirs, other) < (to_go, id))
+    }
+
+    fn near(&self, (x, z): (f32, f32)) -> impl Iterator<Item = &((f32, f32), f32, u32)> {
+        self.spots
+            .iter()
+            .filter(move |((sx, sz), _, _)| (sx - x).hypot(sz - z) < self.reach)
+    }
+
+    /// The nearest of these spots, by `away`, that no other has taken; or if they all are, the
+    /// nearest of them all.
+    fn free_first(
+        &self,
+        spots: Vec<(f32, f32)>,
+        away: impl Fn(&(f32, f32)) -> f32,
+    ) -> Option<(f32, f32)> {
+        let nearest = |spots: &mut dyn Iterator<Item = (f32, f32)>| {
+            spots.min_by(|a, b| away(a).total_cmp(&away(b)))
+        };
+        nearest(&mut spots.iter().copied().filter(|&spot| !self.taken(spot)))
+            .or_else(|| nearest(&mut spots.into_iter()))
+    }
 }
 
 /// Somewhere else on the sand for a harvester to drive to next: one of the cells with
 /// substance around where it harvests, or once there are none far enough from it there, the
 /// nearest elsewhere.
-fn roam(terrain: &Terrain, unit: &Unit) -> Option<(f32, f32)> {
+fn roam(terrain: &Terrain, unit: &Unit, claims: &Claims) -> Option<(f32, f32)> {
     // Where it stands counts too, so one that could not get to where it went picks again.
     let mut random = (unit.id.wrapping_mul(0x9E37_79B1)
         ^ unit.stride.to_bits()
@@ -6895,17 +6964,19 @@ fn roam(terrain: &Terrain, unit: &Unit) -> Option<(f32, f32)> {
         .into_iter()
         .filter(|&(x, z)| (x - unit.field.0).hypot(z - unit.field.1) <= HARVEST_ROAM)
         .filter(usable)
+        .filter(|&at| !claims.taken(at))
         .collect();
     if !around.is_empty() {
         let pick = (next_random(&mut random) * around.len() as f32) as usize;
         return around.get(pick.min(around.len() - 1)).copied();
     }
     let (width, height) = terrain.extent();
-    terrain
+    let elsewhere: Vec<(f32, f32)> = terrain
         .fields_within((unit.x, unit.z), width.max(height))
         .into_iter()
         .filter(usable)
-        .min_by(|a, b| away(a).total_cmp(&away(b)))
+        .collect();
+    claims.free_first(elsewhere, away)
 }
 
 /// Whether it is a finished refinery of this owner's still standing.
@@ -6964,6 +7035,7 @@ pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32],
         }
         let here = (unit.x, unit.z);
         let on_sand = has_substance(terrain, here);
+        let claims = Claims::of_others(units, &unit);
         // Its pad, where it is, and which way is out from it, while the refinery still stands.
         let pad = unit.harvest.dock().map(|dock| {
             units
@@ -6983,18 +7055,32 @@ pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32],
                 } else if on_sand {
                     unit.field = here;
                     unit.harvest = Harvest::Collecting;
-                } else if let Some(sand) = sand_near(terrain, here)
+                } else if let Some(sand) = sand_near(terrain, here, &claims)
                     .filter(|&(x, z)| (x - here.0).hypot(z - here.1) <= BY_THE_SAND)
                 {
                     unit.field = sand;
                     unit.harvest = Harvest::Seeking;
                 }
             }
+            // Making for where another nearer is making for too, it leaves that to the other
+            // and picks a spot of its own.
+            (Harvest::Seeking, _)
+                if unit.is_moving()
+                    && claims.yields(
+                        unit.destination,
+                        (unit.destination.0 - here.0).hypot(unit.destination.1 - here.1),
+                        unit.id,
+                    ) =>
+            {
+                if let Some(sand) = sand_near(terrain, unit.destination, &claims) {
+                    head_for(unit, sand);
+                }
+            }
             (Harvest::Seeking, _) if !unit.is_moving() => {
                 if on_sand {
                     unit.field = here;
                     unit.harvest = Harvest::Collecting;
-                } else if let Some(sand) = sand_near(terrain, unit.field) {
+                } else if let Some(sand) = sand_near(terrain, unit.field, &claims) {
                     head_for(unit, sand);
                 } else {
                     unit.harvest = Harvest::Idle;
@@ -7037,7 +7123,7 @@ pub fn tend_harvesters(units: &mut [Unit], terrain: &Terrain, money: &mut [i32],
             (Harvest::Collecting, _) => {
                 if !on_sand {
                     unit.harvest = Harvest::Seeking;
-                } else if let Some(next) = roam(terrain, unit) {
+                } else if let Some(next) = roam(terrain, unit, &claims) {
                     // Off to another field: it harvests about that one from now on.
                     if (next.0 - unit.field.0).hypot(next.1 - unit.field.1) > HARVEST_ROAM {
                         unit.field = next;
@@ -11979,9 +12065,47 @@ mod tests {
             .with_ground(Ground::Sand, (110, 100), (1, 1))
             .with_spice((110, 100), (1, 1));
         assert_eq!(
-            sand_near(terrain, (cell(99.0), cell(100.0))),
+            sand_near(terrain, (cell(99.0), cell(100.0)), &Claims::none()),
             Some((cell(110.0), cell(100.0)))
         );
+    }
+
+    #[test]
+    fn harvesters_sent_to_one_spot_share_out_the_field_and_all_harvest() {
+        let cell = |n: f32| (n + 0.5) * CELL_SIDE;
+        let terrain = &Terrain::open_rock()
+            .with_ground(Ground::Sand, (100, 100), (8, 8))
+            .with_spice((100, 100), (8, 8));
+        let spot = (cell(104.0), cell(104.0));
+        let mut units: Vec<Unit> = (0..3)
+            .map(|n| harvester_off_to(cell(90.0), cell(100.0 + 4.0 * n as f32), spot, n + 1))
+            .collect();
+        let mut money = [0];
+        let dt = 0.05;
+        let mut spots = Vec::new();
+        for _ in 0..(20.0 / dt) as usize {
+            advance(&mut units, terrain, &[0], dt);
+            tend_harvesters(&mut units, terrain, &mut money, dt);
+            if spots.is_empty() && units.iter().all(|u| u.harvest == Harvest::Collecting) {
+                spots = units.iter().map(|u| (u.x, u.z)).collect();
+            }
+        }
+        assert_eq!(
+            spots.len(),
+            3,
+            "{:?}",
+            units.iter().map(|u| u.harvest).collect::<Vec<_>>()
+        );
+        for (n, a) in spots.iter().enumerate() {
+            for b in &spots[n + 1..] {
+                let apart = (a.0 - b.0).hypot(a.1 - b.1);
+                assert!(
+                    apart >= units[0].radius() * 2.0 - 1.0,
+                    "each its own spot: {apart}"
+                );
+            }
+        }
+        assert!(units.iter().all(|u| u.load > 0.0), "all harvest");
     }
 
     /// The player's carryall, circling at its height here.

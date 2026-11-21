@@ -483,20 +483,9 @@ impl Scene {
 
     /// Draws the scene flat, its middle at `at` and `scale` pixels to its unit, as it is this
     /// many seconds on. The original's cursors are such scenes: most lie on the ground and are
-    /// seen from straight above, what stands highest last; one that stands up, `STANDING`
-    /// times as tall as it is deep, is seen from its front.
-    pub(super) fn draw_flat(
-        &self,
-        vertices: &mut Vec<Vertex>,
-        (x, y): (f32, f32),
-        scale: f32,
-        time: f32,
-    ) {
-        self.draw_tilted(vertices, (x, y), scale, time, 0.0);
-    }
-
-    /// The same, lying scenes seen tipped this many radians towards the viewer about their
-    /// across, so that what turns over end to end, as the hourglass does, is seen to.
+    /// seen from above, what stands highest last, tipped `tilt` radians towards the viewer
+    /// about their across so that what turns over end to end, as the hourglass does, is seen
+    /// to; one that stands up, `STANDING` times as tall as it is deep, is seen from its front.
     pub(super) fn draw_tilted(
         &self,
         vertices: &mut Vec<Vertex>,

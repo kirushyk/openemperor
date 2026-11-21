@@ -2149,6 +2149,28 @@ impl mission::Battle for Game {
         self.scene_playing = playing;
     }
 
+    /// What the side had is the other's from now on, in its color.
+    fn hand_over(&mut self, from: i32, to: i32) {
+        let Some((owner, color)) = self.side_owner(to) else {
+            return;
+        };
+        let handed: Vec<u32> = self
+            .units
+            .iter()
+            .filter(|u| u.alive && self.is_of_side(u, from))
+            .map(|u| u.id)
+            .collect();
+        for unit in self.units.iter_mut().filter(|u| handed.contains(&u.id)) {
+            (unit.owner, unit.color) = (owner, color);
+            unit.selected = false;
+        }
+        self.script_side_of.retain(|(id, _)| !handed.contains(id));
+        if to != 0 {
+            self.script_side_of
+                .extend(handed.iter().map(|&id| (id, to)));
+        }
+    }
+
     fn uncover(&mut self, at: (f32, f32), squares: i32) {
         if let Some(fog) = &mut self.fog {
             fog.uncover(at, squares as f32 * battlefield::CELL_SIDE);
@@ -6805,6 +6827,35 @@ mod tests {
         let yard = game.units.iter().find(|u| Some(u.id) == yard).unwrap();
         assert!(yard.deployed && yard.kind.is_building());
         assert_eq!(game.buildings_left(1), 2);
+    }
+
+    #[test]
+    fn a_side_the_script_hands_over_to_the_player_is_the_players() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let side = game.new_side();
+        let (x, z) = game.home;
+        // As the Atreides' Heighliner's Mongooses: nobody's until found.
+        let brought: Vec<_> = (0..2)
+            .filter_map(|_| game.bring(side, 2, (x + 500.0, z + 500.0)))
+            .collect();
+        let owners = |game: &Game| {
+            brought
+                .iter()
+                .map(|&id| game.units.iter().find(|u| u.id == id).unwrap().owner)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(owners(&game), [units::NEUTRAL; 2]);
+        game.hand_over(side, 0);
+        assert_eq!(owners(&game), [0, 0]);
+        assert_eq!(game.left(side), 0);
+        assert_eq!(
+            game.left(0),
+            game.units
+                .iter()
+                .filter(|u| u.alive && u.owner == 0 && !u.kind.is_building())
+                .count() as i32
+        );
     }
 
     #[test]

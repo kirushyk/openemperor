@@ -186,6 +186,9 @@ const CIRCLE: u16 = 105;
 const STOP_CIRCLING: u16 = 106;
 const KEEP_VIEW: u16 = 112;
 const GLIDE_BACK: u16 = 113;
+/// Hands all a side's units over to another side, as the Atreides' Heighliner's Mongooses
+/// join the player once found.
+const HAND_OVER: u16 = 91;
 /// Uncovers the fog so many squares round a place, as the tutorial does where it shows a
 /// beacon and the enemy's base.
 const UNCOVER: u16 = 97;
@@ -350,6 +353,8 @@ pub trait Battle {
     fn remove(&mut self, _thing: Option<u32>) {}
     /// Uncovers the fog so many squares round a place for the player.
     fn uncover(&mut self, _at: (f32, f32), _squares: i32) {}
+    /// Hands all of side `from`'s units over to side `to`.
+    fn hand_over(&mut self, _from: i32, _to: i32) {}
     /// A scene begins, which the player watches, or ends.
     fn scene(&mut self, _playing: bool) {}
     fn camera(&mut self, _shot: Shot) {}
@@ -578,6 +583,10 @@ impl Script {
                     Piece::Function(STOP_CIRCLING) => film(battle, Some(Shot::StopCircling)),
                     Piece::Function(KEEP_VIEW) => film(battle, Some(Shot::Keep)),
                     Piece::Function(GLIDE_BACK) => film(battle, Some(Shot::GlideBack(number(0)))),
+                    Piece::Function(HAND_OVER) => {
+                        battle.hand_over(number(0), number(1));
+                        Value::Number(0)
+                    }
                     Piece::Function(UNCOVER) => {
                         battle.uncover(at(0).place(), number(1));
                         Value::Number(0)
@@ -859,6 +868,7 @@ mod tests {
         hunting: Vec<i32>,
         removed: Vec<Option<u32>>,
         uncovered: Vec<((f32, f32), i32)>,
+        handed: Vec<(i32, i32)>,
     }
 
     impl Battle for Written {
@@ -919,6 +929,9 @@ mod tests {
         }
         fn uncover(&mut self, at: (f32, f32), squares: i32) {
             self.uncovered.push((at, squares));
+        }
+        fn hand_over(&mut self, from: i32, to: i32) {
+            self.handed.push((from, to));
         }
         fn lose(&mut self) {
             self.lost = true;
@@ -1089,6 +1102,8 @@ mod tests {
             vec![F(FOLLOW), text("("), V(30), text(")")],
             // F97(v13,20), as the tutorial shows its beacon.
             vec![F(UNCOVER), text("("), V(13), text(",20)")],
+            // F91(v18, F14()), as the Atreides' Heighliner hands its Mongooses over.
+            vec![F(HAND_OVER), text("(2,0)")],
         ];
         let mut battle = Written::default();
         Script::new(&lines).run(&mut battle);
@@ -1108,6 +1123,7 @@ mod tests {
             ]
         );
         assert_eq!(battle.uncovered, [((13.0, 0.0), 20)]);
+        assert_eq!(battle.handed, [(2, 0)]);
     }
 
     #[test]

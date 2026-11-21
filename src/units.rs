@@ -215,6 +215,10 @@ const BACKING_SPEED: f32 = 45.25;
 const ON_PAD: f32 = 0.9051;
 /// How far out in front of a refinery a full harvester waits when all of its pads are taken.
 const REFINERY_WAITS: f32 = 294.2;
+/// The rules' name of the flare a script puts down to mark a place, and how high above its
+/// foot its model marks where its smoke comes out.
+const BEACON: &str = "BeaconFlare";
+const BEACON_SMOKE_UP: f32 = 27.89;
 /// Where a refinery's exhaust stacks stand, as (across, ahead) before it is turned, and how
 /// high they end.
 pub const REFINERY_STACKS: [(f32, f32); 2] = [(-1.9, -2.0), (1.9, -2.0)];
@@ -3827,6 +3831,12 @@ impl Unit {
     /// Which way is out along each of a refinery's pads, away from it.
     pub fn refinery_pad_ways(&self) -> [(f32, f32); 3] {
         std::array::from_fn(|pad| self.facing.turned(refinery_pad(self.house, pad).1))
+    }
+
+    /// Where a beacon flare gives off its smoke: its model's `#smoke` mark, atop its post.
+    pub fn flare_top(&self) -> Option<Point> {
+        let beacon = matches!(self.role, Role::Extra(extra) if extra.rules_name() == BEACON);
+        beacon.then_some((self.x, self.y + BEACON_SMOKE_UP, self.z))
     }
 
     /// Where the smoke comes out of a refinery's exhaust stacks.

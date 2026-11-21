@@ -37,7 +37,9 @@ we are missing is in [units.md](units.md). This list is about everything else.
   dead soldier is not shown. A wound comes from the last weapon that hurt the soldier; mines,
   the superweapon and the saw count as shots.
 - **Smoke from buildings** comes from our own pipe and stack positions, not from the models'
-  `#smokey…` nodes. This covers the deployed MCV, the refinery and the factory.
+  `#smokey…` nodes. This covers the deployed MCV, the refinery and the factory. A beacon
+  flare sends up red smoke from its model's `#smoke` mark; its colour, rate and rise are ours,
+  as the disc's particle settings are not read.
 - **Tracks** start their picture from the beginning again whenever a machine stops. The
   original probably keeps them where they were.
 - **Firing points** are taken from each model's rest pose, with its aim. The barrel's recoil

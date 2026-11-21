@@ -1785,6 +1785,7 @@ impl Combat {
         const DUST_PER_SECOND: f32 = 14.0;
         const EXHAUST_PER_SECOND: f32 = 9.0;
         const HARVEST_DUST_PER_SECOND: f32 = 45.0;
+        const FLARE_PER_SECOND: f32 = 18.0;
         const VAPOR: [f32; 3] = [0.94, 0.96, 1.0];
         for wisp in &mut self.wisps {
             wisp.position.0 += wisp.velocity.0 * dt;
@@ -1804,9 +1805,10 @@ impl Combat {
         let stacks_smoke =
             |u: &Unit| u.role == Role::Refinery && u.alive && !u.is_under_construction();
         let raises_dust = |u: &Unit| u.role.rolls() && u.is_moving() && !terrain.is_rock(u.x, u.z);
+        let flares = |u: &Unit| u.alive && u.flare_top().is_some();
         if !units
             .iter()
-            .any(|u| leaves_vapor(u) || raises_dust(u) || smokes(u) || stacks_smoke(u))
+            .any(|u| leaves_vapor(u) || raises_dust(u) || smokes(u) || stacks_smoke(u) || flares(u))
         {
             return;
         }
@@ -1861,6 +1863,23 @@ impl Combat {
                             fade: 0.25 + next() * 0.2,
                         });
                     }
+                }
+            }
+            // A beacon sends up a thin column of red flare smoke from the top of its post.
+            if let Some(top) = unit.flare_top().filter(|_| unit.alive) {
+                for _ in 0..(FLARE_PER_SECOND * dt + next()) as usize {
+                    wisps.push(Wisp {
+                        position: top,
+                        velocity: (
+                            (next() - 0.5) * 9.051,
+                            63.36 + next() * 27.15,
+                            (next() - 0.5) * 9.051,
+                        ),
+                        size: 6.788 + next() * 6.788,
+                        color: [0.9, 0.22 + next() * 0.18, 0.1],
+                        life: 1.0,
+                        fade: 0.35 + next() * 0.15,
+                    });
                 }
             }
             if raises_dust(unit) && unit.is_harvesting() {
@@ -6025,6 +6044,21 @@ mod tests {
         let tip = units[0].exhaust_tip();
         assert!(!combat.wisps.is_empty());
         assert!(combat.wisps.iter().all(|w| w.position.1 >= tip.1));
+    }
+
+    #[test]
+    fn a_beacon_sends_red_smoke_up_from_the_top_of_its_post() {
+        let (role, _) = Role::named("BeaconFlare").unwrap();
+        let mut units = [as_role(role, 0.0, 2715.0)];
+        units[0].constructing = 0.0;
+        let mut combat = Combat::default();
+        run(&mut combat, &mut units, 2.0);
+        let top = units[0].flare_top().unwrap();
+        assert!(!combat.wisps.is_empty());
+        assert!(combat.wisps.iter().all(|w| {
+            let [red, green, _] = w.color;
+            w.position.1 >= top.1 && red > green
+        }));
     }
 
     fn at_minotaurus_facing_east() -> Unit {

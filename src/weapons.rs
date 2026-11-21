@@ -920,6 +920,8 @@ pub struct Wisp {
     pub life: f32,
     /// How much life it loses each second.
     fade: f32,
+    /// How much its color changes each second.
+    shift: [f32; 3],
 }
 
 /// How long the pieces of a destroyed vehicle stay in the air and on the ground.
@@ -1706,6 +1708,7 @@ impl Combat {
                     color: dust,
                     life: 1.0,
                     fade: 0.9 + next() * 0.6,
+                    shift: [0.0; 3],
                 });
             }
         }
@@ -1768,6 +1771,7 @@ impl Combat {
                     color: dust,
                     life: 1.0,
                     fade: 1.0 + next() * 0.7,
+                    shift: [0.0; 3],
                 });
             }
         }
@@ -1785,13 +1789,21 @@ impl Combat {
         const DUST_PER_SECOND: f32 = 14.0;
         const EXHAUST_PER_SECOND: f32 = 9.0;
         const HARVEST_DUST_PER_SECOND: f32 = 45.0;
-        const FLARE_PER_SECOND: f32 = 18.0;
+        // The beacon's effect: 25 puffs a second rising 5 a frame, starting white and losing
+        // 17 of red and blue and 7 of green, out of 255, and 17 of how much shows, each frame.
+        const FLARE_PER_SECOND: f32 = 25.0;
+        const FLARE_RISE: f32 = 5.0 * 25.0;
+        const FLARE_FADE: f32 = 17.0 * 25.0 / 255.0;
+        const FLARE_SHIFT: [f32; 3] = [-FLARE_FADE, -7.0 * 25.0 / 255.0, -FLARE_FADE];
         const VAPOR: [f32; 3] = [0.94, 0.96, 1.0];
         for wisp in &mut self.wisps {
             wisp.position.0 += wisp.velocity.0 * dt;
             wisp.position.1 += wisp.velocity.1 * dt;
             wisp.position.2 += wisp.velocity.2 * dt;
             wisp.life -= wisp.fade * dt;
+            for (channel, shift) in wisp.color.iter_mut().zip(wisp.shift) {
+                *channel = (*channel + shift * dt).clamp(0.0, 1.0);
+            }
         }
         self.wisps.retain(|w| w.life > 0.0);
         let leaves_vapor =
@@ -1832,6 +1844,7 @@ impl Combat {
                             color: VAPOR,
                             life: 1.0,
                             fade: 1.1 + next() * 0.5,
+                            shift: [0.0; 3],
                         });
                     }
                 }
@@ -1849,6 +1862,7 @@ impl Combat {
                         color: [0.2 + next() * 0.14; 3],
                         life: 1.0,
                         fade: 0.3 + next() * 0.25,
+                        shift: [0.0; 3],
                     });
                 }
             }
@@ -1866,24 +1880,27 @@ impl Combat {
                             color: [0.22 + next() * 0.14; 3],
                             life: 1.0,
                             fade: 0.25 + next() * 0.2,
+                            shift: [0.0; 3],
                         });
                     }
                 }
             }
-            // A beacon sends up a thin column of red flare smoke from the top of its post.
+            // A beacon sends up flare puffs from the top of its post as its model's effect has
+            // them: white, turning green as they fade out within 15 updates.
             if let Some(top) = unit.flare_top().filter(|_| unit.alive) {
                 for _ in 0..(FLARE_PER_SECOND * dt + next()) as usize {
                     wisps.push(Wisp {
                         position: top,
                         velocity: (
                             (next() - 0.5) * 9.051,
-                            63.36 + next() * 27.15,
+                            FLARE_RISE * (0.8 + next() * 0.4),
                             (next() - 0.5) * 9.051,
                         ),
                         size: 6.788 + next() * 6.788,
-                        color: [0.9, 0.22 + next() * 0.18, 0.1],
+                        color: [1.0; 3],
                         life: 1.0,
-                        fade: 0.35 + next() * 0.15,
+                        fade: FLARE_FADE,
+                        shift: FLARE_SHIFT,
                     });
                 }
             }
@@ -1909,6 +1926,7 @@ impl Combat {
                         color: dust,
                         life: 1.0,
                         fade: 0.6 + next() * 0.5,
+                        shift: [0.0; 3],
                     });
                 }
             }
@@ -1932,6 +1950,7 @@ impl Combat {
                         color: dust,
                         life: 1.0,
                         fade: 1.0 + next() * 0.6,
+                        shift: [0.0; 3],
                     });
                 }
             }
@@ -2411,6 +2430,7 @@ impl Combat {
                 ],
                 life: 1.0,
                 fade: 0.7 + next() * 0.8,
+                shift: [0.0; 3],
             });
         }
         self.random = random;
@@ -6052,7 +6072,7 @@ mod tests {
     }
 
     #[test]
-    fn a_beacon_sends_red_smoke_up_from_the_top_of_its_post() {
+    fn a_beacons_puffs_rise_from_the_top_of_its_post_white_turning_green() {
         let (role, _) = Role::named("BeaconFlare").unwrap();
         let mut units = [as_role(role, 0.0, 2715.0)];
         units[0].constructing = 0.0;
@@ -6061,9 +6081,13 @@ mod tests {
         let top = units[0].flare_top().unwrap();
         assert!(!combat.wisps.is_empty());
         assert!(combat.wisps.iter().all(|w| {
-            let [red, green, _] = w.color;
-            w.position.1 >= top.1 && red > green
+            let [red, green, blue] = w.color;
+            w.position.1 >= top.1 && green >= red && red == blue
         }));
+        assert!(
+            combat.wisps.iter().any(|w| w.color[1] > w.color[0] + 0.2),
+            "the older ones green"
+        );
     }
 
     fn at_minotaurus_facing_east() -> Unit {

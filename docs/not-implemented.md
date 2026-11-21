@@ -38,8 +38,11 @@ we are missing is in [units.md](units.md). This list is about everything else.
   the superweapon and the saw count as shots.
 - **Smoke from buildings** comes from our own pipe and stack positions, not from the models'
   `#smokey…` nodes. This covers the deployed MCV, the refinery and the factory. A beacon
-  flare sends up red smoke from its model's `#smoke` mark; its colour, rate and rise are ours,
-  as the disc's particle settings are not read.
+  flare sends up puffs from its model's `#smoke` mark with the figures its model's effect data
+  (`FXDataHeader`, effect 269) gives, taken by hand: 25 a second, starting white and losing 17
+  red, 7 green and 17 blue out of 255 each frame while fading out in 15, so turning green. How
+  fast they rise (5 a frame) and how big they are is our reading or our choice; the effect
+  data is not read from the models yet, so the other effects (`GP_SFX_…Smoke`) are not shown.
 - **Tracks** start their picture from the beginning again whenever a machine stops. The
   original probably keeps them where they were.
 - **Firing points** are taken from each model's rest pose, with its aim. The barrel's recoil

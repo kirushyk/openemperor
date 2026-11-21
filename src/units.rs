@@ -1144,12 +1144,12 @@ pub enum Facing {
 
 impl Facing {
     /// The one a mission script or a map gives by its number, a quarter turn each from the
-    /// front out along -z: out along +x, +z, then -x.
+    /// front out along +z: out along +x, -z, then -x.
     pub fn numbered(number: i32) -> Self {
         [
-            Facing::RightTop,
-            Facing::RightBottom,
             Facing::LeftBottom,
+            Facing::RightBottom,
+            Facing::RightTop,
             Facing::LeftTop,
         ][number.rem_euclid(4) as usize]
     }
@@ -12577,6 +12577,17 @@ mod tests {
     }
 
     #[test]
+    fn facing_numbers_go_round_from_out_along_z_to_x_as_the_tutorial_and_first_mission_have_them() {
+        // The tutorial's yard and windtraps face 0 and its refinery 2; the first mission's yard
+        // faces 1, out of its walls' open side along +x.
+        let ways = (0..4).map(|number| {
+            let (x, z) = Facing::numbered(number).way_out();
+            (x.round() as i32, z.round() as i32)
+        });
+        assert_eq!(ways.collect::<Vec<_>>(), [(0, 1), (1, 0), (0, -1), (-1, 0)]);
+    }
+
+    #[test]
     fn a_scripted_building_stands_with_its_front_row_on_its_point_and_faces_its_way() {
         // The Atreides' first construction yard: at its base's point, facing the way out along
         // +x, inside walls that close it in from tile 1 to 7 along x and -3 to 3 along z.
@@ -12607,7 +12618,7 @@ mod tests {
             (x - 1.0).abs() < 1e-6 && z.abs() < 1e-6,
             "its pad towards the walls' far side"
         );
-        // The factory frigate of its map's compound, at square 87 by 7 facing out along +z, runs
+        // The factory frigate of its map's compound, at square 87 by 7 facing out along -z, runs
         // along the compound to square 104 and ahead from there.
         let at = grid_to_world(87.5, 7.5);
         let frigate = (Role::Prop(Prop::FactoryFrigate), Faction::Harkonnen);

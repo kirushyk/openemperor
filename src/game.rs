@@ -3057,7 +3057,8 @@ impl Game {
         }
     }
 
-    /// Moves along every building's upgrade. A refinery's new pad brings its harvester.
+    /// Moves along every building's upgrade. A refinery's new pad brings its harvester, under
+    /// a carryall of its owner's that stays, as a new refinery's does.
     fn work_on_upgrades(&mut self, dt: f32) {
         let terrain = battlefield::terrain(self.battle_map);
         for building in units::work_on_upgrades(&mut self.units, &mut self.money, dt) {
@@ -3068,7 +3069,7 @@ impl Game {
             if upgraded.role == Role::Refinery {
                 let ids = (self.next_unit_id, self.next_unit_id + 1);
                 self.next_unit_id += 2;
-                units::deliver_harvester(&mut self.units, terrain, (building, false), ids);
+                units::deliver_harvester(&mut self.units, terrain, (building, true), ids);
             }
         }
     }
@@ -15253,6 +15254,18 @@ mod tests {
             "each pad brings its harvester"
         );
         assert_eq!(game.player_power().1, used + 2 * 20, "and uses its power");
+        let carryalls = |game: &Game| {
+            game.units
+                .iter()
+                .filter(|u| u.alive && u.owner == 0 && u.role == Role::Carryall)
+                .count()
+        };
+        game.update(60.0);
+        assert_eq!(
+            carryalls(&game),
+            2,
+            "the carryalls that brought them are the player's and stay"
+        );
         assert!(!game.can_upgrade(Role::Refinery), "three pads are all");
     }
 

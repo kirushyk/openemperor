@@ -175,18 +175,36 @@ const HARVEST_ROAM: f32 = 158.4;
 const HARVEST_LEAST_STEP: f32 = 67.88;
 /// How near the sand a harvester has to stop to go back to harvesting by itself.
 const BY_THE_SAND: f32 = 2.0 * CELL_SIDE;
-/// How a refinery's three pads fan out from a point just inside the front of its hall, given as
-/// (across, ahead) of its middle with its front ahead, before it is turned the way it faces:
-/// each is turned this far from straight ahead, the side ones at 45 degrees to the middle one,
-/// and has its middle this far out from that point.
-pub const REFINERY_PAD_HUB: (f32, f32) = (0.0, -1.6);
-pub const REFINERY_PAD_TURNS: [f32; 3] = [-FRAC_PI_4, 0.0, FRAC_PI_4];
-/// The order a refinery comes by its pads: the middle one it is built with, then the others
-/// as it is upgraded.
-const REFINERY_PAD_ORDER: [usize; 3] = [1, 0, 2];
-pub const REFINERY_PAD_REACH: f32 = 2.8;
-/// How far each way a refinery's pad reaches: across it, and along it from the building out.
-pub const REFINERY_PAD_HALF: (f32, f32) = (0.78, 1.25);
+/// Where the middles of a refinery's three pads are, left, middle and right, as (across,
+/// ahead) of its middle with its front ahead, before it is turned the way it faces: the
+/// middles of each house's model's pads, the side ones slid out. The Ordos' stand further
+/// out.
+const REFINERY_PADS: [(Faction, [(f32, f32); 3]); 3] = [
+    (
+        Faction::Atreides,
+        [(-121.65, 5.86), (-0.91, 45.43), (121.24, 7.26)],
+    ),
+    (
+        Faction::Harkonnen,
+        [(-121.58, 5.81), (-0.91, 45.43), (119.7, 4.88)],
+    ),
+    (
+        Faction::Ordos,
+        [(-121.68, 15.25), (-0.93, 54.31), (122.47, 16.12)],
+    ),
+];
+/// How far each of a refinery's pads is turned from straight ahead: the side ones 54 degrees
+/// out, as the models have them.
+pub const REFINERY_PAD_TURNS: [f32; 3] = [-0.942_477_8, 0.0, 0.942_477_8];
+/// The order a refinery comes by its pads: the middle one it is built with, then those its
+/// model slides out as its first and its second upgrade, the right one and the left one.
+const REFINERY_PAD_ORDER: [usize; 3] = [1, 2, 0];
+/// How far each way a refinery's side pad reaches on the ground: across it, and along it
+/// from the building out.
+pub const REFINERY_PAD_HALF: (f32, f32) = (13.71, 47.6);
+/// Seconds a refinery's pad takes to slide out once its upgrade is done: the ten frames of
+/// its model's `Refinery Pad` sequences.
+const REFINERY_PAD_SLIDES: f32 = 0.4;
 /// How far in front of its pad a harvester stops to come round before it backs on, how fast it
 /// backs on, and how close to its pad it has to come.
 const PAD_APPROACH: f32 = 135.8;
@@ -2445,7 +2463,7 @@ impl Role {
             | Role::GuPalace
             | Role::ImBarracks
             | Role::FrCamp => [2.2, 0.86, 1.824],
-            Role::Refinery => [6.8307, 4.0, 5.2],
+            Role::Refinery => [6.8307, 4.0, 5.7356],
             Role::Outpost => [2.3, 1.95, 2.324],
             Role::Palace(Faction::Atreides) => [2.4, 1.5, 2.0],
             Role::Palace(Faction::Harkonnen) => [3.92, 4.7, 3.934],
@@ -2513,7 +2531,7 @@ impl Role {
 
     /// Whether this square of its plot is where what it makes comes out: the middle of the
     /// side its door is on.
-    pub fn is_exit(self, plot: Plot, facing: Facing, (u, v): (i32, i32)) -> bool {
+    pub fn is_exit(self, house: Faction, plot: Plot, facing: Facing, (u, v): (i32, i32)) -> bool {
         let middle_u = plot.u + plot.cols / 2;
         let middle_v = plot.v + plot.rows / 2;
         let along_u = (middle_u - 1..=middle_u).contains(&u);
@@ -2525,18 +2543,18 @@ impl Role {
                 Facing::RightBottom => u == plot.u + plot.cols - 1 && along_v,
                 Facing::LeftTop => u == plot.u && along_v,
             };
-        exit || self.is_under_pad(plot, facing, (u, v))
+        exit || self.is_under_pad(house, plot, facing, (u, v))
     }
 
     /// Whether the middle of this grid cell of its plot lies on one of a refinery's pads,
     /// where harvesters come in.
-    fn is_under_pad(self, plot: Plot, facing: Facing, (u, v): (i32, i32)) -> bool {
+    fn is_under_pad(self, house: Faction, plot: Plot, facing: Facing, (u, v): (i32, i32)) -> bool {
         let (x, z) = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
         let (middle_x, middle_z) = plot.center();
         let (half_across, half_along) = (35.3, 56.57);
         self == Role::Refinery
             && (0..REFINERY_PAD_TURNS.len()).any(|pad| {
-                let (middle, way) = laid_refinery_pad(pad);
+                let (middle, way) = refinery_pad(house, pad);
                 let (pad_x, pad_z) = facing.turned(middle);
                 let (out_x, out_z) = facing.turned(way);
                 let (dx, dz) = (x - middle_x - pad_x, z - middle_z - pad_z);
@@ -2880,7 +2898,8 @@ pub struct Unit {
     /// Whether a soldier is cheering his side's win.
     pub cheering: bool,
     /// How far a pop-up turret has come up: 0 sunk in the ground, 1 ready to fire. For a
-    /// Kobra, how far its cannon is raised: 0 resting on its tracks, 1 high on its leg.
+    /// Kobra, how far its cannon is raised: 0 resting on its tracks, 1 high on its leg. For a
+    /// refinery, how far the pad its last upgrade brought has slid out.
     pub popped: f32,
     /// How far a deployed Kobra has swung its raised cannon round from its nose, in radians.
     pub gun_turn: f32,
@@ -2969,26 +2988,15 @@ pub enum Lift {
     Leave,
 }
 
-/// A refinery's pad as it is made, before the refinery is turned the way it faces: its middle
-/// and the way out along it, each as (across, ahead).
-pub fn refinery_pad(pad: usize) -> ((f32, f32), (f32, f32)) {
-    let (sin, cos) = REFINERY_PAD_TURNS[pad].sin_cos();
-    let (across, ahead) = REFINERY_PAD_HUB;
-    let reach = REFINERY_PAD_REACH;
-    ((across + sin * reach, ahead + cos * reach), (sin, cos))
-}
-
-/// A refinery's pad as it stands, its model stretched to the original's size, before the
-/// refinery is turned the way it faces. Every house's refinery is the same.
-fn laid_refinery_pad(pad: usize) -> ((f32, f32), (f32, f32)) {
-    let [across, _, ahead] = Role::Refinery.stretch(Faction::Atreides);
-    let ((middle_across, middle_ahead), (way_across, way_ahead)) = refinery_pad(pad);
-    let way = (way_across * across, way_ahead * ahead);
-    let length = way.0.hypot(way.1);
-    (
-        (middle_across * across, middle_ahead * ahead),
-        (way.0 / length, way.1 / length),
-    )
+/// A house's refinery's pad, before the refinery is turned the way it faces: its middle and
+/// the way out along it, each as (across, ahead).
+pub fn refinery_pad(house: Faction, pad: usize) -> ((f32, f32), (f32, f32)) {
+    let pads = REFINERY_PADS
+        .iter()
+        .find(|&&(of, _)| of == house)
+        .unwrap_or(&REFINERY_PADS[0])
+        .1;
+    (pads[pad], REFINERY_PAD_TURNS[pad].sin_cos())
 }
 
 /// What a harvester is getting on with by itself.
@@ -3798,12 +3806,15 @@ impl Unit {
 
     /// Where the middle of each of a refinery's pads is.
     pub fn refinery_pads(&self) -> [(f32, f32); 3] {
-        std::array::from_fn(|pad| self.on_plot(refinery_pad(pad).0))
+        std::array::from_fn(|pad| {
+            let (x, z) = self.facing.turned(refinery_pad(self.house, pad).0);
+            (self.x + x, self.z + z)
+        })
     }
 
     /// Which way is out along each of a refinery's pads, away from it.
     pub fn refinery_pad_ways(&self) -> [(f32, f32); 3] {
-        std::array::from_fn(|pad| self.facing.turned(laid_refinery_pad(pad).1))
+        std::array::from_fn(|pad| self.facing.turned(refinery_pad(self.house, pad).1))
     }
 
     /// Where the smoke comes out of a refinery's exhaust stacks.
@@ -4485,6 +4496,9 @@ pub fn work_on_upgrades(units: &mut [Unit], money: &mut [i32], dt: f32) -> Vec<u
         if left <= 0.0 {
             unit.upgrading = None;
             unit.upgrades += 1;
+            if unit.role == Role::Refinery {
+                unit.popped = 0.0;
+            }
             done.push(i);
         }
     }
@@ -7556,6 +7570,9 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
         unit.constructing = (unit.constructing - dt).max(0.0);
         go_on_deploying(unit, dt);
         set_up_or_pack(unit, dt);
+        if unit.role == Role::Refinery {
+            unit.popped = (unit.popped + dt / REFINERY_PAD_SLIDES).min(1.0);
+        }
     }
     tend_pads(units, terrain, dt);
     alert_landers(units, teams);
@@ -11511,7 +11528,7 @@ mod tests {
             let plot = Role::Refinery.plot_facing(Faction::Atreides, at, facing);
             let pads: Vec<_> = plot
                 .cells()
-                .filter(|&cell| Role::Refinery.is_exit(plot, facing, cell))
+                .filter(|&cell| Role::Refinery.is_exit(Faction::Atreides, plot, facing, cell))
                 .collect();
             assert!(pads.len() >= 3 * 4, "{facing:?}: {pads:?}");
             let (out_x, out_z) = facing.way_out();
@@ -11537,7 +11554,7 @@ mod tests {
         let exits = |facing: Facing| -> Vec<(i32, i32)> {
             let plot = Role::Factory.plot_facing(Faction::Atreides, at, facing);
             plot.cells()
-                .filter(|&cell| Role::Factory.is_exit(plot, facing, cell))
+                .filter(|&cell| Role::Factory.is_exit(Faction::Atreides, plot, facing, cell))
                 .collect()
         };
         let plot = |facing| Role::Factory.plot_facing(Faction::Atreides, at, facing);

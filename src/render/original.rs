@@ -18,6 +18,7 @@ use crate::units::{
 use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
 pub(super) use crate::xbf::{point, times};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::path::Path;
@@ -1068,6 +1069,9 @@ struct Part {
     /// holds the turret of the gun he fires once dug in (`::1`) and stays put but for its recoil,
     /// and shows only once he is, as a mortar's `Mortorgun01`.
     set_up: bool,
+    /// For one of the pads a refinery's model slides out as it is upgraded, which: 1 for
+    /// `SmallPad01`, played by the sequence `Refinery Pad 1`, out with the first upgrade.
+    pad: Option<u8>,
 }
 
 /// A face drawn over what lies behind it: a light's glow, adding its picture, or a
@@ -1926,6 +1930,10 @@ fn gather(
                     rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
                 rest[..digits].parse().ok()
             }),
+        pad: object
+            .name
+            .split_once(SLIDING_PAD)
+            .and_then(|(_, number)| number.parse().ok()),
     });
     let this = shape.parts.len() - 1;
     for child in &object.children {
@@ -2290,6 +2298,12 @@ fn looped(ranges: &[(usize, usize)], played: usize) -> usize {
 /// What the name of a part holds that shows only when something has happened to the unit.
 const CONDITION_MARK: char = '{';
 
+/// What the name of a part of a refinery's model holds before the number of its pad, for the
+/// pads it slides out as it is upgraded; and what the sequence that slides one out is called,
+/// before the same number.
+const SLIDING_PAD: &str = "SmallPad";
+const PAD_SLIDES_OUT: &str = "Refinery Pad ";
+
 /// What a part of a model that marks one of its weapon ends starts with, before the number of
 /// the end.
 const MUZZLE_MARK: &str = ">>";
@@ -2341,6 +2355,16 @@ fn places(shape: &Shape, unit: &Unit) -> (Place, Place) {
 /// Where each part of the model is within it at a frame, the barrel lifted by `pitch` and a
 /// gun that swings on its own swung round by `swing`.
 fn pose(shape: &Shape, pitch: f32, swing: f32, frame: usize) -> Vec<[[f32; 4]; 4]> {
+    pose_by(shape, pitch, swing, |_| frame)
+}
+
+/// Where each part of the model is, each at its own frame of the animation.
+fn pose_by(
+    shape: &Shape,
+    pitch: f32,
+    swing: f32,
+    frame: impl Fn(&Part) -> usize,
+) -> Vec<[[f32; 4]; 4]> {
     let (sin, cos) = pitch.sin_cos();
     // Turned about its own across, so that its front, along -z, comes up.
     let lifted = [
@@ -2360,7 +2384,7 @@ fn pose(shape: &Shape, pitch: f32, swing: f32, frame: usize) -> Vec<[[f32; 4]; 4
     let mut worlds: Vec<[[f32; 4]; 4]> = Vec::with_capacity(shape.parts.len());
     for part in &shape.parts {
         let above = part.parent.map_or(&IDENTITY, |parent| &worlds[parent]);
-        let at = part.at(frame);
+        let at = part.at(frame(part));
         let at = if part.lift { times(&lifted, &at) } else { at };
         let mut world = times(&at, above);
         // Swung about the model's up, staying where it is, and what sits in it with it.
@@ -2535,11 +2559,34 @@ pub(super) fn draw(canvas: &mut Canvas, unit: &Unit, team: [f32; 3], time: f32) 
         head,
         frame,
         slid,
-        worlds: pose(shape, unit.tube_pitch, unit.gun_turn, frame),
+        worlds: pose_by(shape, unit.tube_pitch, unit.gun_turn, |part| {
+            part.pad.map_or(frame, |pad| pad_frame(shape, unit, pad))
+        }),
         set_up: shows_set_up(&unit),
     };
     draw_posed(canvas, shape, &posed, team);
     true
+}
+
+/// The frame a refinery's pad is at that its model slides out as it is upgraded: tucked in at
+/// the start of its sequence until its upgrade is done, then as far along as it has slid out,
+/// and at the end once out.
+fn pad_frame(shape: &Shape, unit: &Unit, pad: u8) -> usize {
+    let name = format!("{PAD_SLIDES_OUT}{pad}");
+    let Some(&(first, last)) = shape
+        .sequences
+        .iter()
+        .find(|sequence| sequence.name == name)
+        .and_then(|sequence| sequence.ranges.first())
+    else {
+        return 0;
+    };
+    let out = match unit.upgrades.cmp(&pad) {
+        Ordering::Less => 0.0,
+        Ordering::Equal => unit.popped,
+        Ordering::Greater => 1.0,
+    };
+    first + ((last - first) as f32 * out).round() as usize
 }
 
 /// Whether what a unit's model has set up shows: only a soldier sets his gun down, and only
@@ -3557,6 +3604,68 @@ mod tests {
                 .iter()
                 .filter(|&&y| (y - crate::units::pad_top()).abs() < 1.0);
             assert!(deck.count() >= 4, "{name}: {heights:?}");
+        }
+    }
+
+    #[test]
+    fn a_refinerys_side_pads_slide_out_onto_where_its_harvesters_dock_only_once_upgraded() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        use crate::units::Facing;
+        for house in [Faction::Atreides, Faction::Harkonnen, Faction::Ordos] {
+            for facing in [Facing::LeftBottom, Facing::RightTop, Facing::RightBottom] {
+                let mut refinery = Unit::for_test(1000.0, 1000.0, UnitKind::Building);
+                refinery.role = Role::Refinery;
+                refinery.house = house;
+                refinery.facing = facing;
+                let shape = shape_of(&refinery).unwrap();
+                // The middle of each sliding pad on the ground, by its number.
+                let pads = |refinery: &Unit| {
+                    let (body, _) = places(shape, refinery);
+                    let worlds = pose_by(shape, 0.0, 0.0, |part| {
+                        part.pad.map_or(0, |pad| pad_frame(shape, refinery, pad))
+                    });
+                    let mut middles = [(0.0, 0.0); 2];
+                    for (part, world) in shape.parts.iter().zip(&worlds) {
+                        let Some(pad) = part.pad else { continue };
+                        let (mut low, mut high) = ([f32::MAX; 2], [f32::MIN; 2]);
+                        for &p in part.faces.iter().flat_map(|f| &f.points) {
+                            let [x, _, z] = body.point(to_place(point(world, p)));
+                            low = [low[0].min(x), low[1].min(z)];
+                            high = [high[0].max(x), high[1].max(z)];
+                        }
+                        middles[usize::from(pad) - 1] =
+                            ((low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0);
+                    }
+                    middles
+                };
+                let docks = refinery.refinery_pads();
+                let near = |(x, z): (f32, f32), (dx, dz): (f32, f32)| (x - dx).hypot(z - dz) < 3.0;
+                let tucked = pads(&refinery);
+                assert!(
+                    !near(tucked[0], docks[2]) && !near(tucked[1], docks[0]),
+                    "{house:?} {facing:?}: tucked in before any upgrade"
+                );
+                refinery.upgrades = 1;
+                refinery.popped = 0.5;
+                let sliding = pads(&refinery);
+                assert!(!near(sliding[0], docks[2]) && sliding[0] != tucked[0]);
+                refinery.popped = 1.0;
+                let first = pads(&refinery);
+                assert!(
+                    near(first[0], docks[2]) && first[1] == tucked[1],
+                    "{house:?} {facing:?}: the first out on its right, {first:?} {docks:?}"
+                );
+                refinery.upgrades = 2;
+                let both = pads(&refinery);
+                assert!(
+                    near(both[0], docks[2]) && near(both[1], docks[0]),
+                    "{house:?} {facing:?}: and the second on its left"
+                );
+            }
         }
     }
 

@@ -3695,7 +3695,7 @@ impl Game {
                     && self.sight_at(x, z) != Sight::Unexplored;
                 let square = if !can {
                     PlaceSquare::Blocked
-                } else if role.is_exit(plot, self.placing_facing, (u, v)) {
+                } else if role.is_exit(self.faction_of(0), plot, self.placing_facing, (u, v)) {
                     PlaceSquare::Exit
                 } else {
                     PlaceSquare::Free
@@ -15033,8 +15033,11 @@ mod tests {
             click_hud(&mut game, Action::BuildCell(cell));
             game.update(Role::Refinery.upgrade_seconds() + 0.1);
             assert_eq!(game.units[at].working_pads().count(), pads);
+            assert!(game.units[at].popped < 1.0, "its new pad sliding out");
+            game.update(0.5);
+            assert_eq!(game.units[at].popped, 1.0, "and out");
         }
-        assert_eq!(game.units[at].working_pads().collect::<Vec<_>>(), [1, 0, 2]);
+        assert_eq!(game.units[at].working_pads().collect::<Vec<_>>(), [1, 2, 0]);
         assert_eq!(game.player_money(), money - 2 * 1200);
         assert_eq!(
             harvesters(&game),

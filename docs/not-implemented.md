@@ -138,8 +138,10 @@ done:
   Ours upgrades the first one standing that is not, and each building counts for itself: one
   lost takes its upgrade with it.
 - **`UpgradeTechLevel` and `TechLevel`** hold nothing back.
-- **The pads' look**: a refinery is drawn with all three pads from the start; only the
-  upgraded ones take harvesters.
+- **The pads' look**: a refinery's model slides each side pad out once its upgrade is done,
+  the right one first, by its `Refinery Pad` sequences, and harvesters dock on the pads where
+  the model has them. The rules' `DeployTile` and `DeployAngle` (45 degrees) are not used:
+  the models' side pads stand 54 degrees out.
 - **The mini-houses' upgraded units** (`IXProjector`, `TLLeech`, `IMADVSardaukar`,
   `FRADVFremen`, `GUNIABTank`): their buildings can be upgraded, but we have none of these.
 - **The power gauge** round the minimap shows the share of power to spare and the number;

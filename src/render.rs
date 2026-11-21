@@ -3759,11 +3759,16 @@ fn draw_refinery(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
         }
     }
     // The pads, striped round their edges, each with a chute into the hall at its back: each
-    // turned along its own way out.
+    // turned along its own way out, where the original's are, back in the model as made.
+    let [stretch_x, _, stretch_z] = unit.stretch();
     let (half_x, half_z) = units::REFINERY_PAD_HALF;
-    let (hub_x, hub_z) = units::REFINERY_PAD_HUB;
+    let (half_x, half_z) = (half_x / stretch_x, half_z / stretch_z);
     for pad in 0..units::REFINERY_PAD_TURNS.len() {
-        let ((px, pz), (out_x, out_z)) = units::refinery_pad(pad);
+        let ((px, pz), (out_x, out_z)) = units::refinery_pad(unit.house, pad);
+        let (px, pz) = (px / stretch_x, pz / stretch_z);
+        let (out_x, out_z) = (out_x / stretch_x, out_z / stretch_z);
+        let length = out_x.hypot(out_z);
+        let (out_x, out_z) = (out_x / length, out_z / length);
         let heading = out_z.atan2(out_x);
         turned_part((px, pz, half_z, half_x, heading), (y, y + 0.05), STRIPE);
         turned_part(
@@ -3771,12 +3776,38 @@ fn draw_refinery(canvas: &mut Canvas, unit: &Unit, color: [f32; 3]) {
             (y + 0.05, y + 0.06),
             DECK,
         );
-        let chute = (hub_x + out_x, hub_z + out_z);
+        let chute = (px - out_x * (half_z + 0.5), pz - out_z * (half_z + 0.5));
         let chute_part = |half_width| (chute.0, chute.1, 0.5, half_width, heading);
         turned_part(chute_part(0.32), (y, y + 0.7), BUILDING_DOOR);
         turned_part(chute_part(0.36), (y + 0.7, y + 0.78), color);
     }
+    // The lamps along each side of its middle pad.
+    for (lx, lz) in REFINERY_LAMPS {
+        let lamp = (
+            lx / stretch_x,
+            lz / stretch_z,
+            LAMP_HALF / stretch_x,
+            LAMP_HALF / stretch_z,
+        );
+        turned_part(
+            (lamp.0, lamp.1, lamp.2, lamp.3, 0.0),
+            (y, y + 0.02),
+            RED_LAMP,
+        );
+    }
 }
+
+/// Where the lamps along a refinery's middle pad are, as (across, ahead) of its middle, as the
+/// Atreides' model has them, and how far each way one reaches.
+const REFINERY_LAMPS: [(f32, f32); 6] = [
+    (47.3, 58.1),
+    (47.7, 83.3),
+    (49.3, 112.6),
+    (-48.4, 56.3),
+    (-48.9, 81.6),
+    (-49.5, 111.9),
+];
+const LAMP_HALF: f32 = 4.0;
 
 fn draw_unit_model(canvas: &mut Canvas, game: &Game, unit: &Unit) {
     let [r, g, b, _] = team_color(unit.color);

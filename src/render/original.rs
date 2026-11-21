@@ -764,7 +764,7 @@ const UI_DATA: &str = "\\data\\UI0001.RFD";
 const SIDEBAR: &str = "SIDEBAR\\SIDEBAR1.XBF";
 /// The original's cursors in the interface's data, each for the look it gives the cursor:
 /// models of their own, most lying on the ground under it.
-const CURSORS: [(CursorLook, &str); 13] = [
+const CURSORS: [(CursorLook, &str); 14] = [
     (CursorLook::Arrow, "CU_Pointer_H0"),
     (CursorLook::Attack, "CU_attack_H0"),
     (CursorLook::Heal, "CU_Repair_H0"),
@@ -778,6 +778,7 @@ const CURSORS: [(CursorLook, &str); 13] = [
     (CursorLook::Board, "CU_Enter_H0"),
     (CursorLook::Sell, "CU_Sell_H0"),
     (CursorLook::Repair, "CU_Repair_H0"),
+    (CursorLook::Wait, "CU_Wait_H0"),
 ];
 const CURSOR_FOLDER: &str = "CURSORS\\";
 /// The parts of the sidebar's model that are its frame: its back, then its glowing rims.
@@ -3787,6 +3788,42 @@ mod tests {
             |at: fn(&Vertex) -> f32| vertices.iter().map(at).sum::<f32>() / vertices.len() as f32;
         let (x, y) = (mean(|v| v.x), mean(|v| v.y));
         assert!(x > 0.0 && y > 0.0, "it lies at ({x}, {y}) from its tip");
+    }
+
+    #[test]
+    fn the_discs_hourglass_turns_over_where_the_pointer_is() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        let drawn = |time: f32| {
+            let mut vertices = Vec::new();
+            assert!(draw_cursor(
+                &mut vertices,
+                CursorLook::Wait,
+                (500.0, 400.0),
+                3.0,
+                time
+            ));
+            vertices
+        };
+        // It stands one way up for its first 40 frames, and the other from then on to 90.
+        let (first, later) = (drawn(0.0), drawn(2.0));
+        assert!(!first.is_empty());
+        for v in &first {
+            assert!(
+                (v.x - 500.0).hypot(v.y - 400.0) < 3.0 * 20.0,
+                "about the pointer"
+            );
+        }
+        let xs = |vertices: &[Vertex]| vertices.iter().map(|v| v.x).collect::<Vec<_>>();
+        let ys = |vertices: &[Vertex]| vertices.iter().map(|v| v.y).collect::<Vec<_>>();
+        assert_ne!(
+            (xs(&first), ys(&first)),
+            (xs(&later), ys(&later)),
+            "it turns over"
+        );
     }
 
     #[test]

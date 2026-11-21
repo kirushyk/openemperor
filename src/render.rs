@@ -1156,7 +1156,7 @@ fn canvas_of(game: &Game) -> Canvas {
         CursorLook::Sell | CursorLook::Repair => {
             canvas.sell_cursor(game.mouse, s, game.screen_elapsed())
         }
-        CursorLook::Arrow => canvas.cursor(game.mouse, s),
+        CursorLook::Arrow | CursorLook::Wait => canvas.cursor(game.mouse, s),
     }
     let lies_on_map = matches!(
         look,

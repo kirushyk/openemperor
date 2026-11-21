@@ -451,6 +451,8 @@ pub enum CursorLook {
     Sell,
     /// A click would start or stop mending the player's building here.
     Repair,
+    /// A scene of the mission's script is playing, and the player waits: an hourglass.
+    Wait,
 }
 
 /// What the next click on the map does instead of what it usually would.
@@ -3845,6 +3847,9 @@ impl Game {
 
     /// What the cursor should look like: what a click here would make the selected units do.
     pub fn cursor_look(&self) -> CursorLook {
+        if self.scene_playing {
+            return CursorLook::Wait;
+        }
         let selected = self.selected_units();
         let look_at = |u: &Unit| {
             let armed = |s: &&Unit| {
@@ -7327,6 +7332,17 @@ mod tests {
         game.update(Role::AtTrike.build_seconds() / 2.0);
         let progress = game.making_progress(Role::AtTrike).unwrap();
         assert!((progress - 0.5).abs() < 0.01, "{progress}");
+    }
+
+    #[test]
+    fn the_cursor_is_an_hourglass_while_a_scripts_scene_plays() {
+        use mission::Battle;
+        let mut game = in_battle();
+        assert_eq!(game.cursor_look(), CursorLook::Arrow);
+        game.scene(true);
+        assert_eq!(game.cursor_look(), CursorLook::Wait);
+        game.scene(false);
+        assert_eq!(game.cursor_look(), CursorLook::Arrow);
     }
 
     #[test]

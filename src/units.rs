@@ -4638,12 +4638,22 @@ pub fn put(
             .turned((across * CELL_SIDE, ahead * CELL_SIDE));
         (at.0 + dx, at.1 + dz)
     } else if stands {
-        // Its squares as it faces, from the one the point is in across and down.
+        // Its squares as it faces, from the one the point is in across and down; a building
+        // that would reach past the map's edge stands in from it, as the tutorial's refinery.
         let plot = role.plot_facing(house, (0.0, 0.0), facing.unwrap_or_default());
         let (u, v) = world_to_grid(at.0, at.1);
+        let (u, v) = (u.floor(), v.floor());
+        let (cells_u, cells_v) = terrain.cells();
+        let within = |at: f32, size: i32, cells: usize| {
+            if matches!(role, Role::Prop(_)) {
+                at
+            } else {
+                at.min(cells as f32 - size as f32).max(0.0)
+            }
+        };
         grid_to_world(
-            u.floor() + plot.cols as f32 / 2.0,
-            v.floor() + plot.rows as f32 / 2.0,
+            within(u, plot.cols, cells_u) + plot.cols as f32 / 2.0,
+            within(v, plot.rows, cells_v) + plot.rows as f32 / 2.0,
         )
     } else {
         let taken = spots_taken(units, kind.flies());
@@ -12574,6 +12584,21 @@ mod tests {
             Role::named("INMaleCiv").unwrap().0,
             Role::Civilian(Gender::Male)
         );
+    }
+
+    #[test]
+    fn a_scripted_building_that_would_reach_past_the_maps_edge_stands_in_from_it() {
+        // The tutorial's refinery, 11 squares across from square 55 on a map 64 squares wide,
+        // stands on the last 11 instead.
+        let terrain = Terrain::blank(64, 112);
+        let mut units = Vec::new();
+        let side = (0, TeamColor::Blue);
+        let refinery = (Role::Refinery, Faction::Atreides);
+        let facing = (false, Some(Facing::numbered(2)), Anchor::Corner);
+        let at = grid_to_world(55.4, 100.5);
+        put(&mut units, &terrain, at, refinery, side, facing, 0).unwrap();
+        let plot = units[0].plot().unwrap();
+        assert_eq!((plot.u, plot.v, plot.cols, plot.rows), (53, 100, 11, 7));
     }
 
     #[test]

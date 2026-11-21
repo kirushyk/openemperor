@@ -202,6 +202,9 @@ const REFINERY_PAD_ORDER: [usize; 3] = [1, 2, 0];
 /// How far each way a refinery's side pad reaches on the ground: across it, and along it
 /// from the building out.
 pub const REFINERY_PAD_HALF: (f32, f32) = (13.71, 47.6);
+/// Seconds one that goes invisible only standing still takes to, once it stops: the rules'
+/// `StealthDelay` of 30 updates.
+const STEALTH_DELAY: f32 = 1.2;
 /// Seconds a refinery's pad takes to slide out once its upgrade is done: the ten frames of
 /// its model's `Refinery Pad` sequences.
 const REFINERY_PAD_SLIDES: f32 = 0.4;
@@ -2091,6 +2094,12 @@ impl Role {
         }
     }
 
+    /// Whether it goes invisible only while it stands still, as the rules' scouts and the
+    /// Atreides APC are `StealthedWhenStill`.
+    fn stealthed_when_still(self) -> bool {
+        matches!(self, Role::Scout | Role::AtApc)
+    }
+
     /// Whether it can dig in where it stands.
     pub fn can_deploy(self) -> bool {
         matches!(
@@ -2895,6 +2904,8 @@ pub struct Unit {
     pad: Option<Pad>,
     /// Seconds an invisible unit stays seen after it last fired.
     pub revealed: f32,
+    /// Seconds one that goes invisible only standing still stays seen after it last moved.
+    seen_moving: f32,
     /// Whether a soldier is cheering his side's win.
     pub cheering: bool,
     /// How far a pop-up turret has come up: 0 sunk in the ground, 1 ready to fire. For a
@@ -3477,9 +3488,10 @@ impl Unit {
         ) || self.levels().iter().any(|level| level.stealthed)
     }
 
-    /// Whether it is invisible now: it shows for a while each time it opens fire.
+    /// Whether it is invisible now: it shows for a while each time it opens fire, and one the
+    /// rules make `StealthedWhenStill` while it moves and for a while after.
     pub fn is_cloaked(&self) -> bool {
-        self.alive && self.can_cloak() && self.revealed <= 0.0
+        self.alive && self.can_cloak() && self.revealed <= 0.0 && self.seen_moving <= 0.0
     }
 
     /// Whether this owner cannot see it at all: an invisible unit is hidden from its enemies,
@@ -3957,6 +3969,7 @@ impl Unit {
             on_mission: false,
             pace: None,
             revealed: 0.0,
+            seen_moving: 0.0,
             cheering: false,
             popped: 0.0,
             gun_turn: 0.0,
@@ -4120,6 +4133,7 @@ fn place_unit(
         on_mission: false,
         pace: None,
         revealed: 0.0,
+        seen_moving: 0.0,
         cheering: false,
         popped: 0.0,
         gun_turn: 0.0,
@@ -7580,6 +7594,11 @@ pub fn advance(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) 
         unit.constructing = (unit.constructing - dt).max(0.0);
         go_on_deploying(unit, dt);
         set_up_or_pack(unit, dt);
+        unit.seen_moving = if unit.role.stealthed_when_still() && unit.is_moving() {
+            STEALTH_DELAY
+        } else {
+            (unit.seen_moving - dt).max(0.0)
+        };
         if unit.role == Role::Refinery {
             unit.popped = (unit.popped + dt / REFINERY_PAD_SLIDES).min(1.0);
         }
@@ -10346,6 +10365,33 @@ mod tests {
             let gap = (soldier.x - units[0].x).hypot(soldier.z - units[0].z);
             assert!(gap < 181.0, "out by the APC: {gap}");
         }
+    }
+
+    #[test]
+    fn a_scout_shows_while_it_moves_and_goes_invisible_once_it_has_stood_still_a_while() {
+        let terrain = open_ground();
+        let mut scout = Unit::for_test(MAP_MIDDLE_X, 2715.0, UnitKind::Infantry);
+        scout.role = Role::Scout;
+        scout.destination = (MAP_MIDDLE_X + 600.0, 2715.0);
+        let mut units = vec![scout];
+        assert!(units[0].is_cloaked(), "standing");
+        advance(&mut units, terrain, &[0], 0.1);
+        assert!(
+            units[0].is_moving() && !units[0].is_cloaked(),
+            "on the move"
+        );
+        units[0].destination = (units[0].x, units[0].z);
+        for _ in 0..10 {
+            advance(&mut units, terrain, &[0], 0.1);
+        }
+        assert!(
+            !units[0].is_moving() && !units[0].is_cloaked(),
+            "just stopped"
+        );
+        for _ in 0..3 {
+            advance(&mut units, terrain, &[0], 0.1);
+        }
+        assert!(units[0].is_cloaked(), "still for 30 updates");
     }
 
     #[test]

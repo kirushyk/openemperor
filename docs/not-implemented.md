@@ -48,7 +48,11 @@ we are missing is in [units.md](units.md). This list is about everything else.
 - **Lower-detail models**: only the `_H0` models are read.
 - **Invisible units**: their own side sees them painted with the disc's `hackedstealth0–7`
   shimmer, one frame per update and seen through as much as it shows. The original's shimmer
-  also wavers a little, which we don't draw.
+  also wavers a little, which we don't draw. Scouts and the Atreides APC, the rules'
+  `StealthedWhenStill`, show while they move and go invisible once still for `StealthDelay`
+  (30 updates). After firing, units stay seen for 4 seconds, not the rules'
+  `StealthDelayAfterFiring` of 10 updates. The rules make the Atreides sniper
+  `StealthedWhenStill` too; ours goes invisible only with all three medals.
 
 ## Lights
 

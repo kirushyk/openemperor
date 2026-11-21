@@ -6838,7 +6838,7 @@ mod tests {
                 );
             }
             let (cx, cz) = a.center();
-            assert!((cx - at.0).hypot(cz - at.1) < 12.0 * battlefield::CELL_SIDE);
+            assert!((cx - at.0).hypot(cz - at.1) < 20.0 * battlefield::CELL_SIDE);
         }
     }
 

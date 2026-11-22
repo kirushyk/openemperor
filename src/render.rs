@@ -3180,11 +3180,21 @@ fn draw_shatter(
     let drawn = canvas.objects.len();
     // Once they tumble, any face of it can come to be seen.
     let watchers = canvas.watchers.take();
-    draw_unit_model(canvas, game, &shatter.unit);
+    // Its lights went out as it blew up.
+    without_glows(canvas, |canvas| {
+        draw_unit_model(canvas, game, &shatter.unit)
+    });
     canvas.watchers = watchers;
     canvas.detail = models::Detail::Full;
     let terrain = battlefield::terrain(game.battle_map);
     break_apart(&mut canvas.objects[drawn..], shatter, terrain);
+}
+
+/// Draws something, leaving out the glows of its lights.
+fn without_glows(canvas: &mut Canvas, draw: impl FnOnce(&mut Canvas)) {
+    let lit = canvas.decals.len();
+    draw(canvas);
+    canvas.decals.truncate(lit);
 }
 
 /// Pulls a model's triangles in for a moment, then throws each its own way, spinning, while

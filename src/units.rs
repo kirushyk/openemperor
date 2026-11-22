@@ -4915,11 +4915,14 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
     true
 }
 
+/// How many of a scripted construction yard's rows lie behind the point it is put at.
+const YARD_ROWS_BEHIND: f32 = 2.0;
+
 /// Puts a map's or a mission script's unit or building on the map for a side, and says its
 /// id: a building where it is put, dug in if it is a construction yard, an MCV dug in; a unit
 /// at the free spot nearest. A building's squares, as it faces, start at the point's across
-/// and down, as `anchor` has it, or a construction yard a script digs in has its back row's
-/// middle there; a unit looks the way it faces.
+/// and down, as `anchor` has it, or a construction yard a script digs in has the middle of
+/// its third row from the back there; a unit looks the way it faces.
 pub fn put(
     units: &mut Vec<Unit>,
     terrain: &Terrain,
@@ -4933,10 +4936,10 @@ pub fn put(
     let stands = kind.is_building() || dug_in;
     let spot = if stands && anchor == Anchor::Yard {
         // A construction yard a script digs in, an MCV, has the point in its middle across,
-        // between the walls the first one stands in, its depth running ahead from its back row.
+        // and on its third row from the back, its depth running ahead from there.
         let (cols, rows) = role.plot_size(house);
         let across = (cols / 2) as f32 - (cols - 1) as f32 / 2.0;
-        let ahead = (rows - 1) as f32 / 2.0;
+        let ahead = (rows - 1) as f32 / 2.0 - YARD_ROWS_BEHIND;
         let (dx, dz) = facing
             .unwrap_or_default()
             .turned((across * CELL_SIDE, ahead * CELL_SIDE));
@@ -13356,9 +13359,9 @@ mod tests {
     }
 
     #[test]
-    fn a_scripted_building_stands_with_its_front_row_on_its_point_and_faces_its_way() {
+    fn a_scripted_building_stands_from_its_point_as_the_original_and_faces_its_way() {
         // The Atreides' first construction yard: at its base's point, facing the way out along
-        // +x, inside walls that close it in from tile 1 to 7 along x and -3 to 3 along z.
+        // +x, its third row from the back on the point, as the original's stands.
         let terrain = Terrain::open();
         let at = grid_to_world(40.5, 40.5);
         let mut units = Vec::new();
@@ -13378,8 +13381,8 @@ mod tests {
         assert_eq!(units[0].facing, Facing::RightBottom);
         assert_eq!(
             (plot.u, plot.v, plot.cols, plot.rows),
-            (40, 38, 7, 5),
-            "from its point to the walls' far side, between the walls each way"
+            (38, 38, 7, 5),
+            "two rows behind its point, five ahead"
         );
         let (x, z) = Facing::RightBottom.way_out();
         assert!(

@@ -758,6 +758,15 @@ pub const TEAM_COLORS: [TeamColor; 8] = [
     TeamColor::LightPink,
 ];
 
+/// The colour a great house fights in outside a skirmish.
+fn house_color(house: Faction) -> TeamColor {
+    match house {
+        Faction::Atreides => TeamColor::Blue,
+        Faction::Harkonnen => TeamColor::Red,
+        Faction::Ordos => TeamColor::Green,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpponentKind {
     Defensive,
@@ -4455,20 +4464,24 @@ impl Game {
         }
     }
 
+    /// What colour a side's unit of this kind and house is: in a campaign a great house's in
+    /// its house's colour, whichever side it is on; otherwise, or a sub-house's, its side's.
+    fn colour_of(&self, (role, house): (Role, Faction), side: TeamColor) -> TeamColor {
+        let of_a_great_house = !matches!(role, Role::Extra(extra) if extra.house().is_none());
+        if self.battle_kind == BattleKind::Campaign && of_a_great_house {
+            house_color(house)
+        } else {
+            side
+        }
+    }
+
     /// The player, then each opponent in this battle.
     pub fn stats_rows(&self) -> Vec<StatsRow> {
         let setup = &self.skirmish;
         if self.battle_kind != BattleKind::Skirmish {
-            let color = match self.faction {
-                Some(Faction::Harkonnen) => TeamColor::Red,
-                Some(Faction::Ordos) => TeamColor::Cyan,
-                Some(Faction::Atreides) | None => TeamColor::Blue,
-            };
-            let enemy_color = if color == TeamColor::Red {
-                TeamColor::Blue
-            } else {
-                TeamColor::Red
-            };
+            // Each side in its house's colour.
+            let color = house_color(self.faction.unwrap_or(Faction::Atreides));
+            let enemy_color = house_color(self.faction_of(1));
             return vec![
                 StatsRow {
                     name: setup.commander.clone(),
@@ -4804,7 +4817,7 @@ impl Game {
                 _ => usize::from(house != player),
             };
             let color = match self.stats_rows().get(owner) {
-                Some(row) => row.color,
+                Some(row) => self.colour_of((role, house), row.color),
                 None if owner == units::NEUTRAL => TeamColor::Yellow,
                 None => continue,
             };
@@ -4878,6 +4891,11 @@ impl Game {
         let name = campaign::kind_name(kind)?;
         let thing = Role::named(name)?;
         let (owner, color) = self.side_owner(side)?;
+        let color = if owner == units::NEUTRAL {
+            color
+        } else {
+            self.colour_of(thing, color)
+        };
         // A construction yard is one dug in, put down or brought; only one put down stands
         // about its back row.
         let dug_in = name.ends_with(CONSTRUCTION_YARD);
@@ -6622,8 +6640,27 @@ mod tests {
         let rows = game.stats_rows();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].faction, Some(Faction::Ordos));
-        assert_eq!(rows[0].color, TeamColor::Cyan);
+        assert_eq!(rows[0].color, TeamColor::Green);
         assert_ne!(rows[1].color, rows[0].color);
+    }
+
+    #[test]
+    fn in_the_campaign_each_house_fights_in_its_own_colour() {
+        let mut game = in_faction_select();
+        pick(&mut game, Faction::Atreides);
+        click(&mut game, Action::ConfirmFaction);
+        game.update(OPENING_WAIT_SECONDS + 0.05);
+        assert_eq!(game.battle_kind, BattleKind::Campaign);
+        let rows = game.stats_rows();
+        assert_eq!(rows[0].color, TeamColor::Blue);
+        assert_eq!(rows[1].color, house_color(game.faction_of(1)));
+        let side = TeamColor::Yellow;
+        let of = |role, house| game.colour_of((role, house), side);
+        assert_eq!(of(Role::HkAssault, Faction::Harkonnen), TeamColor::Red);
+        assert_eq!(of(Role::OrKobra, Faction::Ordos), TeamColor::Green);
+        let (niap, house) = Role::named("GUNIAP").unwrap();
+        assert!(matches!(niap, Role::Extra(extra) if extra.house().is_none()));
+        assert_eq!(of(niap, house), side, "a sub-house's in its side's");
     }
 
     #[test]

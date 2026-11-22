@@ -1918,10 +1918,16 @@ fn read_picture(archive: &Archive, name: &str, layer: usize) -> Picture {
         - name
             .trim_start_matches(|c: char| !c.is_alphanumeric())
             .len()];
+    let strength = strength(marks);
     match archive
         .read(&format!("{TEXTURES}{name}"))
         .and_then(|data| xbf::tga(&data))
-    {
+        .map(|mut image| {
+            for pixel in &mut image.pixels {
+                pixel[3] = (f32::from(pixel[3]) * strength).round() as u8;
+            }
+            image
+        }) {
         Some(image) if marks.contains('!') => Picture::Glow { image, layer },
         Some(image) if marks.contains('@') => Picture::SeeThrough { image, layer },
         Some(image) => Picture::Painted {
@@ -1932,6 +1938,19 @@ fn read_picture(archive: &Archive, name: &str, layer: usize) -> Picture {
         },
         None => Picture::Missing,
     }
+}
+
+/// How strongly a picture shows, by the figure among the marks in front of its name, in
+/// tenths: `!5flash04` and `!05halfblack` show at half, `@50black` too; whole without one.
+fn strength(marks: &str) -> f32 {
+    let digits: String = marks.chars().filter(char::is_ascii_digit).collect();
+    let Ok(mut tenths) = digits.parse::<u32>() else {
+        return 1.0;
+    };
+    while tenths >= 10 && tenths % 10 == 0 {
+        tenths /= 10;
+    }
+    (tenths as f32 / 10.0).clamp(0.0, 1.0)
 }
 
 /// Whether an object is one of a model's lights, whose glowing faces show where the original
@@ -3924,6 +3943,16 @@ mod tests {
     }
 
     #[test]
+    fn a_pictures_figure_among_its_marks_says_how_strongly_it_shows() {
+        assert_eq!(strength("!5"), 0.5);
+        assert_eq!(strength("!05"), 0.5);
+        assert_eq!(strength("@50"), 0.5);
+        assert_eq!(strength("!%01"), 0.1);
+        assert_eq!(strength("=!08%"), 0.8);
+        assert_eq!(strength("!%"), 1.0);
+    }
+
+    #[test]
     fn a_guns_look_is_its_units_in_the_rules_and_for_two_guns_its_weapons() {
         let gun = |role, weapon| Gun {
             role,
@@ -3941,6 +3970,33 @@ mod tests {
             (MUZZLE2, None, SHELL_HIT)
         );
         assert!(gun_look(gun(Role::Harvester, WeaponKind::Unarmed)).is_none());
+    }
+
+    #[test]
+    fn a_vehicle_blown_apart_leaves_none_of_its_lights_glowing() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        let mut tank = Unit::for_test(1000.0, 1000.0, UnitKind::Vehicle);
+        (tank.role, tank.house) = (Role::HkMissile, Faction::Harkonnen);
+        let mut standing = Canvas::default();
+        assert!(draw(&mut standing, &tank, [1.0; 3], 0.0));
+        assert!(
+            !standing.decals.is_empty(),
+            "its lamps glow while it stands"
+        );
+        let mut blown = Canvas::default();
+        super::super::without_glows(&mut blown, |canvas| {
+            draw(canvas, &tank, [1.0; 3], 0.0);
+        });
+        assert!(blown.decals.is_empty());
+        assert_eq!(
+            blown.objects.len(),
+            standing.objects.len(),
+            "all of it but them"
+        );
     }
 
     #[test]

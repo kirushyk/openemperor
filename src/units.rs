@@ -3223,6 +3223,24 @@ impl Unit {
         self.target.is_some() || self.alerted
     }
 
+    /// Which way a machine is turning on the spot before it sets off, the shortest turn to the
+    /// way it is going, if it is: it drives only once it faces near enough that way.
+    pub fn turning_on_the_spot(&self) -> Option<f32> {
+        if self.kind != UnitKind::Vehicle || self.role.glides() || !self.is_moving() {
+            return None;
+        }
+        let (x, z) = self.way.map_or(self.destination, |way| way.through);
+        let turn = turn_between(self.heading, (z - self.z).atan2(x - self.x));
+        (turn.abs() > DRIVE_ALIGNMENT).then_some(turn)
+    }
+
+    /// For what lands, whether it is coming down rather than going up, and how far up it is
+    /// as a share of its cruising height, while it is between the ground and that height.
+    pub fn landing(&self) -> Option<(bool, f32)> {
+        let between = self.role.lands() && self.altitude > 0.0 && self.altitude < CRUISE_ALTITUDE;
+        between.then(|| (self.is_settling(), self.altitude / CRUISE_ALTITUDE))
+    }
+
     /// Whether it is up in the air but would rather sit, having nothing to go after.
     fn is_settling(&self) -> bool {
         self.alive

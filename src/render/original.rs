@@ -13,8 +13,8 @@ use crate::fog::Fog;
 use crate::game::{CursorLook, Faction};
 use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
 use crate::units::{
-    CrateKind, EAT_SECONDS, Flight, Frigate, Gender, Harvest, Point, Prop, Role, Unit, UnitKind,
-    WallPiece, Wound,
+    CrateKind, DUMP_SECONDS, EAT_SECONDS, Flight, Frigate, Gender, HARVESTER_LOAD, Harvest, Point,
+    Prop, Role, Unit, UnitKind, WallPiece, Wound,
 };
 use crate::weapons::{
     BODY_SECONDS, BODY_SINK_SECONDS, Body, Effect, Gun, Made, Noise, REVEAL_SECONDS, Tornado,
@@ -954,6 +954,9 @@ const SHINE: f32 = 0.2;
 const UNPAINTED: [f32; 3] = [0.5, 0.5, 0.5];
 /// How many frames of their animations the original's models go through in a second.
 const FRAMES_PER_SECOND: f32 = 25.0;
+/// The runs of a machine's model it plays firing its first gun, and going.
+const FIRE: &str = "Fire 0";
+const MOVE: &str = "Move";
 /// How many frames apart one machine's loops are from the next one's, so that they do not all
 /// move together.
 const FRAMES_APART: usize = 13;
@@ -2449,10 +2452,14 @@ fn frame(shape: &Shape, unit: &Unit, time: f32) -> usize {
     {
         return first + ((last - first) as f32 * unit.popped.min(1.0)) as usize;
     }
+    // A soldier on infantry rock crouches there, and fires crouching.
+    let crouches = unit.kind == UnitKind::Infantry && unit.on_inf_rock;
     let fire = if unit.deployed {
         ["Deployed Fire", "Fire 1"]
+    } else if crouches {
+        ["CrouchFire", FIRE]
     } else {
-        ["Fire 0", "Fire 0"]
+        [FIRE, FIRE]
     };
     if unit.revealed > 0.0
         && let Some(frame) = fire.iter().find_map(|&name| find(name)).and_then(|ranges| {
@@ -2474,17 +2481,50 @@ fn frame(shape: &Shape, unit: &Unit, time: f32) -> usize {
             find("Harv Eat End"),
         )
     {
-        let eaten = (unit.eating * FRAMES_PER_SECOND) as usize;
-        let end_from = ((EAT_SECONDS * FRAMES_PER_SECOND) as usize)
-            .saturating_sub(length(end))
-            .max(length(start));
-        return if eaten < length(start) {
-            start.0 + eaten
-        } else if eaten >= end_from {
-            end.0 + (eaten - end_from).min(length(end) - 1)
+        return start_hold_end((start, hold, end), unit.eating, EAT_SECONDS);
+    }
+    // Emptying its load onto a pad, it opens up, holds and closes again over the time it takes.
+    if unit.role == Role::Harvester
+        && matches!(unit.harvest, Harvest::Dumping(_))
+        && let (Some(&[start, ..]), Some(&[hold, ..]), Some(&[end, ..])) = (
+            find("Harv Unload Start"),
+            find("Harv Unload Hold"),
+            find("Harv Unload End"),
+        )
+    {
+        let dumped = (1.0 - unit.load / HARVESTER_LOAD) * DUMP_SECONDS;
+        return start_hold_end((start, hold, end), dumped, DUMP_SECONDS);
+    }
+    // Coming down onto the ground or going up off it, as far as it has got.
+    if let Some((coming_down, up)) = unit.landing() {
+        let (name, share) = if coming_down {
+            ("Land", 1.0 - up)
         } else {
-            looped(&[hold], eaten - length(start))
+            ("Takeoff", up)
         };
+        if let Some(&[(first, last), ..]) = find(name) {
+            return first + ((last - first) as f32 * share) as usize;
+        }
+    }
+    // A machine turning on the spot before it sets off.
+    if let Some(turn) = unit.turning_on_the_spot()
+        && let Some(ranges) = find(if turn > 0.0 {
+            "Turn Right"
+        } else {
+            "Turn Left"
+        })
+    {
+        return looped(ranges, played + unit.id as usize * FRAMES_APART);
+    }
+    // A soldier standing about now and then shifts, one of his idles in turn.
+    if unit.kind == UnitKind::Infantry
+        && !unit.is_moving()
+        && !crouches
+        && !unit.deployed
+        && !unit.cheering
+        && let Some(frame) = idling(&find, played + unit.id as usize * FRAMES_APART)
+    {
+        return frame;
     }
     let moving = unit.is_moving();
     let names: &[&str] = match unit.harvest {
@@ -2492,7 +2532,8 @@ fn frame(shape: &Shape, unit: &Unit, time: f32) -> usize {
         _ if unit.kind == UnitKind::Aircraft && unit.altitude > 0.0 => &["Hover", "Stationary"],
         Harvest::Dumping(_) if unit.role == Role::Harvester => &["Harv Unload Hold"],
         _ if unit.deployed => &["Deployed Idle 0", "Deploy Gun Hold"],
-        _ if moving => &["Move"],
+        _ if moving => &[MOVE],
+        _ if crouches => &["Crouch", "Stationary"],
         _ if unit.cheering => &["Win", "Stationary"],
         _ => &["Stationary"],
     };
@@ -2502,6 +2543,45 @@ fn frame(shape: &Shape, unit: &Unit, time: f32) -> usize {
         .map_or(0, |ranges| {
             looped(ranges, played + unit.id as usize * FRAMES_APART)
         })
+}
+
+/// The frame of a run that starts, holds and ends over `total` seconds, this many seconds in:
+/// its start played once, then its hold over and over, and its end played out by the last.
+fn start_hold_end(
+    (start, hold, end): ((usize, usize), (usize, usize), (usize, usize)),
+    seconds: f32,
+    total: f32,
+) -> usize {
+    let done = (seconds * FRAMES_PER_SECOND) as usize;
+    let end_from = ((total * FRAMES_PER_SECOND) as usize)
+        .saturating_sub(length(end))
+        .max(length(start));
+    if done < length(start) {
+        start.0 + done
+    } else if done >= end_from {
+        end.0 + (done - end_from).min(length(end) - 1)
+    } else {
+        looped(&[hold], done - length(start))
+    }
+}
+
+/// How many seconds a soldier stands still between his idles.
+const IDLE_EVERY_SECONDS: f32 = 8.0;
+
+/// The frame of the idle a soldier standing still is playing this many frames in, if he is
+/// playing one: every `IDLE_EVERY_SECONDS`, the next of his idles once through.
+fn idling<'a>(
+    find: &impl Fn(&str) -> Option<&'a [(usize, usize)]>,
+    played: usize,
+) -> Option<usize> {
+    let idles: Vec<_> = ["Idle 0", "Idle 1"]
+        .iter()
+        .filter_map(|&name| find(name))
+        .collect();
+    let every = (IDLE_EVERY_SECONDS * FRAMES_PER_SECOND) as usize;
+    let turn = played / every;
+    let ranges = idles.get(turn % idles.len().max(1))?;
+    once(ranges, played % every)
 }
 
 /// How many frames a range plays: one at least, for one that holds a single frame.
@@ -2780,6 +2860,29 @@ pub(super) fn draw(canvas: &mut Canvas, unit: &Unit, team: [f32; 3], time: f32) 
     };
     let (body, head) = places(shape, unit);
     let frame = frame(shape, unit, time);
+    // Firing on the move, only its guns play their firing: the rest goes on moving, as a
+    // buzzsaw's wheel rolls on.
+    let fire_and_move = [FIRE, MOVE].map(|name| {
+        shape
+            .sequences
+            .iter()
+            .find(|sequence| sequence.name == name)
+            .map(|sequence| sequence.ranges.as_slice())
+    });
+    let going = match fire_and_move {
+        [Some(fire), Some(going)] if unit.revealed > 0.0 && unit.is_moving() => {
+            let mut still = *unit;
+            still.revealed = 0.0;
+            Some((fire, going, self::frame(shape, &still, time)))
+        }
+        _ => None,
+    };
+    let frame_for = |part: &Part| match going {
+        Some((fire, moves, going)) if !(moves_within(part, fire) && !moves_within(part, moves)) => {
+            going
+        }
+        _ => frame,
+    };
     // Pictures slide all the time, but a machine's tracks only as it goes.
     let slid = if unit.kind == UnitKind::Vehicle && !unit.is_moving() {
         0.0
@@ -2792,12 +2895,20 @@ pub(super) fn draw(canvas: &mut Canvas, unit: &Unit, team: [f32; 3], time: f32) 
         frame,
         slid,
         worlds: pose_by(shape, unit.tube_pitch, unit.gun_turn, |part| {
-            part.pad.map_or(frame, |pad| pad_frame(shape, unit, pad))
+            part.pad
+                .map_or_else(|| frame_for(part), |pad| pad_frame(shape, unit, pad))
         }),
         set_up: shows_set_up(&unit),
     };
     draw_posed(canvas, shape, &posed, team);
     true
+}
+
+/// Whether a part's animation moves it anywhere in these runs.
+fn moves_within(part: &Part, ranges: &[(usize, usize)]) -> bool {
+    ranges
+        .iter()
+        .any(|&(first, last)| (first + 1..=last).any(|frame| part.at(frame) != part.at(frame - 1)))
 }
 
 /// The frame a refinery's pad is at that its model slides out as it is upgraded: tucked in at
@@ -3569,6 +3680,83 @@ mod tests {
     }
 
     #[test]
+    fn units_turn_idle_crouch_land_and_unload_by_their_sequences() {
+        let sequence = |name: &str, first, last| Sequence {
+            name: name.into(),
+            ranges: vec![(first, last)],
+        };
+        let shape = Shape {
+            sequences: vec![
+                sequence("Stationary", 100, 110),
+                sequence("Move", 20, 40),
+                sequence("Turn Left", 200, 210),
+                sequence("Turn Right", 220, 230),
+                sequence("Idle 0", 300, 320),
+                sequence("Idle 1", 330, 350),
+                sequence("Crouch", 400, 405),
+                sequence("CrouchFire", 410, 420),
+                sequence("Land", 500, 520),
+                sequence("Takeoff", 530, 550),
+                sequence("Harv Unload Start", 600, 610),
+                sequence("Harv Unload Hold", 610, 620),
+                sequence("Harv Unload End", 620, 630),
+            ],
+            ..Shape::default()
+        };
+        // A machine facing away from where it is going turns on the spot first, its way.
+        let mut tank = Unit::for_test(0.0, 0.0, UnitKind::Vehicle);
+        (tank.role, tank.id, tank.heading) = (Role::HkAssault, 0, 0.0);
+        tank.destination = (0.0, 500.0);
+        assert!((220..230).contains(&frame(&shape, &tank, 0.2)));
+        tank.destination = (0.0, -500.0);
+        assert!((200..210).contains(&frame(&shape, &tank, 0.2)));
+        tank.destination = (500.0, 0.0);
+        assert!(
+            (20..40).contains(&frame(&shape, &tank, 0.2)),
+            "and then drives"
+        );
+        // A soldier standing still plays an idle now and then, one after the other.
+        let mut soldier = Unit::for_test(0.0, 0.0, UnitKind::Infantry);
+        (soldier.role, soldier.id) = (Role::AtInfantry, 0);
+        soldier.destination = (soldier.x, soldier.z);
+        assert!((300..320).contains(&frame(&shape, &soldier, 0.2)));
+        assert!(
+            (100..110).contains(&frame(&shape, &soldier, 2.0)),
+            "then stands"
+        );
+        assert!((330..350).contains(&frame(&shape, &soldier, IDLE_EVERY_SECONDS + 0.2)));
+        // On infantry rock he crouches, and fires crouching.
+        soldier.on_inf_rock = true;
+        assert!((400..405).contains(&frame(&shape, &soldier, 0.2)));
+        soldier.revealed = REVEAL_SECONDS - 0.2;
+        assert_eq!(frame(&shape, &soldier, 0.2), 415);
+        // What lands comes down through its landing, and goes up through its takeoff.
+        let mut orni = Unit::for_test(0.0, 0.0, UnitKind::Aircraft);
+        (orni.role, orni.id) = (Role::AtOrni, 0);
+        let (_, up) = {
+            orni.altitude = 90.5;
+            orni.destination = (orni.x, orni.z);
+            orni.landing().unwrap()
+        };
+        assert!((500..520).contains(&frame(&shape, &orni, 0.2)) && up > 0.4 && up < 0.6);
+        // A harvester emptying itself opens up, holds, and closes by the end.
+        let mut harvester = Unit::for_test(0.0, 0.0, UnitKind::Vehicle);
+        (harvester.role, harvester.id) = (Role::Harvester, 0);
+        harvester.destination = (harvester.x, harvester.z);
+        harvester.harvest = Harvest::Dumping(crate::units::Dock {
+            refinery: 9,
+            pad: 0,
+        });
+        let unloading = |harvester: &mut Unit, load: f32| {
+            harvester.load = load;
+            frame(&shape, harvester, 0.2)
+        };
+        assert!((600..610).contains(&unloading(&mut harvester, HARVESTER_LOAD)));
+        assert!((610..620).contains(&unloading(&mut harvester, HARVESTER_LOAD / 2.0)));
+        assert!((620..=630).contains(&unloading(&mut harvester, 0.1)));
+    }
+
+    #[test]
     fn a_machine_moves_fires_and_harvests_by_its_sequences() {
         let sequence = |name: &str, first, last| Sequence {
             name: name.into(),
@@ -3970,6 +4158,35 @@ mod tests {
             (MUZZLE2, None, SHELL_HIT)
         );
         assert!(gun_look(gun(Role::Harvester, WeaponKind::Unarmed)).is_none());
+    }
+
+    #[test]
+    fn a_buzzsaw_firing_on_the_move_keeps_rolling_its_wheel() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        let mut saw = Unit::for_test(1000.0, 1000.0, UnitKind::Vehicle);
+        (saw.role, saw.house) = (Role::HkBuzzsaw, Faction::Harkonnen);
+        saw.destination = (2000.0, 1000.0);
+        saw.revealed = REVEAL_SECONDS;
+        let drawn = |time: f32| {
+            let mut canvas = Canvas::default();
+            draw(&mut canvas, &saw, [1.0; 3], time);
+            canvas.objects
+        };
+        let (now, later) = (drawn(0.0), drawn(0.2));
+        let moved = now
+            .iter()
+            .zip(&later)
+            .filter(|(a, b)| (a.x - b.x).abs() + (a.y - b.y).abs() + (a.z - b.z).abs() > 0.5)
+            .count();
+        assert!(
+            moved > now.len() / 3,
+            "its wheel and all on it roll: {moved} of {}",
+            now.len()
+        );
     }
 
     #[test]

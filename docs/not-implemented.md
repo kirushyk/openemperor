@@ -28,13 +28,25 @@ we are missing is in [units.md](units.md). This list is about everything else.
   effects that follow, and each group of effects has one more than the table counts. We
   take that one to be at the last frame, which puts the infantry's "Crush" in "Run Over"
   where it belongs, but it is a guess.
+- **Animation runs played**: besides standing, moving, firing, deploying, harvesting and
+  dying, a machine turning on the spot plays "Turn Left" or "Turn Right"; a soldier standing
+  still plays "Idle 0" and "Idle 1" in turn, every 8 seconds (our own timing); on infantry
+  rock he plays "Crouch" and "CrouchFire"; what lands plays "Land" and "Takeoff" as far as it
+  has come down or gone up; a harvester unloads through "Harv Unload Start", "Hold" and
+  "End". Firing on the move, only the parts its "Fire 0" moves and its "Move" does not play
+  firing: the rest goes on moving, as a buzzsaw's wheel.
 - **Animation runs not played**:
-  - turning on the spot ("Turn Left", "Turn Right");
   - starting and stopping ("Move Start", "Move Stop");
-  - idle variants ("Idle 0", "Idle 1");
-  - infantry crouching ("Crouch", "CrouchFire");
-  - "Win";
-  - "Explode" (the saboteur's own blast).
+  - "Explode", on 32 models: a machine blows apart in our own way;
+  - "Leeched", on 17 machines;
+  - soldiers lying down and crawling ("Lay Down", "Lay Down Fire", "Crawl", "StandToLayDown",
+    "LayDownToStand");
+  - aircraft between flying and hovering ("FlyToHover", "HoverToFly");
+  - the carryall's pick-up ("StartPickup", "Pickup", "EndPickup");
+  - sinking into and coming up out of the sand ("Sink", "SinkHold", "Surface") and "Move
+    Special", on the trike, the buzzsaw and the dust scout;
+  - the repair vehicle's arms ("Repair Arms Out", "Hold", "In");
+  - the Kobra's "Fire 2", the contaminator's "Born".
 - **Deaths without the disc**: our ragdoll is commented out, so without the disc's models a
   dead soldier is not shown. A wound comes from the last weapon that hurt the soldier; mines,
   the superweapon and the saw count as shots.

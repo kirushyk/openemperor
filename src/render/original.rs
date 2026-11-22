@@ -3704,6 +3704,69 @@ mod tests {
     }
 
     #[test]
+    fn a_buildings_solid_squares_on_the_disc_lie_under_its_model_not_its_mirror() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let _ = ORIGINAL.set(original);
+        use crate::units::Facing;
+        // The Harkonnen palace's open squares lie all to one side, as no other's do so far.
+        let (role, house) = (Role::Palace(Faction::Harkonnen), Faction::Harkonnen);
+        for facing in [Facing::LeftBottom, Facing::RightTop, Facing::RightBottom] {
+            let mut building = Unit::for_test(1000.0, 1000.0, UnitKind::Building);
+            (building.role, building.house, building.facing) = (role, house, facing);
+            let shape = shape_of(&building).unwrap();
+            let plot = building.plot().unwrap();
+            let (body, _) = places(shape, &building);
+            // How high the model stands over each of its squares.
+            let mut height = vec![0.0_f32; (plot.cols * plot.rows) as usize];
+            for (part, world) in shape.parts.iter().zip(&pose(shape, 0.0, 0.0, 0)) {
+                for face in &part.faces {
+                    let corners = face.points.map(|p| body.point(to_place(point(world, p))));
+                    for (a, b) in (0..=8).flat_map(|a| (0..=8 - a).map(move |b| (a, b))) {
+                        let (a, b) = (a as f32 / 8.0, b as f32 / 8.0);
+                        let [x, y, z]: [f32; 3] = std::array::from_fn(|i| {
+                            corners[0][i] * (1.0 - a - b) + corners[1][i] * a + corners[2][i] * b
+                        });
+                        let (u, v) = crate::battlefield::world_to_grid(x, z);
+                        let (u, v) = (u.floor() as i32 - plot.u, v.floor() as i32 - plot.v);
+                        if (0..plot.cols).contains(&u) && (0..plot.rows).contains(&v) {
+                            let cell = &mut height[(v * plot.cols + u) as usize];
+                            *cell = cell.max(y - building.y);
+                        }
+                    }
+                }
+            }
+            let solid: Vec<_> = building.blocking_squares().collect();
+            // The squares mirrored across the building's front, as they would lie with
+            // its rows read the other way about.
+            let (middle_u, middle_v) = (2 * plot.u + plot.cols - 1, 2 * plot.v + plot.rows - 1);
+            let mirrored: Vec<_> = solid
+                .iter()
+                .map(|&(u, v)| match facing {
+                    Facing::LeftBottom | Facing::RightTop => (middle_u - u, v),
+                    _ => (u, middle_v - v),
+                })
+                .collect();
+            let misses = |squares: &[(i32, i32)]| {
+                plot.cells()
+                    .filter(|&(u, v)| {
+                        let high = height[((v - plot.v) * plot.cols + u - plot.u) as usize] > 30.0;
+                        high != squares.contains(&(u, v))
+                    })
+                    .count()
+            };
+            assert!(
+                misses(&solid) < misses(&mirrored),
+                "{role:?} {facing:?}: {} against {}",
+                misses(&solid),
+                misses(&mirrored)
+            );
+        }
+    }
+
+    #[test]
     fn a_refinerys_side_pads_slide_out_onto_where_its_harvesters_dock_only_once_upgraded() {
         let disc = Path::new("/Volumes/EMPEROR1");
         let Some(original) = read_shapes(disc) else {

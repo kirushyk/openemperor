@@ -98,6 +98,11 @@ Without the disc, everything we have is drawn with our own models.
 
 Each house has its own model of each of these.
 
+A building takes up the squares its rules' `Occupy` rows give it, front row first, and keeps
+what is on the ground off only those marked `b`. Squares marked `n` are open ground, `d` and
+`p` the decks and pads machines drive onto, and `s` room kept clear in front. Nobody is sent to
+stand on a deck or pad. The incidental buildings and scenery with such rows have them too.
+
 | Original | Ours | Drawn as | Notes |
 | --- | --- | --- | --- |
 | ConYard | the deployed MCV | Disc | |

@@ -8058,9 +8058,13 @@ mod tests {
         click_widget(&mut game, Action::StartBattle);
         game.update(LOADING_SECONDS);
         with_bases(&mut game);
-        // Nobody fires on these without an order, and the drone circles out of reach.
-        game.units
-            .retain(|u| u.owner != 1 || !(u.kind == UnitKind::Building || u.role == Role::AtAdp));
+        // Nobody fires on these without an order, the drone circles out of reach, and only
+        // rockets bring the carryall down, which a rocket trooper may not live to fire.
+        game.units.retain(|u| {
+            u.owner != 1
+                || !(u.kind == UnitKind::Building
+                    || matches!(u.role, Role::AtAdp | Role::AdvCarryall))
+        });
         game.handle(Event::MouseMove(W / 2.0, H / 2.0));
         let enemies = game
             .units
@@ -15032,6 +15036,8 @@ mod tests {
     #[test]
     fn a_wall_is_placed_from_one_click_to_the_next_and_goes_up_a_square_at_a_time() {
         let mut game = in_battle();
+        // Nobody of the player's wanders onto the wall's squares meanwhile.
+        game.units.retain(|u| u.owner != 0 || u.kind.is_building());
         let cell = cell_of(&game, BuildTab::Buildings, Role::Wall);
         click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
         let money = game.player_money();
@@ -15127,6 +15133,8 @@ mod tests {
     #[test]
     fn a_wall_goes_round_a_building_in_its_way() {
         let mut game = in_battle();
+        // Nobody of the player's wanders onto the wall's squares meanwhile.
+        game.units.retain(|u| u.owner != 0 || u.kind.is_building());
         click_hud(&mut game, Action::BuildTab(BuildTab::Buildings));
         let cell = cell_of(&game, BuildTab::Buildings, Role::Wall);
         click_hud(&mut game, Action::BuildCell(cell));

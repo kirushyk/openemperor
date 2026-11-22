@@ -6,7 +6,7 @@ use crate::battlefield::{
 use crate::game::{Faction, TeamColor};
 use crate::weapons::WeaponKind;
 use std::cmp::Ordering;
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
+use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 /// About how tall a unit stands, in world units.
 pub const HEIGHT: f32 = 22.63;
@@ -1238,6 +1238,57 @@ pub struct DrillPose {
     pub spin: f32,
 }
 
+/// The rules' `Occupy` rows of the buildings whose squares are not all solid, by the rules'
+/// names, front row first, each from the square at the least x when the building faces +z. Only
+/// a `b` square keeps what is on the ground off it: `n` is open ground, `d` and `p` the decks
+/// and pads machines drive onto, and `s` room kept clear. A building's plot is its last rows,
+/// as many as it is deep; any before them are room kept clear in front of it.
+#[rustfmt::skip]
+const OCCUPY: [(&str, &[&str]); 42] = [
+    ("ATBarracks", &["nbbbn", "nbbbn", "bbbbb", "bbbbb"]),
+    ("ATConYard", &["nbbbn", "nbbbn", "bbbbb", "bbbbb", "bbbbb", "bbbbb", "nbbbb"]),
+    ("ATFactory", &["nbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb"]),
+    ("ATINBrancastle", &["ddbbdd", "ddbbbd", "bbbbbb", "bbbbbb", "dbbbbb", "dbbbbd"]),
+    ("ATINHouse2", &["bbbb", "bbbb", "ddbb"]),
+    ("ATINHouse3", &["bbbb", "bbbb", "bbbb", "ddbb"]),
+    ("ATINStPauls", &["ddbbbdd", "bbbbbbb", "bbbbbbb", "bbbbbbb", "ddbbbdd"]),
+    ("ATINSultan", &["ddbbbdd", "bbbbbbb", "bbbbbbb", "bbbbbbb", "ddbbbdd"]),
+    ("ATPalace", &["nnbbbnn", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb"]),
+    ("ATRefinery", &["ddddddddddd", "pppdddddppp", "pppdddddppp", "pppbbbbbppp", "nnbbbbbbbnn", "nnbbbbbbbnn", "nnnnbbbnnnn"]),
+    ("ATStarport", &["sssbsbsss", "sssbbbsss", "ddddddddd", "ddddddddd", "ddddddddd", "nnbbbbbnn", "nnnbbbbnn"]),
+    ("FRCamp", &["ddbbdd", "dbbbbb", "dbbbbb", "bbbbbb", "dbbbbd", "ddbbdd"]),
+    ("GUPalace", &["sdsssds", "bdbbbdb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "ddbbbdd", "bbdbdbb"]),
+    ("GURefinery", &["sssssss", "sssssss", "sssssss", "nbdddbn", "nbdddbn", "nbdddbn", "bbbbbbb", "bbbbbbb", "bbbbbbb"]),
+    ("HKBarracks", &["bbbbb", "bbbbb", "bbbbb", "bbbbb", "bbbbb", "nnbnn"]),
+    ("HKConYard", &["nbbbn", "nbbbn", "nbbbn", "nbbbn", "bbbbb", "bbbbb", "bbbbb", "nbbbb"]),
+    ("HKFactory", &["bbbbbbbb", "bbbbbbbb", "bbbbbbbb", "bbbbbbbb", "bbbbbbbb", "nbbbbbbb", "nbbbbbbb", "nnbbbbbb"]),
+    ("HKHanger", &["bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "nbbbbbb", "nbbbbbb", "nnbbbnn"]),
+    ("HKINGiediRef", &["bbbb", "bbbb", "bbbb", "bddb"]),
+    ("HKINHouse", &["bbbbbdd", "bbbbbbb", "bbbbbbb", "bbbbbdd"]),
+    ("HKINHouse2", &["dbbbb", "bbbbb", "bbbbb", "dbbbb"]),
+    ("HKINSultan", &["ddbbbdd", "bbbbbbb", "bbbbbbb", "bbbbbbb", "ddbbbdd"]),
+    ("HKINTownhall", &["bddb", "dbbd", "dbbd", "bddb"]),
+    ("HKPalace", &["nnbbnnnnn", "nbbbbnnnn", "bbbbbbbbb", "bbbbbbbbb", "bbbbbbbbb", "bbbbbbnnn", "nbbbbnnnn"]),
+    ("HKRefinery", &["ddddddddddd", "pppdddddppp", "pppdddddppp", "pppbbbbbppp", "nnbbbbbbbnn", "nnbbbbbbbnn", "nnnnbbbnnnn"]),
+    ("HKStarport", &["sssbsbsss", "sssbbbsss", "ddddddddd", "ddddddddd", "ddddddddd", "nnbbbbbnn", "nnnbbbbnn"]),
+    ("HLINElectricVent", &["dbbbbd", "bbbbbb", "bbbbbb", "bbbbbb", "bbbbbb", "dbbbbd"]),
+    ("HLINMHut", &["dbdd", "bbbb", "bdbb"]),
+    ("HLINOxygen", &["ddbbbbbb", "ddbbbbbb", "bbbbbbbb", "bbbbbbbb", "bbbbbbdd", "bbbbbbdd", "ddbbdddd"]),
+    ("IXRefinery", &["sssssssssss", "sssssssssss", "sssssssssss", "ddddddddddd", "pppdddddppp", "pppdddddppp", "pppbbbbbppp", "nnbbbbbbbnn", "nnbbbbbbbnn", "nnnnbbbnnnn"]),
+    ("IXResCentre", &["dbbbddd", "dbbbddd", "dbbbbbd", "bbbbbbd", "bbbbbbb", "bbbbbbb", "dbbbbdd"]),
+    ("ORBarracks", &["nbbbn", "bbbbb", "bbbbb", "bbbbb", "bbbbb"]),
+    ("ORConYard", &["nbbbn", "nbbbn", "bbbbb", "bbbbb", "bbbbb", "bbbbb", "nbbbn"]),
+    ("ORHanger", &["nbbbbbn", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb", "bbbbbbb"]),
+    ("ORINHall", &["nnbbbbbnn", "nnbbbbbnn", "bbbbbbbbb", "nnbbbbbnn", "nnnbbbnnn", "nnnbbbnnn"]),
+    ("ORINIndi", &["dbbbbbd", "dbbbbbd", "bbbbbbb", "bbbbbbb", "bbbbbbb", "dbbbbbb"]),
+    ("ORINTownHall", &["bbbbb", "bbbbb", "bbbbb", "dbdbd"]),
+    ("ORPalace", &["nnbbbbbnn", "nnbbbbbnn", "bbbbbbbbb", "nnbbbbbnn", "nnnbbbnnn", "nnnbbbnnn"]),
+    ("ORRefinery", &["ddddddddddd", "pppdddddppp", "pppdddddppp", "pppbbbbbppp", "nnbbbbbbbnn", "nnbbbbbbbnn", "nnnnbbbnnnn"]),
+    ("ORStarport", &["ssdbbbdss", "sddbbbdds", "ddddddddd", "ddddddddd", "ddddddddd", "nnbdddbnn", "nnbbbbbnn", "nnbbbbnnn"]),
+    ("SMStarport", &["ssssssss", "ssssssss", "ssssssss", "dddddddd", "dddddddd", "dddddddd", "bdddddbb", "bdddddbb", "bdddddbb", "bbbbbbbb", "bbbbbbbb"]),
+    ("TLFleshVat", &["bdb", "bbb", "bbb", "bbb", "bbb", "bbb"]),
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Plot {
     pub u: i32,
@@ -2267,6 +2318,22 @@ impl Role {
             (Role::Mcv, _) => (5, 7),
             _ => (2, 2),
         }
+    }
+
+    /// The rules' `Occupy` rows for it, for one whose squares are not all solid: see
+    /// `OCCUPY`. A construction yard goes by the yard's name, a palace by its house's.
+    fn occupy(self, house: Faction) -> Option<&'static [&'static str]> {
+        let name = match self {
+            Role::Mcv => house_letters(house).to_string() + "ConYard",
+            Role::Palace(owner) => house_letters(owner).to_string() + "Palace",
+            Role::Prop(prop) => prop.rules_name().to_string(),
+            Role::Extra(extra) => extra.rules_name().to_string(),
+            _ => self.rules_name(house),
+        };
+        OCCUPY
+            .iter()
+            .find(|(rules_name, _)| rules_name.eq_ignore_ascii_case(&name))
+            .map(|&(_, rows)| rows)
     }
 
     /// How tall the original's building is, in its coordinates.
@@ -3602,6 +3669,79 @@ impl Unit {
         })
     }
 
+    /// The grid squares of a building that keep what is on the ground off them: those its
+    /// rules' `Occupy` marks `b`, all of them for one that has no other kind.
+    pub fn blocking_squares(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.squares_marked(b"b")
+    }
+
+    /// The grid squares of a building its rules' `Occupy` marks with one of these letters, all
+    /// of them for one whose squares are all solid.
+    fn squares_marked(&self, marks: &'static [u8]) -> impl Iterator<Item = (i32, i32)> + '_ {
+        let (cols, rows) = self.role.plot_size(self.house);
+        let grid = self.role.occupy(self.house);
+        self.plot().into_iter().flat_map(move |plot| {
+            let (middle_u, middle_v) = (
+                plot.u as f32 + plot.cols as f32 / 2.0,
+                plot.v as f32 + plot.rows as f32 / 2.0,
+            );
+            (0..rows).flat_map(move |row| {
+                (0..cols).filter_map(move |col| {
+                    let solid = grid.is_none_or(|grid| {
+                        let back = grid.len().saturating_sub(rows as usize);
+                        grid.get(back + row as usize)
+                            .and_then(|line| line.as_bytes().get(col as usize))
+                            .is_some_and(|mark| marks.contains(mark))
+                    });
+                    let across = col as f32 + 0.5 - cols as f32 / 2.0;
+                    let ahead = rows as f32 / 2.0 - row as f32 - 0.5;
+                    let (du, dv) = self.facing.turned((across, ahead));
+                    solid.then(|| {
+                        (
+                            (middle_u + du).floor() as i32,
+                            (middle_v + dv).floor() as i32,
+                        )
+                    })
+                })
+            })
+        })
+    }
+
+    /// The middle of the solid square of a building nearest this place, and how far it is.
+    fn nearest_blocking_middle(&self, (x, z): (f32, f32)) -> Option<((f32, f32), f32)> {
+        self.blocking_squares()
+            .map(|(u, v)| {
+                let middle = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+                (middle, (middle.0 - x).hypot(middle.1 - z))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// The nearest point to this place of the squares a building keeps the ground off, and
+    /// how far that is: 0 inside one. `None` for what is not a building.
+    fn nearest_blocking(&self, at: (f32, f32)) -> Option<((f32, f32), f32)> {
+        self.nearest_marked(b"b", at)
+    }
+
+    /// The nearest point to this place of a building's squares marked with one of these
+    /// letters, and how far that is: 0 inside one.
+    fn nearest_marked(
+        &self,
+        marks: &'static [u8],
+        (x, z): (f32, f32),
+    ) -> Option<((f32, f32), f32)> {
+        self.squares_marked(marks)
+            .map(|(u, v)| {
+                let (low_x, low_z) = grid_to_world(u as f32, v as f32);
+                let near = (
+                    x.clamp(low_x, low_x + CELL_SIDE),
+                    z.clamp(low_z, low_z + CELL_SIDE),
+                );
+                (near, (near.0 - x).hypot(near.1 - z))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
     /// Whether it can go invisible: a scout, an Atreides APC, and what its levels make
     /// stealthy, as a sniper with all three medals.
     pub fn can_cloak(&self) -> bool {
@@ -4748,7 +4888,7 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
     };
     let taken = spots_taken(units, false);
     let on_the_ground = role.kind().going_on_the_ground();
-    let Some(&spot) = find_slots(terrain, near, 1, &taken, on_the_ground).first() else {
+    let Some(&spot) = find_slots(terrain, units, near, 1, &taken, on_the_ground).first() else {
         return false;
     };
     let side = (owner, maker.color);
@@ -4758,7 +4898,7 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
     let gathers_at = maker.gathering.and_then(|point| {
         let taken = spots_taken(units, flying);
         let going = if flying { Going::Flying } else { on_the_ground };
-        find_slots(terrain, point, 1, &taken, going)
+        find_slots(terrain, units, point, 1, &taken, going)
             .first()
             .copied()
     });
@@ -4826,7 +4966,7 @@ pub fn put(
         )
     } else {
         let taken = spots_taken(units, kind.flies());
-        *find_slots(terrain, at, 1, &taken, kind.going_on_the_ground()).first()?
+        *find_slots(terrain, units, at, 1, &taken, kind.going_on_the_ground()).first()?
     };
     place_unit(units, terrain, spot, role, role.weapon(), side, id);
     let unit = units.last_mut()?;
@@ -4907,7 +5047,7 @@ pub fn send_to_spot(units: &mut [Unit], index: usize, point: (f32, f32), terrain
     let flying = units[index].keeps_to_the_air();
     let taken = spots_taken(units, flying);
     let going = units[index].going_to_a_spot();
-    if let Some(&spot) = find_slots(terrain, point, 1, &taken, going).first() {
+    if let Some(&spot) = find_slots(terrain, units, point, 1, &taken, going).first() {
         units[index].destination = spot;
     }
 }
@@ -5296,7 +5436,8 @@ pub fn unload(units: &mut Vec<Unit>, terrain: &Terrain, apc: usize) {
         };
         let taken = spots_taken(units, false);
         let out = passenger.role.kind().going_on_the_ground();
-        let Some(&spot) = find_slots(terrain, (carrier.x, carrier.z), 1, &taken, out).first()
+        let Some(&spot) =
+            find_slots(terrain, units, (carrier.x, carrier.z), 1, &taken, out).first()
         else {
             return;
         };
@@ -5515,9 +5656,12 @@ pub fn spawn_bases(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
 
 /// Up to `count` free spots near a point, nearest first, each far enough from the others
 /// and from every point in `taken`. Spots on the ground must be walkable the way they go, so a
-/// click on water finds the nearest land. Spots in the air only have to be on the map.
+/// click on water finds the nearest land, and leave a machine room clear of the buildings'
+/// solid squares and of their decks and pads, which are no place to be left standing. Spots in
+/// the air only have to be on the map.
 fn find_slots(
     terrain: &Terrain,
+    units: &[Unit],
     target: (f32, f32),
     count: usize,
     taken: &[(f32, f32)],
@@ -5549,7 +5693,25 @@ fn find_slots(
             break;
         }
         let spot = (target.0 + dx, target.1 + dz);
-        if terrain.can_go(going, spot.0, spot.1) && is_free(spot, taken) && is_free(spot, &slots) {
+        let off_buildings = || {
+            flying
+                || units
+                    .iter()
+                    .filter(|u| u.alive && u.kind.is_building())
+                    .filter(|u| {
+                        u.plot()
+                            .is_some_and(|plot| plot.distance_from(spot) < CELL_SIDE)
+                    })
+                    .all(|u| {
+                        u.nearest_marked(b"bdp", spot)
+                            .is_none_or(|(_, away)| away >= CELL_SIDE)
+                    })
+        };
+        if terrain.can_go(going, spot.0, spot.1)
+            && is_free(spot, taken)
+            && is_free(spot, &slots)
+            && off_buildings()
+        {
             slots.push(spot);
         }
     }
@@ -5614,7 +5776,7 @@ fn order_layer(
     } else {
         Going::Driving
     };
-    let mut slots = find_slots(terrain, target, chosen.len(), &taken, going);
+    let mut slots = find_slots(terrain, units, target, chosen.len(), &taken, going);
     // Farthest first, so that those with the longest walk are not left the leftover spots.
     let distance = |unit: &Unit, spot: (f32, f32)| (unit.x - spot.0).hypot(unit.z - spot.1);
     chosen.sort_by(|&a, &b| distance(&units[b], target).total_cmp(&distance(&units[a], target)));
@@ -5689,7 +5851,7 @@ pub fn order_march(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, te
         let spot = if free {
             place
         } else {
-            let Some(&spot) = find_slots(terrain, place, 1, &taken, going).first() else {
+            let Some(&spot) = find_slots(terrain, units, place, 1, &taken, going).first() else {
                 continue;
             };
             spot
@@ -6146,9 +6308,23 @@ fn steering(units: &[Unit], index: usize, teams: &[usize]) -> (f32, f32) {
         {
             continue;
         }
-        let (dx, dz) = (other.x - unit.x, other.z - unit.z);
-        let distance = dx.hypot(dz);
-        let range = unit.radius() + other.radius() + AVOID_MARGIN;
+        // A building is skirted by its solid squares, the nearest of them, each as round
+        // about its middle as the route around it has it.
+        let ((dx, dz), distance, range) = if other.kind.is_building() {
+            let range = unit.radius() + CELL_SIDE * FRAC_1_SQRT_2 + AVOID_MARGIN;
+            let near = other
+                .plot()
+                .filter(|plot| plot.distance_from((unit.x, unit.z)) < range)
+                .and_then(|_| other.nearest_blocking_middle((unit.x, unit.z)));
+            let Some(((x, z), distance)) = near else {
+                continue;
+            };
+            ((x - unit.x, z - unit.z), distance, range)
+        } else {
+            let (dx, dz) = (other.x - unit.x, other.z - unit.z);
+            let range = unit.radius() + other.radius() + AVOID_MARGIN;
+            ((dx, dz), dx.hypot(dz), range)
+        };
         if distance < range && dx * want_x + dz * want_z > 0.0 {
             sideways += (1.0 - distance / range) * 2.0;
         }
@@ -6260,7 +6436,39 @@ fn squash(units: &mut [Unit], teams: &[usize]) {
     }
 }
 
-/// Pushes overlapping spheres apart, sharing the push evenly between equals.
+/// Which way, out from a building, and how far a unit must go to be off its solid squares;
+/// `None` if it is clear of them. One right inside a square goes out of its nearest side.
+fn off_squares(building: &Unit, unit: &Unit) -> Option<(f32, f32, f32)> {
+    let radius = unit.radius();
+    let here = (unit.x, unit.z);
+    if building.plot()?.distance_from(here) >= radius {
+        return None;
+    }
+    let ((near_x, near_z), distance) = building.nearest_blocking(here)?;
+    if distance >= radius {
+        return None;
+    }
+    if distance > 0.0 {
+        let (dx, dz) = (unit.x - near_x, unit.z - near_z);
+        return Some((dx / distance, dz / distance, radius - distance));
+    }
+    let (u, v) = world_to_grid(unit.x, unit.z);
+    let (low_x, low_z) = grid_to_world(u.floor(), v.floor());
+    let sides = [
+        (unit.x - low_x, (-1.0, 0.0)),
+        (low_x + CELL_SIDE - unit.x, (1.0, 0.0)),
+        (unit.z - low_z, (0.0, -1.0)),
+        (low_z + CELL_SIDE - unit.z, (0.0, 1.0)),
+    ];
+    let (inside, (nx, nz)) = sides
+        .into_iter()
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .unwrap_or((0.0, (1.0, 0.0)));
+    Some((nx, nz, inside + radius))
+}
+
+/// Pushes overlapping spheres apart, sharing the push evenly between equals, and what stands
+/// by a building off its solid squares.
 fn separate(units: &mut [Unit], terrain: &Terrain) {
     for _ in 0..SEPARATION_ROUNDS {
         for a in 0..units.len() {
@@ -6293,20 +6501,35 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
                 {
                     continue;
                 }
-                let (dx, dz) = (units[b].x - units[a].x, units[b].z - units[a].z);
-                let dy = units[b].sphere_y() - units[a].sphere_y();
-                let touching = units[a].radius() + units[b].radius();
-                let flat = dx.hypot(dz);
-                if flat.hypot(dy) >= touching {
-                    continue;
-                }
-                // Exactly on top of each other, any fixed direction will do.
-                let (nx, nz) = if flat > 0.004525 {
-                    (dx / flat, dz / flat)
-                } else {
-                    (1.0, 0.0)
+                // What stands by a building is kept off its solid squares, the way out
+                // from a building to it.
+                let pushed = match (units[a].kind.is_building(), units[b].kind.is_building()) {
+                    (true, false) => Some(off_squares(&units[a], &units[b])),
+                    (false, true) => Some(
+                        off_squares(&units[b], &units[a]).map(|(nx, nz, deep)| (-nx, -nz, deep)),
+                    ),
+                    _ => None,
                 };
-                let overlap = touching - flat.hypot(dy);
+                let (nx, nz, overlap) = match pushed {
+                    Some(Some(push)) => push,
+                    Some(None) => continue,
+                    None => {
+                        let (dx, dz) = (units[b].x - units[a].x, units[b].z - units[a].z);
+                        let dy = units[b].sphere_y() - units[a].sphere_y();
+                        let touching = units[a].radius() + units[b].radius();
+                        let flat = dx.hypot(dz);
+                        if flat.hypot(dy) >= touching {
+                            continue;
+                        }
+                        // Exactly on top of each other, any fixed direction will do.
+                        let (nx, nz) = if flat > 0.004525 {
+                            (dx / flat, dz / flat)
+                        } else {
+                            (1.0, 0.0)
+                        };
+                        (nx, nz, touching - flat.hypot(dy))
+                    }
+                };
                 // Infantry cannot shove something heavy: it takes the whole push itself. Nothing
                 // shoves a building, or what is sitting or coming down.
                 let solid = |unit: &Unit| {
@@ -6424,7 +6647,19 @@ fn find_new_way(units: &mut [Unit], i: usize, terrain: &Terrain) {
                 && Some(u.id) != target_id
                 && (u.kind.is_building() || u.deployed || !u.is_moving())
         })
-        .map(|u| (u.x, u.z, u.radius() + unit.radius()))
+        .flat_map(|u| {
+            // A building stands in the way by its solid squares, each about its middle.
+            if u.kind.is_building() {
+                u.blocking_squares()
+                    .map(|(su, sv)| {
+                        let (x, z) = grid_to_world(su as f32 + 0.5, sv as f32 + 0.5);
+                        (x, z, CELL_SIDE * FRAC_1_SQRT_2 + unit.radius())
+                    })
+                    .collect()
+            } else {
+                vec![(u.x, u.z, u.radius() + unit.radius())]
+            }
+        })
         .collect();
     let here = (unit.x, unit.z);
     // A route on from right where it stands would only bring it back to the same stall.
@@ -7156,9 +7391,22 @@ impl Claims {
                 && matches!(u.harvest, Harvest::Seeking | Harvest::Collecting)
         });
         let to_go = |u: &Unit| (u.destination.0 - u.x).hypot(u.destination.1 - u.z);
+        // Nobody stops to eat where harvesters line up to back onto a refinery's pads.
+        let approaches = units
+            .iter()
+            .filter(|u| u.alive && u.role == Role::Refinery)
+            .flat_map(|refinery| {
+                let (pads, ways) = (refinery.refinery_pads(), refinery.refinery_pad_ways());
+                refinery.working_pads().map(move |pad| {
+                    let ((x, z), (out_x, out_z)) = (pads[pad], ways[pad]);
+                    let front = (x + out_x * PAD_APPROACH, z + out_z * PAD_APPROACH);
+                    (front, 0.0, refinery.id)
+                })
+            });
         Claims {
             spots: others
                 .flat_map(|u| [(u.destination, to_go(u), u.id), ((u.x, u.z), 0.0, u.id)])
+                .chain(approaches)
                 .collect(),
             reach: harvester.radius() * 2.0,
         }
@@ -7650,7 +7898,7 @@ pub fn deliver_harvester(
                 .filter_map(Unit::plot)
                 .all(|plot| plot.distance_from(spot) > room)
     };
-    let drop = find_slots(terrain, front, DROP_TRIES, &taken, Going::Driving)
+    let drop = find_slots(terrain, units, front, DROP_TRIES, &taken, Going::Driving)
         .into_iter()
         .find(|&spot| clear(spot))
         .or_else(|| terrain.nearest_walkable(Going::Driving, front))
@@ -8840,7 +9088,8 @@ mod tests {
                 10 + id
             ));
         }
-        for _ in 0..400 {
+        // Out between the real shapes of a crowded base, a dozen take half a minute.
+        for _ in 0..600 {
             advance(&mut units, open_ground(), &[0], 0.05);
         }
         assert!(
@@ -10718,10 +10967,18 @@ mod tests {
         let mut largest = 0.0_f32;
         for (i, a) in units.iter().enumerate() {
             for b in &units[i + 1..] {
-                let distance = (a.x - b.x)
-                    .hypot(a.z - b.z)
-                    .hypot(a.sphere_y() - b.sphere_y());
-                largest = largest.max(a.radius() + b.radius() - distance);
+                // What stands by a building is kept off its solid squares.
+                let overlap = match (a.kind.is_building(), b.kind.is_building()) {
+                    (true, false) => off_squares(a, b).map_or(0.0, |(_, _, deep)| deep),
+                    (false, true) => off_squares(b, a).map_or(0.0, |(_, _, deep)| deep),
+                    _ => {
+                        let distance = (a.x - b.x)
+                            .hypot(a.z - b.z)
+                            .hypot(a.sphere_y() - b.sphere_y());
+                        a.radius() + b.radius() - distance
+                    }
+                };
+                largest = largest.max(overlap);
             }
         }
         largest
@@ -12132,6 +12389,80 @@ mod tests {
             advance(units, open_ground(), &[0], DT);
             tend_harvesters(units, open_ground(), money, DT);
         }
+    }
+
+    #[test]
+    fn each_rules_occupy_grid_is_as_wide_as_its_plot_and_deep_enough() {
+        let houses = [Faction::Atreides, Faction::Harkonnen, Faction::Ordos];
+        let roles = ALL_ROLES
+            .into_iter()
+            .chain((0..SCENERY.len() as u8).map(|i| Role::Prop(Prop::Scenery(Scenery(i)))))
+            .chain((0..EXTRAS.len() as u8).map(|i| Role::Extra(Extra(i))));
+        let mut found = 0;
+        for role in roles {
+            for house in houses {
+                let Some(grid) = role.occupy(house) else {
+                    continue;
+                };
+                found += 1;
+                let (cols, rows) = role.plot_size(house);
+                assert!(grid.len() >= rows as usize, "{role:?} {house:?}");
+                assert!(
+                    grid.iter().all(|line| line.len() == cols as usize),
+                    "{role:?} {house:?}"
+                );
+            }
+        }
+        assert!(found >= OCCUPY.len(), "each is some building's");
+    }
+
+    #[test]
+    fn a_building_keeps_units_off_only_its_solid_squares_as_it_faces() {
+        let (x, z) = (MAP_MIDDLE_X, 2715.0);
+        let mut palace = unit_at(x, z, UnitKind::Building);
+        (palace.role, palace.house) = (Role::Palace(Faction::Harkonnen), Faction::Harkonnen);
+        let plot = palace.plot().unwrap();
+        let solid: Vec<_> = palace.blocking_squares().collect();
+        assert_eq!(solid.len(), 43, "as many as its rules' Occupy has b");
+        // Its front row, out along +z, is solid only in its third and fourth squares.
+        let front = plot.v + plot.rows - 1;
+        assert_eq!(
+            (plot.u..plot.u + plot.cols)
+                .filter(|&u| solid.contains(&(u, front)))
+                .collect::<Vec<_>>(),
+            [plot.u + 2, plot.u + 3]
+        );
+        // Turned about, its squares are the same turned about its middle.
+        let mut turned = palace;
+        turned.facing = Facing::RightTop;
+        let turned_plot = turned.plot().unwrap();
+        assert_eq!(turned_plot, plot);
+        let mut about: Vec<_> = solid
+            .iter()
+            .map(|&(u, v)| {
+                (
+                    2 * plot.u + plot.cols - 1 - u,
+                    2 * plot.v + plot.rows - 1 - v,
+                )
+            })
+            .collect();
+        let mut theirs: Vec<_> = turned.blocking_squares().collect();
+        about.sort();
+        theirs.sort();
+        assert_eq!(theirs, about);
+        // A soldier may stand on an open square of it, but is pushed off a solid one.
+        let on = |(u, v): (i32, i32)| {
+            let (x, z) = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+            unit_at(x, z, UnitKind::Infantry)
+        };
+        let open = (plot.u + plot.cols - 1, front);
+        assert!(!solid.contains(&open));
+        let mut units = vec![palace, on(open), on((plot.u + 2, front))];
+        units[2].id = 2;
+        separate(&mut units, open_ground());
+        let (open_x, open_z) = grid_to_world(open.0 as f32 + 0.5, open.1 as f32 + 0.5);
+        assert_eq!((units[1].x, units[1].z), (open_x, open_z), "left be");
+        assert!(off_squares(&units[0], &units[2]).is_none(), "pushed off");
     }
 
     #[test]

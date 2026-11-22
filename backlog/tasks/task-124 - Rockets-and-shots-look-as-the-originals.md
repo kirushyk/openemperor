@@ -1,9 +1,10 @@
 ---
 id: TASK-124
 title: Rockets and shots look as the original's
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-21T23:04:00Z'
+updated_date: '2026-11-22T00:45:00Z'
 labels: []
 dependencies: []
 ordinal: 124000

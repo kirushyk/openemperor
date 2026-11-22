@@ -645,6 +645,16 @@ const ALL_ROLES: [Role; 63] = [
     Role::GuMaker,
 ];
 
+/// Every kind there is: our roles, the props and scenery, and the extras.
+#[cfg(test)]
+pub fn every_role() -> impl Iterator<Item = Role> {
+    ALL_ROLES
+        .into_iter()
+        .chain(Prop::ALL.into_iter().map(Role::Prop))
+        .chain((0..SCENERY.len() as u8).map(|i| Role::Prop(Prop::Scenery(Scenery(i)))))
+        .chain((0..EXTRAS.len() as u8).map(|i| Role::Extra(Extra(i))))
+}
+
 /// Who owns what is no side's, as a map's barrels and wrecks: no side's index, so nobody's
 /// friend or enemy. It is attacked only when ordered to.
 pub const NEUTRAL: usize = 15;
@@ -2320,16 +2330,22 @@ impl Role {
         }
     }
 
-    /// The rules' `Occupy` rows for it, for one whose squares are not all solid: see
-    /// `OCCUPY`. A construction yard goes by the yard's name, a palace by its house's.
-    fn occupy(self, house: Faction) -> Option<&'static [&'static str]> {
-        let name = match self {
+    /// The name of its section in the rules, for one of this house: a construction yard's is
+    /// the yard's, a palace its house's, a prop's or an extra's its own.
+    pub fn rules_section(self, house: Faction) -> String {
+        match self {
             Role::Mcv => house_letters(house).to_string() + "ConYard",
             Role::Palace(owner) => house_letters(owner).to_string() + "Palace",
             Role::Prop(prop) => prop.rules_name().to_string(),
             Role::Extra(extra) => extra.rules_name().to_string(),
             _ => self.rules_name(house),
-        };
+        }
+    }
+
+    /// The rules' `Occupy` rows for it, for one whose squares are not all solid: see
+    /// `OCCUPY`. A construction yard goes by the yard's name, a palace by its house's.
+    fn occupy(self, house: Faction) -> Option<&'static [&'static str]> {
+        let name = self.rules_section(house);
         OCCUPY
             .iter()
             .find(|(rules_name, _)| rules_name.eq_ignore_ascii_case(&name))
@@ -12415,10 +12431,7 @@ mod tests {
     #[test]
     fn each_rules_occupy_grid_is_as_wide_as_its_plot_and_deep_enough() {
         let houses = [Faction::Atreides, Faction::Harkonnen, Faction::Ordos];
-        let roles = ALL_ROLES
-            .into_iter()
-            .chain((0..SCENERY.len() as u8).map(|i| Role::Prop(Prop::Scenery(Scenery(i)))))
-            .chain((0..EXTRAS.len() as u8).map(|i| Role::Extra(Extra(i))));
+        let roles = every_role();
         let mut found = 0;
         for role in roles {
             for house in houses {

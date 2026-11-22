@@ -4,6 +4,7 @@ title: Which targets need Ctrl to attack
 status: To Do
 assignee: []
 created_date: '2026-11-22T01:14:00Z'
+updated_date: '2026-11-22T01:54:00Z'
 labels: []
 dependencies: []
 ordinal: 134000
@@ -21,3 +22,9 @@ As remembered, hanged figures (gallows) could not be attacked without Ctrl. Chec
 - [ ] #2 Everything it marks is attacked only with Ctrl
 - [ ] #3 Tests cover it
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+No rules key found: the gallows' sections have House Incidental, CountsForStats FALSE, no ExplosionType; the factory frigates CanBeEngineered FALSE, Factory TRUE. Their models have SLCT boxes. Ours: every neutral thing is attacked by a plain click. Asked the user which things need Ctrl in the original.
+<!-- SECTION:NOTES:END -->

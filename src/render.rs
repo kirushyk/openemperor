@@ -2119,12 +2119,24 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
         );
         canvas.deep_line(view, at(back), at(front), thick, GUN_STREAK);
     }
-    for flare in game.combat.flares.iter().filter(|f| seen(f.at)) {
-        draw_flare(canvas, view, flare, s);
+    // The disc's muzzle flashes and hits take the place of ours.
+    if original::shows_gunfire() {
+        for effect in game.combat.effects.iter().filter(|e| seen(e.at)) {
+            original::draw_effect(canvas, effect);
+        }
+    } else {
+        for flare in game.combat.flares.iter().filter(|f| seen(f.at)) {
+            draw_flare(canvas, view, flare, s);
+        }
     }
     for missile in game.combat.missiles.iter().filter(|m| seen(m.position)) {
         let (x, y, z) = missile.position;
         let (dx, dy, dz) = missile.direction;
+        let flight = (missile.position, missile.direction);
+        if original::draw_shot(canvas, flight, missile.gun(), missile.flown()) {
+            cast_only(canvas, missile.position, 2.263);
+            continue;
+        }
         let back = |by: f32| (x - dx * by, y - dy * by, z - dz * by);
         if missile.is_plasma() {
             canvas.deep_line(
@@ -2146,6 +2158,14 @@ fn draw_combat(canvas: &mut Canvas, game: &Game, view: &battlefield::View) {
     }
     for shell in game.combat.shells.iter().filter(|s| seen(s.position())) {
         let (x, y, z) = shell.position();
+        let (bx, by, bz) = shell.a_moment_ago();
+        let (dx, dy, dz) = (x - bx, y - by, z - bz);
+        let length = (dx * dx + dy * dy + dz * dz).sqrt().max(0.004525);
+        let flight = ((x, y, z), (dx / length, dy / length, dz / length));
+        if original::draw_shot(canvas, flight, shell.gun(), shell.flown()) {
+            cast_only(canvas, (x, y, z), 3.62);
+            continue;
+        }
         if let Some(turn) = shell.cistern_turn() {
             let (sin, cos) = turn.sin_cos();
             let end = |by: f32| (x + cos * by, y + sin * by, z);

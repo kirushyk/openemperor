@@ -438,6 +438,8 @@ pub struct Shooter {
     power: f32,
     /// What it fired.
     bullet: Bullet,
+    /// What it fired it with.
+    gun: Gun,
 }
 
 impl Shooter {
@@ -448,6 +450,11 @@ impl Shooter {
             color: unit.color,
             power: unit.attack_power(),
             bullet: bullet_of(unit),
+            gun: Gun {
+                role: unit.role,
+                house: unit.house,
+                weapon: unit.weapon,
+            },
         }
     }
 
@@ -685,12 +692,32 @@ impl Missile {
     pub fn is_plasma(&self) -> bool {
         self.weapon == WeaponKind::Plasma
     }
+
+    /// What fired it, for how it looks.
+    pub fn gun(&self) -> Gun {
+        self.shooter.gun
+    }
+
+    /// How many seconds it has been flying.
+    pub fn flown(&self) -> f32 {
+        MISSILE_FUEL_SECONDS - self.fuel
+    }
 }
 
 impl Shell {
     /// Where it is along its ballistic arc.
     pub fn position(&self) -> Point {
         self.position_at(self.elapsed)
+    }
+
+    /// What fired it, for how it looks.
+    pub fn gun(&self) -> Gun {
+        self.shooter.gun
+    }
+
+    /// How many seconds it has been flying.
+    pub fn flown(&self) -> f32 {
+        self.elapsed
     }
 
     /// The points of its arc it has just passed, nearest first, if it shows them.
@@ -798,6 +825,31 @@ pub struct Flare {
     /// From 1 when it is fired down to 0.
     pub life: f32,
 }
+
+/// Which gun a shot came from, for how it looks: what fired it, of which house, with which of
+/// its weapons.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gun {
+    pub role: Role,
+    pub house: Faction,
+    pub weapon: WeaponKind,
+}
+
+/// A gun's muzzle flash, or its shot's hit, played out where it happened. It is only a sight.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Effect {
+    pub at: Point,
+    /// The way the shot went, as a unit vector.
+    pub direction: Point,
+    /// How many seconds since it happened.
+    pub age: f32,
+    /// Whether it is where the shot hit, not where it was fired from.
+    pub hit: bool,
+    pub gun: Gun,
+}
+
+/// How long a muzzle flash or a hit is kept, as long as the longest of the original's plays.
+const EFFECT_SECONDS: f32 = 1.7;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Blast {
@@ -1084,6 +1136,8 @@ pub struct Combat {
     pub eruptions: Vec<Eruption>,
     pub mushrooms: Vec<Mushroom>,
     pub streaks: Vec<GunStreak>,
+    /// Muzzle flashes and hits.
+    pub effects: Vec<Effect>,
     pub wrecks: Vec<Wreck>,
     pub ragdolls: Vec<Ragdoll>,
     pub bodies: Vec<Body>,
@@ -1107,6 +1161,17 @@ fn paler(color: [f32; 3]) -> [f32; 3] {
 }
 
 impl Combat {
+    /// Where a gun's shot hit, coming this way.
+    fn hit_effect(&mut self, at: Point, direction: Point, gun: Gun) {
+        self.effects.push(Effect {
+            at,
+            direction,
+            age: 0.0,
+            hit: true,
+            gun,
+        });
+    }
+
     /// A flash on the ground, and sparks and smoke thrown out from a point, more and farther
     /// the bigger it is.
     pub fn explode(&mut self, at: Point, radius: f32) {
@@ -1678,6 +1743,10 @@ impl Combat {
             shatter.age += dt;
             shatter.age < SHATTER_SECONDS
         });
+        self.effects.retain_mut(|effect| {
+            effect.age += dt;
+            effect.age < EFFECT_SECONDS
+        });
         self.weld(units, dt);
         self.raise_wisps(units, terrain, dt);
         self.bite_with_drills(units, dt);
@@ -2176,6 +2245,14 @@ impl Combat {
         };
         // Only firing as ordered at a place or a friend can hurt friends.
         let forced = target.is_none_or(|t| units[i].target == Some(Target::Forced(units[t].id)));
+        let tip = units[i].gun_tip();
+        self.effects.push(Effect {
+            at: tip,
+            direction: direction_to(tip, to),
+            age: 0.0,
+            hit: false,
+            gun: shooter.gun,
+        });
         if let Some(size) = weapon.flare() {
             let at = units[i].gun_tip();
             self.flares.push(Flare {
@@ -2200,12 +2277,14 @@ impl Combat {
             | WeaponKind::PostGun
             | WeaponKind::TowerGun => {
                 strike(units, i, target, to, weapon, teams);
+                self.hit_effect(to, direction_to(from, to), shooter.gun);
                 // Twin guns take turns.
                 units[i].second_tube ^= has_twin_guns(&units[i]);
             }
             WeaponKind::Flame | WeaponKind::Gas => self.spray(units, i, teams, forced),
             WeaponKind::Laser | WeaponKind::RapidLaser => {
                 strike(units, i, target, to, weapon, teams);
+                self.hit_effect(to, direction_to(from, to), shooter.gun);
                 self.beams.push(Beam {
                     from,
                     to,
@@ -2668,6 +2747,7 @@ impl Combat {
                     }
                 }
                 self.explode(missile.position, MISSILE_BLAST_RADIUS);
+                self.hit_effect(missile.position, missile.direction, missile.gun());
             } else if let Some(t) = reached {
                 hit(units, t, missile.weapon, missile.shooter, teams);
                 let blast = bullet.blast.unwrap_or(MISSILE_BLAST_RADIUS);
@@ -2687,10 +2767,12 @@ impl Combat {
                     );
                 }
                 self.explode(missile.position, blast);
+                self.hit_effect(missile.position, missile.direction, missile.gun());
             } else if y <= terrain.height_at(x, z) || missile.fuel <= 0.0 || heading_for.is_none() {
                 // A miss: it hits the ground, burns out, or blows itself up where it is once
                 // what it was chasing is gone, harming nobody.
                 self.explode(missile.position, MISSILE_BLAST_RADIUS * 0.6);
+                self.hit_effect(missile.position, missile.direction, missile.gun());
             } else {
                 flying.push(missile);
             }
@@ -2733,6 +2815,9 @@ impl Combat {
             } else {
                 self.explode(landing, blast_radius);
             }
+            let (bx, by, bz) = shell.position_at((shell.elapsed - 0.05).max(0.0));
+            let came = direction_to((bx, by, bz), landing);
+            self.hit_effect(landing, came, shell.gun());
         }
         self.shells = flying;
     }
@@ -3714,6 +3799,38 @@ mod tests {
             distance(combat.missiles[0].position, combat.missiles[1].position) > 9.051,
             "one from each tube"
         );
+    }
+
+    #[test]
+    fn a_shot_flashes_at_the_gun_and_its_rocket_shows_where_it_hits_and_both_pass() {
+        let mut tower = as_role(Role::AtRocketTurret, 0.0, 2715.0);
+        tower.heading = 0.0;
+        let mut units = [tower, target_at(271.5, 2715.0)];
+        let mut combat = Combat::default();
+        combat.shoot(&mut units, 0, Aim::Unit(1), &TEAMS);
+        let flash = combat.effects[0];
+        assert!(!flash.hit && distance(flash.at, units[0].gun_tip()) < 0.01);
+        assert_eq!(flash.gun.role, Role::AtRocketTurret);
+        assert_eq!(
+            combat.missiles[0].gun(),
+            flash.gun,
+            "its rocket is the turret's"
+        );
+        // It fires nothing more meanwhile.
+        units[0].cooldown = 1000.0;
+        for _ in 0..10 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert!(combat.missiles.is_empty());
+        let hit = combat.effects.iter().find(|e| e.hit).expect("a hit");
+        assert!(
+            distance(hit.at, units[1].center()) < 45.25,
+            "where it struck"
+        );
+        for _ in 0..40 {
+            combat.advance(&mut units, &TEAMS, flat(), 0.05);
+        }
+        assert!(combat.effects.is_empty(), "over after a while");
     }
 
     #[test]

@@ -282,7 +282,7 @@ impl Place {
 
     /// The same place pitched nose up by an angle about an axis across it through a point given
     /// as [along, up, across], which stays where it was.
-    fn pitched(self, about: [f32; 3], angle: f32) -> Self {
+    pub(super) fn pitched(self, about: [f32; 3], angle: f32) -> Self {
         let (sin, cos) = angle.sin_cos();
         let along = [0, 1, 2].map(|i| self.along[i] * cos + self.up[i] * sin);
         let up = [0, 1, 2].map(|i| self.up[i] * cos - self.along[i] * sin);

@@ -8,7 +8,9 @@ we are missing is in [units.md](units.md). This list is about everything else.
 - **Effect helpers in the models**: the parts whose names start with `?` or `#` are not
   drawn, except for lights and for faces with see-through `@` pictures (the tornado, the
   buildings' ground skirts). These include:
-  - muzzle flashes (`?bigflash…`) and tracer bullets (`?mgbullet…`);
+  - on the units' own models, muzzle flashes (`?bigflash…`) and tracer bullets
+    (`?mgbullet…`): the flashes are drawn instead from the disc's `Explosion` models each
+    gun's `TurretMuzzleFlash` names, whose glowing faces all show;
   - the windtraps' wind (`?leftwind`, `?rightwind`);
   - the palace's and the lightning gate's lightning (`?lightning…`);
   - Ordos shields (`?{SHIELD}`) and the Leech's mark (`?~~2{LEECH}`);
@@ -134,6 +136,14 @@ and its warhead's share against each armour from `[WarheadTypes]`, and each turr
   ours: how fast shells and bombs fly (their bullets have no `Speed`, or the bomb's 8 we do
   not use), the arc they take, `MinRange`, and the bursts of bullets that strike at once (the
   Kindjal's and the Kobra's 64 on its tracks), which hurt only what they hit.
+- **How shots look**: each gun's muzzle flash, from its turret's `TurretMuzzleFlash`, and each
+  bullet in flight are the disc's models the art list names (`missile`, `shell`,
+  `mortarshell`, `trailmissile`, `devplasma`, `gasrocket`…), played as they are made. Bullets
+  that strike at once (`Speed = -1`) have nothing in flight but our streak. Where a shot
+  hits, its `ExplosionType` model (`mghit`, `shellhit`, `missilehit`, `sniperhit`,
+  `deviatehit`, `bloodsplat`) is only boxes marking where its sparks fly, from the model's
+  effects block we don't read: our own sparks and flash show there. Only the inkvine's splat
+  has faces to draw.
 - **Shields**: the laser tank's `ShieldHealth` 300 and its self-repair.
 - **The repair vehicle** heals by our own rate; the original's `RepairRate` is 12.
 - **By house**: the original gives the Harkonnen engineer 600 health (ours 400 for every

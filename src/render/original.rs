@@ -13,10 +13,13 @@ use crate::fog::Fog;
 use crate::game::{CursorLook, Faction};
 use crate::platform::{NO_PICTURE, Vertex, WorldVertex};
 use crate::units::{
-    CrateKind, EAT_SECONDS, Flight, Frigate, Gender, Harvest, Prop, Role, Unit, UnitKind,
+    CrateKind, EAT_SECONDS, Flight, Frigate, Gender, Harvest, Point, Prop, Role, Unit, UnitKind,
     WallPiece, Wound,
 };
-use crate::weapons::{BODY_SECONDS, BODY_SINK_SECONDS, Body, Made, Noise, REVEAL_SECONDS, Tornado};
+use crate::weapons::{
+    BODY_SECONDS, BODY_SINK_SECONDS, Body, Effect, Gun, Made, Noise, REVEAL_SECONDS, Tornado,
+    WeaponKind,
+};
 use crate::xbf::{self, Animation, Bending, Image, Object, Sequence, Slide};
 pub(super) use crate::xbf::{point, times};
 use std::cmp::Ordering;
@@ -279,6 +282,120 @@ const MODELS: &[(Role, Option<Faction>, &str)] = {
 const TORNADO: &str = "Units\\IN_Tornado_H0.xbf";
 /// The original's model of the starport's frigate, the rules' `[Frigate]`.
 const FRIGATE: &str = "Units\\G_Frigate_H0.xbf";
+
+/// How a gun's shots look, as the rules give it for the unit, by the rules' name of it and, for
+/// one with two guns, the weapon: its turret's `TurretMuzzleFlash`, its bullet's model in
+/// flight as the art list names it, for a bullet that flies, and its bullet's `ExplosionType`
+/// where it hits; each as the disc's model of it.
+struct GunLook {
+    unit: &'static str,
+    weapon: Option<WeaponKind>,
+    muzzle: Option<&'static str>,
+    bullet: Option<&'static str>,
+    hit: Option<&'static str>,
+}
+
+const MUZZLE1: Option<&str> = Some("Explosion\\muzzle1.xbf");
+const MUZZLE2: Option<&str> = Some("Explosion\\muzzle2.xbf");
+const MUZZLE3: Option<&str> = Some("Explosion\\muzzle3.xbf");
+const SMALL_MUZZLE: Option<&str> = Some("Explosion\\smuzz2.xbf");
+const MISSILE: Option<&str> = Some("Bullets\\missile.xbf");
+const SHELL: Option<&str> = Some("Bullets\\shell.xbf");
+const TRAIL_MISSILE: Option<&str> = Some("Bullets\\trailmissile.xbf");
+const DEV_PLASMA: Option<&str> = Some("Bullets\\devplasma.xbf");
+const SONIC: Option<&str> = Some("Bullets\\lsonic.xbf");
+const MISSILE_HIT: Option<&str> = Some("Explosion\\missilehit.xbf");
+const SHELL_HIT: Option<&str> = Some("Explosion\\shellhit.xbf");
+const MG_HIT: Option<&str> = Some("Explosion\\mghit.xbf");
+const BLOOD: Option<&str> = Some("Explosion\\bloodsplat.xbf");
+const DEVIATE_HIT: Option<&str> = Some("Explosion\\deviatehit.xbf");
+
+const fn look(
+    unit: &'static str,
+    weapon: Option<WeaponKind>,
+    muzzle: Option<&'static str>,
+    bullet: Option<&'static str>,
+    hit: Option<&'static str>,
+) -> GunLook {
+    GunLook {
+        unit,
+        weapon,
+        muzzle,
+        bullet,
+        hit,
+    }
+}
+
+#[rustfmt::skip]
+const GUN_LOOKS: [GunLook; 50] = [
+    look("HKGunTurret", None, MUZZLE3, None, MG_HIT),
+    look("ATPillBox", None, None, None, MG_HIT),
+    look("ATRocketTurret", None, MUZZLE3, MISSILE, MISSILE_HIT),
+    look("ORPopUpTurret", None, Some("Explosion\\gplasglow.xbf"), Some("Bullets\\gplasbolt.xbf"), SHELL_HIT),
+    look("ORGasTurret", None, MUZZLE3, Some("Bullets\\gasgrenade.xbf"), DEVIATE_HIT),
+    look("TLTurret", None, MUZZLE3, None, MG_HIT),
+    look("IXMegaCannon", None, Some("Explosion\\ixplasmaflash.xbf"), Some("Bullets\\ixplasma.xbf"), None),
+    look("GUMegaCannon", None, Some("Explosion\\guplasmaflash.xbf"), Some("Bullets\\guplasma.xbf"), None),
+    look("ATKindjal", Some(WeaponKind::Pistol), None, None, MG_HIT),
+    look("ATKindjal", None, MUZZLE2, None, SHELL_HIT),
+    look("ATInfantry", None, SMALL_MUZZLE, None, MG_HIT),
+    look("ATSniper", None, SMALL_MUZZLE, None, Some("Explosion\\sniperhit.xbf")),
+    look("HKLightInf", None, None, None, MG_HIT),
+    look("HKTrooper", None, MUZZLE2, MISSILE, MISSILE_HIT),
+    look("HKEngineer", None, None, None, MG_HIT),
+    look("ORMortar", Some(WeaponKind::Pistol), None, None, MG_HIT),
+    look("ORMortar", None, None, Some("Bullets\\mortarshell.xbf"), None),
+    look("ORAATrooper", None, MUZZLE2, MISSILE, MISSILE_HIT),
+    look("ATGeneral", None, None, None, MG_HIT),
+    look("IMGeneral", None, None, None, SHELL_HIT),
+    look("ATMilitia", None, SMALL_MUZZLE, None, MG_HIT),
+    look("HKDevastator", Some(WeaponKind::Rockets), MUZZLE2, MISSILE, MISSILE_HIT),
+    look("HKDevastator", None, Some("Explosion\\devmuzzle.xbf"), DEV_PLASMA, SHELL_HIT),
+    look("HKMissile", None, MUZZLE3, MISSILE, MISSILE_HIT),
+    look("HKAssault", None, MUZZLE2, None, SHELL_HIT),
+    look("HKBuzzsaw", None, MUZZLE1, None, MG_HIT),
+    look("HKGunship", None, None, TRAIL_MISSILE, MISSILE_HIT),
+    look("HKADP", None, MUZZLE3, None, MG_HIT),
+    look("HKInkVine", None, None, Some("Bullets\\inkvinebullet.xbf"), Some("Explosion\\inkvinesplat.xbf")),
+    look("ATTrike", None, MUZZLE1, None, MG_HIT),
+    look("ATAPC", None, MUZZLE1, None, MG_HIT),
+    look("ATMongoose", None, MUZZLE3, MISSILE, MISSILE_HIT),
+    look("ATOrni", None, None, TRAIL_MISSILE, MISSILE_HIT),
+    look("ATADP", None, None, Some("Bullets\\ormissile.xbf"), MISSILE_HIT),
+    look("ATSonicTank", None, Some("Explosion\\sonicflash.xbf"), SONIC, None),
+    look("ATMinotaurus", None, MUZZLE3, SHELL, None),
+    look("ORLaserTank", None, Some("Explosion\\ltmuzzle.xbf"), None, SHELL_HIT),
+    look("ORDustScout", None, MUZZLE1, None, MG_HIT),
+    look("ORAPC", None, MUZZLE3, MISSILE, None),
+    look("ORKobra", None, MUZZLE2, SHELL, None),
+    look("ORDeviator", None, MUZZLE3, Some("Bullets\\gasrocket.xbf"), DEVIATE_HIT),
+    look("TLLeech", None, None, Some("Bullets\\leechbullet.xbf"), BLOOD),
+    look("TLContaminator", None, None, None, BLOOD),
+    look("IXProjector", None, MUZZLE1, None, MG_HIT),
+    look("IMSardaukar", None, None, None, MG_HIT),
+    look("IMTank", None, MUZZLE2, None, SHELL_HIT),
+    look("IMADVSardaukar", None, None, None, SHELL_HIT),
+    look("FRFremen", None, SMALL_MUZZLE, None, None),
+    look("FRADVFremen", None, None, SONIC, None),
+    look("GUNIAP", None, None, DEV_PLASMA, MISSILE_HIT),
+];
+
+/// The look of the gun a shot came from, if the rules give it one.
+fn gun_look(gun: Gun) -> Option<&'static GunLook> {
+    let name = match gun.role {
+        Role::Extra(extra) => extra.rules_name().to_string(),
+        role => role.rules_name(gun.house),
+    };
+    GUN_LOOKS.iter().find(|look| {
+        look.unit.eq_ignore_ascii_case(&name) && look.weapon.is_none_or(|w| w == gun.weapon)
+    })
+}
+
+/// Whether a model is a shot's, a flash's or a hit's, all of whose glowing faces show.
+fn is_effect(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with("bullets\\") || name.starts_with("explosion\\")
+}
 
 /// The picture on the build button of each role, for every house or for one, and the grey one
 /// it shows while it cannot be made, as the original's `ArtIni.txt` names them. Ordos have no
@@ -1040,6 +1157,9 @@ struct Shape {
     slides: Vec<Slide>,
     /// The sounds its animation plays, each at its frame, by its section in the sound tables.
     sounds: Vec<(usize, String)>,
+    /// Whether all its glowing faces show, as a shot's, a flash's or a hit's do, not only its
+    /// lights'.
+    glows: bool,
 }
 
 /// A part of a model: its faces, the part it sits in, where it is in that one, and whether it
@@ -1406,6 +1526,12 @@ fn read_shapes(disc: &Path) -> Option<Original> {
     let names = names.chain(SCENERY.iter().map(|&(_, name)| name));
     let names = names.chain(EXTRAS.iter().map(|&(_, name)| name));
     let names = names.chain(CRATES.iter().map(|&(_, name)| name));
+    let names = names.chain(
+        GUN_LOOKS
+            .iter()
+            .flat_map(|look| [look.muzzle, look.bullet, look.hit])
+            .flatten(),
+    );
     let shapes: HashMap<_, _> = names
         .filter_map(|name| Some((name, read_shape(&archive, name, &mut pictures)?)))
         .collect();
@@ -1765,6 +1891,7 @@ fn read_shape(
         sequences: model.sequences,
         slides: model.slides,
         sounds: model.sounds,
+        glows: is_effect(name),
         ..Shape::default()
     };
     for object in &model.objects {
@@ -1883,19 +2010,21 @@ fn gather(
     // and what is seen through, unless it only shows when something has happened to the
     // unit, as the mark of a leech in it does.
     let flows = shape.slides.iter().any(|slide| slide.part == object.name);
-    let lit = is_light(&object.name) || flows;
-    let shown = !object.name.contains(CONDITION_MARK);
+    let lit = is_light(&object.name) || flows || shape.glows;
+    // A shot's, a flash's or a hit's box that only marks where an effect plays shows nothing.
+    let shown =
+        !object.name.contains(CONDITION_MARK) && !(shape.glows && object.name.contains(GLINT_MARK));
     let veils = object
         .faces
         .iter()
         .filter_map(|face| {
             let (layer, glows) = match face.texture.and_then(|n| pictures.get(n).copied()) {
-                Some(Picture::Glow { layer, .. }) if lit => (*layer, true),
+                Some(Picture::Glow { layer, .. }) if lit && shown => (*layer, true),
                 // A light kept out of sight as a mark, painted with a picture not marked to
                 // glow, shows it unlit and covering what is behind, as a windtrap's front and
                 // back panels do; a box that only marks where a light is, `#`, shows nothing.
                 Some(Picture::Painted { layer, .. })
-                    if lit && object.name.starts_with(LIGHT_FACE_MARK) =>
+                    if lit && shown && object.name.starts_with(LIGHT_FACE_MARK) =>
                 {
                     (*layer, false)
                 }
@@ -2777,6 +2906,97 @@ pub(super) fn draw_tornado(canvas: &mut Canvas, tornado: &Tornado, time: f32) ->
     };
     draw_posed(canvas, shape, &posed, [0.0; 3]);
     true
+}
+
+/// Draws a gun's shot in flight with the disc's model of its bullet, this many seconds since
+/// it was fired, nose along the way it is going, if the disc has one for it.
+pub(super) fn draw_shot(
+    canvas: &mut Canvas,
+    (at, (dx, dy, dz)): (Point, Point),
+    gun: Gun,
+    flown: f32,
+) -> bool {
+    let Some(shape) = gun_look(gun)
+        .and_then(|look| look.bullet)
+        .and_then(|name| ORIGINAL.get()?.shapes.get(name))
+    else {
+        return false;
+    };
+    let frame = played(shape, "Move", flown).unwrap_or(0);
+    draw_effect_shape(canvas, shape, at, (dx, dy, dz), frame, flown);
+    true
+}
+
+/// Draws a gun's muzzle flash or its shot's hit with the disc's model of it, playing it once.
+/// False if the disc has none for it; true while it is over.
+pub(super) fn draw_effect(canvas: &mut Canvas, effect: &Effect) -> bool {
+    let Some(look) = gun_look(effect.gun) else {
+        return false;
+    };
+    let name = if effect.hit { look.hit } else { look.muzzle };
+    let Some(shape) = name.and_then(|name| ORIGINAL.get()?.shapes.get(name)) else {
+        return false;
+    };
+    let ranges = shape
+        .sequences
+        .first()
+        .map_or(&[][..], |s| s.ranges.as_slice());
+    if let Some(frame) = once(ranges, (effect.age * FRAMES_PER_SECOND) as usize) {
+        draw_effect_shape(
+            canvas,
+            shape,
+            effect.at,
+            effect.direction,
+            frame,
+            effect.age,
+        );
+    }
+    true
+}
+
+/// Whether the disc's models of guns' flashes and hits have been read, which then take the
+/// place of ours.
+pub(super) fn shows_gunfire() -> bool {
+    ORIGINAL.get().is_some_and(|original| {
+        GUN_LOOKS
+            .iter()
+            .filter_map(|look| look.muzzle)
+            .any(|name| original.shapes.contains_key(name))
+    })
+}
+
+/// Which frame of its model's sequence of this name a shot is at, this many seconds in, going
+/// round it.
+fn played(shape: &Shape, name: &str, seconds: f32) -> Option<usize> {
+    let sequence = shape.sequences.iter().find(|s| s.name == name)?;
+    Some(looped(
+        &sequence.ranges,
+        (seconds * FRAMES_PER_SECOND) as usize,
+    ))
+}
+
+/// Draws a shot's, a flash's or a hit's model at a point, its front along a way, at a frame.
+fn draw_effect_shape(
+    canvas: &mut Canvas,
+    shape: &Shape,
+    at: Point,
+    (dx, dy, dz): Point,
+    frame: usize,
+    seconds: f32,
+) {
+    let (x, y, z) = at;
+    let heading = dz.atan2(dx);
+    let rise = dy.clamp(-1.0, 1.0).asin();
+    let body = Place::turned([x, y, z], heading).pitched([0.0; 3], rise);
+    let posed = Posed {
+        body,
+        head: body,
+        frame,
+        slid: seconds * FRAMES_PER_SECOND,
+        worlds: pose(shape, 0.0, 0.0, frame),
+        set_up: true,
+    };
+    draw_posed(canvas, shape, &posed, [0.0; 3]);
 }
 
 /// Draws the original's frigate in its house color, as it is in its visit at this time of the
@@ -3701,6 +3921,57 @@ mod tests {
                 .filter(|&&y| (y - crate::units::pad_top()).abs() < 1.0);
             assert!(deck.count() >= 4, "{name}: {heights:?}");
         }
+    }
+
+    #[test]
+    fn a_guns_look_is_its_units_in_the_rules_and_for_two_guns_its_weapons() {
+        let gun = |role, weapon| Gun {
+            role,
+            house: Faction::Harkonnen,
+            weapon,
+        };
+        let turret = gun_look(gun(Role::AtRocketTurret, WeaponKind::TowerRockets)).unwrap();
+        assert_eq!((turret.muzzle, turret.bullet), (MUZZLE3, MISSILE));
+        let rockets = gun_look(gun(Role::HkDevastator, WeaponKind::Rockets)).unwrap();
+        let plasma = gun_look(gun(Role::HkDevastator, WeaponKind::Plasma)).unwrap();
+        assert_eq!((rockets.bullet, plasma.bullet), (MISSILE, DEV_PLASMA));
+        let tank = gun_look(gun(Role::HkAssault, WeaponKind::Cannon)).unwrap();
+        assert_eq!(
+            (tank.muzzle, tank.bullet, tank.hit),
+            (MUZZLE2, None, SHELL_HIT)
+        );
+        assert!(gun_look(gun(Role::Harvester, WeaponKind::Unarmed)).is_none());
+    }
+
+    #[test]
+    fn each_guns_flash_shot_and_hit_on_the_disc_has_something_to_show() {
+        let disc = Path::new("/Volumes/EMPEROR1");
+        let Some(original) = read_shapes(disc) else {
+            return;
+        };
+        let shows = |name: &str| {
+            let shape = original.shapes.get(name).expect(name);
+            let shows = |part: &Part| !part.faces.is_empty() || !part.veils.is_empty();
+            shape.parts.iter().any(shows)
+        };
+        for name in GUN_LOOKS
+            .iter()
+            .flat_map(|look| [look.muzzle, look.bullet])
+            .flatten()
+        {
+            assert!(shows(name), "{name}");
+        }
+        // Most hits are only boxes marking where their sparks fly, which show nothing.
+        assert!(!shows(MG_HIT.unwrap()) && !shows(SHELL_HIT.unwrap()));
+        assert!(shows("Explosion\\inkvinesplat.xbf"));
+        // A rocket's flame glows behind it.
+        let missile = &original.shapes[MISSILE.unwrap()];
+        assert!(
+            missile
+                .parts
+                .iter()
+                .any(|part| part.veils.iter().any(|veil| veil.glows))
+        );
     }
 
     #[test]

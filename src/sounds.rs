@@ -286,8 +286,8 @@ fn spoken_name(speech: Speech, house: Faction) -> &'static str {
         (Speech::SuperweaponReady, Atreides) => "ui-g054",
         (Speech::SuperweaponReady, Harkonnen) => "ui-g056",
         (Speech::SuperweaponReady, Ordos) => "ui-g058",
-        (Speech::Victory, _) => "ui-g482",
-        (Speech::Defeat, _) => "ui-g484",
+        (Speech::Victory, _) => "ui-g488",
+        (Speech::Defeat, _) => "ui-g490",
     }
 }
 

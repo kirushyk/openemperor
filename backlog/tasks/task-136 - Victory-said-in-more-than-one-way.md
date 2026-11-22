@@ -1,9 +1,10 @@
 ---
 id: TASK-136
 title: Victory said in more than one way
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-22T02:43:00Z'
+updated_date: '2026-11-22T02:47:00Z'
 labels: []
 dependencies: []
 ordinal: 136000
@@ -21,3 +22,9 @@ Winning always says 'You are victorious'; the original also says 'Victory is you
 - [ ] #2 A win plays them as the original does
 - [ ] #3 Tests cover it
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+UI lines near the win ui-g482 (5.7 s) and loss ui-g484: ui-g480, 486-496 unused (2-3.4 s). No transcript on the disc; exported to the scratchpad for the user to say which is 'Victory is yours'.
+<!-- SECTION:NOTES:END -->

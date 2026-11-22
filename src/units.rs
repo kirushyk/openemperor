@@ -16,9 +16,6 @@ pub const HEIGHT: f32 = 22.63;
 const SPACING: f32 = 70.0;
 /// A unit this close to its destination has reached it.
 const ARRIVED: f32 = 5.431;
-/// Destinations in one order stand this far apart: two and a half tiles, enough for two
-/// machines of the original's usual size side by side with room between them.
-const SLOT_SPACING: f32 = 2.5 * CELL_SIDE;
 /// The same in the air, where carryalls take three tiles.
 const AIR_SLOT_SPACING: f32 = 3.5 * CELL_SIDE;
 /// How far from the clicked point to look for free destinations, in slots.
@@ -4502,15 +4499,6 @@ fn place_building(
     place_unit(units, terrain, at, role, role.weapon(), side, id);
 }
 
-/// Places around a building where others must not be sent, so that nobody presses against it.
-fn building_footprint(building: &Unit) -> [(f32, f32); 8] {
-    std::array::from_fn(|i| {
-        let (sin, cos) = (i as f32 / 8.0 * TAU).sin_cos();
-        let reach = building.radius() / 2.0;
-        (building.x + reach * cos, building.z + reach * sin)
-    })
-}
-
 /// The building of this owner that can make this role, if they have one.
 #[cfg(test)]
 pub fn maker_of(units: &[Unit], role: Role, owner: usize) -> Option<&Unit> {
@@ -5089,18 +5077,16 @@ pub fn send_to_spot(units: &mut [Unit], index: usize, point: (f32, f32), terrain
     }
 }
 
-/// Where a new unit must not go: where everyone in its layer stands or is headed, and around
-/// the buildings.
-fn spots_taken(units: &[Unit], flying: bool) -> Vec<(f32, f32)> {
+/// A place someone stands or is headed, and how wide they are about it.
+type Taken = ((f32, f32), f32);
+
+/// Where a new unit must not go: where everyone in its layer stands or is headed. Buildings
+/// keep it off their squares themselves.
+fn spots_taken(units: &[Unit], flying: bool) -> Vec<Taken> {
     units
         .iter()
-        .filter(|u| u.alive && u.keeps_to_the_air() == flying)
-        .flat_map(|u| {
-            let around = u.kind.is_building().then(|| building_footprint(u));
-            [(u.x, u.z), u.destination]
-                .into_iter()
-                .chain(around.into_iter().flatten())
-        })
+        .filter(|u| u.alive && u.keeps_to_the_air() == flying && !u.kind.is_building())
+        .flat_map(|u| [((u.x, u.z), u.radius()), (u.destination, u.radius())])
         .collect()
 }
 
@@ -5691,6 +5677,16 @@ pub fn spawn_bases(terrain: &Terrain, colors: &[TeamColor]) -> Vec<Unit> {
     units
 }
 
+/// How wide a spot is about its middle for what goes this way: a square across for soldiers
+/// and two for machines, as the rules' `Size` of each, and room for a carryall in the air.
+fn slot_radius(going: Going) -> f32 {
+    match going {
+        Going::Flying => AIR_SLOT_SPACING / 2.0,
+        Going::OnFoot => CELL_SIDE / 2.0,
+        _ => CELL_SIDE,
+    }
+}
+
 /// Up to `count` free spots near a point, nearest first, each far enough from the others
 /// and from every point in `taken`. Spots on the ground must be walkable the way they go, so a
 /// click on water finds the nearest land, and leave a machine room clear of the buildings'
@@ -5701,17 +5697,14 @@ fn find_slots(
     units: &[Unit],
     target: (f32, f32),
     count: usize,
-    taken: &[(f32, f32)],
+    taken: &[Taken],
     going: Going,
 ) -> Vec<(f32, f32)> {
     let flying = going == Going::Flying;
     // Sent into a mountain or a pit, they go to the edge of it.
     let target = terrain.nearest_walkable(going, target).unwrap_or(target);
-    let spacing = if flying {
-        AIR_SLOT_SPACING
-    } else {
-        SLOT_SPACING
-    };
+    let room = slot_radius(going);
+    let spacing = room * 2.0;
     let mut offsets = Vec::new();
     for j in -SLOT_SEARCH_RINGS..=SLOT_SEARCH_RINGS {
         for i in -SLOT_SEARCH_RINGS..=SLOT_SEARCH_RINGS {
@@ -5719,10 +5712,10 @@ fn find_slots(
         }
     }
     offsets.sort_by(|a, b| a.0.hypot(a.1).total_cmp(&b.0.hypot(b.1)));
-    let is_free = |spot: (f32, f32), others: &[(f32, f32)]| {
-        others
+    let is_free = |spot: (f32, f32)| {
+        taken
             .iter()
-            .all(|o| (o.0 - spot.0).hypot(o.1 - spot.1) >= spacing - 0.04525)
+            .all(|&((x, z), r)| (x - spot.0).hypot(z - spot.1) >= room + r - 0.04525)
     };
     let mut slots: Vec<(f32, f32)> = Vec::with_capacity(count);
     for (dx, dz) in offsets {
@@ -5735,18 +5728,17 @@ fn find_slots(
                 || units
                     .iter()
                     .filter(|u| u.alive && u.kind.is_building())
-                    .filter(|u| {
-                        u.plot()
-                            .is_some_and(|plot| plot.distance_from(spot) < CELL_SIDE)
-                    })
+                    .filter(|u| u.plot().is_some_and(|plot| plot.distance_from(spot) < room))
                     .all(|u| {
                         u.nearest_marked(b"bdp", spot)
-                            .is_none_or(|(_, away)| away >= CELL_SIDE)
+                            .is_none_or(|(_, away)| away >= room)
                     })
         };
         if terrain.can_go(going, spot.0, spot.1)
-            && is_free(spot, taken)
-            && is_free(spot, &slots)
+            && is_free(spot)
+            && slots
+                .iter()
+                .all(|s| (s.0 - spot.0).hypot(s.1 - spot.1) >= spacing - 0.04525)
             && off_buildings()
         {
             slots.push(spot);
@@ -5781,18 +5773,13 @@ fn order_layer(
 ) {
     let in_layer = |u: &Unit| u.keeps_to_the_air() == flying;
     let any_heavy = units.iter().any(|u| in_layer(u) && u.selected && u.heavy);
-    let taken: Vec<(f32, f32)> = units
+    let taken: Vec<Taken> = units
         .iter()
         .filter(|u| {
-            let can_be_run_over =
-                any_heavy && are_enemies(teams, 0, u.owner) && !u.kind.is_building();
-            // Buildings stay in the way whether selected or not.
-            in_layer(u) && (!u.selected || u.kind.is_building()) && u.alive && !can_be_run_over
+            let can_be_run_over = any_heavy && are_enemies(teams, 0, u.owner);
+            in_layer(u) && !u.selected && u.alive && !u.kind.is_building() && !can_be_run_over
         })
-        .flat_map(|u| {
-            let around = u.kind.is_building().then(|| building_footprint(u));
-            std::iter::once(u.destination).chain(around.into_iter().flatten())
-        })
+        .map(|u| (u.destination, u.radius()))
         .collect();
     // Deployed units are dug in and stay put.
     let mut chosen: Vec<usize> = (0..units.len())
@@ -5861,13 +5848,10 @@ pub fn order_march(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, te
         .iter()
         .map(|&i| units[i].speed())
         .fold(f32::INFINITY, f32::min);
-    let mut taken: Vec<(f32, f32)> = units
+    let mut taken: Vec<Taken> = units
         .iter()
-        .filter(|u| u.alive && !u.keeps_to_the_air() && (!u.selected || u.kind.is_building()))
-        .flat_map(|u| {
-            let around = u.kind.is_building().then(|| building_footprint(u));
-            std::iter::once(u.destination).chain(around.into_iter().flatten())
-        })
+        .filter(|u| u.alive && !u.keeps_to_the_air() && !u.selected && !u.kind.is_building())
+        .map(|u| (u.destination, u.radius()))
         .collect();
     let others = taken.clone();
     let mut by_middle = marching;
@@ -5881,10 +5865,11 @@ pub fn order_march(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, te
         // Its own place in the group if that is free of the rest, however near it is to the
         // others marching; or else the nearest free spot to it.
         let going = units[i].going_to_a_spot();
+        let room = slot_radius(going);
         let free = terrain.can_go(going, place.0, place.1)
             && others
                 .iter()
-                .all(|o| (o.0 - place.0).hypot(o.1 - place.1) >= SLOT_SPACING - 0.04525);
+                .all(|&((x, z), r)| (x - place.0).hypot(z - place.1) >= room + r - 0.04525);
         let spot = if free {
             place
         } else {
@@ -5893,7 +5878,7 @@ pub fn order_march(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, te
             };
             spot
         };
-        taken.push(spot);
+        taken.push((spot, room));
         units[i].destination = spot;
         units[i].pace = Some(pace);
     }
@@ -6362,7 +6347,8 @@ fn steering(units: &[Unit], index: usize, teams: &[usize]) -> (f32, f32) {
             let range = unit.radius() + other.radius() + AVOID_MARGIN;
             ((dx, dz), dx.hypot(dz), range)
         };
-        if distance < range && dx * want_x + dz * want_z > 0.0 {
+        // Only what stands between it and where it is going is in its way.
+        if distance < range && distance < length && dx * want_x + dz * want_z > 0.0 {
             sideways += (1.0 - distance / range) * 2.0;
         }
     }
@@ -6601,13 +6587,30 @@ fn separate(units: &mut [Unit], terrain: &Terrain) {
     }
 }
 
+/// How far a point is from the nearest point of a line between two others.
+fn distance_to_segment((x, z): (f32, f32), from: (f32, f32), to: (f32, f32)) -> f32 {
+    let (dx, dz) = (to.0 - from.0, to.1 - from.1);
+    let long = dx * dx + dz * dz;
+    let t = if long > 0.0 {
+        (((x - from.0) * dx + (z - from.1) * dz) / long).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (x - from.0 - dx * t).hypot(z - from.1 - dz * t)
+}
+
 /// Close enough to a point on its way to go on to the next.
 const THROUGH: f32 = 18.1;
 
 /// Finds a way around what stands between a unit on the ground and where it is going, unless
 /// it has one or goes straight there. With no way at all it keeps heading straight, which ends
 /// with it giving up against whatever blocks it. Returns whether it had to look for a route.
-fn plan_way(unit: &mut Unit, terrain: &Terrain, may_search: bool) -> bool {
+fn plan_way(
+    unit: &mut Unit,
+    terrain: &Terrain,
+    standing: &[(f32, f32, f32, bool)],
+    may_search: bool,
+) -> bool {
     /// How far a destination may have moved for a route to it to still be good.
     const STILL_GOOD: f32 = 45.25;
     let here = (unit.x, unit.z);
@@ -6625,12 +6628,31 @@ fn plan_way(unit: &mut Unit, terrain: &Terrain, may_search: bool) -> bool {
         unit.way = None;
     }
     let going = unit.kind.going();
-    if !may_search || terrain.line_is_clear(going, here, unit.destination) {
+    // What stands still is in the way as much as the land: buildings' solid squares, each as
+    // round about its middle as it reaches, and whoever is not going anywhere. Not what it
+    // stands right by, or what stands at where it is going, as what it is going after; nor
+    // soldiers in a heavy machine's way, who go under it or out of it.
+    let to = unit.destination;
+    let in_way: Vec<(f32, f32, f32)> = standing
+        .iter()
+        .filter(|&&(_, _, _, soldier)| !(soldier && unit.heavy))
+        .map(|&(x, z, r, _)| (x, z, r + unit.radius()))
+        .filter(|&(x, z, reach)| {
+            (x - here.0).hypot(z - here.1) >= reach && (x - to.0).hypot(z - to.1) >= reach
+        })
+        .collect();
+    let past_buildings = !in_way
+        .iter()
+        .any(|&(x, z, reach)| distance_to_segment((x, z), here, to) < reach);
+    if !may_search || past_buildings && terrain.line_is_clear(going, here, unit.destination) {
         return false;
     }
-    let through = terrain
-        .next_on_route(going, here, unit.destination)
-        .unwrap_or(unit.destination);
+    let route = if past_buildings {
+        terrain.next_on_route(going, here, unit.destination)
+    } else {
+        terrain.next_on_route_around(going, here, unit.destination, &in_way)
+    };
+    let through = route.unwrap_or(unit.destination);
     unit.way = Some(Way {
         through,
         to: unit.destination,
@@ -6721,6 +6743,23 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
     let mut searches = SEARCHES;
     let mut held_back = vec![false; units.len()];
     let started_at: Vec<(f32, f32)> = units.iter().map(|u| (u.x, u.z)).collect();
+    // What stands still on the ground, which units find their way round: the middles of the
+    // buildings' solid squares, and who is not going anywhere, each as far as it reaches.
+    let standing: Vec<(f32, f32, f32, bool)> = units
+        .iter()
+        .filter(|u| u.alive && u.kind.is_building())
+        .flat_map(Unit::blocking_squares)
+        .map(|(u, v)| {
+            let (x, z) = grid_to_world(u as f32 + 0.5, v as f32 + 0.5);
+            (x, z, CELL_SIDE * FRAC_1_SQRT_2, false)
+        })
+        .chain(
+            units
+                .iter()
+                .filter(|u| u.alive && u.altitude <= 0.0 && !u.kind.is_building() && !u.is_moving())
+                .map(|u| (u.x, u.z, u.radius(), u.kind == UnitKind::Infantry)),
+        )
+        .collect();
     for i in 0..units.len() {
         if units[i].is_settling() {
             settle(&mut units[i], terrain, dt);
@@ -6753,7 +6792,7 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
             if units[i].stall.rethink && searches > 0 {
                 find_new_way(units, i, terrain);
                 searches -= 1;
-            } else if plan_way(&mut units[i], terrain, searches > 0) {
+            } else if plan_way(&mut units[i], terrain, &standing, searches > 0) {
                 searches -= 1;
             }
         }
@@ -6813,7 +6852,13 @@ fn step(units: &mut [Unit], terrain: &Terrain, teams: &[usize], dt: f32) {
         // Wedged against those who stay put, a chaser would otherwise press on forever.
         let moved = (unit.x - started_at[i].0).hypot(unit.z - started_at[i].1);
         unit.stride += moved;
-        held_back[i] |= unit.target.is_some() && moved < unit.speed() * dt * WEDGED_SHARE;
+        let barely = moved < unit.speed() * dt * WEDGED_SHARE;
+        // Held up within its own width of where it is going, by whoever stands on the rest of
+        // it, it is there as near as it can be.
+        if unit.is_moving() && unit.target.is_none() && barely && unit.remaining() < unit.radius() {
+            unit.stand_down();
+        }
+        held_back[i] |= unit.target.is_some() && barely;
         unit.y = terrain.height_at(unit.x, unit.z);
         if unit.kind.flies() {
             // What flies keeps above the land's level over a pit.
@@ -9125,12 +9170,14 @@ mod tests {
                 10 + id
             ));
         }
-        // Out between the real shapes of a crowded base, a dozen take half a minute.
-        for _ in 0..600 {
+        // Out between the real shapes of a crowded base, packed a machine's width apart, a
+        // dozen at once take three quarters of a minute.
+        for _ in 0..900 {
             advance(&mut units, open_ground(), &[0], 0.05);
         }
+        // Packed a machine's width apart, those pressed between others rest touching.
         assert!(
-            largest_overlap(&units) <= 0.1,
+            largest_overlap(&units) <= 1.0,
             "{}",
             largest_overlap(&units)
         );
@@ -11114,14 +11161,12 @@ mod tests {
         order_move(&mut units, (MAP_MIDDLE_X, 2263.0), open_ground(), &[]);
         for (i, a) in units.iter().enumerate() {
             let from_click = (a.destination.0 - MAP_MIDDLE_X).hypot(a.destination.1 - 2263.0);
-            assert!(
-                from_click < SLOT_SPACING * 3.0,
-                "near the click: {from_click}"
-            );
+            assert!(from_click < CELL_SIDE * 3.0, "near the click: {from_click}");
             for b in &units[i + 1..] {
                 let apart =
                     (a.destination.0 - b.destination.0).hypot(a.destination.1 - b.destination.1);
-                assert!(apart >= SLOT_SPACING - 0.4525, "too close: {apart}");
+                // A square apart, each soldier on his own.
+                assert!(apart >= CELL_SIDE - 0.4525, "too close: {apart}");
             }
         }
     }
@@ -11136,8 +11181,8 @@ mod tests {
         units[1].selected = true;
         order_move(&mut units, (MAP_MIDDLE_X, 2263.0), open_ground(), &[]);
         assert_ne!(units[1].destination, units[0].destination);
-        let apart = (units[1].destination.0).hypot(units[1].destination.1 - 2263.0);
-        assert!(apart >= SLOT_SPACING - 0.4525);
+        let apart = (units[1].destination.0 - MAP_MIDDLE_X).hypot(units[1].destination.1 - 2263.0);
+        assert!(apart >= CELL_SIDE - 0.4525);
         assert_eq!(
             units[0].destination,
             (MAP_MIDDLE_X, 2263.0),

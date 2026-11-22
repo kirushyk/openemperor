@@ -632,11 +632,37 @@ impl Script {
                         battle.relate(number(0), number(1), *callee == Piece::Function(ENEMIES));
                         Value::Number(0)
                     }
-                    _ => Value::Number(0),
+                    _ => {
+                        if let Some(warning) = first_unknown(*callee) {
+                            eprintln!("{warning}");
+                        }
+                        Value::Number(0)
+                    }
                 }
             }
         }
     }
+}
+
+/// A warning that a script calls a function or keyword we don't carry out, by its number, the
+/// first time one is called in this run; `None` after that, or for anything else.
+fn first_unknown(callee: Piece) -> Option<String> {
+    static WARNED: std::sync::Mutex<Vec<Piece>> = std::sync::Mutex::new(Vec::new());
+    let name = match callee {
+        Piece::Function(n) => format!("function F{n}"),
+        Piece::Keyword(n) => format!("keyword K{n}"),
+        _ => return None,
+    };
+    let mut warned = WARNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if warned.contains(&callee) {
+        return None;
+    }
+    warned.push(callee);
+    Some(format!(
+        "Warning: the mission script calls {name}, which is not carried out"
+    ))
 }
 
 /// Has the camera do this, if there is anything to do.
@@ -790,6 +816,15 @@ fn binding(keyword: u16) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_we_do_not_carry_out_is_warned_of_once_by_its_number() {
+        let warning = first_unknown(Piece::Function(999)).unwrap();
+        assert!(warning.contains("F999"), "{warning}");
+        assert_eq!(first_unknown(Piece::Function(999)), None, "once");
+        assert!(first_unknown(Piece::Keyword(999)).unwrap().contains("K999"));
+        assert_eq!(first_unknown(Piece::Number(3)), None);
+    }
 
     /// A script of these lines, with its head.
     fn script(lines: &[&[u8]]) -> Vec<u8> {

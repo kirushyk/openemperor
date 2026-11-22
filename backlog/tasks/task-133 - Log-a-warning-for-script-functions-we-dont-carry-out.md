@@ -1,9 +1,10 @@
 ---
 id: TASK-133
 title: Log a warning for script functions we don't carry out
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-22T01:13:00Z'
+updated_date: '2026-11-22T01:46:00Z'
 labels: []
 dependencies: []
 ordinal: 133000
@@ -17,6 +18,12 @@ When a mission script calls a function we have not implemented, log a warning na
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A script calling a function we don't carry out logs a warning naming it, once per function
-- [ ] #2 Tests cover it
+- [x] #1 A script calling a function we don't carry out logs a warning naming it, once per function
+- [x] #2 Tests cover it
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A script calling a function (F<n>) or keyword (K<n>) we don't carry out now prints a warning naming it on stderr, the first time in a run.
+<!-- SECTION:FINAL_SUMMARY:END -->

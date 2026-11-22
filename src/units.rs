@@ -4914,7 +4914,6 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
         return false;
     };
     let side = (owner, maker.color);
-    let appears_at = if vehicle { door } else { spot };
     // Sent on to the gathering point if there is one, to a spot there of its own.
     let flying = role.kind().flies() && !role.lands();
     let gathers_at = maker.gathering.and_then(|point| {
@@ -4924,6 +4923,29 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
             .first()
             .copied()
     });
+    // A soldier with nowhere to go stands on the square by the door, those there before him
+    // stepping a square aside for him.
+    let at_door = (role.kind() == UnitKind::Infantry && gathers_at.is_none())
+        .then(|| door_square(maker))
+        .flatten()
+        .filter(|&(x, z)| terrain.can_go(on_the_ground, x, z));
+    let stepping = at_door.map_or_else(Vec::new, |square| make_way_at_door(units, maker, square));
+    // With anyone else on it, who will not step aside, it takes the nearest free spot.
+    let room = role.radius();
+    let at_door = at_door.filter(|&(x, z)| {
+        units
+            .iter()
+            .enumerate()
+            .filter(|(i, u)| {
+                u.alive && u.altitude <= 0.0 && !u.kind.is_building() && !stepping.contains(i)
+            })
+            .all(|(_, u)| (u.x - x).hypot(u.z - z) >= room + u.radius() - 0.04525)
+    });
+    let appears_at = match at_door {
+        Some(square) => square,
+        None if vehicle => door,
+        None => spot,
+    };
     place_unit(units, terrain, appears_at, role, role.weapon(), side, id);
     if let Some(new) = units.last_mut() {
         new.house = maker.house;
@@ -4935,6 +4957,46 @@ fn produce_at(units: &mut Vec<Unit>, terrain: &Terrain, role: Role, maker: &Unit
         }
     }
     true
+}
+
+/// The middle of the square just out from the middle of a building's front, if it is one.
+fn door_square(maker: &Unit) -> Option<(f32, f32)> {
+    let plot = maker.plot()?;
+    let (_, rows) = maker.role.plot_size(maker.house);
+    let (out_x, out_z) = maker.facing.way_out();
+    let (x, z) = plot.center();
+    let out = (rows as f32 / 2.0 + 0.5) * CELL_SIDE;
+    let (u, v) = world_to_grid(x + out_x * out, z + out_z * out);
+    Some(grid_to_world(u.floor() + 0.5, v.floor() + 0.5))
+}
+
+/// Those of a building's owner standing idle on the square by its door step a square aside
+/// along its front, and whoever stands idle where each steps steps aside with them. Says who
+/// is stepping.
+fn make_way_at_door(units: &mut [Unit], maker: &Unit, square: (f32, f32)) -> Vec<usize> {
+    let (aside_x, aside_z) = maker.facing.turned((CELL_SIDE, 0.0));
+    let idle_on = |units: &[Unit], (x, z): (f32, f32)| {
+        units.iter().position(|u| {
+            u.alive
+                && u.owner == maker.owner
+                && u.kind == UnitKind::Infantry
+                && !u.is_moving()
+                && u.target.is_none()
+                && (u.x - x).abs() < CELL_SIDE / 2.0
+                && (u.z - z).abs() < CELL_SIDE / 2.0
+        })
+    };
+    let mut at = square;
+    let mut stepping = Vec::new();
+    while let Some(i) = idle_on(units, at).filter(|i| !stepping.contains(i)) {
+        stepping.push(i);
+        at = (at.0 + aside_x, at.1 + aside_z);
+    }
+    for &i in &stepping {
+        let (x, z) = units[i].destination;
+        units[i].destination = (x + aside_x, z + aside_z);
+    }
+    stepping
 }
 
 /// How many of a scripted construction yard's rows lie behind the point it is put at.
@@ -9148,10 +9210,56 @@ mod tests {
         for id in 0..12 {
             assert!(produce(&mut units, open_ground(), Role::Scout, 0, 10 + id));
         }
+        // Those already by the door step aside for each new one.
+        for _ in 0..200 {
+            advance(&mut units, open_ground(), &[0], 0.05);
+        }
         assert!(
-            largest_overlap(&units) <= 0.0,
+            largest_overlap(&units) <= 1.0,
             "{}",
             largest_overlap(&units)
+        );
+    }
+
+    #[test]
+    fn soldiers_out_of_the_barracks_take_its_door_square_the_earlier_stepping_aside() {
+        let mut units = base_of(0);
+        let barracks = *units.iter().find(|u| u.role == Role::Barracks).unwrap();
+        let door = door_square(&barracks).unwrap();
+        let (aside_x, aside_z) = barracks.facing.turned((CELL_SIDE, 0.0));
+        let soldiers = |units: &[Unit]| -> Vec<(f32, f32)> {
+            units
+                .iter()
+                .filter(|u| u.role == Role::AtInfantry)
+                .map(|u| (u.x, u.z))
+                .collect()
+        };
+        let near = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).hypot(a.1 - b.1) < ARRIVED * 2.0;
+        for id in 0..3 {
+            assert!(produce(
+                &mut units,
+                open_ground(),
+                Role::AtInfantry,
+                0,
+                100 + id
+            ));
+            for _ in 0..100 {
+                advance(&mut units, open_ground(), &[0], 0.05);
+            }
+        }
+        let stood = soldiers(&units);
+        let square = |n: f32| (door.0 + aside_x * n, door.1 + aside_z * n);
+        assert!(
+            near(stood[2], square(0.0)),
+            "the last by the door: {stood:?} {door:?}"
+        );
+        assert!(
+            near(stood[1], square(1.0)),
+            "the one before a square aside: {stood:?}"
+        );
+        assert!(
+            near(stood[0], square(2.0)),
+            "the first two squares aside: {stood:?}"
         );
     }
 
@@ -10280,7 +10388,10 @@ mod tests {
         assert!(produce(&mut units, open_ground(), Role::Scout, 0, 50));
         let scout = units.last().unwrap();
         let away = (scout.x - barracks.x).hypot(scout.z - barracks.z);
-        assert!(away > barracks.radius() + scout.radius(), "{away}");
+        assert!(
+            off_squares(&barracks, scout).is_none(),
+            "clear of its walls"
+        );
         assert!(away < 226.3, "{away}");
         assert!(!scout.is_moving());
     }

@@ -228,6 +228,9 @@ const PIP_CAMERA_PAN_TO_POINT: u16 = 115;
 /// A scene begins, the player's controls taken away, and ends.
 const DISABLE_UI: u16 = 131;
 const ENABLE_UI: u16 = 132;
+/// The game's world stands still while the script runs on, and moves again.
+const FREEZE_GAME: u16 = 129;
+const UN_FREEZE_GAME: u16 = 130;
 /// Sells a building: taken as taking a thing off the map.
 const OBJECT_SELL: u16 = 135;
 const NEW_OBJECT_OFFSET_ORIENTATION: u16 = 139;
@@ -437,6 +440,8 @@ pub trait Battle {
     fn change_side(&mut self, _thing: Option<u32>, _to: i32) {}
     /// A scene begins, which the player watches, or ends.
     fn scene(&mut self, _playing: bool) {}
+    /// The world stands still, or moves again.
+    fn freeze(&mut self, _frozen: bool) {}
     fn camera(&mut self, _shot: Shot) {}
 }
 
@@ -703,6 +708,10 @@ impl Script {
                         }
                         None => Value::Thing(None),
                     },
+                    Piece::Keyword(FREEZE_GAME | UN_FREEZE_GAME) => {
+                        battle.freeze(*callee == Piece::Keyword(FREEZE_GAME));
+                        Value::Number(0)
+                    }
                     Piece::Keyword(DISABLE_UI | ENABLE_UI) => {
                         battle.scene(*callee == Piece::Keyword(DISABLE_UI));
                         Value::Number(0)
@@ -1110,6 +1119,7 @@ mod tests {
         all_uncovered: bool,
         nuked: Vec<Option<i32>>,
         ranks: u32,
+        frozen: Vec<bool>,
         handed: Vec<(i32, i32)>,
         changed: Vec<(Option<u32>, i32)>,
         detonated: Vec<Option<u32>>,
@@ -1190,6 +1200,9 @@ mod tests {
         }
         fn scene(&mut self, playing: bool) {
             self.scenes.push(playing);
+        }
+        fn freeze(&mut self, frozen: bool) {
+            self.frozen.push(frozen);
         }
         fn uncover(&mut self, at: (f32, f32), squares: i32) {
             self.uncovered.push((at, squares));
@@ -1562,6 +1575,7 @@ mod tests {
         let lines = vec![
             [vec![V(13), K(SET)], point("13")].concat(),
             [vec![V(16), K(SET)], point("16")].concat(),
+            vec![K(FREEZE_GAME), text("()")],
             vec![K(DISABLE_UI), text("()")],
             vec![F(CAMERA_LOOK_AT_POINT), text("("), V(13), text(")")],
             vec![F(CAMERA_STORE), text("()")],
@@ -1570,6 +1584,7 @@ mod tests {
             vec![F(CAMERA_STOP_ROTATE), text("()")],
             vec![F(CAMERA_RESTORE), text("(60)")],
             vec![K(ENABLE_UI), text("()")],
+            vec![K(UN_FREEZE_GAME), text("()")],
             vec![F(PIP_CAMERA_LOOK_AT_POINT), text("("), V(20), text(")")],
             vec![F(PIP_CAMERA_PAN_TO_POINT), text("("), V(13), text(",80)")],
             // As the tutorial's opening: v1 = K139(...); F107(v1); ... F108(); and the camera
@@ -1610,6 +1625,7 @@ mod tests {
         let mut battle = Written::default();
         Script::new(&lines).run(&mut battle);
         assert_eq!(battle.scenes, [true, false]);
+        assert_eq!(battle.frozen, [true, false]);
         assert_eq!(
             battle.shots,
             [

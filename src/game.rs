@@ -2180,6 +2180,10 @@ impl mission::Battle for Game {
         self.scene_playing = playing;
     }
 
+    fn freeze(&mut self, frozen: bool) {
+        self.script_frozen = frozen;
+    }
+
     /// What the side had is the other's from now on, in its color.
     fn hand_over(&mut self, from: i32, to: i32) {
         let handed: Vec<u32> = self
@@ -2495,6 +2499,8 @@ pub struct Game {
     script_updates: i32,
     /// Whether a scene of the mission's script is playing, the camera its own.
     scene_playing: bool,
+    /// Whether the mission's script has frozen the game: its world stands still.
+    script_frozen: bool,
     script_clock: f32,
     script_sides: i32,
     /// What the script's `Random` draws from.
@@ -2653,6 +2659,7 @@ impl Game {
             script_clock: 0.0,
             script_sides: 0,
             script_random: 1,
+            script_frozen: false,
             script_side_of: Vec::new(),
             script_enemies: Vec::new(),
             script_hunting: Vec::new(),
@@ -4850,6 +4857,7 @@ impl Game {
         self.script_clock = 0.0;
         self.script_sides = 0;
         self.script_random = self.start_random;
+        self.script_frozen = false;
         self.script_side_of.clear();
         self.script_enemies.clear();
         self.script_hunting.clear();
@@ -5463,6 +5471,63 @@ impl Game {
         }
     }
 
+    /// Moves the battle's world on by `dt`: its units, shots, bases and what the opponents do.
+    fn advance_world(&mut self, dt: f32) {
+        let terrain = battlefield::terrain(self.battle_map);
+        units::advance(&mut self.units, terrain, &self.teams, dt);
+        units::tend_harvesters(&mut self.units, terrain, &mut self.money, dt);
+        units::tend_carryalls(&mut self.units, terrain);
+        units::board_apcs(&mut self.units);
+        self.combat
+            .advance(&mut self.units, &self.teams, terrain, dt);
+        for eye in units::release_eyes(&mut self.units, terrain, &mut self.next_unit_id) {
+            self.combat.drop_bombs(&eye, terrain);
+        }
+        self.combat.stir_tornados(terrain, dt);
+        units::carry(&mut self.units, &mut self.carried, terrain, &self.teams, dt);
+        if self.superweapon().is_some() {
+            let was_recharging = self.strike_recharge > 0.0;
+            self.strike_recharge = (self.strike_recharge - dt).max(0.0);
+            if was_recharging && self.strike_recharge <= 0.0 {
+                self.post_chat("Superweapon ready".to_string());
+                self.announce(Speech::SuperweaponReady);
+            }
+        } else {
+            self.aiming_strike = false;
+        }
+        if self.screen == Screen::InGame {
+            self.settle_casualties();
+            // The original's tutorial has its enemy do only what its script says.
+            let opponents_play = self.battle_kind != BattleKind::Tutorial || self.script.is_none();
+            if self.outcome.is_none() {
+                if opponents_play {
+                    self.run_opponents();
+                    for (owner, plan) in (1..).zip(&mut self.strategies) {
+                        let money = &mut self.money[owner];
+                        if let Some(building) =
+                            plan.grow(&mut self.units, terrain, money, dt, self.next_unit_id)
+                        {
+                            self.units.push(building);
+                            self.next_unit_id += 1;
+                        }
+                        plan.think(&mut self.units, terrain, &self.teams, dt);
+                    }
+                }
+                units::settle_power(&mut self.units);
+                self.listen_to_the_base();
+                units::work_on_repairs(&mut self.units, &mut self.money, dt);
+                self.run_market(dt);
+                self.follow_routes();
+                self.retreat_armed = (self.retreat_armed - dt).max(0.0);
+                self.work_on_making(dt);
+                self.work_on_upgrades(dt);
+                self.work_on_site(dt);
+                self.deliver_harvesters(dt);
+                self.drop_crates(dt);
+            }
+        }
+    }
+
     pub fn update(&mut self, dt: f32) {
         self.menu_seconds += dt;
         self.screen_elapsed += dt;
@@ -5473,59 +5538,9 @@ impl Game {
             let battle_time = self.battle_time;
             self.chat
                 .retain(|line| battle_time - line.posted_at < CHAT_SECONDS);
-            let terrain = battlefield::terrain(self.battle_map);
-            units::advance(&mut self.units, terrain, &self.teams, dt);
-            units::tend_harvesters(&mut self.units, terrain, &mut self.money, dt);
-            units::tend_carryalls(&mut self.units, terrain);
-            units::board_apcs(&mut self.units);
-            self.combat
-                .advance(&mut self.units, &self.teams, terrain, dt);
-            for eye in units::release_eyes(&mut self.units, terrain, &mut self.next_unit_id) {
-                self.combat.drop_bombs(&eye, terrain);
-            }
-            self.combat.stir_tornados(terrain, dt);
-            units::carry(&mut self.units, &mut self.carried, terrain, &self.teams, dt);
-            if self.superweapon().is_some() {
-                let was_recharging = self.strike_recharge > 0.0;
-                self.strike_recharge = (self.strike_recharge - dt).max(0.0);
-                if was_recharging && self.strike_recharge <= 0.0 {
-                    self.post_chat("Superweapon ready".to_string());
-                    self.announce(Speech::SuperweaponReady);
-                }
-            } else {
-                self.aiming_strike = false;
-            }
-            if self.screen == Screen::InGame {
-                self.settle_casualties();
-                // The original's tutorial has its enemy do only what its script says.
-                let opponents_play =
-                    self.battle_kind != BattleKind::Tutorial || self.script.is_none();
-                if self.outcome.is_none() {
-                    if opponents_play {
-                        self.run_opponents();
-                        for (owner, plan) in (1..).zip(&mut self.strategies) {
-                            let money = &mut self.money[owner];
-                            if let Some(building) =
-                                plan.grow(&mut self.units, terrain, money, dt, self.next_unit_id)
-                            {
-                                self.units.push(building);
-                                self.next_unit_id += 1;
-                            }
-                            plan.think(&mut self.units, terrain, &self.teams, dt);
-                        }
-                    }
-                    units::settle_power(&mut self.units);
-                    self.listen_to_the_base();
-                    units::work_on_repairs(&mut self.units, &mut self.money, dt);
-                    self.run_market(dt);
-                    self.follow_routes();
-                    self.retreat_armed = (self.retreat_armed - dt).max(0.0);
-                    self.work_on_making(dt);
-                    self.work_on_upgrades(dt);
-                    self.work_on_site(dt);
-                    self.deliver_harvesters(dt);
-                    self.drop_crates(dt);
-                }
+            // A script that freezes the game has the world stand still while it runs on.
+            if !self.script_frozen {
+                self.advance_world(dt);
             }
             self.update_fog();
         }
@@ -6948,6 +6963,32 @@ mod tests {
         let yard = game.units.iter().find(|u| Some(u.id) == yard).unwrap();
         assert!(yard.deployed && yard.kind.is_building());
         assert_eq!(game.buildings_left(1), 2);
+    }
+
+    #[test]
+    fn a_frozen_game_stands_still_while_its_script_runs_on() {
+        use mission::Battle;
+        let mut game = in_battle();
+        game.set_screen(Screen::InGame);
+        let side = game.new_side();
+        let (x, z) = game.home;
+        let thing = game.bring(side, 2, (x + 500.0, z + 500.0));
+        game.send(side, (x + 1500.0, z + 500.0));
+        game.script = Some(Script::new(&[]));
+        let at = |game: &Game| game.place_of(thing).unwrap();
+        let start = at(&game);
+        game.freeze(true);
+        let updates = game.script_updates;
+        for _ in 0..30 {
+            game.update(0.1);
+        }
+        assert_eq!(at(&game), start, "it stands still");
+        assert!(game.script_updates > updates, "the script runs on");
+        game.freeze(false);
+        for _ in 0..30 {
+            game.update(0.1);
+        }
+        assert_ne!(at(&game), start, "and moves again");
     }
 
     #[test]

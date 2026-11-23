@@ -80,7 +80,8 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `K139` | Puts a new object on the map and gives it: side, kind, place, tiles across, tiles down, facing | `K139(v0,<ATConYard>,v13,0,0,1)` |
 | `K150` | Sets something of a side | `K150(v2,1)` |
 | `K131`, `K132` | A scene begins and ends: the camera is the script's, not scrolled | around the first battles' opening |
-| `K128`, `K129`, `K130`, `K133` | Not known | |
+| `K129()`, `K130()` | The game freezes, its world standing still while the script runs on, and unfreezes (the original's code sets and clears the world's frozen flag) | around a scene |
+| `K128`, `K133` | Not known | |
 | `K156(thing, n)` | Raises a thing `n` levels of veterancy, as far as it has them, each to the score that reaches it and keeping its share of health (the original's code) | `K156(v29,2)` |
 | `F0()` | The battle's time, in updates | compared with 49, 50, 100, 150 … |
 | `F1(n)` | A whole number at random from 0 to `n - 1` (the original's code) | `v7 K180 F1(2000) K178 v7` |

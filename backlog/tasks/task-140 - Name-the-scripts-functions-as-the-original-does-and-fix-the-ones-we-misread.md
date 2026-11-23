@@ -4,7 +4,7 @@ title: Name the script's functions as the original does, and fix the ones we mis
 status: In Progress
 assignee: []
 created_date: '2026-11-23T14:32:00Z'
-updated_date: '2026-11-23T18:16:00Z'
+updated_date: '2026-11-23T18:18:00Z'
 labels: []
 dependencies: []
 ordinal: 140000
@@ -39,4 +39,6 @@ What the original's case code does, for the functions we misread:
 F11 GetEntranceFarFromPos now gives the farthest of the map's entrances; F6 GetEntrancePoint was also misread (it is the entrance nearest the side's mission position, 0x4ecd90 -> 0x4ecb70) and is fixed with it.
 
 K135 ObjectSell now sells a building for its owner (half its cost, no words), and leaves what is not a building; K136 ObjectRemove takes things off the map.
+
+Read from the code (2026-11-23): F32 SideNearToSide(a, b) (core 0x4edba0) walks the side with fewer objects (counts by 0x53f300 kinds 1 and 2) and asks 0x4ed810(obj, other side) of each, caching the answer per pair in 0x89c2d4/0x89c354 for the update. 0x4ed810(obj, side) is also F24 ObjectNearToSide's core: r = round(rules Size (+0x9c) x 0.5); over the map squares within r+5 squares of the object's square (distance squared < (r+5)^2), true if an occupant of a square belongs to 'side' and its seen-by mask (+0x6c) has the object owner's bit. So F24 (ours: within REACH_OF_A_PLACE of the thing's edge, the tutorial's beacons) is 'within half its size + 5 squares, and seen by its owner', and F32 is F24 asked of each of the smaller side's things. Not changed yet: the tutorial's beacons ride on F24, and our sides keep no seen-by masks (the nearest we have is Battle::sees, by sight range).
 <!-- SECTION:NOTES:END -->

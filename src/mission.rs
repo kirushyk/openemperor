@@ -196,6 +196,10 @@ const SIDE_CHANGE_SIDE: u16 = 91;
 /// Uncovers the fog so many squares round a place, as the tutorial does where it shows a
 /// beacon and the enemy's base.
 const REMOVE_SHROUD: u16 = 97;
+/// Covers the map again so many squares round a place, as if never seen; and opens up the
+/// whole map.
+const REPLACE_SHROUD: u16 = 98;
+const REMOVE_MAP_SHROUD: u16 = 99;
 /// The camera's part in a scene: sent to look at a place, glided to one over so many updates,
 /// circled about it at so many degrees an update one way or the other, stopped circling,
 /// made to follow a thing and stop following it, kept, glided back to where it was kept.
@@ -396,6 +400,10 @@ pub trait Battle {
     fn remove(&mut self, _thing: Option<u32>) {}
     /// Uncovers the fog so many squares round a place for the player.
     fn uncover(&mut self, _at: (f32, f32), _squares: i32) {}
+    /// Covers it again so many squares round a place.
+    fn cover(&mut self, _at: (f32, f32), _squares: i32) {}
+    /// Uncovers the whole map for the player.
+    fn uncover_all(&mut self) {}
     /// Hands all of side `from`'s units over to side `to`.
     fn hand_over(&mut self, _from: i32, _to: i32) {}
     /// A scene begins, which the player watches, or ends.
@@ -673,6 +681,14 @@ impl Script {
                     }
                     Piece::Function(REMOVE_SHROUD) => {
                         battle.uncover(at(0).place(), number(1));
+                        Value::Number(0)
+                    }
+                    Piece::Function(REPLACE_SHROUD) => {
+                        battle.cover(at(0).place(), number(1));
+                        Value::Number(0)
+                    }
+                    Piece::Function(REMOVE_MAP_SHROUD) => {
+                        battle.uncover_all();
                         Value::Number(0)
                     }
                     Piece::Function(CAMERA_TRACK_OBJECT) => {
@@ -1027,6 +1043,8 @@ mod tests {
         hunting: Vec<i32>,
         removed: Vec<Option<u32>>,
         uncovered: Vec<((f32, f32), i32)>,
+        covered: Vec<((f32, f32), i32)>,
+        all_uncovered: bool,
         handed: Vec<(i32, i32)>,
         entrances: Vec<(f32, f32)>,
         drawn: u32,
@@ -1105,6 +1123,12 @@ mod tests {
         }
         fn uncover(&mut self, at: (f32, f32), squares: i32) {
             self.uncovered.push((at, squares));
+        }
+        fn cover(&mut self, at: (f32, f32), squares: i32) {
+            self.covered.push((at, squares));
+        }
+        fn uncover_all(&mut self) {
+            self.all_uncovered = true;
         }
         fn hand_over(&mut self, from: i32, to: i32) {
             self.handed.push((from, to));
@@ -1432,8 +1456,10 @@ mod tests {
             vec![F(CAMERA_TRACK_OBJECT), text("("), V(1), text(")")],
             vec![F(CAMERA_STOP_TRACK), text("()")],
             vec![F(CAMERA_TRACK_OBJECT), text("("), V(30), text(")")],
-            // F97(v13,20), as the tutorial shows its beacon.
+            // F97(v13,20), as the tutorial shows its beacon; F98(v16,8); F99().
             vec![F(REMOVE_SHROUD), text("("), V(13), text(",20)")],
+            vec![F(REPLACE_SHROUD), text("("), V(16), text(",8)")],
+            vec![F(REMOVE_MAP_SHROUD), text("()")],
             // F91(v18, F14()), as the Atreides' Heighliner hands its Mongooses over.
             vec![F(SIDE_CHANGE_SIDE), text("(2,0)")],
         ];
@@ -1455,6 +1481,8 @@ mod tests {
             ]
         );
         assert_eq!(battle.uncovered, [((13.0, 0.0), 20)]);
+        assert_eq!(battle.covered, [((16.0, 0.0), 8)]);
+        assert!(battle.all_uncovered);
         assert_eq!(battle.handed, [(2, 0)]);
     }
 

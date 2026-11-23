@@ -131,6 +131,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F63`, `F96` | Not known; the tutorial runs without them | `F96(v36)` |
 | `F91(a, b)` | Hands all of side `a`'s units over to side `b` | `F91(v18,F14())`: the Atreides' Heighliner's Mongooses, once in sight |
 | `F97(place, n)` | Opens up the fog `n` squares round a place, seen from then on | `F97(v35,20)` as a beacon goes down |
+| `F98(place, n)`, `F99()` | Covers the map again `n` squares round a place, to be seen anew; opens up the whole map (the original's code: the human sides' shroud) | `F99()` in the start scripts |
 | `F107(thing)`, `F108()` | The camera follows a thing, or what carries it, and stops following | `F107(v1)`: the tutorial's harvester, at its start |
 | `F100(place)`, `F114(place)` | The camera looks at a place; the second in the midst of the battle | `F100(v13)`: the player's base |
 | `F101(place, n)`, `F115(place, n)` | The camera glides to a place over `n` updates | `F101(v16,50)`: to the enemy's base |

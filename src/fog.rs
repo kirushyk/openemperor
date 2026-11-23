@@ -72,7 +72,7 @@ impl Fog {
         let rock = |x: f32, z: f32| terrain.ground_at(x, z) == Ground::InfRock;
         for seer in seers {
             if let Some(radius) = seer.rock_sight_over(terrain.floor()) {
-                spread_where(&mut self.now, (seer.x, seer.z), radius, &rock);
+                spread_where(&mut self.now, (seer.x, seer.z), radius, &rock, &see);
             }
         }
         for (ever, now) in self.ever.iter_mut().zip(&self.now) {
@@ -84,6 +84,22 @@ impl Fog {
     pub fn uncover(&mut self, at: (f32, f32), radius: f32) {
         for points in [&mut self.opened, &mut self.now, &mut self.ever] {
             spread(points, at, radius);
+        }
+    }
+
+    /// Opens up the whole map, seen from now on.
+    pub fn uncover_all(&mut self) {
+        for points in [&mut self.opened, &mut self.now, &mut self.ever] {
+            points.fill(EDGE_REACH);
+        }
+    }
+
+    /// Covers the land this far round a place again, as if never seen, to be seen anew by
+    /// whoever is near it.
+    pub fn cover(&mut self, at: (f32, f32), radius: f32) {
+        let hide = |point: &mut f32, into: f32| *point = point.min(-into);
+        for points in [&mut self.opened, &mut self.now, &mut self.ever] {
+            spread_where(points, at, radius, &|_, _| true, &hide);
         }
     }
 
@@ -140,15 +156,22 @@ impl Fog {
 /// Marks every grid point this far round a place as that far inside it, where it was not
 /// already further in.
 fn spread(points: &mut [f32], (x, z): (f32, f32), radius: f32) {
-    spread_where(points, (x, z), radius, &|_, _| true);
+    spread_where(points, (x, z), radius, &|_, _| true, &see);
 }
 
-/// The same, only at the points where `keep` holds.
+/// Has a grid point this far inside what is seen, where it was not already further in.
+fn see(point: &mut f32, into: f32) {
+    *point = point.max(into);
+}
+
+/// Marks each grid point round a place, where `keep` holds, by `mark` with how far inside
+/// the circle it lies.
 fn spread_where(
     points: &mut [f32],
     (x, z): (f32, f32),
     radius: f32,
     keep: &dyn Fn(f32, f32) -> bool,
+    mark: &dyn Fn(&mut f32, f32),
 ) {
     let (u, v) = world_to_grid(x, z);
     let reach = radius / CELL_SIDE + EDGE_REACH;
@@ -164,8 +187,10 @@ fn spread_where(
                 continue;
             }
             let into = (radius - (px - x).hypot(pz - z)) / CELL_SIDE;
-            let point = &mut points[grid_index(point_u, point_v)];
-            *point = point.max(into.clamp(-EDGE_REACH, EDGE_REACH));
+            mark(
+                &mut points[grid_index(point_u, point_v)],
+                into.clamp(-EDGE_REACH, EDGE_REACH),
+            );
         }
     }
 }
@@ -213,6 +238,22 @@ mod tests {
         assert_eq!(fog.at(1600.0, 1600.0), Sight::Visible);
         assert_eq!(fog.at(1600.0 + 19.0 * CELL_SIDE, 1600.0), Sight::Visible);
         assert_eq!(fog.at(1600.0 + 22.0 * CELL_SIDE, 1600.0), Sight::Unexplored);
+    }
+
+    #[test]
+    fn the_whole_map_opened_stays_open_and_land_covered_again_is_unexplored_till_seen() {
+        let mut fog = Fog::new();
+        fog.uncover_all();
+        fog.update(std::iter::empty(), 0.0);
+        assert_eq!(fog.at(0.0, 0.0), Sight::Visible);
+        assert_eq!(fog.at(4000.0, 4000.0), Sight::Visible);
+        fog.cover((1600.0, 1600.0), 10.0 * CELL_SIDE);
+        fog.update(std::iter::empty(), 0.0);
+        assert_eq!(fog.at(1600.0, 1600.0), Sight::Unexplored);
+        assert_eq!(fog.at(1600.0 + 9.0 * CELL_SIDE, 1600.0), Sight::Unexplored);
+        assert_eq!(fog.at(1600.0 + 13.0 * CELL_SIDE, 1600.0), Sight::Visible);
+        fog.update([unit_at(1600.0, 1600.0)].iter(), 0.0);
+        assert_eq!(fog.at(1600.0, 1600.0), Sight::Visible, "seen anew");
     }
 
     #[test]

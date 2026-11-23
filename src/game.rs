@@ -2202,6 +2202,18 @@ impl mission::Battle for Game {
         }
     }
 
+    fn cover(&mut self, at: (f32, f32), squares: i32) {
+        if let Some(fog) = &mut self.fog {
+            fog.cover(at, squares as f32 * battlefield::CELL_SIDE);
+        }
+    }
+
+    fn uncover_all(&mut self) {
+        if let Some(fog) = &mut self.fog {
+            fog.uncover_all();
+        }
+    }
+
     fn camera(&mut self, shot: mission::Shot) {
         let seconds = |updates: i32| updates as f32 / SCRIPT_UPDATES_PER_SECOND;
         match shot {

@@ -106,6 +106,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F9(n)`, `F10(place)`, `F11(place)` | The map's entrance `n` (the first when it has none of that number), the one nearest a place and the one farthest from it (the original's code) | `F11(F12(F16()))` |
 | `F12(side)` | Where a side's units arrive; taken as its base | `F21(F14(),<ATMongoose>,F12(F14()))` |
 | `F13(thing)` | Where a thing is | `F97(F13(v3),12)` |
+| `K158(x, y)` | The place of the map's square in column `x`, row `y`: its corner, `x` × 32 and `y` × 32 (the original's code, which works out the middle too but gives the corner) | `F21(v5,…,K158(141,132))` |
 | `F16()` | A side that is neither the player's nor one of the script's | `F59(v1,F16())` |
 | `F17(thing)` | Whose a thing is, as a side | `F17(v3) K168 F14()`: the outpost captured |
 | `F22(thing)` | Whether a thing still stands | |

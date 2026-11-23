@@ -223,6 +223,9 @@ const NEG: u16 = 143;
 const SET_SIDE_CASH: u16 = 152;
 /// Does nothing but write a line to the original's debugger.
 const BREAK_POINT: u16 = 160;
+/// The place of a square of the map, by its column and row: its corner nearest the map's
+/// first, as the original's code gives it, though it works out the square's middle too.
+const SET_TILE_POS: u16 = 158;
 /// A step of the tutorial, as the number it is.
 const SET_VALUE: u16 = 144;
 const IF: u16 = 165;
@@ -534,6 +537,10 @@ impl Script {
                     Piece::Keyword(NEG) => Value::Number(-number(0)),
                     Piece::Keyword(GET_NEUTRAL_SIDE) => Value::Number(NEUTRAL_SIDE),
                     Piece::Keyword(BREAK_POINT) => Value::Number(0),
+                    Piece::Keyword(SET_TILE_POS) => {
+                        let cell = crate::battlefield::CELL_SIDE;
+                        Value::Place(number(0) as f32 * cell, number(1) as f32 * cell)
+                    }
                     Piece::Keyword(NEW_OBJECT_OFFSET_ORIENTATION) => {
                         let Some(kind) = kind(1) else {
                             return Value::Thing(None);
@@ -1324,6 +1331,18 @@ mod tests {
             script.variables[1..=2],
             [n(850), n(850)],
             "set only at the start"
+        );
+    }
+
+    #[test]
+    fn a_squares_place_is_its_corner_in_the_worlds_units() {
+        use Token::{Keyword as K, Variable as V};
+        let lines = vec![vec![V(1), K(SET), K(SET_TILE_POS), text("(141,132)")]];
+        let mut script = Script::new(&lines);
+        script.run(&mut Written::default());
+        assert_eq!(
+            script.variables[1],
+            Value::Place(141.0 * 32.0, 132.0 * 32.0)
         );
     }
 

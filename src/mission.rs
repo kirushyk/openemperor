@@ -110,7 +110,8 @@ pub fn speeches(lines: &[Vec<Token>]) -> Vec<u16> {
 /// original's table names it (`docs/tok-format.md` lists them all, with where GAME.EXE carries
 /// each out). What we take one to do, where its name does not say it, is with it.
 const MODEL_TICK: u16 = 0;
-/// Whether the game is the co-op campaign: asked before the first reinforcements.
+/// Whether the game is the co-op campaign, which it never is here: the start scripts give the
+/// second player of one a gift of units only then.
 const MULTIPLAYER: u16 = 2;
 const GET_UNUSED_BASE_POINT: u16 = 3;
 const GET_SIDE_BASE_POINT: u16 = 4;
@@ -503,7 +504,7 @@ impl Script {
                         Value::Thing(battle.place(number(0), kind, to, number(5)))
                     }
                     Piece::Function(MODEL_TICK) => Value::Number(battle.now()),
-                    Piece::Function(MULTIPLAYER) => Value::Number(1),
+                    Piece::Function(MULTIPLAYER) => Value::Number(0),
                     Piece::Function(GET_UNUSED_BASE_POINT) => place(battle.enemy_base()),
                     Piece::Function(GET_SIDE_BASE_POINT | GET_ENTRANCE_POINT) => {
                         place(battle.base(number(0)))
@@ -1112,6 +1113,15 @@ mod tests {
         assert_eq!(battle.hunting, [4]);
         assert_eq!(battle.removed, [Some(1)]);
         assert!(battle.won, "the tutorial done");
+    }
+
+    #[test]
+    fn a_game_is_never_the_co_op_campaign() {
+        use Token::{Function as F, Keyword as K, Variable as V};
+        let lines = vec![vec![V(1), K(SET), F(MULTIPLAYER), text("()")]];
+        let mut script = Script::new(&lines);
+        script.run(&mut Written::default());
+        assert_eq!(script.variables[1], Value::Number(0));
     }
 
     #[test]

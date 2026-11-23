@@ -1530,8 +1530,9 @@ pub(crate) mod tests {
             kinds("[UnitTypes]\nA\n[Other]\nB\n[UnitTypes]\nC // c\n"),
             ["A", "C"]
         );
-        // Run on its own, the script puts down both bases at once, the reinforcements at its
-        // 49th update, and the Mentat speaks first.
+        // Run on its own, the script puts down both bases at once and the Mentat speaks first;
+        // the units it brings at its 49th update are a gift to a co-op game's second player,
+        // and this is no co-op game.
         struct Written(i32, Vec<String>, Vec<String>, Vec<u16>, i32, Vec<String>);
         impl mission::Battle for Written {
             fn now(&self) -> i32 {
@@ -1580,10 +1581,7 @@ pub(crate) mod tests {
         let brought = written.2.len();
         written.0 = 49;
         script.run(&mut written);
-        assert_eq!(
-            &written.2[brought..],
-            ["MCV", "ATTrike", "ATTrike", "ATMongoose"]
-        );
+        assert_eq!(&written.2[brought..], [] as [&str; 0]);
         // The Atreides start next to the Harkonnen, in the south-west of the map.
         let ((left, bottom), (right, top)) = data.bounds().unwrap();
         assert!(left < right && bottom < top);

@@ -1,9 +1,10 @@
 ---
 id: TASK-146.2
 title: Script function F65 SideAIAggressiveTowards
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:41:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-146
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf235a, 0x110 bytes; 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's SideAIAggressiveTowards does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls SideAIAggressiveTowards and checks the effect
+- [x] #1 The game does what the original's SideAIAggressiveTowards does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls SideAIAggressiveTowards and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SideAIAggressiveTowards(side, enemy) has the side hunt the enemy side's units, then buildings, as SideAIAggressive hunts the player's (script_hunting now keeps each hunter's quarry; GetEnemySide's things are what the map has that is no script side's and not nobody's). Tested in game.rs (a_side_told_to_be_aggressive_towards_another_hunts_that_ones_units) and mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

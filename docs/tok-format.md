@@ -133,6 +133,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F38(side)` | Whether a side's units have all got where they were sent, or all left the map they were told to leave | after `F71` |
 | `F42(a, b)` | Taken as: whether `b` has lost any of what the script gave it, to `a` | the tutorial's wave fought, not only met by the worm |
 | `F64(side)` | A side's units go after the player's, and keep at it | the wave the worm left |
+| `F65(side, enemy)` | A side's units go after another side's, and keep at it (the original's code: an attack tactic against that side) | |
 | `F71(side, place)` | Sends a side's units to a place | |
 | `F72(side)` | A side's units give up what they were told, their hunt too, and stop (the original's code: its mission tactics dropped) | |
 | `F73(side, thing)` | A side's units give up what they were told and go after a thing, those that can fire on it (the original's code: an attack-object tactic) | |

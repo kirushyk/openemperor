@@ -205,8 +205,9 @@ const SIDE_ENEMY_TO: u16 = 60;
 const SIDE_NEUTRAL_TO: u16 = 61;
 /// Gives a side money, on top of what it has.
 const ADD_SIDE_CASH: u16 = 62;
-/// A side's units go after the player's.
+/// A side's units go after the player's, or another side's.
 const SIDE_AI_AGGRESSIVE: u16 = 64;
+const SIDE_AI_AGGRESSIVE_TOWARDS: u16 = 65;
 /// A side's units are sent to a place.
 const SIDE_AI_MOVE: u16 = 71;
 /// A side's units give up what they were told and stop.
@@ -486,6 +487,8 @@ pub trait Battle {
     fn send(&mut self, _side: i32, _to: (f32, f32)) {}
     /// Has a side's units go after the player's.
     fn hunt(&mut self, _side: i32) {}
+    /// Has a side's units go after another side's.
+    fn hunt_towards(&mut self, _side: i32, _quarry: i32) {}
     /// Has a side's units give up what they were told and stop.
     fn stop(&mut self, _side: i32) {}
     /// Has a side's units give up what they were told and go after a thing.
@@ -919,6 +922,10 @@ impl Script {
                         battle.hunt(number(0));
                         Value::Number(0)
                     }
+                    Piece::Function(SIDE_AI_AGGRESSIVE_TOWARDS) => {
+                        battle.hunt_towards(number(0), number(1));
+                        Value::Number(0)
+                    }
                     Piece::Function(SIDE_AI_STOP) => {
                         battle.stop(number(0));
                         Value::Number(0)
@@ -1270,6 +1277,7 @@ mod tests {
         attacking: Vec<(i32, Option<u32>)>,
         leaving: Vec<i32>,
         guarding: Vec<(i32, Option<u32>)>,
+        hunting_towards: Vec<(i32, i32)>,
         uncovered: Vec<((f32, f32), i32)>,
         covered: Vec<((f32, f32), i32)>,
         all_uncovered: bool,
@@ -1428,6 +1436,9 @@ mod tests {
         fn stop(&mut self, side: i32) {
             self.hunting.retain(|&hunting| hunting != side);
         }
+        fn hunt_towards(&mut self, side: i32, quarry: i32) {
+            self.hunting_towards.push((side, quarry));
+        }
         fn attack(&mut self, side: i32, thing: Option<u32>) {
             self.attacking.push((side, thing));
         }
@@ -1542,6 +1553,7 @@ mod tests {
             vec![F(SIDE_AI_ATTACK_OBJECT), text("(3,"), V(1), text(")")],
             vec![F(SIDE_AI_EXIT_MAP), text("(6)")],
             vec![F(SIDE_AI_GUARD_OBJECT), text("(7,"), V(0), text(")")],
+            vec![F(SIDE_AI_AGGRESSIVE_TOWARDS), text("(8,2)")],
             vec![K(OBJECT_SELL), text("("), V(0), text(")")],
             vec![K(OBJECT_REMOVE), text("("), V(1), text(")")],
             set(8, vec![K(SET_VALUE), text("(11)")]),
@@ -1585,6 +1597,7 @@ mod tests {
         assert_eq!(battle.attacking, [(3, Some(2))]);
         assert_eq!(battle.leaving, [6]);
         assert_eq!(battle.guarding, [(7, Some(1))]);
+        assert_eq!(battle.hunting_towards, [(8, 2)]);
         assert_eq!(battle.sold, [Some(1)]);
         assert_eq!(battle.removed, [Some(2)]);
         assert!(battle.won, "the tutorial done");

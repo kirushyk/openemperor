@@ -2132,14 +2132,17 @@ impl mission::Battle for Game {
     }
 
     fn hunt(&mut self, side: i32) {
-        if !self.script_hunting.contains(&side) {
-            self.script_hunting.push(side);
-        }
-        self.go_hunting(side);
+        self.hunt_towards(side, 0);
+    }
+
+    fn hunt_towards(&mut self, side: i32, quarry: i32) {
+        self.script_hunting.retain(|&(hunting, _)| hunting != side);
+        self.script_hunting.push((side, quarry));
+        self.go_hunting(side, quarry);
     }
 
     fn stop(&mut self, side: i32) {
-        self.script_hunting.retain(|&hunting| hunting != side);
+        self.script_hunting.retain(|&(hunting, _)| hunting != side);
         for index in 0..self.units.len() {
             if self.is_of_side(&self.units[index], side) {
                 self.units[index].stop();
@@ -2484,9 +2487,10 @@ impl mission::Battle for Game {
 }
 
 impl Game {
-    /// Each of a side's units with nothing to do goes after the nearest of the player's units,
-    /// or buildings if none are left.
-    fn go_hunting(&mut self, side: i32) {
+    /// Each of a side's units with nothing to do goes after the nearest of its quarry's units,
+    /// or buildings if none are left: the someone's being what the map has that is not the
+    /// script's, the player's or nobody's.
+    fn go_hunting(&mut self, side: i32, quarry: i32) {
         for index in 0..self.units.len() {
             let unit = self.units[index];
             let idle = unit.target.is_none() && !unit.is_moving();
@@ -2497,7 +2501,7 @@ impl Game {
             let prey = self
                 .units
                 .iter()
-                .filter(|u| u.alive && u.owner == 0 && unit.can_attack(u, &self.teams))
+                .filter(|u| u.alive && self.is_quarry(u, quarry) && unit.can_attack(u, &self.teams))
                 .min_by(|a, b| {
                     (a.kind.is_building(), distance(a))
                         .partial_cmp(&(b.kind.is_building(), distance(b)))
@@ -2506,6 +2510,15 @@ impl Game {
             if let Some(id) = prey.map(|u| u.id) {
                 self.units[index].go_after(id);
             }
+        }
+    }
+
+    /// Whether a thing is of the side a script's side hunts.
+    fn is_quarry(&self, unit: &Unit, quarry: i32) -> bool {
+        if quarry == mission::SOMEONE_SIDE {
+            self.script_side(unit).is_none() && unit.owner != units::NEUTRAL
+        } else {
+            self.is_of_side(unit, quarry)
         }
     }
 
@@ -2680,8 +2693,9 @@ pub struct Game {
     script_side_of: Vec<(u32, i32)>,
     /// The pairs of the script's sides it has made enemies.
     script_enemies: Vec<(i32, i32)>,
-    /// The script's sides told to go after the player's units, for as long as they have any.
-    script_hunting: Vec<i32>,
+    /// The script's sides told to go after another side's units, and which, for as long as
+    /// they have any.
+    script_hunting: Vec<(i32, i32)>,
     /// The script's sides told to leave the map.
     script_leaving: Vec<i32>,
     /// The starport's frigate, while it is about.
@@ -5113,8 +5127,8 @@ impl Game {
             self.script_clock -= 1.0;
             self.script_updates += 1;
             script.run(self);
-            for side in self.script_hunting.clone() {
-                self.go_hunting(side);
+            for (side, quarry) in self.script_hunting.clone() {
+                self.go_hunting(side, quarry);
             }
         }
         self.script = Some(script);
@@ -7273,7 +7287,11 @@ mod tests {
         assert!(unit(&game).is_moving());
         game.stop(side);
         assert!(!unit(&game).is_moving());
-        assert!(!game.script_hunting.contains(&side));
+        assert!(
+            game.script_hunting
+                .iter()
+                .all(|&(hunting, _)| hunting != side)
+        );
     }
 
     #[test]
@@ -7332,6 +7350,33 @@ mod tests {
         );
         let unarmed = game.units.iter().find(|u| Some(u.id) == thing).unwrap();
         assert_eq!(unarmed.guard, None, "what cannot fight does not guard");
+    }
+
+    #[test]
+    fn a_side_told_to_be_aggressive_towards_another_hunts_that_ones_units() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let (hunter, quarry) = (game.new_side(), game.new_side());
+        game.relate(hunter, 0, true);
+        game.relate(quarry, hunter, true);
+        let (x, z) = game.home;
+        let (fx, fz) = (x + 3000.0, z + 3000.0);
+        let hunting = game.bring(hunter, 2, (fx, fz));
+        let unit = game
+            .units
+            .iter_mut()
+            .find(|u| Some(u.id) == hunting)
+            .unwrap();
+        units::turn_into(unit, Role::HkAssault);
+        let hunted = game.bring(quarry, 2, (fx + 300.0, fz));
+        let player_near = game.bring(0, 2, (fx - 200.0, fz));
+        game.hunt_towards(hunter, quarry);
+        let unit = game.units.iter().find(|u| Some(u.id) == hunting).unwrap();
+        assert_eq!(
+            unit.target,
+            Some(units::Target::Unit(hunted.unwrap())),
+            "the quarry's, not the nearer player's {player_near:?}"
+        );
     }
 
     #[test]

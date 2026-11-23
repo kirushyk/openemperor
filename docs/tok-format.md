@@ -125,6 +125,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F59(a, b)` | Makes side `a` a friend of `b` | given both ways |
 | `F61(a, b)` | Makes side `a` neutral to `b` (the original's code: relation 2); with only friends and enemies here, it is no longer its enemy | |
 | `F24(thing, side)` | Whether a side has a unit at a thing; taken as within three squares of its edge | `F24(v61,F14())`: the tutorial's beacon reached |
+| `F28(kind, side)` | Whether a side sees any thing of a kind that is another side's (the original's code); taken as in sight of any of its things | `F28(…,F14()) K168 TRUE` |
 | `F29(thing)`, `F30(thing)` | A thing's health and the most it has | `F29(v0) K168 F30(v0)`: the tutorial's windtrap mended |
 | `F36(side)` | How many buildings a side has left | with `F35`, the tutorial's enemy base gone |
 | `F38(side)` | Whether a side's units have all got where they were sent | after `F71` |

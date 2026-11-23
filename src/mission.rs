@@ -156,6 +156,8 @@ const OBJECT_NEAR_TO_OBJECT: u16 = 26;
 /// Whether a side sees a thing: taken as whether it has hurt it, the outpost of a camp fired
 /// on.
 const OBJECT_VISIBLE_TO_SIDE: u16 = 27;
+/// Whether a side sees any thing of a kind that is another side's.
+const OBJECT_TYPE_VISIBLE_TO_SIDE: u16 = 28;
 const OBJECT_GET_HEALTH: u16 = 29;
 const OBJECT_MAX_HEALTH: u16 = 30;
 /// Whether any of a side's things is seen by another side.
@@ -390,6 +392,10 @@ pub trait Battle {
     }
     /// Whether any of `seen`'s units are in sight of any of `by`'s.
     fn sees(&self, _seen: i32, _by: i32) -> bool {
+        false
+    }
+    /// Whether any thing of a kind that is not `by`'s is in sight of any of `by`'s.
+    fn sees_kind(&self, _kind: u16, _by: i32) -> bool {
         false
     }
     fn set_health(&mut self, _thing: Option<u32>, _health: i32) {}
@@ -794,6 +800,9 @@ impl Script {
                         film(battle, at(0).thing().map(Shot::Follow))
                     }
                     Piece::Function(CAMERA_STOP_TRACK) => film(battle, Some(Shot::StopFollowing)),
+                    Piece::Function(OBJECT_TYPE_VISIBLE_TO_SIDE) => Value::Number(i32::from(
+                        kind(0).is_some_and(|kind| battle.sees_kind(kind, number(1))),
+                    )),
                     Piece::Function(OBJECT_GET_HEALTH) => Value::Number(
                         battle
                             .health(at(0).thing())
@@ -1233,6 +1242,9 @@ mod tests {
         fn sees(&self, seen: i32, by: i32) -> bool {
             (seen, by) == (1, 0)
         }
+        fn sees_kind(&self, kind: u16, by: i32) -> bool {
+            (kind, by) == (4, 0)
+        }
         fn scene(&mut self, playing: bool) {
             self.scenes.push(playing);
         }
@@ -1598,9 +1610,26 @@ mod tests {
             script.run(&mut Written::default());
             script.variables[1]
         };
-        // The written battle has side 1 in sight of the player's.
+        // The written battle has side 1 in sight of the player's, and a thing of kind 4.
         assert_eq!(asked("1", "0"), Value::Number(1));
         assert_eq!(asked("0", "1"), Value::Number(0));
+        let kind_seen = |kind: u16| {
+            let line = vec![
+                V(1),
+                K(SET),
+                F(OBJECT_TYPE_VISIBLE_TO_SIDE),
+                text("("),
+                Token::Kind(kind),
+                text(","),
+                F(GET_PLAYER_SIDE),
+                text("())"),
+            ];
+            let mut script = Script::new(&[line]);
+            script.run(&mut Written::default());
+            script.variables[1]
+        };
+        assert_eq!(kind_seen(4), Value::Number(1));
+        assert_eq!(kind_seen(5), Value::Number(0));
     }
 
     #[test]

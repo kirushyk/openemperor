@@ -2280,13 +2280,22 @@ impl mission::Battle for Game {
     }
 
     fn sees(&self, seen: i32, by: i32) -> bool {
-        let of = |side: i32| {
-            self.units
-                .iter()
-                .filter(move |u| u.alive && self.script_side(u) == Some(side))
+        self.in_sight_of(by, |u| self.script_side(u) == Some(seen))
+    }
+
+    /// A construction yard is an MCV dug in, and an MCV one that is not, as in `count`.
+    fn sees_kind(&self, kind: u16, by: i32) -> bool {
+        let Some(name) = campaign::kind_name(kind) else {
+            return false;
         };
-        of(by).any(|looking| {
-            of(seen).any(|u| (u.x - looking.x).hypot(u.z - looking.z) <= looking.sight())
+        let Some((role, _)) = Role::named(name) else {
+            return false;
+        };
+        let yard = name.ends_with(CONSTRUCTION_YARD);
+        self.in_sight_of(by, |u| {
+            u.role == role
+                && (role != Role::Mcv || u.deployed == yard)
+                && self.script_side(u) != Some(by)
         })
     }
 
@@ -2411,6 +2420,17 @@ impl Game {
             self.script_side_of
                 .extend(handed.iter().map(|&id| (id, to)));
         }
+    }
+
+    /// Whether anything that is `seen` stands in sight of any of side `by`'s.
+    fn in_sight_of(&self, by: i32, seen: impl Fn(&Unit) -> bool) -> bool {
+        let alive = self.units.iter().filter(|u| u.alive);
+        let mut lookers = alive.clone().filter(|u| self.script_side(u) == Some(by));
+        lookers.any(|looking| {
+            alive
+                .clone()
+                .any(|u| seen(u) && (u.x - looking.x).hypot(u.z - looking.z) <= looking.sight())
+        })
     }
 
     /// Whether a thing is on a script's side: the player's own for the player's.
@@ -7067,6 +7087,21 @@ mod tests {
         (unit.x, unit.z) = (at_a.0 + reach + 1.0, at_a.1);
         assert!(!game.near_each_other(a, b, more));
         assert!(!game.near_each_other(a, None, more));
+    }
+
+    #[test]
+    fn a_side_sees_a_kind_of_anothers_in_sight_of_its_own() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let side = game.new_side();
+        let (x, z) = game.home;
+        assert!(!game.sees_kind(2, 0), "none of the kind yet");
+        let far = game.bring(side, 2, (x + 3000.0, z + 3000.0));
+        assert!(!game.sees_kind(2, 0), "out of sight");
+        let unit = game.units.iter_mut().find(|u| Some(u.id) == far).unwrap();
+        (unit.x, unit.z) = (x, z);
+        assert!(game.sees_kind(2, 0));
+        assert!(!game.sees_kind(2, side), "its own are not counted");
     }
 
     #[test]

@@ -1099,13 +1099,15 @@ pub struct Camera {
 }
 
 /// A glide of the camera, as a mission's script asks for one: from where it looks and how it
-/// is turned to where and how, over so many seconds.
+/// is turned to where and how, over so many seconds, easing in and out as a pan does or at
+/// one pace as a scroll does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Glide {
     from: (f32, f32, f32),
     to: (f32, f32, f32),
     seconds: f32,
     gone: f32,
+    eased: bool,
 }
 
 impl Camera {
@@ -1208,7 +1210,26 @@ impl Camera {
 
     /// Glides to look at a place over so many seconds, turned as it is.
     pub fn glide_to(&mut self, (x, z): (f32, f32), seconds: f32) {
-        self.glide((x, z, self.yaw_target), seconds);
+        self.glide((x, z, self.yaw_target), seconds, true);
+    }
+
+    /// Slides to look at a place over so many seconds at one pace, turned and zoomed as it is.
+    pub fn scroll_to(&mut self, (x, z): (f32, f32), seconds: f32) {
+        self.glide((x, z, self.yaw_target), seconds, false);
+    }
+
+    /// Whether it is gliding somewhere, or sliding, as a script had it.
+    pub fn is_panning(&self) -> bool {
+        self.glide.is_some_and(|glide| glide.eased)
+    }
+
+    pub fn is_scrolling(&self) -> bool {
+        self.glide.is_some_and(|glide| !glide.eased)
+    }
+
+    /// Whether it is circling round where it looks.
+    pub fn is_spinning(&self) -> bool {
+        self.circling != 0.0
     }
 
     /// Stops circling and glides back to where it was kept over so many seconds, turning back
@@ -1217,11 +1238,11 @@ impl Camera {
         self.circling = 0.0;
         if let Some((x, z, yaw)) = self.kept {
             let turns = ((self.yaw_target - yaw) / TAU).round();
-            self.glide((x, z, yaw + turns * TAU), seconds);
+            self.glide((x, z, yaw + turns * TAU), seconds, true);
         }
     }
 
-    fn glide(&mut self, to: (f32, f32, f32), seconds: f32) {
+    fn glide(&mut self, to: (f32, f32, f32), seconds: f32, eased: bool) {
         self.opening = 0.0;
         self.zoom = self.zoom_target;
         self.yaw = self.yaw_target;
@@ -1231,6 +1252,7 @@ impl Camera {
             to,
             seconds,
             gone: 0.0,
+            eased,
         });
     }
 
@@ -1248,7 +1270,11 @@ impl Camera {
             } else {
                 1.0
             };
-            let eased = done * done * (3.0 - 2.0 * done);
+            let eased = if glide.eased {
+                done * done * (3.0 - 2.0 * done)
+            } else {
+                done
+            };
             let between = |from: f32, to: f32| from + (to - from) * eased;
             let (from, to) = (glide.from, glide.to);
             self.look_at(between(from.0, to.0), between(from.1, to.1));
@@ -2255,6 +2281,27 @@ mod tests {
                 "{mouse:?} gave {got:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_scripts_camera_scrolls_at_one_pace_and_says_what_it_is_doing() {
+        let mut camera = Camera::centered_on((4000.0, 4000.0));
+        let (x, z) = (camera.x, camera.z);
+        camera.scroll_to((x + 1000.0, z), 4.0);
+        assert!(camera.is_scrolling() && !camera.is_panning());
+        camera.play(1.0);
+        assert!(
+            (camera.x - (x + 250.0)).abs() < 1e-3,
+            "a quarter in a quarter of the time"
+        );
+        camera.play(3.0);
+        assert_eq!(camera.x, x + 1000.0);
+        assert!(!camera.is_scrolling());
+        camera.glide_to((x, z), 2.0);
+        assert!(camera.is_panning() && !camera.is_scrolling());
+        assert!(!camera.is_spinning());
+        camera.circle(1.0);
+        assert!(camera.is_spinning());
     }
 
     #[test]

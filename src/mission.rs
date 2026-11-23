@@ -232,10 +232,16 @@ const REMOVE_MAP_SHROUD: u16 = 99;
 /// made to follow a thing and stop following it, kept, glided back to where it was kept.
 const CAMERA_LOOK_AT_POINT: u16 = 100;
 const CAMERA_PAN_TO_POINT: u16 = 101;
+/// Slid to a place over so many updates at one pace, turned and zoomed as it is.
+const CAMERA_SCROLL_TO_POINT: u16 = 102;
 const CAMERA_START_ROTATE: u16 = 105;
 const CAMERA_STOP_ROTATE: u16 = 106;
 const CAMERA_TRACK_OBJECT: u16 = 107;
 const CAMERA_STOP_TRACK: u16 = 108;
+/// Whether it is panning, scrolling or circling.
+const CAMERA_IS_PANNING: u16 = 109;
+const CAMERA_IS_SCROLLING: u16 = 110;
+const CAMERA_IS_SPINNING: u16 = 111;
 const CAMERA_STORE: u16 = 112;
 const CAMERA_RESTORE: u16 = 113;
 /// The picture-in-picture camera's: taken as the main camera's.
@@ -335,6 +341,8 @@ pub enum Shot {
     Keep,
     LookAt((f32, f32)),
     GlideTo((f32, f32), i32),
+    /// To a place over so many updates at one pace.
+    ScrollTo((f32, f32), i32),
     /// Degrees an update, and which way: 1 one, 2 the other.
     Circle(i32, i32),
     StopCircling,
@@ -484,6 +492,18 @@ pub trait Battle {
     /// The world stands still, or moves again.
     fn freeze(&mut self, _frozen: bool) {}
     fn camera(&mut self, _shot: Shot) {}
+    /// Whether the camera is doing what a script had it do.
+    fn camera_is(&self, _doing: Doing) -> bool {
+        false
+    }
+}
+
+/// What a script can ask the camera is doing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Doing {
+    Panning,
+    Scrolling,
+    Spinning,
 }
 
 /// What a script asks is near something: a thing, or any of a side's things.
@@ -786,6 +806,18 @@ impl Script {
                     }
                     Piece::Function(CAMERA_PAN_TO_POINT | PIP_CAMERA_PAN_TO_POINT) => {
                         film(battle, spot(0).map(|to| Shot::GlideTo(to, number(1))))
+                    }
+                    Piece::Function(CAMERA_SCROLL_TO_POINT) => {
+                        film(battle, spot(0).map(|to| Shot::ScrollTo(to, number(1))))
+                    }
+                    Piece::Function(CAMERA_IS_PANNING) => {
+                        Value::Number(i32::from(battle.camera_is(Doing::Panning)))
+                    }
+                    Piece::Function(CAMERA_IS_SCROLLING) => {
+                        Value::Number(i32::from(battle.camera_is(Doing::Scrolling)))
+                    }
+                    Piece::Function(CAMERA_IS_SPINNING) => {
+                        Value::Number(i32::from(battle.camera_is(Doing::Spinning)))
                     }
                     Piece::Function(CAMERA_START_ROTATE) => {
                         film(battle, Some(Shot::Circle(number(0), number(1))))
@@ -1357,6 +1389,12 @@ mod tests {
         fn camera(&mut self, shot: Shot) {
             self.shots.push(shot);
         }
+        fn camera_is(&self, doing: Doing) -> bool {
+            match doing {
+                Doing::Scrolling => matches!(self.shots.last(), Some(Shot::ScrollTo(..))),
+                _ => false,
+            }
+        }
     }
 
     fn text(text: &str) -> Token {
@@ -1776,6 +1814,10 @@ mod tests {
             vec![F(CAMERA_PAN_TO_POINT), text("("), V(16), text(",50)")],
             vec![F(CAMERA_START_ROTATE), text("(2,1)")],
             vec![F(CAMERA_STOP_ROTATE), text("()")],
+            vec![F(CAMERA_SCROLL_TO_POINT), text("("), V(13), text(",30)")],
+            vec![V(40), K(SET), F(CAMERA_IS_SCROLLING), text("()")],
+            vec![V(41), K(SET), F(CAMERA_IS_PANNING), text("()")],
+            vec![V(42), K(SET), F(CAMERA_IS_SPINNING), text("()")],
             vec![F(CAMERA_RESTORE), text("(60)")],
             vec![K(ENABLE_UI), text("()")],
             vec![K(UN_FREEZE_GAME), text("()")],
@@ -1817,7 +1859,10 @@ mod tests {
             ],
         ];
         let mut battle = Written::default();
-        Script::new(&lines).run(&mut battle);
+        let mut script = Script::new(&lines);
+        script.run(&mut battle);
+        let n = Value::Number;
+        assert_eq!(script.variables[40..=42], [n(1), n(0), n(0)], "scrolling");
         assert_eq!(battle.scenes, [true, false]);
         assert_eq!(battle.frozen, [true, false]);
         assert_eq!(
@@ -1828,6 +1873,7 @@ mod tests {
                 Shot::GlideTo((16.0, 0.0), 50),
                 Shot::Circle(2, 1),
                 Shot::StopCircling,
+                Shot::ScrollTo((13.0, 0.0), 30),
                 Shot::GlideBack(60),
                 Shot::GlideTo((13.0, 0.0), 80),
                 Shot::Follow(1),

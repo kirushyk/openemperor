@@ -2283,6 +2283,7 @@ impl mission::Battle for Game {
             mission::Shot::Keep => self.camera.keep(),
             mission::Shot::LookAt((x, z)) => self.camera.look_at(x, z),
             mission::Shot::GlideTo(to, updates) => self.camera.glide_to(to, seconds(updates)),
+            mission::Shot::ScrollTo(to, updates) => self.camera.scroll_to(to, seconds(updates)),
             mission::Shot::Circle(degrees, way) => {
                 let way = if way == 2 { -1.0 } else { 1.0 };
                 let per_second = degrees as f32 * SCRIPT_UPDATES_PER_SECOND;
@@ -2292,6 +2293,14 @@ impl mission::Battle for Game {
             mission::Shot::GlideBack(updates) => self.camera.glide_back(seconds(updates)),
             mission::Shot::Follow(thing) => self.following = Some(thing),
             mission::Shot::StopFollowing => self.following = None,
+        }
+    }
+
+    fn camera_is(&self, doing: mission::Doing) -> bool {
+        match doing {
+            mission::Doing::Panning => self.camera.is_panning(),
+            mission::Doing::Scrolling => self.camera.is_scrolling(),
+            mission::Doing::Spinning => self.camera.is_spinning(),
         }
     }
 

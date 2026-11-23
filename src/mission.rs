@@ -8,6 +8,7 @@ const WORD: u8 = 0x80;
 const VARIABLE: u8 = 0x81;
 const KIND: u8 = 0x82;
 const SPEECH: u8 = 0x83;
+const TIP: u8 = 0x84;
 /// From this number up a word is a keyword or an operator; below it, a function.
 const FIRST_KEYWORD: u16 = 128;
 /// What the number of a kind of unit or building is more than its place in the rules' lists.
@@ -27,6 +28,9 @@ pub enum Token {
     Kind(u16),
     /// A line of speech, by its number.
     Speech(u16),
+    /// The text a thing shows under the cursor, by its number: only `ObjectToolTip` is given
+    /// one.
+    Tip(u16),
     /// What is written as it is: digits, commas, brackets.
     Text(String),
 }
@@ -58,7 +62,7 @@ fn tokens(line: &[u8]) -> Vec<Token> {
     let mut at = 0;
     while at < line.len() {
         let long = match line[at] {
-            WORD | KIND | SPEECH => 2,
+            WORD | KIND | SPEECH | TIP => 2,
             VARIABLE => 1,
             _ => 0,
         };
@@ -73,7 +77,8 @@ fn tokens(line: &[u8]) -> Vec<Token> {
                     WORD => Token::Keyword(n),
                     VARIABLE => Token::Variable(n),
                     KIND => Token::Kind(n.saturating_sub(FIRST_KIND)),
-                    _ => Token::Speech(n),
+                    SPEECH => Token::Speech(n),
+                    _ => Token::Tip(n),
                 });
                 at += 1 + long;
             }
@@ -963,6 +968,7 @@ fn pieces(line: &[Token]) -> Vec<Piece> {
             Token::Variable(n) => pieces.push(Piece::Variable(*n)),
             Token::Kind(n) => pieces.push(Piece::Kind(*n)),
             Token::Speech(n) => pieces.push(Piece::Speech(*n)),
+            Token::Tip(n) => pieces.push(Piece::Number(i32::from(*n))),
             Token::Text(text) => {
                 let mut number: Option<i32> = None;
                 for ch in text.chars() {
@@ -1119,7 +1125,7 @@ mod tests {
 
     #[test]
     fn a_script_reads_into_lines_of_functions_keywords_variables_kinds_and_text() {
-        let lines: [&[u8]; 4] = [
+        let lines: [&[u8]; 5] = [
             // v6 = F5(1)
             &[
                 0x81, 0x86, 0x80, 0xb4, 0x81, 0x80, 0x85, 0x80, b'(', b'1', b')',
@@ -1129,9 +1135,13 @@ mod tests {
             b"\x80\x8b\x81(\x81\x80,\x82\x8a\x81,\x81\x8d,0,0,1)",
             // F45(<speech 642>)
             b"\x80\xad\x80(\x83\x82\x85)",
+            // F58(v16,<tip 15>), as the Atreides' defence of Bilar Slopes has it
+            &[
+                0x80, 0xba, 0x80, b'(', 0x81, 0x90, b',', 0x84, 0x8f, 0x80, b')',
+            ],
         ];
         let read = read(&script(&lines)).unwrap();
-        assert_eq!(read.len(), 4);
+        assert_eq!(read.len(), 5);
         assert_eq!(
             read[0],
             [
@@ -1149,6 +1159,7 @@ mod tests {
         assert_eq!(read[2].last(), Some(&Token::Text(",0,0,1)".to_string())));
         assert_eq!(read[3][0], Token::Function(45));
         assert_eq!(speeches(&read), [642]);
+        assert_eq!(read[4][4], Token::Tip(15));
     }
 
     #[test]

@@ -30,6 +30,7 @@ number, lowest first.
 | `0x81` | 1 | A variable, by number, in the order the script declares them. |
 | `0x82` | 2 | A kind of unit or building. |
 | `0x83` | 2 | A line of speech. |
+| `0x84` | 2 | The text a thing shows under the cursor: only `F58`, `ObjectToolTip`, is given one, as `F58(v16,<tip 15>)`; which table its number is of is not known yet. |
 
 Everything else is plain text as written: digits, commas, brackets. Numbers are decimal
 digits; a negative one is written with the keyword `K143`, as `K143(4)` for −4.

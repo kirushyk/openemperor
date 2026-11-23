@@ -1,9 +1,10 @@
 ---
 id: TASK-143.4
 title: Script function F58 ObjectToolTip
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:26:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-143
@@ -21,3 +22,9 @@ What the original does (case code at GAME.EXE file offset 0xf3300, 0x2f bytes; +
 - [ ] #1 The game does what the original's ObjectToolTip does, as described here, in whatever form fits our code (it need not be one function)
 - [ ] #2 A test runs a script that calls ObjectToolTip and checks the effect
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Its second argument is a token of its own, 0x84 with two bytes (only ObjectToolTip is given one), which mission.rs now reads as Token::Tip(n). The numbers seen are 72, 15, 69, 11, 10, 47, 189 and a few more; which text table they index is not known yet, and that is what is left before the tooltip can be shown.
+<!-- SECTION:NOTES:END -->

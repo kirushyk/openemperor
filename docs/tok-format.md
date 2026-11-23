@@ -84,6 +84,8 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F0()` | The battle's time, in updates | compared with 49, 50, 100, 150 … |
 | `F1(n)` | A whole number at random from 0 to `n - 1` (the original's code) | `v7 K180 F1(2000) K178 v7` |
 | `F14()` | The player's side | `v0 K180 F14()` |
+| `F15()` | The co-op campaign's second human side; the player's outside one (the original's code) | |
+| `K140()` | Side 15, the last of the original's sixteen: nobody's things (the original's code) | `F21(K140(),…,v20)` |
 | `F18()` | A new side | four of them, the enemy and others |
 | `F3()` | The enemy's main base: the map's point `Primary` | |
 | `F4(side)` | A side's base: the player's at the map's point `Default` | `v13 K180 F4(v0)` |

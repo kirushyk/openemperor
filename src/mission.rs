@@ -216,6 +216,8 @@ const ENABLE_UI: u16 = 132;
 /// Sells a building: taken as taking a thing off the map.
 const OBJECT_SELL: u16 = 135;
 const NEW_OBJECT_OFFSET_ORIENTATION: u16 = 139;
+/// The last of the original's sixteen sides, kept for what is nobody's.
+const GET_NEUTRAL_SIDE: u16 = 140;
 const NEG: u16 = 143;
 /// Sets a side's money, but only at the very start of the battle.
 const SET_SIDE_CASH: u16 = 152;
@@ -242,6 +244,8 @@ const PLUS: u16 = 178;
 const SET: u16 = 180;
 /// What `GET_ENEMY_SIDE` is as a side.
 pub const SOMEONE_SIDE: i32 = -1;
+/// What `GET_NEUTRAL_SIDE` is: the last of sixteen.
+const NEUTRAL_SIDE: i32 = 15;
 
 /// A value of a script: a number, truth being 1 and falsehood 0; a place on the map; or a thing
 /// on it, if one was made.
@@ -526,6 +530,7 @@ impl Script {
                 };
                 match *callee {
                     Piece::Keyword(NEG) => Value::Number(-number(0)),
+                    Piece::Keyword(GET_NEUTRAL_SIDE) => Value::Number(NEUTRAL_SIDE),
                     Piece::Keyword(NEW_OBJECT_OFFSET_ORIENTATION) => {
                         let Some(kind) = kind(1) else {
                             return Value::Thing(None);
@@ -1325,11 +1330,17 @@ mod tests {
         let lines = vec![
             vec![V(1), K(SET), F(MULTIPLAYER), text("()")],
             vec![V(2), K(SET), F(GET_SECOND_PLAYER_SIDE), text("()")],
+            vec![V(3), K(SET), K(GET_NEUTRAL_SIDE), text("()")],
         ];
         let mut script = Script::new(&lines);
         script.run(&mut Written::default());
         assert_eq!(script.variables[1], Value::Number(0));
         assert_eq!(script.variables[2], Value::Number(0), "the player's side");
+        assert_eq!(
+            script.variables[3],
+            Value::Number(15),
+            "the last of sixteen"
+        );
     }
 
     #[test]

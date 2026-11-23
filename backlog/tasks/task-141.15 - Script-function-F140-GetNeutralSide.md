@@ -1,9 +1,10 @@
 ---
 id: TASK-141.15
 title: Script function F140 GetNeutralSide
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:00:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf3e84, 0x16 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's GetNeutralSide does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls GetNeutralSide and checks the effect
+- [x] #1 The game does what the original's GetNeutralSide does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls GetNeutralSide and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+GetNeutralSide gives side 15 (mission::NEUTRAL_SIDE); what a script puts down for it is nobody's, as for any side not made an enemy. Tested in mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

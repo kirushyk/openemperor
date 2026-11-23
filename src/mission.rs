@@ -231,8 +231,9 @@ const ENABLE_UI: u16 = 132;
 /// The game's world stands still while the script runs on, and moves again.
 const FREEZE_GAME: u16 = 129;
 const UN_FREEZE_GAME: u16 = 130;
-/// Sells a building: taken as taking a thing off the map.
+/// Sells a building, its owner paid for it, as a player's sale; and takes a thing off the map.
 const OBJECT_SELL: u16 = 135;
+const OBJECT_REMOVE: u16 = 136;
 /// Whether a carryall holds a thing.
 const OBJECT_IS_CARRIED: u16 = 138;
 const NEW_OBJECT_OFFSET_ORIENTATION: u16 = 139;
@@ -432,6 +433,8 @@ pub trait Battle {
     fn hunt(&mut self, _side: i32) {}
     /// Takes a thing off the map.
     fn remove(&mut self, _thing: Option<u32>) {}
+    /// Sells a building for its owner; what cannot be sold stays.
+    fn sell(&mut self, _thing: Option<u32>) {}
     /// Destroys everything of a side, or of every side.
     fn nuke(&mut self, _side: Option<i32>) {}
     /// Uncovers the fog so many squares round a place for the player.
@@ -815,6 +818,10 @@ impl Script {
                         Value::Number(0)
                     }
                     Piece::Keyword(OBJECT_SELL) => {
+                        battle.sell(at(0).thing());
+                        Value::Number(0)
+                    }
+                    Piece::Keyword(OBJECT_REMOVE) => {
                         battle.remove(at(0).thing());
                         Value::Number(0)
                     }
@@ -1123,6 +1130,7 @@ mod tests {
         sent: Vec<(i32, (f32, f32))>,
         hunting: Vec<i32>,
         removed: Vec<Option<u32>>,
+        sold: Vec<Option<u32>>,
         uncovered: Vec<((f32, f32), i32)>,
         covered: Vec<((f32, f32), i32)>,
         all_uncovered: bool,
@@ -1272,6 +1280,9 @@ mod tests {
         fn remove(&mut self, thing: Option<u32>) {
             self.removed.push(thing);
         }
+        fn sell(&mut self, thing: Option<u32>) {
+            self.sold.push(thing);
+        }
         fn camera(&mut self, shot: Shot) {
             self.shots.push(shot);
         }
@@ -1361,6 +1372,7 @@ mod tests {
             ],
             vec![F(SIDE_AI_AGGRESSIVE), text("(4)")],
             vec![K(OBJECT_SELL), text("("), V(0), text(")")],
+            vec![K(OBJECT_REMOVE), text("("), V(1), text(")")],
             set(8, vec![K(SET_VALUE), text("(11)")]),
             set(9, vec![K(OBJECT_IS_CARRIED), text("("), V(1), text(")")]),
             set(10, vec![K(OBJECT_IS_CARRIED), text("("), V(0), text(")")]),
@@ -1377,7 +1389,8 @@ mod tests {
         );
         assert_eq!(battle.sent, [(2, battle.script_point(4))]);
         assert_eq!(battle.hunting, [4]);
-        assert_eq!(battle.removed, [Some(1)]);
+        assert_eq!(battle.sold, [Some(1)]);
+        assert_eq!(battle.removed, [Some(2)]);
         assert!(battle.won, "the tutorial done");
     }
 

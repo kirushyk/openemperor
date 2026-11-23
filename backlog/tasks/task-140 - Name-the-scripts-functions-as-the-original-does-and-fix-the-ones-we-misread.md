@@ -4,7 +4,7 @@ title: Name the script's functions as the original does, and fix the ones we mis
 status: In Progress
 assignee: []
 created_date: '2026-11-23T14:32:00Z'
-updated_date: '2026-11-23T17:52:00Z'
+updated_date: '2026-11-23T18:16:00Z'
 labels: []
 dependencies: []
 ordinal: 140000
@@ -37,4 +37,6 @@ What the original's case code does, for the functions we misread:
 - F135 ObjectSell(obj) (0xf3edb, 0x75): sells the building (Building 0x486660, the sell routine of building.cpp: it refunds and goes away as a player's sale does) when the object can be sold (its virtual +0x14, or game type 4 with the side's 0x434320 state allowing it); otherwise logs 'eObjectSellFunction: ObjectCan'tBeSold %d'. ObjectRemove (F136) is the one that takes a thing off with order 0x2e.
 
 F11 GetEntranceFarFromPos now gives the farthest of the map's entrances; F6 GetEntrancePoint was also misread (it is the entrance nearest the side's mission position, 0x4ecd90 -> 0x4ecb70) and is fixed with it.
+
+K135 ObjectSell now sells a building for its owner (half its cost, no words), and leaves what is not a building; K136 ObjectRemove takes things off the map.
 <!-- SECTION:NOTES:END -->

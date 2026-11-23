@@ -131,7 +131,8 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F71(side, place)` | Sends a side's units to a place | |
 | `F82(place)` | A worm comes up at a place; not done yet, as there are no worms | `F82(F12(v43))` |
 | `F84()` | The tutorial is over and done; taken as won | 27.5 s after its last line |
-| `K135(thing)` | Takes a thing off the map | the tutorial's walls opened for the wave |
+| `K135(thing)` | Sells a building, its owner paid half what it cost, as a player's sale; what cannot be sold stays (the original's code) | the tutorial's walls opened for the wave |
+| `K136(thing)` | Takes a thing off the map (the original's code) | |
 | `K138(thing)` | Whether a carryall holds a thing (the original's code) | |
 | `K144(n)` | A step of the tutorial, as the number; what else it does is not known | `v32 K180 K144(11)` |
 | `F85()` | The battle is lost (the original's code) | |

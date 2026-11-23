@@ -2108,6 +2108,21 @@ impl mission::Battle for Game {
         self.units.retain(|u| Some(u.id) != thing);
     }
 
+    /// For half what it cost, as a player's sale, but without its words.
+    fn sell(&mut self, thing: Option<u32>) {
+        let Some(at) = self
+            .units
+            .iter()
+            .position(|u| Some(u.id) == thing && u.alive && u.kind.is_building())
+        else {
+            return;
+        };
+        let sold = self.units.remove(at);
+        if let Some(money) = self.money.get_mut(sold.owner) {
+            *money += sold.role.cost() / 2;
+        }
+    }
+
     fn destroyed(&self, thing: Option<u32>) -> bool {
         thing.is_some_and(|id| !self.units.iter().any(|u| u.id == id && u.alive))
     }
@@ -6993,6 +7008,29 @@ mod tests {
             game.update(0.1);
         }
         assert_ne!(at(&game), start, "and moves again");
+    }
+
+    #[test]
+    fn a_building_a_script_sells_pays_its_owner_half_and_a_unit_cannot_be_sold() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let building = game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.kind.is_building())
+            .copied()
+            .unwrap();
+        let unit = game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && !u.kind.is_building())
+            .map(|u| u.id);
+        let money = game.money[0];
+        Battle::sell(&mut game, Some(building.id));
+        assert!(!game.units.iter().any(|u| u.id == building.id));
+        assert_eq!(game.money[0], money + building.role.cost() / 2);
+        Battle::sell(&mut game, unit);
+        assert!(!game.destroyed(unit), "a unit stays");
     }
 
     #[test]

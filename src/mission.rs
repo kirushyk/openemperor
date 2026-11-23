@@ -150,6 +150,9 @@ const OBJECT_VALID: u16 = 22;
 const OBJECT_DESTROYED: u16 = 23;
 /// Whether a side has a unit at a thing: the tutorial's beacons reached.
 const OBJECT_NEAR_TO_SIDE: u16 = 24;
+/// Whether two things stand near each other: nearer than half the size of each and five
+/// squares more.
+const OBJECT_NEAR_TO_OBJECT: u16 = 26;
 /// Whether a side sees a thing: taken as whether it has hurt it, the outpost of a camp fired
 /// on.
 const OBJECT_VISIBLE_TO_SIDE: u16 = 27;
@@ -274,7 +277,8 @@ const PLUS: u16 = 178;
 const SET: u16 = 180;
 /// What `GET_ENEMY_SIDE` is as a side.
 pub const SOMEONE_SIDE: i32 = -1;
-/// How near a place a side's things must stand to be near it, in squares.
+/// How near a place a side's things must stand to be near it, in squares; and how much nearer
+/// than that two things must stand, past half the size of each.
 const NEAR_TO_POINT: f32 = 5.0;
 /// What `GET_NEUTRAL_SIDE` is: the last of sixteen.
 const NEUTRAL_SIDE: i32 = 15;
@@ -353,6 +357,10 @@ pub trait Battle {
     fn bring(&mut self, side: i32, kind: u16, at: (f32, f32)) -> Option<u32>;
     /// How many units a side has left.
     fn left(&self, side: i32) -> i32;
+    /// Whether two things stand nearer each other than half the size of each and this more.
+    fn near_each_other(&self, _a: Option<u32>, _b: Option<u32>, _more: f32) -> bool {
+        false
+    }
     /// Whether any of a side's things stands nearer a place than this.
     fn side_near(&self, _side: i32, _at: (f32, f32), _within: f32) -> bool {
         false
@@ -662,6 +670,11 @@ impl Script {
                     }
                     Piece::Function(OBJECT_DESTROYED | EVENT_OBJECT_DESTROYED) => {
                         Value::Number(i32::from(battle.destroyed(at(0).thing())))
+                    }
+                    Piece::Function(OBJECT_NEAR_TO_OBJECT) => {
+                        let more = NEAR_TO_POINT * crate::battlefield::CELL_SIDE;
+                        let (a, b) = (at(0).thing(), at(1).thing());
+                        Value::Number(i32::from(battle.near_each_other(a, b, more)))
                     }
                     Piece::Function(SIDE_NEAR_TO_POINT) => {
                         let within = NEAR_TO_POINT * crate::battlefield::CELL_SIDE;
@@ -1181,6 +1194,9 @@ mod tests {
         fn left(&self, _: i32) -> i32 {
             3
         }
+        fn near_each_other(&self, a: Option<u32>, b: Option<u32>, more: f32) -> bool {
+            a.is_some() && b.is_some() && more == 160.0
+        }
         fn side_near(&self, side: i32, (x, z): (f32, f32), within: f32) -> bool {
             side == 2 && x.hypot(z) < within
         }
@@ -1377,17 +1393,39 @@ mod tests {
             vec![K(OBJECT_REMOVE), text("("), V(1), text(")")],
             set(8, vec![K(SET_VALUE), text("(11)")]),
             set(9, vec![K(OBJECT_IS_CARRIED), text("("), V(1), text(")")]),
+            set(
+                11,
+                vec![
+                    F(OBJECT_NEAR_TO_OBJECT),
+                    text("("),
+                    V(0),
+                    text(","),
+                    V(1),
+                    text(")"),
+                ],
+            ),
             set(10, vec![K(OBJECT_IS_CARRIED), text("("), V(0), text(")")]),
             vec![F(END_GAME_WIN), text("()")],
         ];
         let mut battle = Written::default();
         let mut script = Script::new(&lines);
         script.run(&mut battle);
-        let numbers: Vec<Value> = (2..=10).map(|v| script.variables[v]).collect();
+        let numbers: Vec<Value> = (2..=11).map(|v| script.variables[v]).collect();
         let n = Value::Number;
         assert_eq!(
             numbers,
-            [n(300), n(600), n(1), n(5), n(1), n(1), n(11), n(1), n(0)]
+            [
+                n(300),
+                n(600),
+                n(1),
+                n(5),
+                n(1),
+                n(1),
+                n(11),
+                n(1),
+                n(0),
+                n(1)
+            ]
         );
         assert_eq!(battle.sent, [(2, battle.script_point(4))]);
         assert_eq!(battle.hunting, [4]);

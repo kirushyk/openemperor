@@ -1,9 +1,10 @@
 ---
 id: TASK-141.9
 title: Script function F26 ObjectNearToObject
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:20:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf1a05, 0x107 bytes; 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's ObjectNearToObject does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls ObjectNearToObject and checks the effect
+- [x] #1 The game does what the original's ObjectNearToObject does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls ObjectNearToObject and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+ObjectNearToObject(a, b) is true when the two stand nearer than a's radius + b's radius + 5 squares (half a rules size taken as the collision radius, half the tiles across). Tested in game.rs (two_things_are_near_within_half_their_sizes_and_five_squares) and mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -113,6 +113,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F16()` | A side that is neither the player's nor one of the script's | `F59(v1,F16())` |
 | `F17(thing)` | Whose a thing is, as a side | `F17(v3) K168 F14()`: the outpost captured |
 | `F22(thing)` | Whether a thing still stands | |
+| `F26(a, b)` | Whether two things stand nearer each other than half the rules' size of each and 5 squares more (the original's code); half a size taken as the radius a thing collides with | |
 | `F27(thing, side)` | Whether a side has hurt a thing; taken as: it is hurt, and the side is its enemy | `F27(v3,F14())` |
 | `F31(a, b)` | Whether any of side `a`'s things is seen by `b` (the original's code: `b`'s bit in their seen-by masks); taken as in sight of any of `b`'s | |
 | `F32(a, b)` | Whether side `a`'s units are in sight of `b`'s | prisoners reached |

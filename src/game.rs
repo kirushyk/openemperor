@@ -2040,6 +2040,15 @@ impl mission::Battle for Game {
         left.count() as i32
     }
 
+    /// Half a thing's size is the radius it collides with.
+    fn near_each_other(&self, a: Option<u32>, b: Option<u32>, more: f32) -> bool {
+        let find = |thing: Option<u32>| self.units.iter().find(|u| Some(u.id) == thing && u.alive);
+        let (Some(a), Some(b)) = (find(a), find(b)) else {
+            return false;
+        };
+        (a.x - b.x).hypot(a.z - b.z) < a.radius() + b.radius() + more
+    }
+
     fn side_near(&self, side: i32, (x, z): (f32, f32), within: f32) -> bool {
         self.units
             .iter()
@@ -7031,6 +7040,33 @@ mod tests {
         assert_eq!(game.money[0], money + building.role.cost() / 2);
         Battle::sell(&mut game, unit);
         assert!(!game.destroyed(unit), "a unit stays");
+    }
+
+    #[test]
+    fn two_things_are_near_within_half_their_sizes_and_five_squares() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let side = game.new_side();
+        let (x, z) = game.home;
+        let a = game.bring(side, 2, (x + 900.0, z + 900.0));
+        let b = game.bring(side, 2, (x + 900.0, z + 900.0));
+        let more = 5.0 * battlefield::CELL_SIDE;
+        assert!(game.near_each_other(a, b, more));
+        let reach = {
+            let radius = |id| {
+                game.units
+                    .iter()
+                    .find(|u| Some(u.id) == id)
+                    .unwrap()
+                    .radius()
+            };
+            radius(a) + radius(b) + more
+        };
+        let at_a = game.place_of(a).unwrap();
+        let unit = game.units.iter_mut().find(|u| Some(u.id) == b).unwrap();
+        (unit.x, unit.z) = (at_a.0 + reach + 1.0, at_a.1);
+        assert!(!game.near_each_other(a, b, more));
+        assert!(!game.near_each_other(a, None, more));
     }
 
     #[test]

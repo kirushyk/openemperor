@@ -1,9 +1,10 @@
 ---
 id: TASK-146.9
 title: Script function F73 SideAIAttackObject
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:33:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-146
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf281c, 0x83 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's SideAIAttackObject does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls SideAIAttackObject and checks the effect
+- [x] #1 The game does what the original's SideAIAttackObject does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls SideAIAttackObject and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SideAIAttackObject stops the side (as SideAIStop) and sends each of its units that can fire on the thing after it (Unit::go_after). Tested in game.rs (a_side_told_to_attack_a_thing_goes_after_it) and mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

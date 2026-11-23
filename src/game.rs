@@ -2143,6 +2143,25 @@ impl mission::Battle for Game {
         }
     }
 
+    /// Each that can fire on it goes after it; the rest stop.
+    fn attack(&mut self, side: i32, thing: Option<u32>) {
+        self.stop(side);
+        let Some(target) = self
+            .units
+            .iter()
+            .find(|u| Some(u.id) == thing && u.alive)
+            .copied()
+        else {
+            return;
+        };
+        for index in 0..self.units.len() {
+            let unit = &self.units[index];
+            if self.is_of_side(unit, side) && unit.alive && unit.can_attack(&target, &self.teams) {
+                self.units[index].go_after(target.id);
+            }
+        }
+    }
+
     fn remove(&mut self, thing: Option<u32>) {
         self.units.retain(|u| Some(u.id) != thing);
     }
@@ -7187,6 +7206,27 @@ mod tests {
         game.stop(side);
         assert!(!unit(&game).is_moving());
         assert!(!game.script_hunting.contains(&side));
+    }
+
+    #[test]
+    fn a_side_told_to_attack_a_thing_goes_after_it() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let side = game.new_side();
+        game.relate(side, 0, true);
+        let (x, z) = game.home;
+        let thing = game.bring(side, 2, (x + 500.0, z + 500.0));
+        let unit = game.units.iter_mut().find(|u| Some(u.id) == thing).unwrap();
+        units::turn_into(unit, Role::HkAssault);
+        let target = game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.kind.is_building())
+            .map(|u| u.id)
+            .unwrap();
+        game.attack(side, Some(target));
+        let unit = game.units.iter().find(|u| Some(u.id) == thing).unwrap();
+        assert_eq!(unit.target, Some(units::Target::Unit(target)));
     }
 
     #[test]

@@ -173,6 +173,8 @@ const EVENT_SIDE_ATTACKS_SIDE: u16 = 42;
 const EVENT_OBJECT_DESTROYED: u16 = 44;
 /// Plays a line of speech.
 const MESSAGE: u16 = 45;
+/// Hands a thing over to a side, as if captured.
+const OBJECT_CHANGE_SIDE: u16 = 53;
 /// Sets a thing's health, in the original's.
 const OBJECT_SET_HEALTH: u16 = 54;
 /// Turns a thing into another kind, for a side: prisoners freed become Fremen.
@@ -425,6 +427,8 @@ pub trait Battle {
     fn uncover_all(&mut self) {}
     /// Hands all of side `from`'s units over to side `to`.
     fn hand_over(&mut self, _from: i32, _to: i32) {}
+    /// Hands a thing over to a side.
+    fn change_side(&mut self, _thing: Option<u32>, _to: i32) {}
     /// A scene begins, which the player watches, or ends.
     fn scene(&mut self, _playing: bool) {}
     fn camera(&mut self, _shot: Shot) {}
@@ -710,6 +714,10 @@ impl Script {
                     Piece::Function(CAMERA_STORE) => film(battle, Some(Shot::Keep)),
                     Piece::Function(CAMERA_RESTORE) => {
                         film(battle, Some(Shot::GlideBack(number(0))))
+                    }
+                    Piece::Function(OBJECT_CHANGE_SIDE) => {
+                        battle.change_side(at(0).thing(), number(1));
+                        Value::Number(0)
                     }
                     Piece::Function(SIDE_CHANGE_SIDE) => {
                         battle.hand_over(number(0), number(1));
@@ -1092,6 +1100,7 @@ mod tests {
         nuked: Vec<Option<i32>>,
         ranks: u32,
         handed: Vec<(i32, i32)>,
+        changed: Vec<(Option<u32>, i32)>,
         entrances: Vec<(f32, f32)>,
         drawn: u32,
     }
@@ -1189,6 +1198,9 @@ mod tests {
         }
         fn hand_over(&mut self, from: i32, to: i32) {
             self.handed.push((from, to));
+        }
+        fn change_side(&mut self, thing: Option<u32>, to: i32) {
+            self.changed.push((thing, to));
         }
         fn lose(&mut self) {
             self.lost = true;
@@ -1568,6 +1580,8 @@ mod tests {
             vec![F(SIDE_NUKE_ALL), text("()")],
             // F91(v18, F14()), as the Atreides' Heighliner hands its Mongooses over.
             vec![F(SIDE_CHANGE_SIDE), text("(2,0)")],
+            // F53(v1, 3): the harvester is side 3's.
+            vec![F(OBJECT_CHANGE_SIDE), text("("), V(1), text(",3)")],
         ];
         let mut battle = Written::default();
         Script::new(&lines).run(&mut battle);
@@ -1591,6 +1605,7 @@ mod tests {
         assert!(battle.all_uncovered);
         assert_eq!(battle.nuked, [Some(3), None]);
         assert_eq!(battle.handed, [(2, 0)]);
+        assert_eq!(battle.changed, [(Some(1), 3)]);
     }
 
     #[test]

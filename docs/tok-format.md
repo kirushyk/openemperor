@@ -115,6 +115,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F27(thing, side)` | Whether a side has hurt a thing; taken as: it is hurt, and the side is its enemy | `F27(v3,F14())` |
 | `F32(a, b)` | Whether side `a`'s units are in sight of `b`'s | prisoners reached |
 | `F44(thing)` | Whether a thing is destroyed | |
+| `F53(thing, side)` | Hands a thing over to a side, as if captured (the original's code) | |
 | `F54(thing, n)` | Sets a thing's health | a camp's windtraps at 90 to 320 |
 | `F57(thing, kind, side)` | Turns a thing into a kind, for a side | prisoners freed as Fremen |
 | `F59(a, b)` | Makes side `a` a friend of `b` | given both ways |

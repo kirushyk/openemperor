@@ -2182,23 +2182,18 @@ impl mission::Battle for Game {
 
     /// What the side had is the other's from now on, in its color.
     fn hand_over(&mut self, from: i32, to: i32) {
-        let Some((owner, color)) = self.side_owner(to) else {
-            return;
-        };
         let handed: Vec<u32> = self
             .units
             .iter()
             .filter(|u| u.alive && self.is_of_side(u, from))
             .map(|u| u.id)
             .collect();
-        for unit in self.units.iter_mut().filter(|u| handed.contains(&u.id)) {
-            (unit.owner, unit.color) = (owner, color);
-            unit.selected = false;
-        }
-        self.script_side_of.retain(|(id, _)| !handed.contains(id));
-        if to != 0 {
-            self.script_side_of
-                .extend(handed.iter().map(|&id| (id, to)));
+        self.give_to_side(&handed, to);
+    }
+
+    fn change_side(&mut self, thing: Option<u32>, to: i32) {
+        if let Some(id) = thing.filter(|&id| self.units.iter().any(|u| u.id == id && u.alive)) {
+            self.give_to_side(&[id], to);
         }
     }
 
@@ -2358,6 +2353,22 @@ impl Game {
             if let Some(id) = prey.map(|u| u.id) {
                 self.units[index].go_after(id);
             }
+        }
+    }
+
+    /// These things are the side's from now on, in its color.
+    fn give_to_side(&mut self, handed: &[u32], to: i32) {
+        let Some((owner, color)) = self.side_owner(to) else {
+            return;
+        };
+        for unit in self.units.iter_mut().filter(|u| handed.contains(&u.id)) {
+            (unit.owner, unit.color) = (owner, color);
+            unit.selected = false;
+        }
+        self.script_side_of.retain(|(id, _)| !handed.contains(id));
+        if to != 0 {
+            self.script_side_of
+                .extend(handed.iter().map(|&id| (id, to)));
         }
     }
 
@@ -6966,6 +6977,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(owners(&game), [units::NEUTRAL; 2]);
+        // One of them alone, then all.
+        game.change_side(Some(brought[0]), 0);
+        assert_eq!(owners(&game), [0, units::NEUTRAL]);
+        assert_eq!(game.left(side), 1);
         game.hand_over(side, 0);
         assert_eq!(owners(&game), [0, 0]);
         assert_eq!(game.left(side), 0);

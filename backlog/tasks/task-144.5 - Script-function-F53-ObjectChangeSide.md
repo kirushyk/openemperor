@@ -1,9 +1,10 @@
 ---
 id: TASK-144.5
 title: Script function F53 ObjectChangeSide
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:08:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-144
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf11c5, 0x33 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's ObjectChangeSide does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls ObjectChangeSide and checks the effect
+- [x] #1 The game does what the original's ObjectChangeSide does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls ObjectChangeSide and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+ObjectChangeSide(obj, side) makes the thing the side's, in its owner and colour, as SideChangeSide does for all of a side (Game::give_to_side, shared). Tested in game.rs (a_side_the_script_hands_over_to_the_player_is_the_players) and mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

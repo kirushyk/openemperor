@@ -36,8 +36,10 @@ finding the local address.
   data (virtual tables and jump tables). These are a little too many, as a switch's cases
   count as starts, so a function's size here is the distance to the next start.
 - Switches: `jmp [4*reg+table]` (`ff 24 85`/`ff 24 8d`) with the table's run of addresses
-  into `.text`. The largest are the mission script's (178 cases, below) and one of 271 cases
-  at `0x127040`, table `0x128ea4`, not yet looked at.
+  into `.text`; the largest are listed under [Switches](#switches).
+- Function names: messages that name their own function, as `CWorldAttrib::GetBF, Invalid line
+  %d` or `CheckForWinCondition : …`, give 252 names. The game's own (110) each have a task where
+  we lack what they do; the networking ones are listed in TASK-177.
 
 ## Tables
 
@@ -57,6 +59,23 @@ finding the local address.
 | Sound table attributes | `0x1ee820`, `0x220434` | | Flags `DECAY` … `LOWEST`; attributes `RANGE` … `SOUNDS` | `Volume` and `Limit` (TASK-169) |
 | Camera settings | `0x21fb78` | `0xc6` | `CAMERA.INI`, `StartZoom` … `Scrolling` | Read (`src/game.rs`) |
 | Territory files | `0x1f257c` | `0xc0e` | `0xc8` each: `arrakis territories.txt` … `hk civil war2 connections.txt` | Arrakis's (`src/campaign.rs`) |
+
+## Switches
+
+| Jump | Table | Cases | What it switches on | Mapped |
+| --- | --- | --- | --- | --- |
+| `0xf0025` | `0xf4a00` | 178 | Mission-script function number | Each case, in [tok-format.md](tok-format.md) and TASK-140 to TASK-149's subtasks |
+| `0x127040` | `0x128ea4` | 265 (keys 47–311) | Rules.txt keyword, in `CWorldAttrib::GameObjectAttributes`: its key number less 47; the bullet and warhead keys go to the default, being read by `BulletAttributes` | Case per key, not yet what each stores |
+| `0x129387` | `0x129bb4` | 89 | Rules.txt keyword, in `CWorldAttrib::GeneralAttributes` | No |
+| `0xc55f1` | `0xc6cc4` | 51 | An order in the order queue (`ProcessOrder, Invalid Order: %d`): every command a player or the AI gives, superweapons among them | No |
+| `0xbdddd` | `0xbfc20` | 52 | A key command (the names at `0x1f9978`) | No |
+| `0xbd0e3` | `0xbd2b4` | 50 | Battlefield clicks: primary building, waypoints, tooltips | No |
+| `0xbbe68` | `0xbd018` | 30 | Placing a building or wall (`BuildingThud`, `WallThud`, `CannotDeployHere`) | No |
+| `0x5c4a6`, `0x5c976` | `0x5c8f4`, `0x5cea8` | 22, 22 | The AI's unit classes (`Identified … unit %s`) | By their messages, TASK-159.3 |
+| `0x9c0e0` | `0x9c62c` | 42 | Interface script tokens (check boxes, labels) | No |
+| `0x192850` | `0x192f50` | 28 | Kinds of object saved and loaded (`CGObjectList::Load`) | No |
+| `0x7cb00`, `0x7cef7`, `0x9e4e8`, `0x12380f`, `0x1897b7` | | 20–50 | Network and co-op messages, Westwood Online events | No (TASK-177) |
+| `0x1a3f98`, `0x1a4193`, `0x1a4587` | | 35–85 | DirectDraw error names | Not wanted |
 
 ## Data files it reads
 

@@ -325,6 +325,27 @@ switch's default, which does nothing. *Uses* counts each over the 228 scripts of
 | `K179` | `-` | the parser's | 41 |
 | `K180` | `=` | the parser's | 7055 |
 
+## How the interpreter runs a function
+
+Read from the switch's cases (TASK-140 to TASK-149 describe each function from them):
+
+- **Arguments**: argument *k* is kept in three arrays at once, as an int at `[esp+0x14+4k]`, an
+  object handle (16 bits) at `[esp+0x98+2k]` and a position (three floats) at `[esp+0xfc+12k]`;
+  how many were given is at `[esp+0x6c]`. A function reads whichever its argument is.
+- **Results**: a type at `[esp+0x3c]` (1 a number, a truth or a side; 2 an object; 3 a position)
+  and the value at `[esp+0x40]`, a position at `[esp+0x48]`.
+- **Objects** are looked up by handle in the world (`0x597880`); one that is gone gives 0 or
+  false, or the error 'Object is not initialised' with the script's name and line. An object
+  keeps its side at `+0x0c`, kind at `+0x10`, position at `+0x14`, health at `+0x3c`, the sides
+  that see it as a bit mask at `+0x6c` and its rules entry at `+0x70`.
+- **Co-op**: when the game is the co-op campaign (game type 3) and a side argument is the human
+  side, a test is made for every side of the human team and is true if any is, and an amount is
+  given to each. Some functions give the human side's turn to a random partner instead.
+- **Events**: each script keeps a list of this update's events (`script+0x2c0`): kind 8 an object
+  delivered, 6 and 9 one constructed, 11 one attacking a side. An `Event…` function's first
+  argument is an object variable that receives the event's object.
+- **Distances** are in the world's units, 32 to a square.
+
 ## The Atreides' first mission
 
 `ATStart.tok` has 754 lines. It declares 53 variables, makes four sides besides the

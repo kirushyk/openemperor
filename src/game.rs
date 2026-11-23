@@ -2049,6 +2049,27 @@ impl mission::Battle for Game {
         (a.x - b.x).hypot(a.z - b.z) < a.radius() + b.radius() + more
     }
 
+    /// Near one of the squares a building stands on, which its side's things see.
+    fn near_base(&self, of: mission::Near, side: i32, within: f32) -> bool {
+        let near = |thing: &Unit| {
+            let Some(looking) = self.script_side(thing) else {
+                return false;
+            };
+            self.units.iter().any(|building| {
+                building.alive
+                    && building.kind.is_building()
+                    && self.is_of_side(building, side)
+                    && (building.x - thing.x).hypot(building.z - thing.z) - building.radius()
+                        < within
+                    && self.in_sight_of(looking, |u| u.id == building.id)
+            })
+        };
+        self.units.iter().filter(|u| u.alive).any(|u| match of {
+            mission::Near::Thing(thing) => Some(u.id) == thing && near(u),
+            mission::Near::Side(of) => self.is_of_side(u, of) && near(u),
+        })
+    }
+
     fn side_near(&self, side: i32, (x, z): (f32, f32), within: f32) -> bool {
         self.units
             .iter()
@@ -7102,6 +7123,31 @@ mod tests {
         (unit.x, unit.z) = (x, z);
         assert!(game.sees_kind(2, 0));
         assert!(!game.sees_kind(2, side), "its own are not counted");
+    }
+
+    #[test]
+    fn a_thing_near_a_building_of_a_side_it_sees_is_near_its_base() {
+        use mission::{Battle, Near};
+        let mut game = in_battle();
+        let side = game.new_side();
+        let (x, z) = game.home;
+        let within = 7.0 * battlefield::CELL_SIDE;
+        let thing = game.bring(side, 2, (x + 4000.0, z + 4000.0));
+        assert!(!game.near_base(Near::Thing(thing), 0, within), "far off");
+        let building = game
+            .units
+            .iter()
+            .find(|u| u.owner == 0 && u.kind.is_building())
+            .copied()
+            .unwrap();
+        let unit = game.units.iter_mut().find(|u| Some(u.id) == thing).unwrap();
+        (unit.x, unit.z) = (building.x + building.radius() + 100.0, building.z);
+        assert!(game.near_base(Near::Thing(thing), 0, within));
+        assert!(game.near_base(Near::Side(side), 0, within));
+        assert!(
+            !game.near_base(Near::Side(side), side, within),
+            "it has no base"
+        );
     }
 
     #[test]

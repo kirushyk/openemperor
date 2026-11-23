@@ -150,6 +150,10 @@ const OBJECT_VALID: u16 = 22;
 const OBJECT_DESTROYED: u16 = 23;
 /// Whether a side has a unit at a thing: the tutorial's beacons reached.
 const OBJECT_NEAR_TO_SIDE: u16 = 24;
+/// Whether a thing, or any of a side's things, stands within so many squares of a building of
+/// another side that it sees.
+const OBJECT_NEAR_TO_SIDE_BASE: u16 = 25;
+const SIDE_NEAR_TO_SIDE_BASE: u16 = 33;
 /// Whether two things stand near each other: nearer than half the size of each and five
 /// squares more.
 const OBJECT_NEAR_TO_OBJECT: u16 = 26;
@@ -282,6 +286,8 @@ pub const SOMEONE_SIDE: i32 = -1;
 /// How near a place a side's things must stand to be near it, in squares; and how much nearer
 /// than that two things must stand, past half the size of each.
 const NEAR_TO_POINT: f32 = 5.0;
+/// How near a building of a side's base a thing must stand to be near it, in squares.
+const NEAR_TO_BASE: f32 = 7.0;
 /// What `GET_NEUTRAL_SIDE` is: the last of sixteen.
 const NEUTRAL_SIDE: i32 = 15;
 
@@ -361,6 +367,11 @@ pub trait Battle {
     fn left(&self, side: i32) -> i32;
     /// Whether two things stand nearer each other than half the size of each and this more.
     fn near_each_other(&self, _a: Option<u32>, _b: Option<u32>, _more: f32) -> bool {
+        false
+    }
+    /// Whether a thing stands nearer than this to a building of `side` that the thing's side
+    /// sees; or, for `of` a side, any of its things.
+    fn near_base(&self, _of: Near, _side: i32, _within: f32) -> bool {
         false
     }
     /// Whether any of a side's things stands nearer a place than this.
@@ -468,6 +479,13 @@ pub trait Battle {
     /// The world stands still, or moves again.
     fn freeze(&mut self, _frozen: bool) {}
     fn camera(&mut self, _shot: Shot) {}
+}
+
+/// What a script asks is near something: a thing, or any of a side's things.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Near {
+    Thing(Option<u32>),
+    Side(i32),
 }
 
 /// A piece of a line as the script reads it.
@@ -681,6 +699,15 @@ impl Script {
                         let more = NEAR_TO_POINT * crate::battlefield::CELL_SIDE;
                         let (a, b) = (at(0).thing(), at(1).thing());
                         Value::Number(i32::from(battle.near_each_other(a, b, more)))
+                    }
+                    Piece::Function(OBJECT_NEAR_TO_SIDE_BASE | SIDE_NEAR_TO_SIDE_BASE) => {
+                        let of = if *callee == Piece::Function(OBJECT_NEAR_TO_SIDE_BASE) {
+                            Near::Thing(at(0).thing())
+                        } else {
+                            Near::Side(number(0))
+                        };
+                        let within = NEAR_TO_BASE * crate::battlefield::CELL_SIDE;
+                        Value::Number(i32::from(battle.near_base(of, number(1), within)))
                     }
                     Piece::Function(SIDE_NEAR_TO_POINT) => {
                         let within = NEAR_TO_POINT * crate::battlefield::CELL_SIDE;
@@ -1206,6 +1233,9 @@ mod tests {
         fn near_each_other(&self, a: Option<u32>, b: Option<u32>, more: f32) -> bool {
             a.is_some() && b.is_some() && more == 160.0
         }
+        fn near_base(&self, of: Near, side: i32, within: f32) -> bool {
+            within == 224.0 && side == 1 && matches!(of, Near::Thing(Some(2)) | Near::Side(3))
+        }
         fn side_near(&self, side: i32, (x, z): (f32, f32), within: f32) -> bool {
             side == 2 && x.hypot(z) < within
         }
@@ -1630,6 +1660,41 @@ mod tests {
         };
         assert_eq!(kind_seen(4), Value::Number(1));
         assert_eq!(kind_seen(5), Value::Number(0));
+    }
+
+    #[test]
+    fn a_thing_or_a_side_is_near_a_sides_base_within_seven_squares() {
+        use Token::{Function as F, Keyword as K, Variable as V};
+        let set = |variable: u16, call: Vec<Token>| [vec![V(variable), K(SET)], call].concat();
+        let place = |variable: u16| {
+            set(
+                variable,
+                vec![
+                    K(NEW_OBJECT_OFFSET_ORIENTATION),
+                    text("(0,"),
+                    Token::Kind(1),
+                    text(",0,0,0,0)"),
+                ],
+            )
+        };
+        let lines = vec![
+            place(1),
+            place(2),
+            set(
+                3,
+                vec![F(OBJECT_NEAR_TO_SIDE_BASE), text("("), V(2), text(",1)")],
+            ),
+            set(
+                4,
+                vec![F(OBJECT_NEAR_TO_SIDE_BASE), text("("), V(1), text(",1)")],
+            ),
+            set(5, vec![F(SIDE_NEAR_TO_SIDE_BASE), text("(3,1)")]),
+            set(6, vec![F(SIDE_NEAR_TO_SIDE_BASE), text("(3,2)")]),
+        ];
+        let mut script = Script::new(&lines);
+        script.run(&mut Written::default());
+        let n = Value::Number;
+        assert_eq!(script.variables[3..=6], [n(1), n(0), n(1), n(0)]);
     }
 
     #[test]

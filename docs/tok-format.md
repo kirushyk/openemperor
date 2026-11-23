@@ -134,6 +134,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F42(a, b)` | Taken as: whether `b` has lost any of what the script gave it, to `a` | the tutorial's wave fought, not only met by the worm |
 | `F64(side)` | A side's units go after the player's, and keep at it | the wave the worm left |
 | `F71(side, place)` | Sends a side's units to a place | |
+| `F72(side)` | A side's units give up what they were told, their hunt too, and stop (the original's code: its mission tactics dropped) | |
 | `F82(place)` | A worm comes up at a place; not done yet, as there are no worms | `F82(F12(v43))` |
 | `F84()` | The tutorial is over and done; taken as won | 27.5 s after its last line |
 | `K135(thing)` | Sells a building, its owner paid half what it cost, as a player's sale; what cannot be sold stays (the original's code) | the tutorial's walls opened for the wave |

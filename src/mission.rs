@@ -208,6 +208,8 @@ const ADD_SIDE_CASH: u16 = 62;
 const SIDE_AI_AGGRESSIVE: u16 = 64;
 /// A side's units are sent to a place.
 const SIDE_AI_MOVE: u16 = 71;
+/// A side's units give up what they were told and stop.
+const SIDE_AI_STOP: u16 = 72;
 /// Ends the battle, won if given true and lost if false.
 const MISSION_OUTCOME: u16 = 83;
 /// The tutorial is over, and done.
@@ -476,6 +478,8 @@ pub trait Battle {
     fn send(&mut self, _side: i32, _to: (f32, f32)) {}
     /// Has a side's units go after the player's.
     fn hunt(&mut self, _side: i32) {}
+    /// Has a side's units give up what they were told and stop.
+    fn stop(&mut self, _side: i32) {}
     /// Takes a thing off the map.
     fn remove(&mut self, _thing: Option<u32>) {}
     /// Sells a building for its owner; what cannot be sold stays.
@@ -899,6 +903,10 @@ impl Script {
                     }
                     Piece::Function(SIDE_AI_AGGRESSIVE) => {
                         battle.hunt(number(0));
+                        Value::Number(0)
+                    }
+                    Piece::Function(SIDE_AI_STOP) => {
+                        battle.stop(number(0));
                         Value::Number(0)
                     }
                     Piece::Function(SIDE_AI_MOVE) => {
@@ -1388,6 +1396,9 @@ mod tests {
         fn hunt(&mut self, side: i32) {
             self.hunting.push(side);
         }
+        fn stop(&mut self, side: i32) {
+            self.hunting.retain(|&hunting| hunting != side);
+        }
         fn remove(&mut self, thing: Option<u32>) {
             self.removed.push(thing);
         }
@@ -1488,6 +1499,8 @@ mod tests {
                 text("(4))"),
             ],
             vec![F(SIDE_AI_AGGRESSIVE), text("(4)")],
+            vec![F(SIDE_AI_AGGRESSIVE), text("(5)")],
+            vec![F(SIDE_AI_STOP), text("(5)")],
             vec![K(OBJECT_SELL), text("("), V(0), text(")")],
             vec![K(OBJECT_REMOVE), text("("), V(1), text(")")],
             set(8, vec![K(SET_VALUE), text("(11)")]),

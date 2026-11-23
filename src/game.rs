@@ -2134,6 +2134,15 @@ impl mission::Battle for Game {
         self.go_hunting(side);
     }
 
+    fn stop(&mut self, side: i32) {
+        self.script_hunting.retain(|&hunting| hunting != side);
+        for index in 0..self.units.len() {
+            if self.is_of_side(&self.units[index], side) {
+                self.units[index].stop();
+            }
+        }
+    }
+
     fn remove(&mut self, thing: Option<u32>) {
         self.units.retain(|u| Some(u.id) != thing);
     }
@@ -7160,6 +7169,24 @@ mod tests {
             !game.near_base(Near::Side(side), side, within),
             "it has no base"
         );
+    }
+
+    #[test]
+    fn a_side_told_to_stop_gives_up_where_it_was_sent_and_its_hunt() {
+        use mission::Battle;
+        let mut game = in_battle();
+        game.set_screen(Screen::InGame);
+        let side = game.new_side();
+        let (x, z) = game.home;
+        let thing = game.bring(side, 2, (x + 500.0, z + 500.0));
+        game.hunt(side);
+        game.send(side, (x + 2500.0, z + 500.0));
+        game.update(0.1);
+        let unit = |game: &Game| *game.units.iter().find(|u| Some(u.id) == thing).unwrap();
+        assert!(unit(&game).is_moving());
+        game.stop(side);
+        assert!(!unit(&game).is_moving());
+        assert!(!game.script_hunting.contains(&side));
     }
 
     #[test]

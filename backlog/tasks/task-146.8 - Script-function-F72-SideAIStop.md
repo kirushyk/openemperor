@@ -1,9 +1,10 @@
 ---
 id: TASK-146.8
 title: Script function F72 SideAIStop
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:31:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-146
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf274f, 0xcd bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's SideAIStop does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls SideAIStop and checks the effect
+- [x] #1 The game does what the original's SideAIStop does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls SideAIStop and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SideAIStop drops the side's hunt (script_hunting) and stops each of its units where it stands (Unit::stop, split out of order_stop, the S key's). Tested in game.rs (a_side_told_to_stop_gives_up_where_it_was_sent_and_its_hunt) and mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

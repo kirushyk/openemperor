@@ -5962,16 +5962,23 @@ pub fn order_march(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, te
 /// Stops the selected right where they are, giving up where they were going and what they were
 /// going after, so that they only fight back at what comes for them.
 pub fn order_stop(units: &mut [Unit]) {
-    for unit in units
-        .iter_mut()
-        .filter(|u| u.selected && u.alive && u.role.goes_where_told())
-    {
-        unit.stand_down();
-        unit.on_mission = false;
-        unit.way = None;
-        unit.reset_progress();
-        if unit.role == Role::Harvester {
-            unit.harvest = Harvest::Idle;
+    for unit in units.iter_mut().filter(|u| u.selected) {
+        unit.stop();
+    }
+}
+
+impl Unit {
+    /// Stops where it is, with nothing to do: what goes where it is told, alive.
+    pub fn stop(&mut self) {
+        if !self.alive || !self.role.goes_where_told() {
+            return;
+        }
+        self.stand_down();
+        self.on_mission = false;
+        self.way = None;
+        self.reset_progress();
+        if self.role == Role::Harvester {
+            self.harvest = Harvest::Idle;
         }
     }
 }

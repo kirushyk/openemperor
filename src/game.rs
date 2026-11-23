@@ -2166,6 +2166,26 @@ impl mission::Battle for Game {
         }
     }
 
+    /// Each that can fight goes to a spot near it and stands guard there.
+    fn guard(&mut self, side: i32, thing: Option<u32>) {
+        self.stop(side);
+        let Some(at) = self.place_of(thing) else {
+            return;
+        };
+        let terrain = battlefield::terrain(self.battle_map);
+        for index in 0..self.units.len() {
+            let unit = &self.units[index];
+            if !unit.alive || unit.kind.is_building() || !unit.weapon.is_armed() {
+                continue;
+            }
+            if self.is_of_side(unit, side) {
+                units::send_to_spot(&mut self.units, index, at, terrain);
+                let unit = &mut self.units[index];
+                unit.guard = Some(unit.destination);
+            }
+        }
+    }
+
     /// Each unit heads for the entrance nearest it, and goes once there.
     fn exit_map(&mut self, side: i32) {
         self.stop(side);
@@ -7290,6 +7310,28 @@ mod tests {
         assert!(!game.destroyed(thing), "it stays");
         assert!(game.script_leaving.contains(&side));
         assert!(!game.has_lost(side));
+    }
+
+    #[test]
+    fn a_side_told_to_guard_a_thing_stands_guard_near_it() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let side = game.new_side();
+        let (x, z) = game.home;
+        let guard = game.bring(side, 2, (x + 2000.0, z + 2000.0));
+        let unit = game.units.iter_mut().find(|u| Some(u.id) == guard).unwrap();
+        units::turn_into(unit, Role::HkAssault);
+        let thing = game.bring(side, 2, (x + 500.0, z + 500.0));
+        game.guard(side, thing);
+        let unit = game.units.iter().find(|u| Some(u.id) == guard).unwrap();
+        let (gx, gz) = unit.guard.expect("in guard mode");
+        assert_eq!((gx, gz), unit.destination);
+        assert!(
+            (gx - (x + 500.0)).hypot(gz - (z + 500.0)) < 300.0,
+            "near the thing"
+        );
+        let unarmed = game.units.iter().find(|u| Some(u.id) == thing).unwrap();
+        assert_eq!(unarmed.guard, None, "what cannot fight does not guard");
     }
 
     #[test]

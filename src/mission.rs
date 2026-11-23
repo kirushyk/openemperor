@@ -213,6 +213,8 @@ const SIDE_AI_MOVE: u16 = 71;
 const SIDE_AI_STOP: u16 = 72;
 /// A side's units give up what they were told and go after a thing.
 const SIDE_AI_ATTACK_OBJECT: u16 = 73;
+/// A side's units give up what they were told and stand guard round a thing.
+const SIDE_AI_GUARD_OBJECT: u16 = 74;
 /// A side's units give up what they were told and leave the map, each by the entrance nearest
 /// it.
 const SIDE_AI_EXIT_MAP: u16 = 75;
@@ -488,6 +490,8 @@ pub trait Battle {
     fn stop(&mut self, _side: i32) {}
     /// Has a side's units give up what they were told and go after a thing.
     fn attack(&mut self, _side: i32, _thing: Option<u32>) {}
+    /// Has a side's units give up what they were told and stand guard round a thing.
+    fn guard(&mut self, _side: i32, _thing: Option<u32>) {}
     /// Has a side's units give up what they were told and leave the map.
     fn exit_map(&mut self, _side: i32) {}
     /// Takes a thing off the map.
@@ -923,6 +927,10 @@ impl Script {
                         battle.attack(number(0), at(1).thing());
                         Value::Number(0)
                     }
+                    Piece::Function(SIDE_AI_GUARD_OBJECT) => {
+                        battle.guard(number(0), at(1).thing());
+                        Value::Number(0)
+                    }
                     Piece::Function(SIDE_AI_EXIT_MAP) => {
                         battle.exit_map(number(0));
                         Value::Number(0)
@@ -1261,6 +1269,7 @@ mod tests {
         sold: Vec<Option<u32>>,
         attacking: Vec<(i32, Option<u32>)>,
         leaving: Vec<i32>,
+        guarding: Vec<(i32, Option<u32>)>,
         uncovered: Vec<((f32, f32), i32)>,
         covered: Vec<((f32, f32), i32)>,
         all_uncovered: bool,
@@ -1425,6 +1434,9 @@ mod tests {
         fn exit_map(&mut self, side: i32) {
             self.leaving.push(side);
         }
+        fn guard(&mut self, side: i32, thing: Option<u32>) {
+            self.guarding.push((side, thing));
+        }
         fn remove(&mut self, thing: Option<u32>) {
             self.removed.push(thing);
         }
@@ -1529,6 +1541,7 @@ mod tests {
             vec![F(SIDE_AI_STOP), text("(5)")],
             vec![F(SIDE_AI_ATTACK_OBJECT), text("(3,"), V(1), text(")")],
             vec![F(SIDE_AI_EXIT_MAP), text("(6)")],
+            vec![F(SIDE_AI_GUARD_OBJECT), text("(7,"), V(0), text(")")],
             vec![K(OBJECT_SELL), text("("), V(0), text(")")],
             vec![K(OBJECT_REMOVE), text("("), V(1), text(")")],
             set(8, vec![K(SET_VALUE), text("(11)")]),
@@ -1571,6 +1584,7 @@ mod tests {
         assert_eq!(battle.hunting, [4]);
         assert_eq!(battle.attacking, [(3, Some(2))]);
         assert_eq!(battle.leaving, [6]);
+        assert_eq!(battle.guarding, [(7, Some(1))]);
         assert_eq!(battle.sold, [Some(1)]);
         assert_eq!(battle.removed, [Some(2)]);
         assert!(battle.won, "the tutorial done");

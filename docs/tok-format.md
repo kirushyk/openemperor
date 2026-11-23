@@ -136,6 +136,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F71(side, place)` | Sends a side's units to a place | |
 | `F72(side)` | A side's units give up what they were told, their hunt too, and stop (the original's code: its mission tactics dropped) | |
 | `F73(side, thing)` | A side's units give up what they were told and go after a thing, those that can fire on it (the original's code: an attack-object tactic) | |
+| `F74(side, thing)` | A side's units give up what they were told and stand guard round a thing, each that can fight at a spot near it (the original's code: a guard-object tactic) | |
 | `F75(side)` | A side's units give up what they were told and leave the map, each driving to the entrance nearest it and going once within 3 squares of it (the original's code: a move-off-map tactic); `F38` then holds | |
 | `F82(place)` | A worm comes up at a place; not done yet, as there are no worms | `F82(F12(v43))` |
 | `F84()` | The tutorial is over and done; taken as won | 27.5 s after its last line |

@@ -1,9 +1,10 @@
 ---
 id: TASK-146.10
 title: Script function F74 SideAIGuardObject
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:38:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-146
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf289f, 0x83 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's SideAIGuardObject does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls SideAIGuardObject and checks the effect
+- [x] #1 The game does what the original's SideAIGuardObject does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls SideAIGuardObject and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SideAIGuardObject stops the side and sends each of its armed units to a free spot near the thing, in guard mode there (Unit::guard), so it goes after enemies that come near and comes back. Tested in game.rs (a_side_told_to_guard_a_thing_stands_guard_near_it) and mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

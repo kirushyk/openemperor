@@ -94,6 +94,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F2()` | Whether the game is the co-op campaign: false here, as the original has it outside one | before the second player's gift |
 | `F21(side, kind, place)` | Brings a unit of that kind in for the side at a place | reinforcements |
 | `F23(object)` | Whether an object is destroyed | all three of the enemy's main buildings ends the mission |
+| `F34(side, place)` | Whether any unit or building of a side stands within 5 squares of a place (the original's code: distance squared under 160²) | |
 | `F35(side)` | How many units a side has left | `F35(v2) K168 0` |
 | `F45(line)` | Plays a line of speech | |
 | `F60(a, b)` | Makes side `a` an enemy of `b` | given both ways |

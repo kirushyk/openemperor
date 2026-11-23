@@ -1,9 +1,10 @@
 ---
 id: TASK-141.13
 title: Script function F34 SideNearToPoint
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:05:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf1ea6, 0xc6 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's SideNearToPoint does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls SideNearToPoint and checks the effect
+- [x] #1 The game does what the original's SideNearToPoint does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls SideNearToPoint and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SideNearToPoint(side, pos) is true when any living unit or building of the side stands less than 5 squares (160 world units) from pos (Battle::side_near). Tested in mission.rs (a_side_is_near_a_place_within_five_squares).
+<!-- SECTION:FINAL_SUMMARY:END -->

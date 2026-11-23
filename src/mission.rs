@@ -157,6 +157,8 @@ const OBJECT_GET_HEALTH: u16 = 29;
 const OBJECT_MAX_HEALTH: u16 = 30;
 /// Whether a side's things are near another's: taken as in sight of them.
 const SIDE_NEAR_TO_SIDE: u16 = 32;
+/// Whether any unit or building of a side stands within so far of a place.
+const SIDE_NEAR_TO_POINT: u16 = 34;
 const SIDE_UNIT_COUNT: u16 = 35;
 const SIDE_BUILDING_COUNT: u16 = 36;
 /// How many of a side's things of a kind there are.
@@ -256,6 +258,8 @@ const PLUS: u16 = 178;
 const SET: u16 = 180;
 /// What `GET_ENEMY_SIDE` is as a side.
 pub const SOMEONE_SIDE: i32 = -1;
+/// How near a place a side's things must stand to be near it, in squares.
+const NEAR_TO_POINT: f32 = 5.0;
 /// What `GET_NEUTRAL_SIDE` is: the last of sixteen.
 const NEUTRAL_SIDE: i32 = 15;
 
@@ -333,6 +337,10 @@ pub trait Battle {
     fn bring(&mut self, side: i32, kind: u16, at: (f32, f32)) -> Option<u32>;
     /// How many units a side has left.
     fn left(&self, side: i32) -> i32;
+    /// Whether any of a side's things stands nearer a place than this.
+    fn side_near(&self, _side: i32, _at: (f32, f32), _within: f32) -> bool {
+        false
+    }
     fn destroyed(&self, thing: Option<u32>) -> bool;
     /// Plays a line of speech, by its number.
     fn say(&mut self, line: u16);
@@ -610,6 +618,14 @@ impl Script {
                     }
                     Piece::Function(OBJECT_DESTROYED | EVENT_OBJECT_DESTROYED) => {
                         Value::Number(i32::from(battle.destroyed(at(0).thing())))
+                    }
+                    Piece::Function(SIDE_NEAR_TO_POINT) => {
+                        let within = NEAR_TO_POINT * crate::battlefield::CELL_SIDE;
+                        Value::Number(i32::from(battle.side_near(
+                            number(0),
+                            at(1).place(),
+                            within,
+                        )))
                     }
                     Piece::Function(SIDE_UNIT_COUNT) => Value::Number(battle.left(number(0))),
                     Piece::Function(MESSAGE) => {
@@ -1099,6 +1115,9 @@ mod tests {
         fn left(&self, _: i32) -> i32 {
             3
         }
+        fn side_near(&self, side: i32, (x, z): (f32, f32), within: f32) -> bool {
+            side == 2 && x.hypot(z) < within
+        }
         fn destroyed(&self, thing: Option<u32>) -> bool {
             thing == Some(1)
         }
@@ -1385,6 +1404,30 @@ mod tests {
             script.variables[1],
             Value::Place(141.0 * 32.0, 132.0 * 32.0)
         );
+    }
+
+    #[test]
+    fn a_side_is_near_a_place_within_five_squares() {
+        use Token::{Function as F, Keyword as K, Variable as V};
+        let near = |side: &str, point: &str| {
+            vec![
+                V(1),
+                K(SET),
+                F(SIDE_NEAR_TO_POINT),
+                text(&format!("({side},")),
+                F(GET_SCRIPT_POINT),
+                text(&format!("({point}))")),
+            ]
+        };
+        let asked = |line: Vec<Token>| {
+            let mut script = Script::new(&[line]);
+            script.run(&mut Written::default());
+            script.variables[1]
+        };
+        // The side's things stand at (0, 0) and the point is that many units along.
+        assert_eq!(asked(near("2", "159")), Value::Number(1));
+        assert_eq!(asked(near("2", "160")), Value::Number(0));
+        assert_eq!(asked(near("1", "0")), Value::Number(0));
     }
 
     #[test]

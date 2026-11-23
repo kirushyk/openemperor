@@ -2040,6 +2040,12 @@ impl mission::Battle for Game {
         left.count() as i32
     }
 
+    fn side_near(&self, side: i32, (x, z): (f32, f32), within: f32) -> bool {
+        self.units
+            .iter()
+            .any(|u| u.alive && self.is_of_side(u, side) && (u.x - x).hypot(u.z - z) < within)
+    }
+
     fn buildings_left(&self, side: i32) -> i32 {
         let left = self
             .units

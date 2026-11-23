@@ -95,7 +95,9 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F35(side)` | How many units a side has left | `F35(v2) K168 0` |
 | `F45(line)` | Plays a line of speech | |
 | `F60(a, b)` | Makes side `a` an enemy of `b` | given both ways |
-| `F62(side, n)` | Gives a side money | `F62(v0,10000)` |
+| `F62(side, n)` | Gives a side money, on top of what it has (the original's code) | `F62(v0,10000)` |
+| `F19(side)`, `F20(side)` | A side's money; its spice is the same figure (the original's code) | |
+| `K152(side, n)` | Sets a side's money, only at the battle's first update (the original's code) | |
 | `F83(truth)` | Ends the battle, won if true and lost if false | `F83(TRUE)` once the enemy's palace and yards are gone |
 | `F37(side, kind)` | How many things of a kind a side has; for `F16()`, the map's own too | `F37(F16(),<HKPalace>) K168 0` |
 | `F8()` | Where reinforcements come in; taken as the player's base | `F21(F14(),<FRFremen>,F8())` |

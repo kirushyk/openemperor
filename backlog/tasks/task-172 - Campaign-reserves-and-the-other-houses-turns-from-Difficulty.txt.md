@@ -4,6 +4,7 @@ title: Campaign reserves and the other houses' turns from Difficulty.txt
 status: To Do
 assignee: []
 created_date: '2026-11-23T14:33:00Z'
+updated_date: '2026-11-23T17:57:00Z'
 labels: []
 dependencies: []
 ordinal: 172000
@@ -20,3 +21,9 @@ Difficulty.txt (file 0x1f1b18) with [Random], [Personality], [Phase], [RRDiffere
 - [ ] #1 The other houses attack and win between themselves as Difficulty.txt and the reserves say
 - [ ] #2 Reserves can be moved and come into battles as reinforcements by the rules' figures
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+A territory battle still opens with DEFAULT_BATTLE_MONEY before its script's AddSideCash; the rules' CampaignAttackMoney/DefendMoney should set it instead.
+<!-- SECTION:NOTES:END -->

@@ -139,6 +139,9 @@ const GET_ENEMY_SIDE: u16 = 16;
 /// Whose a thing is: the player's, or the script's side it was put down for.
 const GET_OBJECT_SIDE: u16 = 17;
 const CREATE_SIDE: u16 = 18;
+/// A side's money; its spice is the same figure.
+const GET_SIDE_CASH: u16 = 19;
+const GET_SIDE_SPICE: u16 = 20;
 const NEW_OBJECT: u16 = 21;
 /// Whether a thing still stands.
 const OBJECT_VALID: u16 = 22;
@@ -173,6 +176,7 @@ const OBJECT_CHANGE: u16 = 57;
 /// Makes one side a friend of another, or an enemy.
 const SIDE_FRIEND_TO: u16 = 59;
 const SIDE_ENEMY_TO: u16 = 60;
+/// Gives a side money, on top of what it has.
 const ADD_SIDE_CASH: u16 = 62;
 /// A side's units go after the player's.
 const SIDE_AI_AGGRESSIVE: u16 = 64;
@@ -209,6 +213,8 @@ const ENABLE_UI: u16 = 132;
 const OBJECT_SELL: u16 = 135;
 const NEW_OBJECT_OFFSET_ORIENTATION: u16 = 139;
 const NEG: u16 = 143;
+/// Sets a side's money, but only at the very start of the battle.
+const SET_SIDE_CASH: u16 = 152;
 /// A step of the tutorial, as the number it is.
 const SET_VALUE: u16 = 144;
 const IF: u16 = 165;
@@ -310,7 +316,14 @@ pub trait Battle {
     fn destroyed(&self, thing: Option<u32>) -> bool;
     /// Plays a line of speech, by its number.
     fn say(&mut self, line: u16);
+    /// Gives a side money, on top of what it has.
     fn pay(&mut self, side: i32, money: i32);
+    /// How much money a side has.
+    fn cash(&self, _side: i32) -> i32 {
+        0
+    }
+    /// Sets how much money a side has.
+    fn set_cash(&mut self, _side: i32, _money: i32) {}
     /// The player has won.
     fn win(&mut self);
     /// The player has lost.
@@ -575,6 +588,15 @@ impl Script {
                     }
                     Piece::Function(ADD_SIDE_CASH) => {
                         battle.pay(number(0), number(1));
+                        Value::Number(0)
+                    }
+                    Piece::Function(GET_SIDE_CASH | GET_SIDE_SPICE) => {
+                        Value::Number(battle.cash(number(0)))
+                    }
+                    Piece::Keyword(SET_SIDE_CASH) => {
+                        if battle.now() == 0 {
+                            battle.set_cash(number(0), number(1));
+                        }
                         Value::Number(0)
                     }
                     Piece::Function(MISSION_OUTCOME) => {
@@ -1031,6 +1053,14 @@ mod tests {
         fn pay(&mut self, side: i32, money: i32) {
             self.paid.push((side, money));
         }
+        fn cash(&self, side: i32) -> i32 {
+            let paid = self.paid.iter().filter(|&&(to, _)| to == side);
+            paid.map(|&(_, money)| money).sum()
+        }
+        fn set_cash(&mut self, side: i32, money: i32) {
+            self.paid.retain(|&(to, _)| to != side);
+            self.paid.push((side, money));
+        }
         fn win(&mut self) {
             self.won = true;
         }
@@ -1252,6 +1282,30 @@ mod tests {
         script.run(&mut Written::default());
         let n = Value::Number;
         assert_eq!(script.variables[1..=4], [n(2), n(4), n(0), n(128)]);
+    }
+
+    #[test]
+    fn a_sides_money_is_added_to_asked_of_as_cash_or_spice_and_set_only_at_the_start() {
+        use Token::{Function as F, Keyword as K, Variable as V};
+        let lines = vec![
+            vec![F(ADD_SIDE_CASH), text("(1,500)")],
+            vec![F(ADD_SIDE_CASH), text("(1,250)")],
+            vec![V(1), K(SET), F(GET_SIDE_CASH), text("(1)")],
+            vec![K(SET_SIDE_CASH), text("(1,100)")],
+            vec![V(2), K(SET), F(GET_SIDE_SPICE), text("(1)")],
+        ];
+        let mut script = Script::new(&lines);
+        let mut battle = Written::default();
+        script.run(&mut battle);
+        let n = Value::Number;
+        assert_eq!(script.variables[1..=2], [n(750), n(100)]);
+        battle.now = 1;
+        script.run(&mut battle);
+        assert_eq!(
+            script.variables[1..=2],
+            [n(850), n(850)],
+            "set only at the start"
+        );
     }
 
     #[test]

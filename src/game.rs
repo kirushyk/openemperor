@@ -21,8 +21,6 @@ pub const MOVIE_SECONDS: f32 = 3.0;
 /// How long the opening movie's screen waits for its movie to start before going on without
 /// it.
 const OPENING_WAIT_SECONDS: f32 = 0.2;
-/// What the player starts a campaign with, as the original's first missions give.
-const CAMPAIGN_START_MONEY: i32 = 10_000;
 /// What the player and any opponents start with outside a skirmish, which sets its own.
 const DEFAULT_BATTLE_MONEY: i32 = 10000;
 /// A selection smaller than this each way, at 1080 pixels tall, counts as a click.
@@ -2123,6 +2121,16 @@ impl mission::Battle for Game {
     }
 
     fn pay(&mut self, side: i32, money: i32) {
+        if let Some(held) = self.money.get_mut(usize::from(side != 0)) {
+            *held += money;
+        }
+    }
+
+    fn cash(&self, side: i32) -> i32 {
+        self.money.get(usize::from(side != 0)).copied().unwrap_or(0)
+    }
+
+    fn set_cash(&mut self, side: i32, money: i32) {
         if let Some(held) = self.money.get_mut(usize::from(side != 0)) {
             *held = money;
         }
@@ -4754,9 +4762,9 @@ impl Game {
         self.mission = Some(mission);
         self.briefing = None;
         self.start_battle(map, Some(house), BattleKind::Campaign);
-        // The original's first mission gives the player 10 000 credits.
+        // The first mission's script gives the player what they start with, 10 000 credits.
         if mission == Mission::Start {
-            self.money[0] = CAMPAIGN_START_MONEY;
+            self.money[0] = 0;
             if let Some(lines) = campaign::start_script(house) {
                 self.start_script(lines);
             }
@@ -15632,7 +15640,8 @@ mod tests {
             Faction::Harkonnen,
             "the Atreides' first enemy"
         );
-        assert_eq!(game.player_money(), CAMPAIGN_START_MONEY);
+        // What the player starts with is what the start script gives.
+        assert_eq!(game.player_money(), 10_000);
         // Without the house's disc it goes straight on.
         let mut game = in_setup();
         game.confirming = Some(Faction::Ordos);

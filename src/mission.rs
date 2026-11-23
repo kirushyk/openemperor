@@ -221,6 +221,8 @@ const GET_NEUTRAL_SIDE: u16 = 140;
 const NEG: u16 = 143;
 /// Sets a side's money, but only at the very start of the battle.
 const SET_SIDE_CASH: u16 = 152;
+/// Does nothing but write a line to the original's debugger.
+const BREAK_POINT: u16 = 160;
 /// A step of the tutorial, as the number it is.
 const SET_VALUE: u16 = 144;
 const IF: u16 = 165;
@@ -531,6 +533,7 @@ impl Script {
                 match *callee {
                     Piece::Keyword(NEG) => Value::Number(-number(0)),
                     Piece::Keyword(GET_NEUTRAL_SIDE) => Value::Number(NEUTRAL_SIDE),
+                    Piece::Keyword(BREAK_POINT) => Value::Number(0),
                     Piece::Keyword(NEW_OBJECT_OFFSET_ORIENTATION) => {
                         let Some(kind) = kind(1) else {
                             return Value::Thing(None);
@@ -1321,6 +1324,18 @@ mod tests {
             script.variables[1..=2],
             [n(850), n(850)],
             "set only at the start"
+        );
+    }
+
+    #[test]
+    fn a_break_point_does_nothing_and_is_not_warned_of() {
+        use Token::Keyword as K;
+        let mut battle = Written::default();
+        Script::new(&[vec![K(BREAK_POINT), text("()")]]).run(&mut battle);
+        assert!(battle.said.is_empty() && battle.shots.is_empty() && !battle.won);
+        assert!(
+            first_unknown(Piece::Keyword(BREAK_POINT)).is_some(),
+            "not warned of yet"
         );
     }
 

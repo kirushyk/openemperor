@@ -1,10 +1,10 @@
 ---
 id: TASK-140
 title: Name the script's functions as the original does, and fix the ones we misread
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-23T14:32:00Z'
-updated_date: '2026-11-23T15:19:00Z'
+updated_date: '2026-11-23T17:24:00Z'
 labels: []
 dependencies: []
 ordinal: 140000
@@ -18,7 +18,7 @@ GAME.EXE names every function and keyword of the mission scripts: a table at fil
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 mission.rs names its function and keyword constants after the original's names
+- [x] #1 mission.rs names its function and keyword constants after the original's names
 - [ ] #2 F2, F11, F16, F27, F32, F42, F114, F115 and F135 do what their names and case code say, or the doc says why not
 - [ ] #3 Tests cover the corrected functions and pass
 <!-- AC:END -->

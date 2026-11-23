@@ -106,13 +106,106 @@ pub fn speeches(lines: &[Vec<Token>]) -> Vec<u16> {
     named
 }
 
-/// The keywords and functions a script is run with, by their numbers. What each does is
-/// worked out from how the original's scripts use them; `docs/tok-format.md` lists them.
-const NEGATIVE: u16 = 143;
-const PLACE: u16 = 139;
+/// The functions and keywords a script is run with, by their numbers, each named as the
+/// original's table names it (`docs/tok-format.md` lists them all, with where GAME.EXE carries
+/// each out). What we take one to do, where its name does not say it, is with it.
+const MODEL_TICK: u16 = 0;
+/// Whether the game is the co-op campaign: asked before the first reinforcements.
+const MULTIPLAYER: u16 = 2;
+const GET_UNUSED_BASE_POINT: u16 = 3;
+const GET_SIDE_BASE_POINT: u16 = 4;
+const GET_SCRIPT_POINT: u16 = 5;
+const GET_ENTRANCE_POINT: u16 = 6;
+/// Where reinforcements come in: given to the player's mostly.
+const GET_NEUTRAL_ENTRANCE_POINT: u16 = 8;
+/// Of the map's entrances the one farthest from a place: taken as that place.
+const GET_ENTRANCE_FAR_FROM_POS: u16 = 11;
+/// Where a side's units arrive, its base.
+const GET_SIDE_POSITION: u16 = 12;
+const GET_OBJECT_POSITION: u16 = 13;
+const GET_PLAYER_SIDE: u16 = 14;
+/// The first computer side: taken as a side that is neither the player's nor one the script
+/// makes, what the scripts make friends and enemies of the others with, as if the world at
+/// large.
+const GET_ENEMY_SIDE: u16 = 16;
+/// Whose a thing is: the player's, or the script's side it was put down for.
+const GET_OBJECT_SIDE: u16 = 17;
+const CREATE_SIDE: u16 = 18;
+const NEW_OBJECT: u16 = 21;
+/// Whether a thing still stands.
+const OBJECT_VALID: u16 = 22;
+const OBJECT_DESTROYED: u16 = 23;
+/// Whether a side has a unit at a thing: the tutorial's beacons reached.
+const OBJECT_NEAR_TO_SIDE: u16 = 24;
+/// Whether a side sees a thing: taken as whether it has hurt it, the outpost of a camp fired
+/// on.
+const OBJECT_VISIBLE_TO_SIDE: u16 = 27;
+const OBJECT_GET_HEALTH: u16 = 29;
+const OBJECT_MAX_HEALTH: u16 = 30;
+/// Whether a side's things are near another's: taken as in sight of them.
+const SIDE_NEAR_TO_SIDE: u16 = 32;
+const SIDE_UNIT_COUNT: u16 = 35;
+const SIDE_BUILDING_COUNT: u16 = 36;
+/// How many of a side's things of a kind there are.
+const SIDE_OBJECT_COUNT: u16 = 37;
+/// Whether a side's units have got where they were sent.
+const SIDE_AI_DONE: u16 = 38;
+/// Whether a side attacked another this update: taken as whether it has lost any of what the
+/// script gave it; the tutorial asks it of the player and its enemy's wave, to tell a wave
+/// fought from one only the worm met.
+const EVENT_SIDE_ATTACKS_SIDE: u16 = 42;
+/// Whether a thing is destroyed, as `OBJECT_DESTROYED`.
+const EVENT_OBJECT_DESTROYED: u16 = 44;
+/// Plays a line of speech.
+const MESSAGE: u16 = 45;
+/// Sets a thing's health, in the original's.
+const OBJECT_SET_HEALTH: u16 = 54;
+/// Turns a thing into another kind, for a side: prisoners freed become Fremen.
+const OBJECT_CHANGE: u16 = 57;
+/// Makes one side a friend of another, or an enemy.
+const SIDE_FRIEND_TO: u16 = 59;
+const SIDE_ENEMY_TO: u16 = 60;
+const ADD_SIDE_CASH: u16 = 62;
+/// A side's units go after the player's.
+const SIDE_AI_AGGRESSIVE: u16 = 64;
+/// A side's units are sent to a place.
+const SIDE_AI_MOVE: u16 = 71;
+/// Ends the battle, won if given true and lost if false.
+const MISSION_OUTCOME: u16 = 83;
+/// The tutorial is over, and done.
+const END_GAME_WIN: u16 = 84;
+/// Hands all a side's units over to another side, as the Atreides' Heighliner's Mongooses
+/// join the player once found.
+const SIDE_CHANGE_SIDE: u16 = 91;
+/// Uncovers the fog so many squares round a place, as the tutorial does where it shows a
+/// beacon and the enemy's base.
+const REMOVE_SHROUD: u16 = 97;
+/// The camera's part in a scene: sent to look at a place, glided to one over so many updates,
+/// circled about it at so many degrees an update one way or the other, stopped circling,
+/// made to follow a thing and stop following it, kept, glided back to where it was kept.
+const CAMERA_LOOK_AT_POINT: u16 = 100;
+const CAMERA_PAN_TO_POINT: u16 = 101;
+const CAMERA_START_ROTATE: u16 = 105;
+const CAMERA_STOP_ROTATE: u16 = 106;
+const CAMERA_TRACK_OBJECT: u16 = 107;
+const CAMERA_STOP_TRACK: u16 = 108;
+const CAMERA_STORE: u16 = 112;
+const CAMERA_RESTORE: u16 = 113;
+/// The picture-in-picture camera's: taken as the main camera's.
+const PIP_CAMERA_LOOK_AT_POINT: u16 = 114;
+const PIP_CAMERA_PAN_TO_POINT: u16 = 115;
+/// A scene begins, the player's controls taken away, and ends.
+const DISABLE_UI: u16 = 131;
+const ENABLE_UI: u16 = 132;
+/// Sells a building: taken as taking a thing off the map.
+const OBJECT_SELL: u16 = 135;
+const NEW_OBJECT_OFFSET_ORIENTATION: u16 = 139;
+const NEG: u16 = 143;
+/// A step of the tutorial, as the number it is.
+const SET_VALUE: u16 = 144;
 const IF: u16 = 165;
 const ELSE: u16 = 166;
-const END: u16 = 167;
+const ENDIF: u16 = 167;
 /// The comparisons, in the order of their numbers: `==`, `!=`, `>=`, `<=`, `>` and `<`. The
 /// tutorial goes on to its next step at a count of exactly the one it is at (`<=`), a capture
 /// is asked of whose a building is not (`!=`), and a time before one or after another (`<`,
@@ -129,99 +222,7 @@ const FALSE: u16 = 176;
 const TRUE: u16 = 177;
 const PLUS: u16 = 178;
 const SET: u16 = 180;
-const NOW: u16 = 0;
-/// Asked before the first reinforcements: whether the battle goes on as usual, it seems.
-const READY: u16 = 2;
-const ENEMY_BASE: u16 = 3;
-const BASE: u16 = 4;
-const SCRIPT_POINT: u16 = 5;
-const SIDE_PLACE: u16 = 6;
-const PLAYER: u16 = 14;
-const NEW_SIDE: u16 = 18;
-const BRING: u16 = 21;
-const DESTROYED: u16 = 23;
-const LEFT: u16 = 35;
-const SAY: u16 = 45;
-const PAY: u16 = 62;
-/// Ends the battle, won if given true and lost if false.
-const WIN: u16 = 83;
-/// How many of a side's things of a kind there are.
-const COUNT: u16 = 37;
-/// Where reinforcements come in: given to the player's mostly.
-const ENTRANCE: u16 = 8;
-/// A place near one given: taken as that place.
-const NEAR: u16 = 11;
-/// Where a side's units arrive, its base.
-const ARRIVAL: u16 = 12;
-/// Where a thing is.
-const WHERE: u16 = 13;
-/// A side that is neither the player's nor one the script makes: what the scripts make
-/// friends and enemies of the others with, as if the world at large.
-const SOMEONE: u16 = 16;
-/// Whether a side's units are seen by another's.
-const SEES: u16 = 32;
-/// Sets a thing's health, in the original's.
-const SET_HEALTH: u16 = 54;
-/// Turns a thing into another kind, for a side: prisoners freed become Fremen.
-const TURN_INTO: u16 = 57;
-/// Makes one side a friend of another, or an enemy.
-const FRIENDS: u16 = 59;
-const ENEMIES: u16 = 60;
-/// Whose a thing is: the player's, or the script's side it was put down for.
-const OWNER: u16 = 17;
-/// Whether a thing still stands.
-const STANDS: u16 = 22;
-/// Whether a side has hurt a thing: the outpost of a camp, fired on.
-const HURT_BY: u16 = 27;
-/// Whether a thing is destroyed, as `DESTROYED`.
-const GONE: u16 = 44;
-/// The camera's part in a scene: begun and ended by these keywords, kept, sent to look at a
-/// place, glided to one over so many updates, circled about it at so many degrees an update
-/// one way or the other, stopped circling, glided back to where it was kept.
-const SCENE_BEGINS: u16 = 131;
-const SCENE_ENDS: u16 = 132;
-const LOOK_AT: u16 = 100;
-const GLIDE_TO: u16 = 101;
-const CIRCLE: u16 = 105;
-const STOP_CIRCLING: u16 = 106;
-const KEEP_VIEW: u16 = 112;
-const GLIDE_BACK: u16 = 113;
-/// Hands all a side's units over to another side, as the Atreides' Heighliner's Mongooses
-/// join the player once found.
-const HAND_OVER: u16 = 91;
-/// Uncovers the fog so many squares round a place, as the tutorial does where it shows a
-/// beacon and the enemy's base.
-const UNCOVER: u16 = 97;
-/// The camera follows a thing, as the tutorial's opening has it follow its harvester, and
-/// stops following it.
-const FOLLOW: u16 = 107;
-const STOP_FOLLOWING: u16 = 108;
-/// The same in the midst of the battle.
-const LOOK_AT_TOO: u16 = 114;
-const GLIDE_TO_TOO: u16 = 115;
-/// A thing's health, and the most it has.
-const HEALTH: u16 = 29;
-const FULL_HEALTH: u16 = 30;
-/// Whether a side has a unit at a thing: the tutorial's beacons reached.
-const REACHED: u16 = 24;
-/// How many buildings a side has left.
-const BUILDINGS_LEFT: u16 = 36;
-/// Whether a side's units have got where they were sent.
-const ARRIVED: u16 = 38;
-/// Whether a side has lost any of what the script gave it; the tutorial asks it of the player
-/// and its enemy's wave, to tell a wave fought from one only the worm met.
-const FOUGHT: u16 = 42;
-/// A side's units go after the player's.
-const HUNT: u16 = 64;
-/// A side's units are sent to a place.
-const SEND: u16 = 71;
-/// The tutorial is over, and done.
-const DONE: u16 = 84;
-/// Takes a thing off the map.
-const REMOVE: u16 = 135;
-/// A step of the tutorial, as the number it is; what else it does is not known.
-const STEP: u16 = 144;
-/// What `SOMEONE` is as a side.
+/// What `GET_ENEMY_SIDE` is as a side.
 pub const SOMEONE_SIDE: i32 = -1;
 
 /// A value of a script: a number, truth being 1 and falsehood 0; a place on the map; or a thing
@@ -491,8 +492,8 @@ impl Script {
                     _ => None,
                 };
                 match *callee {
-                    Piece::Keyword(NEGATIVE) => Value::Number(-number(0)),
-                    Piece::Keyword(PLACE) => {
+                    Piece::Keyword(NEG) => Value::Number(-number(0)),
+                    Piece::Keyword(NEW_OBJECT_OFFSET_ORIENTATION) => {
                         let Some(kind) = kind(1) else {
                             return Value::Thing(None);
                         };
@@ -501,41 +502,43 @@ impl Script {
                         let to = (x + number(3) as f32 * cell, z + number(4) as f32 * cell);
                         Value::Thing(battle.place(number(0), kind, to, number(5)))
                     }
-                    Piece::Function(NOW) => Value::Number(battle.now()),
-                    Piece::Function(READY) => Value::Number(1),
-                    Piece::Function(ENEMY_BASE) => place(battle.enemy_base()),
-                    Piece::Function(BASE | SIDE_PLACE) => place(battle.base(number(0))),
-                    Piece::Function(SCRIPT_POINT) => place(battle.script_point(number(0))),
-                    Piece::Function(PLAYER) => Value::Number(0),
-                    Piece::Function(NEW_SIDE) => Value::Number(battle.new_side()),
-                    Piece::Function(BRING) => match kind(1) {
+                    Piece::Function(MODEL_TICK) => Value::Number(battle.now()),
+                    Piece::Function(MULTIPLAYER) => Value::Number(1),
+                    Piece::Function(GET_UNUSED_BASE_POINT) => place(battle.enemy_base()),
+                    Piece::Function(GET_SIDE_BASE_POINT | GET_ENTRANCE_POINT) => {
+                        place(battle.base(number(0)))
+                    }
+                    Piece::Function(GET_SCRIPT_POINT) => place(battle.script_point(number(0))),
+                    Piece::Function(GET_PLAYER_SIDE) => Value::Number(0),
+                    Piece::Function(CREATE_SIDE) => Value::Number(battle.new_side()),
+                    Piece::Function(NEW_OBJECT) => match kind(1) {
                         Some(kind) => Value::Thing(battle.bring(number(0), kind, at(2).place())),
                         None => Value::Thing(None),
                     },
-                    Piece::Function(OWNER) => {
+                    Piece::Function(GET_OBJECT_SIDE) => {
                         Value::Number(battle.owner_side(at(0).thing()).unwrap_or(SOMEONE_SIDE))
                     }
-                    Piece::Function(STANDS) => {
+                    Piece::Function(OBJECT_VALID) => {
                         Value::Number(i32::from(!battle.destroyed(at(0).thing())))
                     }
-                    Piece::Function(HURT_BY) => {
+                    Piece::Function(OBJECT_VISIBLE_TO_SIDE) => {
                         Value::Number(i32::from(battle.hurt_by(at(0).thing(), number(1))))
                     }
-                    Piece::Function(DESTROYED | GONE) => {
+                    Piece::Function(OBJECT_DESTROYED | EVENT_OBJECT_DESTROYED) => {
                         Value::Number(i32::from(battle.destroyed(at(0).thing())))
                     }
-                    Piece::Function(LEFT) => Value::Number(battle.left(number(0))),
-                    Piece::Function(SAY) => {
+                    Piece::Function(SIDE_UNIT_COUNT) => Value::Number(battle.left(number(0))),
+                    Piece::Function(MESSAGE) => {
                         if let Some(Expression::Speech(line)) = arguments.first() {
                             battle.say(*line);
                         }
                         Value::Number(0)
                     }
-                    Piece::Function(PAY) => {
+                    Piece::Function(ADD_SIDE_CASH) => {
                         battle.pay(number(0), number(1));
                         Value::Number(0)
                     }
-                    Piece::Function(WIN) => {
+                    Piece::Function(MISSION_OUTCOME) => {
                         if arguments.is_empty() || number(0) != 0 {
                             battle.win();
                         } else {
@@ -543,93 +546,105 @@ impl Script {
                         }
                         Value::Number(0)
                     }
-                    Piece::Function(COUNT) => match kind(1) {
+                    Piece::Function(SIDE_OBJECT_COUNT) => match kind(1) {
                         Some(kind) => Value::Number(battle.count(number(0), kind)),
                         None => Value::Number(0),
                     },
-                    Piece::Function(ENTRANCE) => place(battle.base(0)),
-                    Piece::Function(NEAR) => at(0),
-                    Piece::Function(ARRIVAL) => place(battle.base(number(0))),
-                    Piece::Function(WHERE) => battle
+                    Piece::Function(GET_NEUTRAL_ENTRANCE_POINT) => place(battle.base(0)),
+                    Piece::Function(GET_ENTRANCE_FAR_FROM_POS) => at(0),
+                    Piece::Function(GET_SIDE_POSITION) => place(battle.base(number(0))),
+                    Piece::Function(GET_OBJECT_POSITION) => battle
                         .place_of(at(0).thing())
                         .map_or(Value::Thing(None), place),
-                    Piece::Function(SOMEONE) => Value::Number(SOMEONE_SIDE),
-                    Piece::Function(SEES) => {
+                    Piece::Function(GET_ENEMY_SIDE) => Value::Number(SOMEONE_SIDE),
+                    Piece::Function(SIDE_NEAR_TO_SIDE) => {
                         Value::Number(i32::from(battle.sees(number(0), number(1))))
                     }
-                    Piece::Function(SET_HEALTH) => {
+                    Piece::Function(OBJECT_SET_HEALTH) => {
                         battle.set_health(at(0).thing(), number(1));
                         Value::Number(0)
                     }
-                    Piece::Function(TURN_INTO) => match kind(1) {
+                    Piece::Function(OBJECT_CHANGE) => match kind(1) {
                         Some(kind) => {
                             Value::Thing(battle.turn_into(at(0).thing(), kind, number(2)))
                         }
                         None => Value::Thing(None),
                     },
-                    Piece::Keyword(SCENE_BEGINS | SCENE_ENDS) => {
-                        battle.scene(*callee == Piece::Keyword(SCENE_BEGINS));
+                    Piece::Keyword(DISABLE_UI | ENABLE_UI) => {
+                        battle.scene(*callee == Piece::Keyword(DISABLE_UI));
                         Value::Number(0)
                     }
-                    Piece::Function(LOOK_AT | LOOK_AT_TOO) => {
+                    Piece::Function(CAMERA_LOOK_AT_POINT | PIP_CAMERA_LOOK_AT_POINT) => {
                         film(battle, spot(0).map(Shot::LookAt))
                     }
-                    Piece::Function(GLIDE_TO | GLIDE_TO_TOO) => {
+                    Piece::Function(CAMERA_PAN_TO_POINT | PIP_CAMERA_PAN_TO_POINT) => {
                         film(battle, spot(0).map(|to| Shot::GlideTo(to, number(1))))
                     }
-                    Piece::Function(CIRCLE) => {
+                    Piece::Function(CAMERA_START_ROTATE) => {
                         film(battle, Some(Shot::Circle(number(0), number(1))))
                     }
-                    Piece::Function(STOP_CIRCLING) => film(battle, Some(Shot::StopCircling)),
-                    Piece::Function(KEEP_VIEW) => film(battle, Some(Shot::Keep)),
-                    Piece::Function(GLIDE_BACK) => film(battle, Some(Shot::GlideBack(number(0)))),
-                    Piece::Function(HAND_OVER) => {
+                    Piece::Function(CAMERA_STOP_ROTATE) => film(battle, Some(Shot::StopCircling)),
+                    Piece::Function(CAMERA_STORE) => film(battle, Some(Shot::Keep)),
+                    Piece::Function(CAMERA_RESTORE) => {
+                        film(battle, Some(Shot::GlideBack(number(0))))
+                    }
+                    Piece::Function(SIDE_CHANGE_SIDE) => {
                         battle.hand_over(number(0), number(1));
                         Value::Number(0)
                     }
-                    Piece::Function(UNCOVER) => {
+                    Piece::Function(REMOVE_SHROUD) => {
                         battle.uncover(at(0).place(), number(1));
                         Value::Number(0)
                     }
-                    Piece::Function(FOLLOW) => film(battle, at(0).thing().map(Shot::Follow)),
-                    Piece::Function(STOP_FOLLOWING) => film(battle, Some(Shot::StopFollowing)),
-                    Piece::Function(HEALTH) => Value::Number(
+                    Piece::Function(CAMERA_TRACK_OBJECT) => {
+                        film(battle, at(0).thing().map(Shot::Follow))
+                    }
+                    Piece::Function(CAMERA_STOP_TRACK) => film(battle, Some(Shot::StopFollowing)),
+                    Piece::Function(OBJECT_GET_HEALTH) => Value::Number(
                         battle
                             .health(at(0).thing())
                             .map_or(0, |(health, _)| health as i32),
                     ),
-                    Piece::Function(FULL_HEALTH) => Value::Number(
+                    Piece::Function(OBJECT_MAX_HEALTH) => Value::Number(
                         battle
                             .health(at(0).thing())
                             .map_or(0, |(_, most)| most as i32),
                     ),
-                    Piece::Function(REACHED) => {
+                    Piece::Function(OBJECT_NEAR_TO_SIDE) => {
                         Value::Number(i32::from(battle.reached(at(0).thing(), number(1))))
                     }
-                    Piece::Function(BUILDINGS_LEFT) => {
+                    Piece::Function(SIDE_BUILDING_COUNT) => {
                         Value::Number(battle.buildings_left(number(0)))
                     }
-                    Piece::Function(ARRIVED) => Value::Number(i32::from(battle.arrived(number(0)))),
-                    Piece::Function(FOUGHT) => Value::Number(i32::from(battle.has_lost(number(1)))),
-                    Piece::Function(HUNT) => {
+                    Piece::Function(SIDE_AI_DONE) => {
+                        Value::Number(i32::from(battle.arrived(number(0))))
+                    }
+                    Piece::Function(EVENT_SIDE_ATTACKS_SIDE) => {
+                        Value::Number(i32::from(battle.has_lost(number(1))))
+                    }
+                    Piece::Function(SIDE_AI_AGGRESSIVE) => {
                         battle.hunt(number(0));
                         Value::Number(0)
                     }
-                    Piece::Function(SEND) => {
+                    Piece::Function(SIDE_AI_MOVE) => {
                         battle.send(number(0), at(1).place());
                         Value::Number(0)
                     }
-                    Piece::Function(DONE) => {
+                    Piece::Function(END_GAME_WIN) => {
                         battle.win();
                         Value::Number(0)
                     }
-                    Piece::Keyword(REMOVE) => {
+                    Piece::Keyword(OBJECT_SELL) => {
                         battle.remove(at(0).thing());
                         Value::Number(0)
                     }
-                    Piece::Keyword(STEP) => Value::Number(number(0)),
-                    Piece::Function(FRIENDS | ENEMIES) => {
-                        battle.relate(number(0), number(1), *callee == Piece::Function(ENEMIES));
+                    Piece::Keyword(SET_VALUE) => Value::Number(number(0)),
+                    Piece::Function(SIDE_FRIEND_TO | SIDE_ENEMY_TO) => {
+                        battle.relate(
+                            number(0),
+                            number(1),
+                            *callee == Piece::Function(SIDE_ENEMY_TO),
+                        );
                         Value::Number(0)
                     }
                     _ => {
@@ -722,7 +737,7 @@ fn statement(pieces: &[Piece]) -> Statement {
             .expression(0),
         ),
         [Piece::Keyword(ELSE), ..] => Statement::Else,
-        [Piece::Keyword(END), ..] => Statement::End,
+        [Piece::Keyword(ENDIF), ..] => Statement::End,
         [Piece::Variable(v), Piece::Keyword(SET), rest @ ..] => Statement::Set(
             *v,
             Reader {
@@ -1011,16 +1026,16 @@ mod tests {
     fn a_battle_ends_won_or_lost_as_told_and_counts_a_sides_things_of_a_kind() {
         use Token::{Function as F, Keyword as K, Kind, Variable as V};
         let mut won = Written::default();
-        Script::new(&[vec![F(WIN), text("("), K(TRUE), text(")")]]).run(&mut won);
+        Script::new(&[vec![F(MISSION_OUTCOME), text("("), K(TRUE), text(")")]]).run(&mut won);
         assert!(won.won && !won.lost);
         let mut lost = Written::default();
-        Script::new(&[vec![F(WIN), text("("), K(FALSE), text(")")]]).run(&mut lost);
+        Script::new(&[vec![F(MISSION_OUTCOME), text("("), K(FALSE), text(")")]]).run(&mut lost);
         assert!(lost.lost && !lost.won);
         // v1 = F37(2, <kind 4>)
         let lines = vec![vec![
             V(1),
             K(SET),
-            F(COUNT),
+            F(SIDE_OBJECT_COUNT),
             text("(2,"),
             Kind(4),
             text(")"),
@@ -1035,9 +1050,15 @@ mod tests {
         use Token::{Function as F, Keyword as K, Kind, Variable as V};
         let put = |variable: u16| {
             let open = text("(0,");
-            let rest = [text(","), F(SCRIPT_POINT), text("(1),0,0,0)")];
+            let rest = [text(","), F(GET_SCRIPT_POINT), text("(1),0,0,0)")];
             [
-                vec![V(variable), K(SET), K(PLACE), open, Kind(1)],
+                vec![
+                    V(variable),
+                    K(SET),
+                    K(NEW_OBJECT_OFFSET_ORIENTATION),
+                    open,
+                    Kind(1),
+                ],
                 rest.to_vec(),
             ]
             .concat()
@@ -1046,27 +1067,40 @@ mod tests {
         let lines = vec![
             put(0),
             put(1),
-            set(2, vec![F(HEALTH), text("("), V(1), text(")")]),
-            set(3, vec![F(FULL_HEALTH), text("("), V(1), text(")")]),
+            set(2, vec![F(OBJECT_GET_HEALTH), text("("), V(1), text(")")]),
+            set(3, vec![F(OBJECT_MAX_HEALTH), text("("), V(1), text(")")]),
             set(
                 4,
                 vec![
-                    F(REACHED),
+                    F(OBJECT_NEAR_TO_SIDE),
                     text("("),
                     V(1),
                     text(","),
-                    F(PLAYER),
+                    F(GET_PLAYER_SIDE),
                     text("())"),
                 ],
             ),
-            set(5, vec![F(BUILDINGS_LEFT), text("(2)")]),
-            set(6, vec![F(ARRIVED), text("(2)")]),
-            set(7, vec![F(FOUGHT), text("("), F(PLAYER), text("(),3)")]),
-            vec![F(SEND), text("(2,"), F(SCRIPT_POINT), text("(4))")],
-            vec![F(HUNT), text("(4)")],
-            vec![K(REMOVE), text("("), V(0), text(")")],
-            set(8, vec![K(STEP), text("(11)")]),
-            vec![F(DONE), text("()")],
+            set(5, vec![F(SIDE_BUILDING_COUNT), text("(2)")]),
+            set(6, vec![F(SIDE_AI_DONE), text("(2)")]),
+            set(
+                7,
+                vec![
+                    F(EVENT_SIDE_ATTACKS_SIDE),
+                    text("("),
+                    F(GET_PLAYER_SIDE),
+                    text("(),3)"),
+                ],
+            ),
+            vec![
+                F(SIDE_AI_MOVE),
+                text("(2,"),
+                F(GET_SCRIPT_POINT),
+                text("(4))"),
+            ],
+            vec![F(SIDE_AI_AGGRESSIVE), text("(4)")],
+            vec![K(OBJECT_SELL), text("("), V(0), text(")")],
+            set(8, vec![K(SET_VALUE), text("(11)")]),
+            vec![F(END_GAME_WIN), text("()")],
         ];
         let mut battle = Written::default();
         let mut script = Script::new(&lines);
@@ -1106,39 +1140,39 @@ mod tests {
         use Token::{Function as F, Keyword as K, Variable as V};
         // As the houses' first battles have it: K131(); F100(v13); F112(); F101(v16,50);
         // F105(2,1); F113(60); K132(); and the camera sent to a thing gone does nothing.
-        let point = |n: &str| vec![F(SCRIPT_POINT), text(&format!("({n})"))];
+        let point = |n: &str| vec![F(GET_SCRIPT_POINT), text(&format!("({n})"))];
         let lines = vec![
             [vec![V(13), K(SET)], point("13")].concat(),
             [vec![V(16), K(SET)], point("16")].concat(),
-            vec![K(SCENE_BEGINS), text("()")],
-            vec![F(LOOK_AT), text("("), V(13), text(")")],
-            vec![F(KEEP_VIEW), text("()")],
-            vec![F(GLIDE_TO), text("("), V(16), text(",50)")],
-            vec![F(CIRCLE), text("(2,1)")],
-            vec![F(STOP_CIRCLING), text("()")],
-            vec![F(GLIDE_BACK), text("(60)")],
-            vec![K(SCENE_ENDS), text("()")],
-            vec![F(LOOK_AT_TOO), text("("), V(20), text(")")],
-            vec![F(GLIDE_TO_TOO), text("("), V(13), text(",80)")],
+            vec![K(DISABLE_UI), text("()")],
+            vec![F(CAMERA_LOOK_AT_POINT), text("("), V(13), text(")")],
+            vec![F(CAMERA_STORE), text("()")],
+            vec![F(CAMERA_PAN_TO_POINT), text("("), V(16), text(",50)")],
+            vec![F(CAMERA_START_ROTATE), text("(2,1)")],
+            vec![F(CAMERA_STOP_ROTATE), text("()")],
+            vec![F(CAMERA_RESTORE), text("(60)")],
+            vec![K(ENABLE_UI), text("()")],
+            vec![F(PIP_CAMERA_LOOK_AT_POINT), text("("), V(20), text(")")],
+            vec![F(PIP_CAMERA_PAN_TO_POINT), text("("), V(13), text(",80)")],
             // As the tutorial's opening: v1 = K139(...); F107(v1); ... F108(); and the camera
             // sent after a thing there is not does nothing.
             vec![
                 V(1),
                 K(SET),
-                K(PLACE),
+                K(NEW_OBJECT_OFFSET_ORIENTATION),
                 text("(0,"),
                 Token::Kind(1),
                 text(","),
                 V(13),
                 text(",0,0,0)"),
             ],
-            vec![F(FOLLOW), text("("), V(1), text(")")],
-            vec![F(STOP_FOLLOWING), text("()")],
-            vec![F(FOLLOW), text("("), V(30), text(")")],
+            vec![F(CAMERA_TRACK_OBJECT), text("("), V(1), text(")")],
+            vec![F(CAMERA_STOP_TRACK), text("()")],
+            vec![F(CAMERA_TRACK_OBJECT), text("("), V(30), text(")")],
             // F97(v13,20), as the tutorial shows its beacon.
-            vec![F(UNCOVER), text("("), V(13), text(",20)")],
+            vec![F(REMOVE_SHROUD), text("("), V(13), text(",20)")],
             // F91(v18, F14()), as the Atreides' Heighliner hands its Mongooses over.
-            vec![F(HAND_OVER), text("(2,0)")],
+            vec![F(SIDE_CHANGE_SIDE), text("(2,0)")],
         ];
         let mut battle = Written::default();
         Script::new(&lines).run(&mut battle);
@@ -1166,20 +1200,20 @@ mod tests {
         use Token::{Function as F, Keyword as K, Kind, Variable as V};
         let lines = vec![
             // v1 = F18(); v2 = F18(); F59(v1, F14()); F60(F16(), v2)
-            vec![V(1), K(SET), F(NEW_SIDE), text("()")],
-            vec![V(2), K(SET), F(NEW_SIDE), text("()")],
+            vec![V(1), K(SET), F(CREATE_SIDE), text("()")],
+            vec![V(2), K(SET), F(CREATE_SIDE), text("()")],
             vec![
-                F(FRIENDS),
+                F(SIDE_FRIEND_TO),
                 text("("),
                 V(1),
                 text(","),
-                F(PLAYER),
+                F(GET_PLAYER_SIDE),
                 text("())"),
             ],
             vec![
-                F(ENEMIES),
+                F(SIDE_ENEMY_TO),
                 text("("),
-                F(SOMEONE),
+                F(GET_ENEMY_SIDE),
                 text("(),"),
                 V(2),
                 text(")"),
@@ -1188,41 +1222,41 @@ mod tests {
             vec![
                 V(3),
                 K(SET),
-                K(PLACE),
+                K(NEW_OBJECT_OFFSET_ORIENTATION),
                 text("("),
                 V(1),
                 text(","),
                 Kind(4),
                 text(","),
-                F(ENEMY_BASE),
+                F(GET_UNUSED_BASE_POINT),
                 text("(),0,0,0)"),
             ],
-            vec![F(SET_HEALTH), text("("), V(3), text(",250)")],
+            vec![F(OBJECT_SET_HEALTH), text("("), V(3), text(",250)")],
             // if (F32(v1, F14()) == TRUE) F57(v3, <kind 7>, F14())
             vec![
                 K(IF),
                 text("("),
-                F(SEES),
+                F(SIDE_NEAR_TO_SIDE),
                 text("("),
                 V(1),
                 text(","),
-                F(PLAYER),
+                F(GET_PLAYER_SIDE),
                 text("())"),
                 K(EQUAL),
                 K(TRUE),
                 text(")"),
             ],
             vec![
-                F(TURN_INTO),
+                F(OBJECT_CHANGE),
                 text("("),
                 V(3),
                 text(","),
                 Kind(7),
                 text(","),
-                F(PLAYER),
+                F(GET_PLAYER_SIDE),
                 text("())"),
             ],
-            vec![K(END)],
+            vec![K(ENDIF)],
         ];
         let mut battle = Written::default();
         Script::new(&lines).run(&mut battle);
@@ -1240,38 +1274,50 @@ mod tests {
         use Token::{Function as F, Keyword as K, Kind, Speech, Variable as V};
         let lines = vec![
             // if (F0() == 0)
-            vec![K(IF), text("("), F(NOW), text("()"), K(EQUAL), text("0)")],
+            vec![
+                K(IF),
+                text("("),
+                F(MODEL_TICK),
+                text("()"),
+                K(EQUAL),
+                text("0)"),
+            ],
             // v1 = F18()
-            vec![V(1), K(SET), F(NEW_SIDE), text("()")],
+            vec![V(1), K(SET), F(CREATE_SIDE), text("()")],
             // v2 = K139(v1, <kind 5>, F3(), K143(2), 3, 1)
             vec![
                 V(2),
                 K(SET),
-                K(PLACE),
+                K(NEW_OBJECT_OFFSET_ORIENTATION),
                 text("("),
                 V(1),
                 text(","),
                 Kind(5),
                 text(","),
-                F(ENEMY_BASE),
+                F(GET_UNUSED_BASE_POINT),
                 text("(),"),
-                K(NEGATIVE),
+                K(NEG),
                 text("(2),3,1)"),
             ],
-            vec![F(PAY), text("("), F(PLAYER), text("(),10000)")],
-            vec![F(SAY), text("("), Speech(642), text(")")],
-            vec![K(END)],
+            vec![
+                F(ADD_SIDE_CASH),
+                text("("),
+                F(GET_PLAYER_SIDE),
+                text("(),10000)"),
+            ],
+            vec![F(MESSAGE), text("("), Speech(642), text(")")],
+            vec![K(ENDIF)],
             // if ((F0() == 49) && (F35(v1) < 5)) bring
             vec![
                 K(IF),
                 text("(("),
-                F(NOW),
+                F(MODEL_TICK),
                 text("()"),
                 K(EQUAL),
                 text("49)"),
                 K(AND),
                 text("("),
-                F(LEFT),
+                F(SIDE_UNIT_COUNT),
                 text("("),
                 V(1),
                 text(")"),
@@ -1279,19 +1325,26 @@ mod tests {
                 text("5))"),
             ],
             vec![
-                F(BRING),
+                F(NEW_OBJECT),
                 text("("),
                 V(1),
                 text(","),
                 Kind(9),
                 text(","),
-                F(SCRIPT_POINT),
+                F(GET_SCRIPT_POINT),
                 text("(2))"),
             ],
-            vec![K(END)],
-            vec![K(IF), text("("), F(DESTROYED), text("("), V(2), text("))")],
-            vec![F(WIN), text("("), K(TRUE), text(")")],
-            vec![K(END)],
+            vec![K(ENDIF)],
+            vec![
+                K(IF),
+                text("("),
+                F(OBJECT_DESTROYED),
+                text("("),
+                V(2),
+                text("))"),
+            ],
+            vec![F(MISSION_OUTCOME), text("("), K(TRUE), text(")")],
+            vec![K(ENDIF)],
         ];
         let mut script = Script::new(&lines);
         let mut battle = Written::default();

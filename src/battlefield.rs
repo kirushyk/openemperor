@@ -1094,6 +1094,9 @@ pub struct Camera {
     /// What a mission's script has it do: glide somewhere, circle round at so many radians a
     /// second, and come back to where it was kept.
     glide: Option<Glide>,
+    /// A zoom a script asks for: from how near in to how near, over so many seconds, and how
+    /// many have gone.
+    zooming: Option<(f32, f32, f32, f32)>,
     circling: f32,
     kept: Option<(f32, f32, f32)>,
 }
@@ -1131,6 +1134,7 @@ impl Camera {
             opening: 0.0,
             extent,
             glide: None,
+            zooming: None,
             circling: 0.0,
             kept: None,
         }
@@ -1218,6 +1222,15 @@ impl Camera {
         self.glide((x, z, self.yaw_target), seconds, false);
     }
 
+    /// Zooms at one rate over so many seconds to this share of the way from farthest out to
+    /// nearest in, as a script asks in hundredths.
+    pub fn zoom_to(&mut self, share: f32, seconds: f32) {
+        self.opening = 0.0;
+        self.yaw = self.yaw_target;
+        let to = MIN_ZOOM + share.clamp(0.0, 1.0) * (MAX_ZOOM - MIN_ZOOM);
+        self.zooming = Some((self.zoom_target, to, seconds, 0.0));
+    }
+
     /// Whether it is gliding somewhere, or sliding, as a script had it.
     pub fn is_panning(&self) -> bool {
         self.glide.is_some_and(|glide| glide.eased)
@@ -1282,6 +1295,19 @@ impl Camera {
             self.yaw = self.yaw_target;
             if done < 1.0 {
                 self.glide = Some(glide);
+            }
+        }
+        if let Some((from, to, seconds, gone)) = self.zooming.take() {
+            let gone = gone + dt;
+            let done = if seconds > 0.0 {
+                (gone / seconds).min(1.0)
+            } else {
+                1.0
+            };
+            self.zoom_target = from + (to - from) * done;
+            self.zoom = self.zoom_target;
+            if done < 1.0 {
+                self.zooming = Some((from, to, seconds, gone));
             }
         }
         if self.circling != 0.0 {
@@ -2281,6 +2307,26 @@ mod tests {
                 "{mouse:?} gave {got:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_scripts_camera_zooms_at_one_rate_to_a_share_of_its_range() {
+        let mut camera = Camera::centered_on((4000.0, 4000.0));
+        camera.ease_zoom(START_SECONDS);
+        assert_eq!(camera.zoom, DEFAULT_ZOOM);
+        camera.zoom_to(0.0, 2.0);
+        camera.play(1.0);
+        assert!(
+            (camera.zoom - (DEFAULT_ZOOM + MIN_ZOOM) / 2.0).abs() < 1e-4,
+            "halfway"
+        );
+        camera.play(1.0);
+        assert_eq!(camera.zoom, MIN_ZOOM, "all the way out");
+        camera.zoom_to(1.0, 0.0);
+        camera.play(0.1);
+        assert_eq!(camera.zoom, MAX_ZOOM);
+        camera.ease_zoom(1.0);
+        assert_eq!(camera.zoom, MAX_ZOOM, "and stays");
     }
 
     #[test]

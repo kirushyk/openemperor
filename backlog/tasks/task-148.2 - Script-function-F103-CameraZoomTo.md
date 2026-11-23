@@ -1,9 +1,10 @@
 ---
 id: TASK-148.2
 title: Script function F103 CameraZoomTo
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:29:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-148
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf35c7, 0x28 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's CameraZoomTo does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls CameraZoomTo and checks the effect
+- [x] #1 The game does what the original's CameraZoomTo does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls CameraZoomTo and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+CameraZoomTo(percent, n) zooms the camera at one rate over n updates to MIN_ZOOM + percent% of (MAX_ZOOM - MIN_ZOOM), CAMERA.INI's MinZoom and MaxZoom (Camera::zoom_to). Tested in battlefield.rs (a_scripts_camera_zooms_at_one_rate_to_a_share_of_its_range) and mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

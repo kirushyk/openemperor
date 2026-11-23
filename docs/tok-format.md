@@ -150,6 +150,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F100(place)`, `F114(place)` | The camera looks at a place; the second in the midst of the battle | `F100(v13)`: the player's base |
 | `F101(place, n)`, `F115(place, n)` | The camera glides to a place over `n` updates | `F101(v16,50)`: to the enemy's base |
 | `F102(place, n)` | The camera slides to a place over `n` updates at one pace, turned and zoomed as it is (the original's code) | |
+| `F103(percent, n)` | The camera zooms at one rate over `n` updates to `percent` of the way from `CAMERA.INI`'s MinZoom to its MaxZoom (the original's code) | |
 | `F109()`, `F110()`, `F111()` | Whether the camera is panning (`F101`), scrolling (`F102`) or circling (`F105`) (the original's code) | |
 | `F105(degrees, way)` | The camera circles where it looks, so many degrees an update, `1` one way and `2` the other | `F105(2,1)`: once round in the 180 updates before `F113` |
 | `F106()` | The camera stops circling | |

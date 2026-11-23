@@ -234,6 +234,9 @@ const CAMERA_LOOK_AT_POINT: u16 = 100;
 const CAMERA_PAN_TO_POINT: u16 = 101;
 /// Slid to a place over so many updates at one pace, turned and zoomed as it is.
 const CAMERA_SCROLL_TO_POINT: u16 = 102;
+/// Zoomed at one rate over so many updates to so many hundredths of the way from farthest out
+/// to nearest in.
+const CAMERA_ZOOM_TO: u16 = 103;
 const CAMERA_START_ROTATE: u16 = 105;
 const CAMERA_STOP_ROTATE: u16 = 106;
 const CAMERA_TRACK_OBJECT: u16 = 107;
@@ -343,6 +346,8 @@ pub enum Shot {
     GlideTo((f32, f32), i32),
     /// To a place over so many updates at one pace.
     ScrollTo((f32, f32), i32),
+    /// To so many hundredths of its zoom over so many updates.
+    ZoomTo(i32, i32),
     /// Degrees an update, and which way: 1 one, 2 the other.
     Circle(i32, i32),
     StopCircling,
@@ -809,6 +814,9 @@ impl Script {
                     }
                     Piece::Function(CAMERA_SCROLL_TO_POINT) => {
                         film(battle, spot(0).map(|to| Shot::ScrollTo(to, number(1))))
+                    }
+                    Piece::Function(CAMERA_ZOOM_TO) => {
+                        film(battle, Some(Shot::ZoomTo(number(0), number(1))))
                     }
                     Piece::Function(CAMERA_IS_PANNING) => {
                         Value::Number(i32::from(battle.camera_is(Doing::Panning)))
@@ -1814,6 +1822,7 @@ mod tests {
             vec![F(CAMERA_PAN_TO_POINT), text("("), V(16), text(",50)")],
             vec![F(CAMERA_START_ROTATE), text("(2,1)")],
             vec![F(CAMERA_STOP_ROTATE), text("()")],
+            vec![F(CAMERA_ZOOM_TO), text("(60,20)")],
             vec![F(CAMERA_SCROLL_TO_POINT), text("("), V(13), text(",30)")],
             vec![V(40), K(SET), F(CAMERA_IS_SCROLLING), text("()")],
             vec![V(41), K(SET), F(CAMERA_IS_PANNING), text("()")],
@@ -1873,6 +1882,7 @@ mod tests {
                 Shot::GlideTo((16.0, 0.0), 50),
                 Shot::Circle(2, 1),
                 Shot::StopCircling,
+                Shot::ZoomTo(60, 20),
                 Shot::ScrollTo((13.0, 0.0), 30),
                 Shot::GlideBack(60),
                 Shot::GlideTo((13.0, 0.0), 80),

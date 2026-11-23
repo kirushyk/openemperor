@@ -2284,6 +2284,9 @@ impl mission::Battle for Game {
             mission::Shot::LookAt((x, z)) => self.camera.look_at(x, z),
             mission::Shot::GlideTo(to, updates) => self.camera.glide_to(to, seconds(updates)),
             mission::Shot::ScrollTo(to, updates) => self.camera.scroll_to(to, seconds(updates)),
+            mission::Shot::ZoomTo(percent, updates) => self
+                .camera
+                .zoom_to(percent as f32 / 100.0, seconds(updates)),
             mission::Shot::Circle(degrees, way) => {
                 let way = if way == 2 { -1.0 } else { 1.0 };
                 let per_second = degrees as f32 * SCRIPT_UPDATES_PER_SECOND;

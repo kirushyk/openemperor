@@ -1,7 +1,8 @@
 # Not implemented yet
 
 What the original game has that we don't do yet, or do only partly. Which units and buildings
-we are missing is in [units.md](units.md). This list is about everything else.
+we are missing is in [units.md](units.md). This list is about everything else. Where each of
+these is in the original's executable is in [game-exe.md](game-exe.md).
 
 ## Models and their effects
 

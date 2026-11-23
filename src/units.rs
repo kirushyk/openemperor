@@ -333,7 +333,6 @@ pub struct Level {
 
 impl Level {
     /// The score that reaches it.
-    #[cfg(test)]
     pub fn score(&self) -> u32 {
         self.score
     }

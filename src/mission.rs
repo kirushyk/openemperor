@@ -155,6 +155,8 @@ const OBJECT_NEAR_TO_SIDE: u16 = 24;
 const OBJECT_VISIBLE_TO_SIDE: u16 = 27;
 const OBJECT_GET_HEALTH: u16 = 29;
 const OBJECT_MAX_HEALTH: u16 = 30;
+/// Whether any of a side's things is seen by another side.
+const SIDE_VISIBLE_TO_SIDE: u16 = 31;
 /// Whether a side's things are near another's: taken as in sight of them.
 const SIDE_NEAR_TO_SIDE: u16 = 32;
 /// Whether any unit or building of a side stands within so far of a place.
@@ -707,7 +709,7 @@ impl Script {
                         .place_of(at(0).thing())
                         .map_or(Value::Thing(None), place),
                     Piece::Function(GET_ENEMY_SIDE) => Value::Number(SOMEONE_SIDE),
-                    Piece::Function(SIDE_NEAR_TO_SIDE) => {
+                    Piece::Function(SIDE_VISIBLE_TO_SIDE | SIDE_NEAR_TO_SIDE) => {
                         Value::Number(i32::from(battle.sees(number(0), number(1))))
                     }
                     Piece::Function(OBJECT_SET_HEALTH) => {
@@ -1542,6 +1544,25 @@ mod tests {
         let mut battle = Written::default();
         Script::new(&lines).run(&mut battle);
         assert_eq!(battle.ranks, 3, "two, none, then the one left");
+    }
+
+    #[test]
+    fn a_side_is_visible_to_another_whose_things_see_any_of_its_own() {
+        use Token::{Function as F, Keyword as K, Variable as V};
+        let asked = |a: &str, b: &str| {
+            let line = vec![
+                V(1),
+                K(SET),
+                F(SIDE_VISIBLE_TO_SIDE),
+                text(&format!("({a},{b})")),
+            ];
+            let mut script = Script::new(&[line]);
+            script.run(&mut Written::default());
+            script.variables[1]
+        };
+        // The written battle has side 1 in sight of the player's.
+        assert_eq!(asked("1", "0"), Value::Number(1));
+        assert_eq!(asked("0", "1"), Value::Number(0));
     }
 
     #[test]

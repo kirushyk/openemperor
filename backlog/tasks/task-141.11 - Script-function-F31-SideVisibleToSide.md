@@ -1,9 +1,10 @@
 ---
 id: TASK-141.11
 title: Script function F31 SideVisibleToSide
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:19:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf0b32, 0x1ff bytes; 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's SideVisibleToSide does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls SideVisibleToSide and checks the effect
+- [x] #1 The game does what the original's SideVisibleToSide does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls SideVisibleToSide and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SideVisibleToSide(a, b) is true when any of a's things is seen by b; without the original's seen-by masks it is asked as Battle::sees: within the sight of any of b's things. Tested in mission.rs (a_side_is_visible_to_another_whose_things_see_any_of_its_own).
+<!-- SECTION:FINAL_SUMMARY:END -->

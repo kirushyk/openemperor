@@ -114,6 +114,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F17(thing)` | Whose a thing is, as a side | `F17(v3) K168 F14()`: the outpost captured |
 | `F22(thing)` | Whether a thing still stands | |
 | `F27(thing, side)` | Whether a side has hurt a thing; taken as: it is hurt, and the side is its enemy | `F27(v3,F14())` |
+| `F31(a, b)` | Whether any of side `a`'s things is seen by `b` (the original's code: `b`'s bit in their seen-by masks); taken as in sight of any of `b`'s | |
 | `F32(a, b)` | Whether side `a`'s units are in sight of `b`'s | prisoners reached |
 | `F44(thing)` | Whether a thing is destroyed | |
 | `F53(thing, side)` | Hands a thing over to a side, as if captured (the original's code) | |

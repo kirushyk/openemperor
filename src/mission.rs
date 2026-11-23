@@ -132,6 +132,8 @@ const GET_ENTRANCE_FAR_FROM_POS: u16 = 11;
 const GET_SIDE_POSITION: u16 = 12;
 const GET_OBJECT_POSITION: u16 = 13;
 const GET_PLAYER_SIDE: u16 = 14;
+/// The co-op campaign's other human player's side; outside one, the player's.
+const GET_SECOND_PLAYER_SIDE: u16 = 15;
 /// The first computer side: taken as a side that is neither the player's nor one the script
 /// makes, what the scripts make friends and enemies of the others with, as if the world at
 /// large.
@@ -563,7 +565,7 @@ impl Script {
                         place(entrance(battle, at(0).place(), Farthest))
                     }
                     Piece::Function(GET_SCRIPT_POINT) => place(battle.script_point(number(0))),
-                    Piece::Function(GET_PLAYER_SIDE) => Value::Number(0),
+                    Piece::Function(GET_PLAYER_SIDE | GET_SECOND_PLAYER_SIDE) => Value::Number(0),
                     Piece::Function(CREATE_SIDE) => Value::Number(battle.new_side()),
                     Piece::Function(NEW_OBJECT) => match kind(1) {
                         Some(kind) => Value::Thing(battle.bring(number(0), kind, at(2).place())),
@@ -1320,10 +1322,14 @@ mod tests {
     #[test]
     fn a_game_is_never_the_co_op_campaign() {
         use Token::{Function as F, Keyword as K, Variable as V};
-        let lines = vec![vec![V(1), K(SET), F(MULTIPLAYER), text("()")]];
+        let lines = vec![
+            vec![V(1), K(SET), F(MULTIPLAYER), text("()")],
+            vec![V(2), K(SET), F(GET_SECOND_PLAYER_SIDE), text("()")],
+        ];
         let mut script = Script::new(&lines);
         script.run(&mut Written::default());
         assert_eq!(script.variables[1], Value::Number(0));
+        assert_eq!(script.variables[2], Value::Number(0), "the player's side");
     }
 
     #[test]

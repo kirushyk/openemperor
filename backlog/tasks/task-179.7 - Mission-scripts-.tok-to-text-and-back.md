@@ -4,6 +4,7 @@ title: 'Mission scripts: .tok to text and back'
 status: To Do
 assignee: []
 created_date: '2026-11-23T17:27:00Z'
+updated_date: '2026-11-23T17:59:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-179
@@ -13,14 +14,14 @@ ordinal: 358000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-docs/tok-format.md describes the scripts' byte code, and mission.rs runs it. GAME.EXE's own table names its tokens: 181 of them, the functions F0 to F127 and the keywords K128 to K180. MISSIONS0001 has 229 .tok and missionlist.ini.
+The tool's commands for mission scripts, on top of TASK-181, which does the work:
+- `oe-files convert x.tok -o x.txt`: decompile (TASK-181.2), with --names and --notes;
+- `oe-files convert x.txt -o x.tok`: compile (TASK-181.3), checks included (TASK-181.4);
+- `oe-files script check FILE…`: only the checks, with errors as file:line:column: message;
+- `oe-files info x.tok`: the functions it calls and how often, its variables, and the kinds and speech it uses;
+- `oe-files script new`, `script build` and `script functions --json` (TASK-181.5, TASK-181.6).
 
-Commands:
-- `convert x.tok -o x.txt` writes the script as text: functions and keywords by their names, variables by their kind (int, object, position) and number, literals, if/else/endif, and the events it waits on, laid out with indents.
-- `convert x.txt -o x.tok` compiles the text back, with errors given by line.
-- `info x.tok` lists the functions it calls and how often, and the variables it uses.
-
-All 229 come back byte for byte. That makes the missions readable and changeable, and the script runner of TASK-180.8 shows scripts this way.
+MISSIONS0001 has 229 .tok and missionlist.ini.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

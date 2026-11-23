@@ -110,6 +110,8 @@ pub fn speeches(lines: &[Vec<Token>]) -> Vec<u16> {
 /// original's table names it (`docs/tok-format.md` lists them all, with where GAME.EXE carries
 /// each out). What we take one to do, where its name does not say it, is with it.
 const MODEL_TICK: u16 = 0;
+/// A whole number from 0 to one less than the number given.
+const RANDOM: u16 = 1;
 /// Whether the game is the co-op campaign, which it never is here: the start scripts give the
 /// second player of one a gift of units only then.
 const MULTIPLAYER: u16 = 2;
@@ -285,6 +287,10 @@ pub trait Battle {
     /// How many of the script's updates have gone by.
     fn now(&self) -> i32;
     fn new_side(&mut self) -> i32;
+    /// A number drawn at random, the next of a repeatable run.
+    fn random(&mut self) -> u32 {
+        0
+    }
     /// Where a side's base is, and where the enemy's main base is.
     fn base(&self, side: i32) -> (f32, f32);
     fn enemy_base(&self) -> (f32, f32);
@@ -513,6 +519,12 @@ impl Script {
                         Value::Thing(battle.place(number(0), kind, to, number(5)))
                     }
                     Piece::Function(MODEL_TICK) => Value::Number(battle.now()),
+                    // The remainder of a signed division, as the original's; nothing to divide
+                    // by gives 0.
+                    Piece::Function(RANDOM) => {
+                        let drawn = (battle.random() & i32::MAX as u32) as i32;
+                        Value::Number(drawn.checked_rem(number(0)).unwrap_or(0))
+                    }
                     Piece::Function(MULTIPLAYER) => Value::Number(0),
                     Piece::Function(GET_UNUSED_BASE_POINT) => place(battle.enemy_base()),
                     Piece::Function(GET_SIDE_BASE_POINT) => place(battle.base(number(0))),
@@ -972,6 +984,7 @@ mod tests {
         uncovered: Vec<((f32, f32), i32)>,
         handed: Vec<(i32, i32)>,
         entrances: Vec<(f32, f32)>,
+        drawn: u32,
     }
 
     impl Battle for Written {
@@ -993,6 +1006,10 @@ mod tests {
         }
         fn entrances(&self) -> Vec<(f32, f32)> {
             self.entrances.clone()
+        }
+        fn random(&mut self) -> u32 {
+            self.drawn = self.drawn.wrapping_add(7);
+            self.drawn
         }
         fn place(&mut self, side: i32, kind: u16, at: (f32, f32), facing: i32) -> Option<u32> {
             self.placed.push((side, kind, at, facing));
@@ -1212,6 +1229,29 @@ mod tests {
         let mut script = Script::new(&lines);
         script.run(&mut Written::default());
         assert_eq!(script.variables[1], p(100.0, 0.0));
+    }
+
+    #[test]
+    fn a_random_number_is_below_the_one_given_and_nothing_to_divide_by_gives_naught() {
+        use Token::{Function as F, Keyword as K, Variable as V};
+        // v1 = Random(5); v2 = Random(5); v3 = Random(0); v4 = Random(3000) + 100
+        let lines = vec![
+            vec![V(1), K(SET), F(RANDOM), text("(5)")],
+            vec![V(2), K(SET), F(RANDOM), text("(5)")],
+            vec![V(3), K(SET), F(RANDOM), text("(0)")],
+            vec![
+                V(4),
+                K(SET),
+                F(RANDOM),
+                text("(3000)"),
+                K(PLUS),
+                text("100"),
+            ],
+        ];
+        let mut script = Script::new(&lines);
+        script.run(&mut Written::default());
+        let n = Value::Number;
+        assert_eq!(script.variables[1..=4], [n(2), n(4), n(0), n(128)]);
     }
 
     #[test]

@@ -82,6 +82,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `K131`, `K132` | A scene begins and ends: the camera is the script's, not scrolled | around the first battles' opening |
 | `K128`, `K129`, `K130`, `K133`, `K156` | Not known | |
 | `F0()` | The battle's time, in updates | compared with 49, 50, 100, 150 … |
+| `F1(n)` | A whole number at random from 0 to `n - 1` (the original's code) | `v7 K180 F1(2000) K178 v7` |
 | `F14()` | The player's side | `v0 K180 F14()` |
 | `F18()` | A new side | four of them, the enemy and others |
 | `F3()` | The enemy's main base: the map's point `Primary` | |

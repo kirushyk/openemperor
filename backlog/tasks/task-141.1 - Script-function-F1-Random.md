@@ -1,9 +1,10 @@
 ---
 id: TASK-141.1
 title: Script function F1 Random
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T17:54:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf2288, 0x21 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's Random does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls Random and checks the effect
+- [x] #1 The game does what the original's Random does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls Random and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Random(n) draws from the battle's own repeatable run (Game::script_random, seeded with the start seed) and gives the remainder of a signed division by n, 0 for n = 0; tested in mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

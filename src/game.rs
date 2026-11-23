@@ -2018,6 +2018,10 @@ impl mission::Battle for Game {
         self.map_point(&format!("Script{number}"))
     }
 
+    fn random(&mut self) -> u32 {
+        battlefield::xorshift(&mut self.script_random)
+    }
+
     fn entrances(&self) -> Vec<(f32, f32)> {
         battlefield::terrain(self.battle_map).entrances().to_vec()
     }
@@ -2426,6 +2430,8 @@ pub struct Game {
     scene_playing: bool,
     script_clock: f32,
     script_sides: i32,
+    /// What the script's `Random` draws from.
+    script_random: u32,
     script_side_of: Vec<(u32, i32)>,
     /// The pairs of the script's sides it has made enemies.
     script_enemies: Vec<(i32, i32)>,
@@ -2579,6 +2585,7 @@ impl Game {
             scene_playing: false,
             script_clock: 0.0,
             script_sides: 0,
+            script_random: 1,
             script_side_of: Vec::new(),
             script_enemies: Vec::new(),
             script_hunting: Vec::new(),
@@ -4775,6 +4782,7 @@ impl Game {
         self.script_updates = 0;
         self.script_clock = 0.0;
         self.script_sides = 0;
+        self.script_random = self.start_random;
         self.script_side_of.clear();
         self.script_enemies.clear();
         self.script_hunting.clear();

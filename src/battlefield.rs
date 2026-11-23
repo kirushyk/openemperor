@@ -221,7 +221,7 @@ impl Light {
 }
 
 /// Xorshift: repeatable, and it needs no dependency.
-fn xorshift(state: &mut u32) -> u32 {
+pub fn xorshift(state: &mut u32) -> u32 {
     *state ^= *state << 13;
     *state ^= *state >> 17;
     *state ^= *state << 5;

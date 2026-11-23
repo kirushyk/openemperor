@@ -2262,6 +2262,15 @@ impl mission::Battle for Game {
         })
     }
 
+    fn detonate(&mut self, thing: Option<u32>) {
+        let Some(unit) = self.units.iter().find(|u| Some(u.id) == thing && u.alive) else {
+            return;
+        };
+        let (at, radius) = (unit.center(), unit.radius() * 2.0);
+        self.set_health(thing, 0);
+        self.combat.explode(at, radius);
+    }
+
     fn raise_rank(&mut self, thing: Option<u32>) -> bool {
         let unit = self
             .units
@@ -6939,6 +6948,19 @@ mod tests {
         let yard = game.units.iter().find(|u| Some(u.id) == yard).unwrap();
         assert!(yard.deployed && yard.kind.is_building());
         assert_eq!(game.buildings_left(1), 2);
+    }
+
+    #[test]
+    fn a_thing_detonated_is_gone_in_an_explosion() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let side = game.new_side();
+        let (x, z) = game.home;
+        let thing = game.bring(side, 2, (x + 500.0, z + 500.0));
+        let blasts = game.combat.blasts.len();
+        game.detonate(thing);
+        assert!(game.destroyed(thing));
+        assert!(game.combat.blasts.len() > blasts);
     }
 
     #[test]

@@ -1,9 +1,10 @@
 ---
 id: TASK-144.7
 title: Script function F56 ObjectDetonate
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:10:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-144
@@ -19,5 +20,11 @@ What the original does (case code at GAME.EXE file offset 0xf3248, 0x65 bytes; +
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 The game does what the original's ObjectDetonate does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls ObjectDetonate and checks the effect
+- [x] #2 A test runs a script that calls ObjectDetonate and checks the effect
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done so far: ObjectDetonate leaves the thing with no health and makes a blast its size where it stood (Game::detonate), tested in game.rs and mission.rs. Left: its second argument names an [ExplosionTypes] kind, but its 0x82 token is not an index into our [BuildingTypes]+[UnitTypes] kind list (the dump reads one as <ATConYard>); working out which list the token indexes, and playing that explosion, is what remains.
+<!-- SECTION:NOTES:END -->

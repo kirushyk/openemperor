@@ -117,6 +117,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F44(thing)` | Whether a thing is destroyed | |
 | `F53(thing, side)` | Hands a thing over to a side, as if captured (the original's code) | |
 | `F54(thing, n)` | Sets a thing's health | a camp's windtraps at 90 to 320 |
+| `F56(thing, explosion)` | Blows a thing up: no health left and an explosion where it stands (the original's code); which of the rules' explosions is not read yet, its token being no kind of unit or building | `F56(v3,…)` |
 | `F57(thing, kind, side)` | Turns a thing into a kind, for a side | prisoners freed as Fremen |
 | `F59(a, b)` | Makes side `a` a friend of `b` | given both ways |
 | `F61(a, b)` | Makes side `a` neutral to `b` (the original's code: relation 2); with only friends and enemies here, it is no longer its enemy | |

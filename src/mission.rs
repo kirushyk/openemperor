@@ -177,6 +177,8 @@ const MESSAGE: u16 = 45;
 const OBJECT_CHANGE_SIDE: u16 = 53;
 /// Sets a thing's health, in the original's.
 const OBJECT_SET_HEALTH: u16 = 54;
+/// Blows a thing up: no health left, and an explosion where it stands.
+const OBJECT_DETONATE: u16 = 56;
 /// Turns a thing into another kind, for a side: prisoners freed become Fremen.
 const OBJECT_CHANGE: u16 = 57;
 /// Makes one side a friend of another, an enemy, or neither: as the battle has only friends
@@ -375,6 +377,8 @@ pub trait Battle {
         false
     }
     fn set_health(&mut self, _thing: Option<u32>, _health: i32) {}
+    /// Blows a thing up where it stands.
+    fn detonate(&mut self, _thing: Option<u32>) {}
     /// Raises a thing one level of veterancy; `false` if it has none above.
     fn raise_rank(&mut self, _thing: Option<u32>) -> bool {
         false
@@ -716,6 +720,11 @@ impl Script {
                     Piece::Function(CAMERA_STORE) => film(battle, Some(Shot::Keep)),
                     Piece::Function(CAMERA_RESTORE) => {
                         film(battle, Some(Shot::GlideBack(number(0))))
+                    }
+                    // Which of the rules' explosions it makes is not read yet.
+                    Piece::Function(OBJECT_DETONATE) => {
+                        battle.detonate(at(0).thing());
+                        Value::Number(0)
                     }
                     Piece::Function(OBJECT_CHANGE_SIDE) => {
                         battle.change_side(at(0).thing(), number(1));
@@ -1103,6 +1112,7 @@ mod tests {
         ranks: u32,
         handed: Vec<(i32, i32)>,
         changed: Vec<(Option<u32>, i32)>,
+        detonated: Vec<Option<u32>>,
         entrances: Vec<(f32, f32)>,
         drawn: u32,
     }
@@ -1203,6 +1213,9 @@ mod tests {
         }
         fn change_side(&mut self, thing: Option<u32>, to: i32) {
             self.changed.push((thing, to));
+        }
+        fn detonate(&mut self, thing: Option<u32>) {
+            self.detonated.push(thing);
         }
         fn lose(&mut self) {
             self.lost = true;
@@ -1584,6 +1597,15 @@ mod tests {
             vec![F(SIDE_CHANGE_SIDE), text("(2,0)")],
             // F53(v1, 3): the harvester is side 3's.
             vec![F(OBJECT_CHANGE_SIDE), text("("), V(1), text(",3)")],
+            // F56(v1, <kind 4>): the harvester blown up.
+            vec![
+                F(OBJECT_DETONATE),
+                text("("),
+                V(1),
+                text(","),
+                Token::Kind(4),
+                text(")"),
+            ],
         ];
         let mut battle = Written::default();
         Script::new(&lines).run(&mut battle);
@@ -1608,6 +1630,7 @@ mod tests {
         assert_eq!(battle.nuked, [Some(3), None]);
         assert_eq!(battle.handed, [(2, 0)]);
         assert_eq!(battle.changed, [(Some(1), 3)]);
+        assert_eq!(battle.detonated, [Some(1)]);
     }
 
     #[test]

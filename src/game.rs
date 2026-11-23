@@ -2266,6 +2266,10 @@ impl mission::Battle for Game {
         })
     }
 
+    fn is_carried(&self, thing: Option<u32>) -> bool {
+        self.carried.iter().any(|c| Some(c.vehicle.id) == thing)
+    }
+
     fn detonate(&mut self, thing: Option<u32>) {
         let Some(unit) = self.units.iter().find(|u| Some(u.id) == thing && u.alive) else {
             return;
@@ -10179,10 +10183,13 @@ mod tests {
         game.units[carryall].z = at.1;
         game.units[carryall].destination = at;
         game.units[carryall].target = Some(crate::units::Target::Unit(tank_id));
+        use mission::Battle;
+        assert!(!game.is_carried(Some(tank_id)));
         game.update(0.05);
         assert_eq!(game.carried.len(), 1);
         assert!(!game.units.iter().any(|u| u.id == tank_id));
         assert!(!crate::render::build(&game).is_empty(), "it draws, hanging");
+        assert!(game.is_carried(Some(tank_id)), "as a script asks it");
 
         let carrier_id = game.carried[0].carrier;
         game.units

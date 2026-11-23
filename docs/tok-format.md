@@ -132,6 +132,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F82(place)` | A worm comes up at a place; not done yet, as there are no worms | `F82(F12(v43))` |
 | `F84()` | The tutorial is over and done; taken as won | 27.5 s after its last line |
 | `K135(thing)` | Takes a thing off the map | the tutorial's walls opened for the wave |
+| `K138(thing)` | Whether a carryall holds a thing (the original's code) | |
 | `K144(n)` | A step of the tutorial, as the number; what else it does is not known | `v32 K180 K144(11)` |
 | `F85()` | The battle is lost (the original's code) | |
 | `F63`, `F96` | Not known; the tutorial runs without them | `F96(v36)` |

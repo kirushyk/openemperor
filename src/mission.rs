@@ -233,6 +233,8 @@ const FREEZE_GAME: u16 = 129;
 const UN_FREEZE_GAME: u16 = 130;
 /// Sells a building: taken as taking a thing off the map.
 const OBJECT_SELL: u16 = 135;
+/// Whether a carryall holds a thing.
+const OBJECT_IS_CARRIED: u16 = 138;
 const NEW_OBJECT_OFFSET_ORIENTATION: u16 = 139;
 /// The last of the original's sixteen sides, kept for what is nobody's.
 const GET_NEUTRAL_SIDE: u16 = 140;
@@ -380,6 +382,10 @@ pub trait Battle {
         false
     }
     fn set_health(&mut self, _thing: Option<u32>, _health: i32) {}
+    /// Whether a carryall holds a thing.
+    fn is_carried(&self, _thing: Option<u32>) -> bool {
+        false
+    }
     /// Blows a thing up where it stands.
     fn detonate(&mut self, _thing: Option<u32>) {}
     /// Raises a thing one level of veterancy; `false` if it has none above.
@@ -579,6 +585,9 @@ impl Script {
                     Piece::Keyword(NEG) => Value::Number(-number(0)),
                     Piece::Keyword(GET_NEUTRAL_SIDE) => Value::Number(NEUTRAL_SIDE),
                     Piece::Keyword(BREAK_POINT) => Value::Number(0),
+                    Piece::Keyword(OBJECT_IS_CARRIED) => {
+                        Value::Number(i32::from(battle.is_carried(at(0).thing())))
+                    }
                     Piece::Keyword(SET_VETERANCY) => {
                         let thing = at(0).thing();
                         for _ in 0..number(1) {
@@ -1230,6 +1239,9 @@ mod tests {
         fn detonate(&mut self, thing: Option<u32>) {
             self.detonated.push(thing);
         }
+        fn is_carried(&self, thing: Option<u32>) -> bool {
+            thing == Some(2)
+        }
         fn lose(&mut self) {
             self.lost = true;
         }
@@ -1350,14 +1362,19 @@ mod tests {
             vec![F(SIDE_AI_AGGRESSIVE), text("(4)")],
             vec![K(OBJECT_SELL), text("("), V(0), text(")")],
             set(8, vec![K(SET_VALUE), text("(11)")]),
+            set(9, vec![K(OBJECT_IS_CARRIED), text("("), V(1), text(")")]),
+            set(10, vec![K(OBJECT_IS_CARRIED), text("("), V(0), text(")")]),
             vec![F(END_GAME_WIN), text("()")],
         ];
         let mut battle = Written::default();
         let mut script = Script::new(&lines);
         script.run(&mut battle);
-        let numbers: Vec<Value> = (2..=8).map(|v| script.variables[v]).collect();
+        let numbers: Vec<Value> = (2..=10).map(|v| script.variables[v]).collect();
         let n = Value::Number;
-        assert_eq!(numbers, [n(300), n(600), n(1), n(5), n(1), n(1), n(11)]);
+        assert_eq!(
+            numbers,
+            [n(300), n(600), n(1), n(5), n(1), n(1), n(11), n(1), n(0)]
+        );
         assert_eq!(battle.sent, [(2, battle.script_point(4))]);
         assert_eq!(battle.hunting, [4]);
         assert_eq!(battle.removed, [Some(1)]);

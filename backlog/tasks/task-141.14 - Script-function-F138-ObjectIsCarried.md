@@ -1,9 +1,10 @@
 ---
 id: TASK-141.14
 title: Script function F138 ObjectIsCarried
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:14:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf3c46, 0x73 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's ObjectIsCarried does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls ObjectIsCarried and checks the effect
+- [x] #1 The game does what the original's ObjectIsCarried does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls ObjectIsCarried and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+ObjectIsCarried is true while the thing hangs from a carryall (it is among Game::carried). Tested in game.rs (a_vehicle_carried_when_its_carryall_is_lost_is_counted_lost_too) and mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

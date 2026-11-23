@@ -119,6 +119,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F54(thing, n)` | Sets a thing's health | a camp's windtraps at 90 to 320 |
 | `F57(thing, kind, side)` | Turns a thing into a kind, for a side | prisoners freed as Fremen |
 | `F59(a, b)` | Makes side `a` a friend of `b` | given both ways |
+| `F61(a, b)` | Makes side `a` neutral to `b` (the original's code: relation 2); with only friends and enemies here, it is no longer its enemy | |
 | `F24(thing, side)` | Whether a side has a unit at a thing; taken as within three squares of its edge | `F24(v61,F14())`: the tutorial's beacon reached |
 | `F29(thing)`, `F30(thing)` | A thing's health and the most it has | `F29(v0) K168 F30(v0)`: the tutorial's windtrap mended |
 | `F36(side)` | How many buildings a side has left | with `F35`, the tutorial's enemy base gone |

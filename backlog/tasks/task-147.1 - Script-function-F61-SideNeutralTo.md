@@ -1,9 +1,10 @@
 ---
 id: TASK-147.1
 title: Script function F61 SideNeutralTo
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:09:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-147
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf16ac, 0x18f bytes; 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's SideNeutralTo does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls SideNeutralTo and checks the effect
+- [x] #1 The game does what the original's SideNeutralTo does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls SideNeutralTo and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SideNeutralTo(a, b) ends the two sides' enmity, as our battle keeps only enemies and not (no separate neutral relation, and relations are both ways). Tested in mission.rs (a_prison_camps_sides_are_related_and_its_prisoners_freed_once_seen).
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -179,9 +179,11 @@ const OBJECT_CHANGE_SIDE: u16 = 53;
 const OBJECT_SET_HEALTH: u16 = 54;
 /// Turns a thing into another kind, for a side: prisoners freed become Fremen.
 const OBJECT_CHANGE: u16 = 57;
-/// Makes one side a friend of another, or an enemy.
+/// Makes one side a friend of another, an enemy, or neither: as the battle has only friends
+/// and enemies, a side neutral to another is not its enemy, as a friend.
 const SIDE_FRIEND_TO: u16 = 59;
 const SIDE_ENEMY_TO: u16 = 60;
+const SIDE_NEUTRAL_TO: u16 = 61;
 /// Gives a side money, on top of what it has.
 const ADD_SIDE_CASH: u16 = 62;
 /// A side's units go after the player's.
@@ -790,7 +792,7 @@ impl Script {
                         Value::Number(0)
                     }
                     Piece::Keyword(SET_VALUE) => Value::Number(number(0)),
-                    Piece::Function(SIDE_FRIEND_TO | SIDE_ENEMY_TO) => {
+                    Piece::Function(SIDE_FRIEND_TO | SIDE_ENEMY_TO | SIDE_NEUTRAL_TO) => {
                         battle.relate(
                             number(0),
                             number(1),
@@ -1631,6 +1633,23 @@ mod tests {
                 V(2),
                 text(")"),
             ],
+            // F60(v1, v2); F61(v1, v2)
+            vec![
+                F(SIDE_ENEMY_TO),
+                text("("),
+                V(1),
+                text(","),
+                V(2),
+                text(")"),
+            ],
+            vec![
+                F(SIDE_NEUTRAL_TO),
+                text("("),
+                V(1),
+                text(","),
+                V(2),
+                text(")"),
+            ],
             // v3 = K139(v1, <kind 4>, F3(), 0, 0, 0); F54(v3, 250)
             vec![
                 V(3),
@@ -1675,8 +1694,13 @@ mod tests {
         Script::new(&lines).run(&mut battle);
         assert_eq!(
             battle.related,
-            [(1, 0, false), (SOMEONE_SIDE, 2, true)],
-            "friends, then enemies"
+            [
+                (1, 0, false),
+                (SOMEONE_SIDE, 2, true),
+                (1, 2, true),
+                (1, 2, false)
+            ],
+            "friends, enemies, then enemies made neutral"
         );
         assert_eq!(battle.health, [(Some(1), 250)]);
         assert_eq!(battle.turned, [(Some(1), 7, 0)], "seen, it is the player's");

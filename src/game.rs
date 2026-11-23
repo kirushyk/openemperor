@@ -2018,6 +2018,10 @@ impl mission::Battle for Game {
         self.map_point(&format!("Script{number}"))
     }
 
+    fn entrances(&self) -> Vec<(f32, f32)> {
+        battlefield::terrain(self.battle_map).entrances().to_vec()
+    }
+
     fn place(&mut self, side: i32, kind: u16, at: (f32, f32), facing: i32) -> Option<u32> {
         self.put_scripted(side, kind, at, Some(Facing::numbered(facing)))
     }

@@ -116,10 +116,15 @@ const MULTIPLAYER: u16 = 2;
 const GET_UNUSED_BASE_POINT: u16 = 3;
 const GET_SIDE_BASE_POINT: u16 = 4;
 const GET_SCRIPT_POINT: u16 = 5;
+/// The map's entrance nearest a side's base, and the one farthest from that.
 const GET_ENTRANCE_POINT: u16 = 6;
+const GET_EXIT_POINT: u16 = 7;
 /// Where reinforcements come in: given to the player's mostly.
 const GET_NEUTRAL_ENTRANCE_POINT: u16 = 8;
-/// Of the map's entrances the one farthest from a place: taken as that place.
+/// The map's entrance of a number, the first for one it has not; the one nearest a place,
+/// and the one farthest from it.
+const GET_ENTRANCE_POINT_BY_INDEX: u16 = 9;
+const GET_ENTRANCE_NEAR_TO_POS: u16 = 10;
 const GET_ENTRANCE_FAR_FROM_POS: u16 = 11;
 /// Where a side's units arrive, its base.
 const GET_SIDE_POSITION: u16 = 12;
@@ -285,6 +290,10 @@ pub trait Battle {
     fn enemy_base(&self) -> (f32, f32);
     /// The map's point for the script of this number.
     fn script_point(&self, number: i32) -> (f32, f32);
+    /// Where things come onto the map and leave it, in the order of its file.
+    fn entrances(&self) -> Vec<(f32, f32)> {
+        Vec::new()
+    }
     /// Puts a thing of a kind of the rules' lists on the map for a side, facing one of four
     /// ways, and says which it is.
     fn place(&mut self, side: i32, kind: u16, at: (f32, f32), facing: i32) -> Option<u32>;
@@ -506,8 +515,25 @@ impl Script {
                     Piece::Function(MODEL_TICK) => Value::Number(battle.now()),
                     Piece::Function(MULTIPLAYER) => Value::Number(0),
                     Piece::Function(GET_UNUSED_BASE_POINT) => place(battle.enemy_base()),
-                    Piece::Function(GET_SIDE_BASE_POINT | GET_ENTRANCE_POINT) => {
-                        place(battle.base(number(0)))
+                    Piece::Function(GET_SIDE_BASE_POINT) => place(battle.base(number(0))),
+                    Piece::Function(GET_ENTRANCE_POINT) => {
+                        place(entrance(battle, battle.base(number(0)), Nearest))
+                    }
+                    Piece::Function(GET_EXIT_POINT) => {
+                        let entrance_point = entrance(battle, battle.base(number(0)), Nearest);
+                        place(entrance(battle, entrance_point, Farthest))
+                    }
+                    Piece::Function(GET_ENTRANCE_POINT_BY_INDEX) => {
+                        let entrances = battle.entrances();
+                        let index = usize::try_from(number(0)).ok();
+                        let chosen = index.and_then(|i| entrances.get(i)).or(entrances.first());
+                        chosen.map_or(Value::Place(0.0, 0.0), |&at| place(at))
+                    }
+                    Piece::Function(GET_ENTRANCE_NEAR_TO_POS) => {
+                        place(entrance(battle, at(0).place(), Nearest))
+                    }
+                    Piece::Function(GET_ENTRANCE_FAR_FROM_POS) => {
+                        place(entrance(battle, at(0).place(), Farthest))
                     }
                     Piece::Function(GET_SCRIPT_POINT) => place(battle.script_point(number(0))),
                     Piece::Function(GET_PLAYER_SIDE) => Value::Number(0),
@@ -552,7 +578,6 @@ impl Script {
                         None => Value::Number(0),
                     },
                     Piece::Function(GET_NEUTRAL_ENTRANCE_POINT) => place(battle.base(0)),
-                    Piece::Function(GET_ENTRANCE_FAR_FROM_POS) => at(0),
                     Piece::Function(GET_SIDE_POSITION) => place(battle.base(number(0))),
                     Piece::Function(GET_OBJECT_POSITION) => battle
                         .place_of(at(0).thing())
@@ -679,6 +704,32 @@ fn first_unknown(callee: Piece) -> Option<String> {
     Some(format!(
         "Warning: the mission script calls {name}, which is not carried out"
     ))
+}
+
+/// Which of the map's entrances a script asks for, by how far it is from a place.
+#[derive(Clone, Copy)]
+enum Reach {
+    Nearest,
+    Farthest,
+}
+use Reach::{Farthest, Nearest};
+
+/// The map's entrance nearest a place or farthest from it, the first of those as near or as
+/// far, as the original goes through them; the place itself on a map with none.
+fn entrance(battle: &impl Battle, (x, z): (f32, f32), reach: Reach) -> (f32, f32) {
+    let distance = |&(ex, ez): &(f32, f32)| (ex - x).hypot(ez - z);
+    let mut chosen: Option<((f32, f32), f32)> = None;
+    for at in battle.entrances() {
+        let far = distance(&at);
+        let better = chosen.is_none_or(|(_, best)| match reach {
+            Nearest => far < best,
+            Farthest => far > best,
+        });
+        if better {
+            chosen = Some((at, far));
+        }
+    }
+    chosen.map_or((x, z), |(at, _)| at)
 }
 
 /// Has the camera do this, if there is anything to do.
@@ -920,6 +971,7 @@ mod tests {
         removed: Vec<Option<u32>>,
         uncovered: Vec<((f32, f32), i32)>,
         handed: Vec<(i32, i32)>,
+        entrances: Vec<(f32, f32)>,
     }
 
     impl Battle for Written {
@@ -938,6 +990,9 @@ mod tests {
         }
         fn script_point(&self, number: i32) -> (f32, f32) {
             (number as f32, 0.0)
+        }
+        fn entrances(&self) -> Vec<(f32, f32)> {
+            self.entrances.clone()
         }
         fn place(&mut self, side: i32, kind: u16, at: (f32, f32), facing: i32) -> Option<u32> {
             self.placed.push((side, kind, at, facing));
@@ -1113,6 +1168,50 @@ mod tests {
         assert_eq!(battle.hunting, [4]);
         assert_eq!(battle.removed, [Some(1)]);
         assert!(battle.won, "the tutorial done");
+    }
+
+    #[test]
+    fn a_script_asks_for_the_maps_entrances_by_side_number_and_how_far_from_a_place() {
+        use Token::{Function as F, Keyword as K, Variable as V};
+        let set = |variable: u16, call: Vec<Token>| [vec![V(variable), K(SET)], call].concat();
+        let point = vec![F(GET_SCRIPT_POINT), text("(990)")];
+        let lines = vec![
+            set(1, vec![F(GET_ENTRANCE_POINT), text("(1)")]),
+            set(2, vec![F(GET_EXIT_POINT), text("(1)")]),
+            set(3, vec![F(GET_ENTRANCE_POINT_BY_INDEX), text("(2)")]),
+            set(4, vec![F(GET_ENTRANCE_POINT_BY_INDEX), text("(5)")]),
+            set(
+                5,
+                [vec![F(GET_ENTRANCE_NEAR_TO_POS), text("(")], point.clone()].concat(),
+            ),
+            set(
+                6,
+                [vec![F(GET_ENTRANCE_FAR_FROM_POS), text("(")], point].concat(),
+            ),
+        ];
+        let mut battle = Written {
+            entrances: vec![(0.0, 500.0), (150.0, 0.0), (1000.0, 0.0)],
+            ..Written::default()
+        };
+        let mut script = Script::new(&lines);
+        script.run(&mut battle);
+        let p = |x, z| Value::Place(x, z);
+        assert_eq!(
+            script.variables[1..=6],
+            [
+                p(150.0, 0.0),
+                p(1000.0, 0.0),
+                p(1000.0, 0.0),
+                p(0.0, 500.0),
+                p(1000.0, 0.0),
+                p(0.0, 500.0)
+            ],
+            "side 1's base is at (100, 0)"
+        );
+        // A map without entrances gives the place asked about.
+        let mut script = Script::new(&lines);
+        script.run(&mut Written::default());
+        assert_eq!(script.variables[1], p(100.0, 0.0));
     }
 
     #[test]

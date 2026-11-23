@@ -140,6 +140,8 @@ const AREA_NAME: usize = 20;
 const AREA_POINT: usize = 20;
 /// The area holding the places the sides start from.
 const BASES: &[u8] = b"Base";
+/// The area holding where things come onto the map and leave it, at its edges.
+const ENTRANCES: &[u8] = b"Entrance";
 /// As much spice as a cell holds.
 const FULL_SPICE: u8 = 255;
 /// How wide the map's radar picture is, in its pixels, one to a cell.
@@ -156,6 +158,8 @@ pub struct Terrain {
     spice: Vec<u8>,
     /// Where each side may start, as world points.
     starts: Vec<(f32, f32)>,
+    /// The map's entrances, in the order of its file, as world points.
+    entrances: Vec<(f32, f32)>,
     /// The first point of each of the map's named lists of points, such as `Primary` and
     /// `Default` where bases stand, or `Script1` where a mission's script places something.
     points: Vec<(String, (f32, f32))>,
@@ -391,6 +395,9 @@ impl Terrain {
         let starts = part(AREAS)
             .and_then(|areas| area_points(areas, BASES))
             .unwrap_or_default();
+        let entrances = part(AREAS)
+            .and_then(|areas| area_points(areas, ENTRANCES))
+            .unwrap_or_default();
         let points = part(AREAS).map(named_points).unwrap_or_default();
         let radar = (0..cells)
             .map(|cell| {
@@ -410,6 +417,7 @@ impl Terrain {
             grounds,
             spice,
             starts,
+            entrances,
             points,
             objects: part(OBJECTS).map(map_objects).unwrap_or_default(),
             radar,
@@ -443,6 +451,7 @@ impl Terrain {
                 (right - inset, inset),
                 (inset, bottom - inset),
             ],
+            entrances: Vec::new(),
             points: Vec::new(),
             objects: Vec::new(),
             radar: vec![SAND; width * height],
@@ -544,6 +553,11 @@ impl Terrain {
     /// Where the sides may start, as world points.
     pub fn starts(&self) -> &[(f32, f32)] {
         &self.starts
+    }
+
+    /// The map's entrances, in the order of its file.
+    pub fn entrances(&self) -> &[(f32, f32)] {
+        &self.entrances
     }
 
     /// What the map has standing on it from the start.

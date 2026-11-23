@@ -4,7 +4,7 @@ title: Name the script's functions as the original does, and fix the ones we mis
 status: In Progress
 assignee: []
 created_date: '2026-11-23T14:32:00Z'
-updated_date: '2026-11-23T17:24:00Z'
+updated_date: '2026-11-23T17:52:00Z'
 labels: []
 dependencies: []
 ordinal: 140000
@@ -35,4 +35,6 @@ What the original's case code does, for the functions we misread:
 - F42 EventSideAttacksSide(a, b) (0xf30f3, 0x57; 0x4f5cc0, co-op 0x4f5d90): TRUE if this update's event list (script+0x2c0) has a kind-11 attack event by an object of side a on side b. We take it as 'has lost any of what the script gave it'.
 - F114/F115 PIPCameraLookAtPoint/PanToPoint (0xf3760, 0xf37ad): drive the picture-in-picture window's own camera (created on first use, 'GreenTVScreenOn'), never the main one.
 - F135 ObjectSell(obj) (0xf3edb, 0x75): sells the building (Building 0x486660, the sell routine of building.cpp: it refunds and goes away as a player's sale does) when the object can be sold (its virtual +0x14, or game type 4 with the side's 0x434320 state allowing it); otherwise logs 'eObjectSellFunction: ObjectCan'tBeSold %d'. ObjectRemove (F136) is the one that takes a thing off with order 0x2e.
+
+F11 GetEntranceFarFromPos now gives the farthest of the map's entrances; F6 GetEntrancePoint was also misread (it is the entrance nearest the side's mission position, 0x4ecd90 -> 0x4ecb70) and is fixed with it.
 <!-- SECTION:NOTES:END -->

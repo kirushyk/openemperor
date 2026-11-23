@@ -62,7 +62,8 @@ dialogue bag under that name without the language's letter: `KK-M680` in the Atr
 
 Their names are in `GAME.EXE` (see [Names, from GAME.EXE](#names-from-gameexe) below). The
 table here is what their use in the scripts showed before the names were found; where a
-reading and the name disagree, the name is the original's (TASK-140):
+reading and the name disagree, the name is the original's (TASK-140). A map's entrances are
+the points of its area `Entrance`, at its edges, in the order of its file:
 
 | Token | Seems to be | Seen as |
 | --- | --- | --- |
@@ -84,9 +85,10 @@ reading and the name disagree, the name is the original's (TASK-140):
 | `F14()` | The player's side | `v0 K180 F14()` |
 | `F18()` | A new side | four of them, the enemy and others |
 | `F3()` | The enemy's main base: the map's point `Primary` | |
-| `F4(side)`, `F6(side)` | A side's base: the player's at the map's point `Default` | `v13 K180 F4(v0)` |
+| `F4(side)` | A side's base: the player's at the map's point `Default` | `v13 K180 F4(v0)` |
+| `F6(side)`, `F7(side)` | The map's entrance nearest a side's base, and the one farthest from that (the original's code) | `F21(v4,…,F6(F16()))` |
 | `F5(n)` | The map's point `Script` and the number | `F5(1)` is `Script1` |
-| `F2()` | Asked before the first reinforcements; taken as true | |
+| `F2()` | Whether the game is the co-op campaign: false here, as the original has it outside one | before the second player's gift |
 | `F21(side, kind, place)` | Brings a unit of that kind in for the side at a place | reinforcements |
 | `F23(object)` | Whether an object is destroyed | all three of the enemy's main buildings ends the mission |
 | `F35(side)` | How many units a side has left | `F35(v2) K168 0` |
@@ -96,7 +98,7 @@ reading and the name disagree, the name is the original's (TASK-140):
 | `F83(truth)` | Ends the battle, won if true and lost if false | `F83(TRUE)` once the enemy's palace and yards are gone |
 | `F37(side, kind)` | How many things of a kind a side has; for `F16()`, the map's own too | `F37(F16(),<HKPalace>) K168 0` |
 | `F8()` | Where reinforcements come in; taken as the player's base | `F21(F14(),<FRFremen>,F8())` |
-| `F11(place)` | A place near one; taken as that place | `F11(F12(F16()))` |
+| `F9(n)`, `F10(place)`, `F11(place)` | The map's entrance `n` (the first when it has none of that number), the one nearest a place and the one farthest from it (the original's code) | `F11(F12(F16()))` |
 | `F12(side)` | Where a side's units arrive; taken as its base | `F21(F14(),<ATMongoose>,F12(F14()))` |
 | `F13(thing)` | Where a thing is | `F97(F13(v3),12)` |
 | `F16()` | A side that is neither the player's nor one of the script's | `F59(v1,F16())` |

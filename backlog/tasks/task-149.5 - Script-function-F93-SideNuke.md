@@ -1,9 +1,10 @@
 ---
 id: TASK-149.5
 title: Script function F93 SideNuke
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:04:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf33f5, 0x74 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's SideNuke does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls SideNuke and checks the effect
+- [x] #1 The game does what the original's SideNuke does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls SideNuke and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SideNuke(side) and SideNukeAll() leave everything of the side, or of every side, with no health (Battle::nuke, through set_health 0). Tested in game.rs (a_side_nuked_has_nothing_left_and_nuking_all_leaves_nothing_of_anyone) and mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

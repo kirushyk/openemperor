@@ -2202,6 +2202,19 @@ impl mission::Battle for Game {
         }
     }
 
+    /// Everything of the side, or of all, has no health left.
+    fn nuke(&mut self, side: Option<i32>) {
+        let doomed: Vec<u32> = self
+            .units
+            .iter()
+            .filter(|u| u.alive && side.is_none_or(|side| self.is_of_side(u, side)))
+            .map(|u| u.id)
+            .collect();
+        for id in doomed {
+            self.set_health(Some(id), 0);
+        }
+    }
+
     fn cover(&mut self, at: (f32, f32), squares: i32) {
         if let Some(fog) = &mut self.fog {
             fog.cover(at, squares as f32 * battlefield::CELL_SIDE);
@@ -6901,6 +6914,25 @@ mod tests {
         let yard = game.units.iter().find(|u| Some(u.id) == yard).unwrap();
         assert!(yard.deployed && yard.kind.is_building());
         assert_eq!(game.buildings_left(1), 2);
+    }
+
+    #[test]
+    fn a_side_nuked_has_nothing_left_and_nuking_all_leaves_nothing_of_anyone() {
+        use mission::Battle;
+        let mut game = in_battle();
+        let side = game.new_side();
+        let (x, z) = game.home;
+        for _ in 0..2 {
+            game.bring(side, 2, (x + 500.0, z + 500.0));
+        }
+        assert_eq!(game.left(side), 2);
+        let players = game.left(0);
+        assert!(players > 0);
+        game.nuke(Some(side));
+        assert_eq!(game.left(side), 0);
+        assert_eq!(game.left(0), players, "the player's are untouched");
+        game.nuke(None);
+        assert!(game.units.iter().all(|u| !u.alive));
     }
 
     #[test]

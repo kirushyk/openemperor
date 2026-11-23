@@ -193,6 +193,9 @@ const END_GAME_LOSE: u16 = 85;
 /// Hands all a side's units over to another side, as the Atreides' Heighliner's Mongooses
 /// join the player once found.
 const SIDE_CHANGE_SIDE: u16 = 91;
+/// Destroys everything a side has, and everything every side has.
+const SIDE_NUKE: u16 = 93;
+const SIDE_NUKE_ALL: u16 = 94;
 /// Uncovers the fog so many squares round a place, as the tutorial does where it shows a
 /// beacon and the enemy's base.
 const REMOVE_SHROUD: u16 = 97;
@@ -398,6 +401,8 @@ pub trait Battle {
     fn hunt(&mut self, _side: i32) {}
     /// Takes a thing off the map.
     fn remove(&mut self, _thing: Option<u32>) {}
+    /// Destroys everything of a side, or of every side.
+    fn nuke(&mut self, _side: Option<i32>) {}
     /// Uncovers the fog so many squares round a place for the player.
     fn uncover(&mut self, _at: (f32, f32), _squares: i32) {}
     /// Covers it again so many squares round a place.
@@ -681,6 +686,14 @@ impl Script {
                     }
                     Piece::Function(REMOVE_SHROUD) => {
                         battle.uncover(at(0).place(), number(1));
+                        Value::Number(0)
+                    }
+                    Piece::Function(SIDE_NUKE) => {
+                        battle.nuke(Some(number(0)));
+                        Value::Number(0)
+                    }
+                    Piece::Function(SIDE_NUKE_ALL) => {
+                        battle.nuke(None);
                         Value::Number(0)
                     }
                     Piece::Function(REPLACE_SHROUD) => {
@@ -1045,6 +1058,7 @@ mod tests {
         uncovered: Vec<((f32, f32), i32)>,
         covered: Vec<((f32, f32), i32)>,
         all_uncovered: bool,
+        nuked: Vec<Option<i32>>,
         handed: Vec<(i32, i32)>,
         entrances: Vec<(f32, f32)>,
         drawn: u32,
@@ -1129,6 +1143,9 @@ mod tests {
         }
         fn uncover_all(&mut self) {
             self.all_uncovered = true;
+        }
+        fn nuke(&mut self, side: Option<i32>) {
+            self.nuked.push(side);
         }
         fn hand_over(&mut self, from: i32, to: i32) {
             self.handed.push((from, to));
@@ -1460,6 +1477,8 @@ mod tests {
             vec![F(REMOVE_SHROUD), text("("), V(13), text(",20)")],
             vec![F(REPLACE_SHROUD), text("("), V(16), text(",8)")],
             vec![F(REMOVE_MAP_SHROUD), text("()")],
+            vec![F(SIDE_NUKE), text("(3)")],
+            vec![F(SIDE_NUKE_ALL), text("()")],
             // F91(v18, F14()), as the Atreides' Heighliner hands its Mongooses over.
             vec![F(SIDE_CHANGE_SIDE), text("(2,0)")],
         ];
@@ -1483,6 +1502,7 @@ mod tests {
         assert_eq!(battle.uncovered, [((13.0, 0.0), 20)]);
         assert_eq!(battle.covered, [((16.0, 0.0), 8)]);
         assert!(battle.all_uncovered);
+        assert_eq!(battle.nuked, [Some(3), None]);
         assert_eq!(battle.handed, [(2, 0)]);
     }
 

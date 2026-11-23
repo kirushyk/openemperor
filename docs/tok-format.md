@@ -130,6 +130,7 @@ the points of its area `Entrance`, at its edges, in the order of its file:
 | `F85()` | The battle is lost (the original's code) | |
 | `F63`, `F96` | Not known; the tutorial runs without them | `F96(v36)` |
 | `F91(a, b)` | Hands all of side `a`'s units over to side `b` | `F91(v18,F14())`: the Atreides' Heighliner's Mongooses, once in sight |
+| `F93(side)`, `F94()` | Destroys everything of a side, and of every side (the original's code: no health left) | `F94()` as the Heighliner's time runs out |
 | `F97(place, n)` | Opens up the fog `n` squares round a place, seen from then on | `F97(v35,20)` as a beacon goes down |
 | `F98(place, n)`, `F99()` | Covers the map again `n` squares round a place, to be seen anew; opens up the whole map (the original's code: the human sides' shroud) | `F99()` in the start scripts |
 | `F107(thing)`, `F108()` | The camera follows a thing, or what carries it, and stops following | `F107(v1)`: the tutorial's harvester, at its start |

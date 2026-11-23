@@ -1,9 +1,10 @@
 ---
 id: TASK-143.5
 title: Script function F85 EndGameLose
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T17:58:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-143
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf31c9, 0x16 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's EndGameLose does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls EndGameLose and checks the effect
+- [x] #1 The game does what the original's EndGameLose does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls EndGameLose and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+EndGameLose ends the battle as the player's defeat, through Battle::lose as MissionOutcome(FALSE) does; tested in mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

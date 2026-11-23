@@ -186,6 +186,8 @@ const SIDE_AI_MOVE: u16 = 71;
 const MISSION_OUTCOME: u16 = 83;
 /// The tutorial is over, and done.
 const END_GAME_WIN: u16 = 84;
+/// The battle is lost.
+const END_GAME_LOSE: u16 = 85;
 /// Hands all a side's units over to another side, as the Atreides' Heighliner's Mongooses
 /// join the player once found.
 const SIDE_CHANGE_SIDE: u16 = 91;
@@ -694,6 +696,10 @@ impl Script {
                         battle.win();
                         Value::Number(0)
                     }
+                    Piece::Function(END_GAME_LOSE) => {
+                        battle.lose();
+                        Value::Number(0)
+                    }
                     Piece::Keyword(OBJECT_SELL) => {
                         battle.remove(at(0).thing());
                         Value::Number(0)
@@ -1133,6 +1139,9 @@ mod tests {
         assert!(won.won && !won.lost);
         let mut lost = Written::default();
         Script::new(&[vec![F(MISSION_OUTCOME), text("("), K(FALSE), text(")")]]).run(&mut lost);
+        assert!(lost.lost && !lost.won);
+        let mut lost = Written::default();
+        Script::new(&[vec![F(END_GAME_LOSE), text("()")]]).run(&mut lost);
         assert!(lost.lost && !lost.won);
         // v1 = F37(2, <kind 4>)
         let lines = vec![vec![

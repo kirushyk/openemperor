@@ -2267,6 +2267,14 @@ impl mission::Battle for Game {
         })
     }
 
+    fn raise_rank(&mut self, thing: Option<u32>) -> bool {
+        let unit = self
+            .units
+            .iter_mut()
+            .find(|u| Some(u.id) == thing && u.alive);
+        unit.is_some_and(Unit::raise_rank)
+    }
+
     /// None left is gone: a beacon put out once reached.
     fn set_health(&mut self, thing: Option<u32>, health: i32) {
         if let Some(unit) = self.units.iter_mut().find(|u| Some(u.id) == thing) {

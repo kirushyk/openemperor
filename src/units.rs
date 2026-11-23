@@ -3498,6 +3498,20 @@ impl Unit {
         self.health = self.max_health() * share;
     }
 
+    /// Raises it one level, its score made the one that reaches it, keeping the share of its
+    /// health it had, as the original's script does; `false` if it has no level above.
+    pub fn raise_rank(&mut self) -> bool {
+        let next = self
+            .role
+            .veterancy(self.house)
+            .and_then(|levels| levels.get(self.rank() as usize).map(Level::score));
+        let Some(score) = next else {
+            return false;
+        };
+        self.gain_experience(score.saturating_sub(self.experience));
+        true
+    }
+
     /// Whether a repair vehicle can work on it: a vehicle, or an aircraft while it is grounded.
     pub fn can_be_repaired(&self) -> bool {
         self.kind == UnitKind::Vehicle || (self.kind.flies() && self.is_grounded())
@@ -9705,6 +9719,20 @@ mod tests {
             mortar.sight() > 8.0 * CELL_SIDE,
             "it sees as far as it shells"
         );
+    }
+
+    #[test]
+    fn a_unit_raised_a_level_has_the_score_that_reaches_it_and_none_past_the_last() {
+        let mut unit = unit_at(MAP_MIDDLE_X, 2715.0, UnitKind::Infantry);
+        unit.health = 300.0;
+        assert!(unit.raise_rank());
+        assert_eq!((unit.rank(), unit.experience), (1, 5));
+        assert_eq!(unit.health, 400.0, "the share of its health kept");
+        assert!(unit.raise_rank() && unit.raise_rank());
+        assert_eq!(unit.rank(), 3);
+        let score = unit.experience;
+        assert!(!unit.raise_rank(), "no level past the third");
+        assert_eq!((unit.rank(), unit.experience), (3, score));
     }
 
     #[test]

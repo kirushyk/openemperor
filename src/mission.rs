@@ -230,6 +230,8 @@ const GET_NEUTRAL_SIDE: u16 = 140;
 const NEG: u16 = 143;
 /// Sets a side's money, but only at the very start of the battle.
 const SET_SIDE_CASH: u16 = 152;
+/// Raises a thing so many levels of veterancy, as far as it has them.
+const SET_VETERANCY: u16 = 156;
 /// Does nothing but write a line to the original's debugger.
 const BREAK_POINT: u16 = 160;
 /// The place of a square of the map, by its column and row: its corner nearest the map's
@@ -369,6 +371,10 @@ pub trait Battle {
         false
     }
     fn set_health(&mut self, _thing: Option<u32>, _health: i32) {}
+    /// Raises a thing one level of veterancy; `false` if it has none above.
+    fn raise_rank(&mut self, _thing: Option<u32>) -> bool {
+        false
+    }
     /// Turns a thing into one of another kind for a side, in its place, and says which it is.
     fn turn_into(&mut self, thing: Option<u32>, _kind: u16, _side: i32) -> Option<u32> {
         thing
@@ -558,6 +564,15 @@ impl Script {
                     Piece::Keyword(NEG) => Value::Number(-number(0)),
                     Piece::Keyword(GET_NEUTRAL_SIDE) => Value::Number(NEUTRAL_SIDE),
                     Piece::Keyword(BREAK_POINT) => Value::Number(0),
+                    Piece::Keyword(SET_VETERANCY) => {
+                        let thing = at(0).thing();
+                        for _ in 0..number(1) {
+                            if !battle.raise_rank(thing) {
+                                break;
+                            }
+                        }
+                        Value::Number(0)
+                    }
                     Piece::Keyword(SET_TILE_POS) => {
                         let cell = crate::battlefield::CELL_SIDE;
                         Value::Place(number(0) as f32 * cell, number(1) as f32 * cell)
@@ -1075,6 +1090,7 @@ mod tests {
         covered: Vec<((f32, f32), i32)>,
         all_uncovered: bool,
         nuked: Vec<Option<i32>>,
+        ranks: u32,
         handed: Vec<(i32, i32)>,
         entrances: Vec<(f32, f32)>,
         drawn: u32,
@@ -1165,6 +1181,11 @@ mod tests {
         }
         fn nuke(&mut self, side: Option<i32>) {
             self.nuked.push(side);
+        }
+        fn raise_rank(&mut self, thing: Option<u32>) -> bool {
+            let raised = thing.is_some() && self.ranks < 3;
+            self.ranks += u32::from(raised);
+            raised
         }
         fn hand_over(&mut self, from: i32, to: i32) {
             self.handed.push((from, to));
@@ -1428,6 +1449,29 @@ mod tests {
         assert_eq!(asked(near("2", "159")), Value::Number(1));
         assert_eq!(asked(near("2", "160")), Value::Number(0));
         assert_eq!(asked(near("1", "0")), Value::Number(0));
+    }
+
+    #[test]
+    fn a_things_veterancy_is_raised_by_so_many_levels_as_far_as_it_goes() {
+        use Token::{Keyword as K, Kind, Variable as V};
+        let lines = vec![
+            vec![
+                V(1),
+                K(SET),
+                K(NEW_OBJECT_OFFSET_ORIENTATION),
+                text("(0,"),
+                Kind(1),
+                text(","),
+                V(2),
+                text(",0,0,0)"),
+            ],
+            vec![K(SET_VETERANCY), text("("), V(1), text(",2)")],
+            vec![K(SET_VETERANCY), text("("), V(1), text(",0)")],
+            vec![K(SET_VETERANCY), text("("), V(1), text(",5)")],
+        ];
+        let mut battle = Written::default();
+        Script::new(&lines).run(&mut battle);
+        assert_eq!(battle.ranks, 3, "two, none, then the one left");
     }
 
     #[test]

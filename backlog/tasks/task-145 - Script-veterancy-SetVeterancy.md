@@ -1,9 +1,10 @@
 ---
 id: TASK-145
 title: 'Script veterancy: SetVeterancy'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T14:32:00Z'
+updated_date: '2026-11-23T18:07:00Z'
 labels: []
 dependencies: []
 ordinal: 145000
@@ -17,6 +18,12 @@ SetVeterancy F156 is called 1319 times in 51 scripts to give units their ranks; 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 SetVeterancy sets a unit's rank as the original's case code does
-- [ ] #2 A test checks a unit put down at a rank keeps its medals and extra figures
+- [x] #1 SetVeterancy sets a unit's rank as the original's case code does
+- [x] #2 A test checks a unit put down at a rank keeps its medals and extra figures
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SetVeterancy is carried out (TASK-145.1).
+<!-- SECTION:FINAL_SUMMARY:END -->

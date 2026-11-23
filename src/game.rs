@@ -2108,7 +2108,11 @@ impl mission::Battle for Game {
             .iter()
             .filter(|u| u.alive && !u.kind.is_building() && self.is_of_side(u, side))
             .peekable();
-        units.peek().is_some() && units.all(|u| !u.is_moving())
+        if units.peek().is_none() {
+            // A side all gone off the map it was told to leave is done.
+            return self.script_leaving.contains(&side);
+        }
+        units.all(|u| !u.is_moving())
     }
 
     fn has_lost(&self, side: i32) -> bool {
@@ -2158,6 +2162,24 @@ impl mission::Battle for Game {
             let unit = &self.units[index];
             if self.is_of_side(unit, side) && unit.alive && unit.can_attack(&target, &self.teams) {
                 self.units[index].go_after(target.id);
+            }
+        }
+    }
+
+    /// Each unit heads for the entrance nearest it, and goes once there.
+    fn exit_map(&mut self, side: i32) {
+        self.stop(side);
+        if !self.script_leaving.contains(&side) {
+            self.script_leaving.push(side);
+        }
+        let terrain = battlefield::terrain(self.battle_map);
+        for index in 0..self.units.len() {
+            let unit = &self.units[index];
+            if !unit.alive || unit.kind.is_building() || !self.is_of_side(unit, side) {
+                continue;
+            }
+            if let Some(exit) = units::nearest_exit(terrain.entrances(), (unit.x, unit.z)) {
+                units::send_to_spot(&mut self.units, index, exit, terrain);
             }
         }
     }
@@ -2494,6 +2516,27 @@ impl Game {
         })
     }
 
+    /// The units of the sides a script told to leave the map go once they reach an entrance.
+    fn leave_the_map(&mut self) {
+        if self.script_leaving.is_empty() {
+            return;
+        }
+        let entrances = battlefield::terrain(self.battle_map).entrances();
+        let gone: Vec<u32> = self
+            .units
+            .iter()
+            .filter(|u| {
+                self.script_leaving
+                    .iter()
+                    .any(|&side| self.is_of_side(u, side))
+                    && units::at_an_exit(u, entrances)
+            })
+            .map(|u| u.id)
+            .collect();
+        self.units.retain(|u| !gone.contains(&u.id));
+        self.script_side_of.retain(|(id, _)| !gone.contains(id));
+    }
+
     /// Whether a thing is on a script's side: the player's own for the player's.
     fn is_of_side(&self, unit: &Unit, side: i32) -> bool {
         if side == 0 {
@@ -2619,6 +2662,8 @@ pub struct Game {
     script_enemies: Vec<(i32, i32)>,
     /// The script's sides told to go after the player's units, for as long as they have any.
     script_hunting: Vec<i32>,
+    /// The script's sides told to leave the map.
+    script_leaving: Vec<i32>,
     /// The starport's frigate, while it is about.
     pub frigate: Option<units::Frigate>,
     mission_lines: Vec<u16>,
@@ -2772,6 +2817,7 @@ impl Game {
             script_side_of: Vec::new(),
             script_enemies: Vec::new(),
             script_hunting: Vec::new(),
+            script_leaving: Vec::new(),
             frigate: None,
             mission_lines: Vec::new(),
             minimap_dragging: false,
@@ -4970,6 +5016,7 @@ impl Game {
         self.script_side_of.clear();
         self.script_enemies.clear();
         self.script_hunting.clear();
+        self.script_leaving.clear();
         // What the map has standing is there before the script first looks: its palace, say,
         // which a script wins on once it is gone.
         self.place_map_objects();
@@ -5584,6 +5631,7 @@ impl Game {
     fn advance_world(&mut self, dt: f32) {
         let terrain = battlefield::terrain(self.battle_map);
         units::advance(&mut self.units, terrain, &self.teams, dt);
+        self.leave_the_map();
         units::tend_harvesters(&mut self.units, terrain, &mut self.money, dt);
         units::tend_carryalls(&mut self.units, terrain);
         units::board_apcs(&mut self.units);
@@ -7227,6 +7275,21 @@ mod tests {
         game.attack(side, Some(target));
         let unit = game.units.iter().find(|u| Some(u.id) == thing).unwrap();
         assert_eq!(unit.target, Some(units::Target::Unit(target)));
+    }
+
+    #[test]
+    fn a_side_told_to_leave_a_map_without_entrances_stays_and_is_not_done() {
+        use mission::Battle;
+        let mut game = in_battle();
+        game.set_screen(Screen::InGame);
+        let side = game.new_side();
+        assert!(battlefield::terrain(game.battle_map).entrances().is_empty());
+        let thing = game.bring(side, 2, game.home);
+        game.exit_map(side);
+        game.update(0.1);
+        assert!(!game.destroyed(thing), "it stays");
+        assert!(game.script_leaving.contains(&side));
+        assert!(!game.has_lost(side));
     }
 
     #[test]

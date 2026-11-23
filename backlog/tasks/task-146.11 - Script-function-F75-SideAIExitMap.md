@@ -1,9 +1,10 @@
 ---
 id: TASK-146.11
 title: Script function F75 SideAIExitMap
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-23T15:22:00Z'
+updated_date: '2026-11-23T18:37:00Z'
 labels: []
 dependencies: []
 parent_task_id: TASK-146
@@ -18,6 +19,12 @@ What the original does (case code at GAME.EXE file offset 0xf29b4, 0x62 bytes; +
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The game does what the original's SideAIExitMap does, as described here, in whatever form fits our code (it need not be one function)
-- [ ] #2 A test runs a script that calls SideAIExitMap and checks the effect
+- [x] #1 The game does what the original's SideAIExitMap does, as described here, in whatever form fits our code (it need not be one function)
+- [x] #2 A test runs a script that calls SideAIExitMap and checks the effect
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SideAIExitMap stops the side and sends each of its units to the map entrance nearest it (units::nearest_exit); each update a leaving unit within 3 squares of an entrance goes off the map (units::at_an_exit, Game::leave_the_map, part of the world's update), not counted as lost; once all have gone SideAIDone holds, as the original's 'Team has exited'. Tested in units.rs (a_unit_leaves_by_the_nearest_entrance_once_it_comes_to_it), game.rs and mission.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->

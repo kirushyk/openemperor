@@ -5961,6 +5961,26 @@ pub fn order_march(units: &mut [Unit], target: (f32, f32), terrain: &Terrain, te
 
 /// Stops the selected right where they are, giving up where they were going and what they were
 /// going after, so that they only fight back at what comes for them.
+/// How near an entrance a unit leaving the map must come to go off it.
+const EXIT_REACH: f32 = 3.0 * CELL_SIDE;
+
+/// Of a map's entrances, the one nearest a place.
+pub fn nearest_exit(entrances: &[(f32, f32)], (x, z): (f32, f32)) -> Option<(f32, f32)> {
+    let far = |&(ex, ez): &(f32, f32)| (ex - x).hypot(ez - z);
+    entrances
+        .iter()
+        .copied()
+        .min_by(|a, b| far(a).total_cmp(&far(b)))
+}
+
+/// Whether a unit leaving the map has come to an entrance, near enough to go off it.
+pub fn at_an_exit(unit: &Unit, entrances: &[(f32, f32)]) -> bool {
+    unit.alive
+        && !unit.kind.is_building()
+        && nearest_exit(entrances, (unit.x, unit.z))
+            .is_some_and(|(ex, ez)| (ex - unit.x).hypot(ez - unit.z) <= EXIT_REACH)
+}
+
 pub fn order_stop(units: &mut [Unit]) {
     for unit in units.iter_mut().filter(|u| u.selected) {
         unit.stop();
@@ -9739,6 +9759,23 @@ mod tests {
         let score = unit.experience;
         assert!(!unit.raise_rank(), "no level past the third");
         assert_eq!((unit.rank(), unit.experience), (3, score));
+    }
+
+    #[test]
+    fn a_unit_leaves_by_the_nearest_entrance_once_it_comes_to_it() {
+        let entrances = [(0.0, 3000.0), (8000.0, 3000.0)];
+        assert_eq!(
+            nearest_exit(&entrances, (7000.0, 0.0)),
+            Some((8000.0, 3000.0))
+        );
+        assert_eq!(nearest_exit(&[], (7000.0, 0.0)), None);
+        let mut unit = unit_at(4000.0, 3000.0, UnitKind::Vehicle);
+        assert!(!at_an_exit(&unit, &entrances), "in the middle");
+        unit.x = 8000.0 - 2.0 * CELL_SIDE;
+        assert!(at_an_exit(&unit, &entrances));
+        assert!(!at_an_exit(&unit, &[]), "no entrances");
+        unit.alive = false;
+        assert!(!at_an_exit(&unit, &entrances), "the dead stay");
     }
 
     #[test]
